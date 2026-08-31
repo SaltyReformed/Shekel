@@ -541,7 +541,7 @@ def _calendar_scope(paydays, cadence_days=14, user_id=1):
     """
     return _ScopeIds(
         user_id=user_id, account_id=1, scenario_id=1,
-        calendar=PayCalendar.from_paydays(paydays, cadence_days, user_id),
+        calendar=PayCalendar.from_paydays(paydays, cadence_days, user_id, history_opens_on=None),
     )
 
 

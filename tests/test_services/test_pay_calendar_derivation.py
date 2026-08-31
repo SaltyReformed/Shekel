@@ -275,6 +275,7 @@ class TestTheCadenceIsRequiredOnlyBesideAPayday:
         """
         calendar = PayCalendar.from_paydays(
             paydays=[], cadence_days=None, user_id=1,
+            history_opens_on=None,
         )
         day = date(2026, 1, 2)
 
@@ -286,7 +287,6 @@ class TestTheCadenceIsRequiredOnlyBesideAPayday:
         assert calendar.period_starting_on_or_after(day) is None
         assert calendar.period_starting_on_or_before(day) is None
         assert calendar.period_by_id(1) is None
-        assert calendar.earliest_start_in_month(2026, 1) is None
         assert len(calendar.window(0, 6)) == 0
         assert len(calendar.overlapping(day, date(2027, 1, 1))) == 0
         assert len(calendar.axis(day, date(2027, 1, 1))) == 0

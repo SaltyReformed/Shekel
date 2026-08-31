@@ -253,6 +253,11 @@ _LAX_DECLARATIONS = _LAX_INTEGER_SPELLINGS | _LAX_INTEGER_FACTORIES
 #: fact about the helper that should be asserted rather than assumed.
 _NON_INTEGER_FIELD_FACTORIES = frozenset({
     "_auth_email_field",
+    # An optional DATE -- how far back an owner's paychecks reach (plan step
+    # balance:X-bh-2).  Shared by the two doors that ask, so the schema tier
+    # and ``ck_pay_schedule_history_opens_range`` bound one window; it holds a
+    # day, never an id.
+    "history_opens_on_field",
     # A money figure read through the statement package's own strict
     # reader (plan step bank_import:X-f6d-4), so the row-id question does
     # not arise: it holds a signed decimal, never an id.
@@ -747,11 +752,12 @@ class TestNoIdFieldWasMissed:
         """
         # pylint: disable=import-outside-toplevel -- resolved here so the
         # registry above stays a plain frozenset of names.
-        from app.schemas.validation import auth, statements
+        from app.schemas.validation import auth, pay_periods, statements
 
         modules = {
             "_auth_email_field": auth,
             "ReviewedFigureField": statements,
+            "history_opens_on_field": pay_periods,
         }
         for factory_name in _NON_INTEGER_FIELD_FACTORIES:
             module = modules.get(factory_name)

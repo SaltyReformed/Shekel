@@ -214,9 +214,11 @@ def _get_transaction_amount(template, salary_profile, period, calendar):
     longer does**: the per-period GROSS, which distributed a rounding residue
     across whichever rows existed (finding **N-239**).  It is now the salary
     over the cadence and nothing else
-    (:func:`~app.services.payroll_basis.gross_per_paycheck`).  What remains of
-    ledger row **N-390** is what the calendar can answer BELOW its opening
-    payday, which is plan step **balance:X-bh-2**.
+    (:func:`~app.services.payroll_basis.gross_per_paycheck`).  **Ledger row
+    N-390 closed at plan step balance:X-bh-2**, which made the calendar answer
+    BELOW its opening payday too -- so a generated salary row is now priced
+    against the owner's whole rhythm rather than against the part of it the
+    app has rows for.
 
     Measured 2026-08-08 on a streamed clone of production: transaction 2756,
     pay period 2028-06-29 -- the THIRD paycheck of June 2028 -- was generated

@@ -41,26 +41,42 @@ the engine only its newly created periods (ledger row **D25**).  A calendar can
 be built only from a COMPLETE payday set, so that argument is now
 unrepresentable rather than refused in prose -- finding **N-390**'s first half.
 
-**What the two producers still cannot answer is the SECOND half of N-390**, and
-it is plan step **balance:X-bh-2**: they project the rhythm FORWARD past the
-schedule's horizon but not BACKWARD below its opening payday, so a month or a
-calendar year the recorded schedule opens INSIDE is counted from the first
-recorded payday.  Measured 2026-08-30 on the owner's own data: the 2026
-year-to-date gross for 2026-05-21 reads ``$14,103.84`` -- four recorded paydays
-at ``$3,525.96`` -- against ``$31,733.64``, the NINE that owner was really paid.
+**The SECOND half of N-390 closed at plan step balance:X-bh-2** (ruling
+**balance:R-IA**, amended 2026-08-31): both producers project the rhythm
+BACKWARD below the schedule's opening payday as well as forward past its
+horizon, bounded by ``budget.pay_schedule.history_opens_on`` -- a stored fact
+the registration form and the pay-periods settings section ask for, because the
+app knows the CADENCE and cannot derive when a job began.  Until then a month
+or a calendar year the record opened INSIDE was counted from the first RECORDED
+payday: the owner's 2026 year-to-date gross for 2026-05-21 read ``$14,103.84``
+-- four recorded paydays at ``$3,525.96`` -- against the ``$31,733.64`` of the
+NINE he was really paid, which is what it reads once he states his opening.
 
-*Nine and not the ten a cadence gives, and saying which is the point.*  Stepping
-back fourteen days from the 2026-03-26 opening lands on 2026-01-01, and that
-paycheck was really paid **2025-12-31** because New Year's Day is a holiday
-(developer, 2026-08-30) -- so it belongs to 2025's wage base, not 2026's.  The
-app models no payday shift at all: all 63 of this owner's saved gaps are exactly
-14 days.  A cadence projection is therefore an approximation that is wrong at
-exactly the year boundary a calendar-year cumulative turns on, which plan step
-**balance:X-bh-2** carries rather than hides.
+**An owner who has stated nothing keeps the old reading, and that is the
+amendment.**  ``NULL`` means NOT STATED, so the backward half answers nothing
+for every owner nobody has asked.  Why that is the right default rather than
+"back to ``CALENDAR_DATE_MIN``" is argued where the fact lives --
+``budget.pay_schedule.history_opens_on``'s own column comment -- and turns on
+DIRECTION: over-counting a year-to-date retires the FICA wage base and exhausts
+an ``annual_cap`` early, understating the deduction and the tax and so
+OVERSTATING net.  An application that budgets should guess poor.
 
-It moves ``$0.00`` on this data -- no 12-per-year deduction, no ``annual_cap``,
-and ``$91,675`` against a ``$184,500`` wage base -- and it is a real defect on
-data that has any of the three.
+*Stated further back than his own opening it reads TEN, not nine*, because the
+rhythm steps from 2026-03-26 onto 2026-01-01 and that paycheck was really paid
+**2025-12-31**, New Year's Day being a holiday (developer, 2026-08-30).  All 63
+of his saved gaps are exactly 14 days, so the app models no shift at all: a
+cadence projection can be wrong at exactly the year boundary a calendar-year
+cumulative turns on.  That is ledger row **N-398** rather than a silence.
+
+It moves ``$0.00`` on this owner's data either way -- measured 2026-08-30 by
+pricing all 63 of his paychecks on both trees -- because he has no 12-per-year
+deduction, no ``annual_cap``, and ``$91,675`` against a ``$184,500`` wage base.
+The counts underneath DO move once he states his opening: 2026-03-26 goes from
+his month's first paycheck to its second, and the 2026 year-to-date at
+2026-12-31 from 20 paydays to 26.  With one deduction set to 12-per-year and
+one capped at ``$1,200``, the same harness moves net **UP by ``$1,190.54``**
+across four paychecks -- up, because both mechanisms REMOVE a deduction.  That
+is what the ``$0.00`` is a property of, and what it is not.
 
 The per-paycheck gross -- a RATE, not a share of a year
 -------------------------------------------------------
@@ -653,11 +669,20 @@ def _month_ordinal(calendar, payday):
 
     Raises:
         PayCalendarError: This owner is not paid on *payday*, so there is no
-            position in the month to answer with.  Reachable two ways and both
-            are caller defects: a paycheck priced against a different owner's
-            calendar, and one dated BELOW this calendar's opening payday,
-            which the rhythm does not yet reach (ledger row **N-390**, plan
-            step **balance:X-bh-2**).
+            position in the month to answer with.  Plan step **balance:X-bh-2**
+            NARROWED what reaches here and did not remove it: the rhythm runs
+            below the opening payday for an owner who has STATED one, so a
+            day on their own phase and at or above their stated opening is
+            placed -- the day 2026-03-12 that used to raise for the developer
+            prices as March's first paycheck once he states it.  What is left
+            is a day OFF that phase, a day below the stated opening, and every
+            day below the record for an owner who has stated nothing.
+            **For a stated owner this is a WEAKER cross-owner guard and the
+            cost is countable**: at a shared cadence one payday in
+            ``cadence_days`` lands on their phase, so a mispairing that was
+            refused unconditionally is refused about thirteen times in
+            fourteen.  For an unstated owner -- which is every owner until
+            they answer -- the old strictness is unchanged.
     """
     paydays = paydays_in_month_through(calendar, payday)
     if not paydays or paydays[-1] != payday:
@@ -668,8 +693,8 @@ def _month_ordinal(calendar, payday):
             f"calendar holds {len(calendar.periods)} payday(s) and "
             f"{len(paydays)} in that month at or before it.  A paycheck is "
             f"priced against the calendar it belongs to; pairing one owner's "
-            f"period with another's schedule, or pricing a period below this "
-            f"schedule's opening payday, reaches here."
+            f"period with another's schedule, or naming a day off their "
+            f"cadence or below the day their paychecks began, reaches here."
         )
     return len(paydays)
 
@@ -923,12 +948,15 @@ def _get_cumulative_wages(basis, period):
     ordering were both done here -- a filter on the year, a sort, and a break
     -- where the producer now guarantees both.
 
-    **Its remaining horizon dependence is BELOW the schedule's opening
-    payday**, which is the live half of ledger row **N-390** and plan step
-    **balance:X-bh-2**'s subject: an owner whose recorded schedule opens
-    mid-year has no payday for the paychecks before it, so this under-counts
-    and the wage-base cap is reached late.  Measured 2026-08-30: ``$14,103.84``
-    for 2026-05-21 against the nine paychecks that owner was really paid.
+    **It reads BELOW the schedule's opening payday since plan step
+    balance:X-bh-2**, which closed ledger row **N-390** -- for an owner who has
+    STATED when their paychecks began.  Such an owner is no longer summed from
+    the record's boundary, so the wage-base cap is reached when their wages
+    reach it rather than late: the 2026 total for 2026-05-21 goes from
+    ``$14,103.84`` -- four recorded paydays -- to the nine the developer was
+    really paid, once he states his own opening.  An owner who has stated
+    nothing is summed from the record exactly as before, which is the ruling's
+    2026-08-31 amendment and the conservative direction.
 
     Args:
         basis: The :class:`PayrollBasis` -- its profile prices each paycheck

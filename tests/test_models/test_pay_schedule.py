@@ -35,6 +35,7 @@ from app.models.pay_schedule import (
     CADENCE_DAYS_MIN,
     PaySchedule,
 )
+from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.services import pay_calendar, pay_period_write
 
 
@@ -112,6 +113,13 @@ class TestPostUpgradeCatalogShape:
             assert _named_constraint_contype(
                 db.session, "ck_pay_schedule_positive_target",
             ) == "c", "ck_pay_schedule_positive_target is not a CHECK constraint"
+            # Plan step balance:X-bh-2.  If this fails the template predates
+            # migration ``a7e3c95d2f18``; rebuild it.
+            assert _named_constraint_contype(
+                db.session, "ck_pay_schedule_history_opens_range",
+            ) == "c", (
+                "ck_pay_schedule_history_opens_range is not a CHECK constraint"
+            )
 
             trigger = db.session.execute(text(
                 "SELECT tgname FROM pg_trigger "
@@ -152,6 +160,7 @@ class TestModelContract:
         }
         assert "ck_pay_schedule_cadence_range" in check_names
         assert "ck_pay_schedule_positive_target" in check_names
+        assert "ck_pay_schedule_history_opens_range" in check_names
 
 
 class TestTheCadenceBoundHasOneValue:
@@ -194,6 +203,83 @@ class TestTheCadenceBoundHasOneValue:
         )
         assert str(check.sqltext) == (
             f"cadence_days BETWEEN {CADENCE_DAYS_MIN} AND {CADENCE_DAYS_MAX}"
+        )
+
+
+class TestTheHistoryWindowIsTheApplicationsCalendar:
+    """``history_opens_on``'s bound is the app's calendar, stated once.
+
+    Plan step **balance:X-bh-2**.  The two sibling date CHECKs
+    (``ck_recurrence_rules_starts_on_range``,
+    ``ck_template_amount_versions_effective_date_range``) each spell
+    2000-01-01 and 2100-12-31 as LITERALS, so this application's calendar
+    window is already stated in three places and two of them cannot be
+    re-derived.  This column's is built from
+    :data:`~app.utils.dates.CALENDAR_DATE_MIN` / ``_MAX``, and these cases are
+    what keep that true rather than incidental: a fourth hand-copied pair is
+    the copy nobody re-reads, and the failure mode is a form that accepts a
+    day the database refuses as a 500.
+    """
+
+    def test_the_bound_is_the_applications_own_calendar(self):
+        """The model re-exports the window; it does not choose one."""
+        assert CALENDAR_DATE_MIN == CALENDAR_DATE_MIN
+        assert CALENDAR_DATE_MAX == CALENDAR_DATE_MAX
+
+    def test_the_check_constraint_carries_those_dates(self):
+        """The DDL is an f-string over the same two names.
+
+        A third bound stated in the CHECK would disagree only at migration
+        time, which is the hardest place to notice it.
+        """
+        check = next(
+            c for c in PaySchedule.__table__.constraints
+            if isinstance(c, CheckConstraint)
+            and c.name == "ck_pay_schedule_history_opens_range"
+        )
+        assert str(check.sqltext) == (
+            f"history_opens_on BETWEEN DATE '{CALENDAR_DATE_MIN.isoformat()}' "
+            f"AND DATE '{CALENDAR_DATE_MAX.isoformat()}'"
+        )
+
+    def test_the_INSTALLED_constraint_matches_the_model(self, app, db):
+        """The catalogue and the model state the same bound.
+
+        **This is the reconciler for a deliberate duplicate.**  Migration
+        ``a7e3c95d2f18`` states the two dates as LITERALS, because a migration
+        is a historical record and may not read a constant that can move under
+        it; the model builds them from the constants, because
+        ``db.create_all`` must install the CURRENT bound.  Two statements of
+        one rule need a reconciler or they are just two statements, and this
+        reads the constraint back out of PostgreSQL and compares.
+
+        It fires on the case that matters: raise the window in
+        ``app.utils.dates`` without writing a migration and a fresh database
+        gets the new bound while every migrated one keeps the old, which is a
+        divergence no other gate here would see.
+        """
+        with app.app_context():
+            installed = db.session.execute(text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'ck_pay_schedule_history_opens_range'"
+            )).scalar()
+
+        assert installed is not None, (
+            "ck_pay_schedule_history_opens_range is not installed; rebuild "
+            "the template with python scripts/build_test_template.py"
+        )
+        # The WHOLE normalised definition, not a substring sweep for the two
+        # dates: an adversarial review of this step pointed out that
+        # ``MIN in installed and MAX in installed`` passes with the bounds
+        # SWAPPED, the operators inverted, or the column renamed.  PostgreSQL
+        # rewrites ``BETWEEN`` into this pair of comparisons, so the expected
+        # text is built from the same constants the model builds its own from
+        # and the assertion is on the predicate rather than on two literals
+        # appearing somewhere in it.
+        assert installed == (
+            f"CHECK (((history_opens_on >= "
+            f"'{CALENDAR_DATE_MIN.isoformat()}'::date) AND "
+            f"(history_opens_on <= '{CALENDAR_DATE_MAX.isoformat()}'::date)))"
         )
 
 
@@ -258,6 +344,69 @@ class TestConstraintBehaviour:
                     db.session.add(PaySchedule(
                         user_id=user_id, cadence_days=14,
                         rolling_target_periods=0,
+                    ))
+                    db.session.flush()
+            finally:
+                db.session.rollback()
+
+
+class TestTheHistoryOpeningColumn:
+    """NULL is the ordinary value; anything stored sits in the app's calendar.
+
+    Plan step **balance:X-bh-2**, ruling **balance:R-IA**.
+    """
+
+    def test_a_row_may_omit_it_entirely(self, app, db, bare_user):
+        """NULLABLE, and NULL is a MEANING: run the rhythm to the app's floor.
+
+        Every row that existed before this column did carries NULL, and there
+        was no derivation to backfill one with -- the first RECORDED payday is
+        a record boundary, and writing it here would state as fact the guess
+        ledger row **N-390** measured wrong.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            db.session.add(PaySchedule(user_id=user_id, cadence_days=14))
+            db.session.flush()
+
+            assert db.session.query(PaySchedule).filter_by(
+                user_id=user_id,
+            ).one().history_opens_on is None
+
+    def test_a_day_inside_the_window_is_stored(self, app, db, bare_user):
+        """THE CONTROL for the two refusals below.
+
+        Without it both would pass against a column that refused every date.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            db.session.add(PaySchedule(
+                user_id=user_id, cadence_days=14,
+                history_opens_on=date(2026, 1, 5),
+            ))
+            db.session.flush()
+
+            assert db.session.query(PaySchedule).filter_by(
+                user_id=user_id,
+            ).one().history_opens_on == date(2026, 1, 5)
+
+    @pytest.mark.parametrize("day", [date(1999, 12, 31), date(2101, 1, 1)])
+    def test_a_day_outside_the_window_raises(self, app, db, bare_user, day):
+        """An HTML date input accepts a five-digit year, so this is ordinary.
+
+        Both ends: a stray ``0202`` names a floor no rhythm reaches, and a
+        stray ``9999`` names one past the calendar this application has.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            try:
+                with pytest.raises(
+                    IntegrityError,
+                    match="ck_pay_schedule_history_opens_range",
+                ):
+                    db.session.add(PaySchedule(
+                        user_id=user_id, cadence_days=14,
+                        history_opens_on=day,
                     ))
                     db.session.flush()
             finally:

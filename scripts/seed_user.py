@@ -259,6 +259,15 @@ def seed_user():
                 BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
                 unit="pay periods",
             ),
+            # No env var, and that is the answer rather than an omission (plan
+            # step balance:X-bh-2).  ``None`` means NOT STATED: the engine
+            # counts only the paydays this seed records, which is exactly what
+            # it did before that step and is the reading a script may honestly
+            # supply.  Unlike the payday above there is nothing to fabricate --
+            # a seed script cannot know when the owner's job began, and saying
+            # so is what ``None`` now means.  The owner states it themselves on
+            # the pay-periods settings section, which is the door for it.
+            history_opens_on=None,
         ))
     except ConflictError:
         # The race: another process created this owner between the check

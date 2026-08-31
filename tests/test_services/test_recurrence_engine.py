@@ -512,6 +512,7 @@ def _calendar(periods, cadence_days=_CADENCE_DAYS):
         paydays=[(period.id, period.start_date) for period in periods],
         cadence_days=cadence_days,
         user_id=_MATCH_USER_ID,
+        history_opens_on=None,
     )
 
 

@@ -238,6 +238,7 @@ def register():
             first_payday=register_data["last_payday"],
             cadence_days=register_data["cadence_days"],
             num_periods=register_data["num_periods"],
+            history_opens_on=register_data["history_opens_on"],
         ))
         db.session.commit()
         log_event(
@@ -247,10 +248,20 @@ def register():
         )
         flash("Account created. Please sign in.", "success")
         return redirect(url_for("auth.login"))
-    except ConflictError as e:
-        flash(str(e), "danger")
-        return _render_register_form()
-    except ValidationError as e:
+    except (ConflictError, ValidationError) as e:
+        # ROLLED BACK before the re-render, which the four pay-period doors
+        # already do and this one did not until plan step balance:X-bh-2.
+        # ``register_user`` states that every refusal happens before the
+        # ``User`` row is added, and that property held by ARGUMENT once this
+        # step put ``set_history_opening`` -- a raising producer -- after the
+        # row: its three refusal arms are each unreachable there, but two of
+        # those arms rest on premises stated nowhere (that PERIOD_BATCH_MIN is
+        # at least 1, so a schedule row exists; that a new owner's first
+        # recorded payday is the one the form stated).  The rollback makes the
+        # property hold structurally instead, and the re-render below then
+        # reads committed state rather than a session holding a half-built
+        # owner.
+        db.session.rollback()
         flash(str(e), "danger")
         return _render_register_form()
 

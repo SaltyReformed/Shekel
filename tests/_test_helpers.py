@@ -2426,6 +2426,13 @@ def register_form_data(**overrides):
         "last_payday": display_today().isoformat(),
         "cadence_days": str(BaseConfig.DEFAULT_PAY_CADENCE_DAYS),
         "num_periods": str(BaseConfig.DEFAULT_PAY_PERIOD_HORIZON),
+        # EMPTY, because that is what a browser submits for the optional
+        # pay-history date nobody touched (plan step balance:X-bh-2): an HTML
+        # form posts every control it renders, so a body that omitted the key
+        # would exercise a payload no browser can produce.  The schema maps it
+        # to ``None``, which means NOT STATED -- the engine counts only the
+        # paydays the app records.
+        "history_opens_on": "",
     }
     body.update(overrides)
     return body
@@ -2458,6 +2465,11 @@ def registration_spec(**overrides):
         "first_payday": display_today(),
         "cadence_days": BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
         "num_periods": BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
+        # The column's own default (plan step balance:X-bh-2): a sign-up that
+        # skips the question has stated NOTHING, and the engine counts only
+        # that owner's recorded paydays.  A case about the field passes its
+        # own value.
+        "history_opens_on": None,
     }
     fields.update(overrides)
     return RegistrationSpec(**fields)
@@ -6028,7 +6040,7 @@ def cadence_payload(
     return payload
 
 
-def payroll_basis(profile, periods, cadence_days=14):
+def payroll_basis(profile, periods, cadence_days=14, history_opens_on=None):
     """Return the :class:`PayrollBasis` for *profile* over *periods*.
 
     **The ONE test-side door onto the paycheck engine's owner input**, added at
@@ -6076,6 +6088,18 @@ def payroll_basis(profile, periods, cadence_days=14):
             order.  Only their paydays are read; the calendar re-derives every
             end and ordinal, so a case may hand over the same values it prices.
         cadence_days: Days between the owner's paydays, 1..365.
+        history_opens_on: How far back this owner's paychecks reach, or
+            ``None`` -- **the DEFAULT, and it is the column's own** (plan step
+            **balance:X-bh-2**).  ``budget.pay_schedule.history_opens_on`` is
+            nullable and null means NOT STATED since ruling
+            **balance:R-IA**'s 2026-08-31 amendment, so a case that says
+            nothing here gets what an owner nobody asked gets: the engine
+            counts *periods* and projects nothing below them.  **That makes
+            the default the SAFE one** -- forgetting it cannot silently invent
+            paychecks, which is the direction a defaulted argument should fail
+            in.  A case about the BACKWARD rhythm states a day here, and a
+            case about an owner who genuinely started at the record's opening
+            states that opening.
 
     Returns:
         The :class:`~app.services.payroll_basis.PayrollBasis`.
@@ -6091,10 +6115,13 @@ def payroll_basis(profile, periods, cadence_days=14):
 
     return PayrollBasis(profile, derived_calendar(
         [period.start_date for period in periods], cadence_days=cadence_days,
+        history_opens_on=history_opens_on,
     ))
 
 
-def derived_calendar(paydays, cadence_days=14, user_id=1):
+def derived_calendar(
+    paydays, cadence_days=14, user_id=1, history_opens_on=None,
+):
     """Return a :class:`PayCalendar` over *paydays*, derived rather than built.
 
     The calendar-shaped sibling of :func:`derived_window`, for a producer that
@@ -6107,6 +6134,9 @@ def derived_calendar(paydays, cadence_days=14, user_id=1):
         paydays: The paydays opening each period, in any order.
         cadence_days: Days between paydays, 1..365.
         user_id: The owner the calendar belongs to.
+        history_opens_on: How far back the owner's paychecks reach, or ``None``
+            -- the default, which is the nullable column's own; see
+            :func:`payroll_basis` for what saying nothing means.
 
     Returns:
         The :class:`~app.services.pay_calendar.PayCalendar`.
@@ -6119,6 +6149,7 @@ def derived_calendar(paydays, cadence_days=14, user_id=1):
         [(index + 1, payday) for index, payday in enumerate(sorted(paydays))],
         cadence_days,
         user_id=user_id,
+        history_opens_on=history_opens_on,
     )
 
 
@@ -6168,6 +6199,7 @@ def derived_window(paydays, cadence_days):
         ],
         cadence_days,
         user_id=1,
+        history_opens_on=None,
     )
     return PeriodWindow(periods=calendar.periods)
 
@@ -6363,7 +6395,9 @@ def current_pay_period(user_id, as_of=None):
     return _db.session.get(_PayPeriod, period.period_id)
 
 
-def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
+def read_pass_over_paydays(
+    paydays, cadence_days, as_of, user_id=1, history_opens_on=None,
+):
     """Return a :class:`BalanceContext` whose pay calendar is *paydays*.
 
     **The ONE place a test seeds the read pass's pay-calendar memo**, and that
@@ -6406,6 +6440,9 @@ def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
         user_id: The owning user (default ``1``).  The calendar is derived for
             the SAME id the pass carries, so the two cannot disagree -- which
             is the pairing the seeded memo could otherwise express.
+        history_opens_on: How far back the owner's paychecks reach, or ``None``
+            -- the default, which is the nullable column's own; see
+            :func:`payroll_basis` for what saying nothing means.
 
     Returns:
         A :class:`~app.services.balance_at.BalanceContext` with no baseline
@@ -6433,6 +6470,7 @@ def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
         ],
         cadence_days,
         user_id=user_id,
+        history_opens_on=history_opens_on,
     )
     return BalanceContext(
         user_id=user_id,

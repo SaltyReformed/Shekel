@@ -9,21 +9,35 @@ here -- the cadence pair from the model carrying the matching CHECK constraint
 :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`), the batch pair from the
 writer whose transaction does the work
 (:data:`~app.services.pay_period_write.PERIOD_BATCH_MIN` /
-:data:`~app.services.pay_period_write.PERIOD_BATCH_MAX`).  A schema is a
-door, and a door does not get to invent the rule it enforces.
+:data:`~app.services.pay_period_write.PERIOD_BATCH_MAX`), and, since plan step
+**balance:X-bh-2**, the pay-history window from :mod:`app.utils.dates` --
+which is not a column's bound at all but how far this application's calendar
+reaches, mirrored onto ``ck_pay_schedule_history_opens_range`` for the writers
+that never see a schema.  A schema is a door, and a door does not get to
+invent the rule it enforces.
+
+*THREE pairs now, where this paragraph counted two until X-bh-2 added the
+third.  The number is restated rather than left to decay, which is the same
+discipline* :data:`app.utils.dates.CALENDAR_DATE_MIN`'s *own comment follows.*
 """
 
 
 from marshmallow import (
     fields,
+    pre_load,
     validate,
 )
 
 from app.config import BaseConfig
 from app.models.pay_period import MIN_MATERIALISABLE_CADENCE_DAYS
 from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
-from app.schemas.validation._helpers import BaseSchema, RowId
+from app.schemas.validation._helpers import (
+    BaseSchema,
+    RowId,
+    _normalize_empty_inputs,
+)
 from app.services.pay_period_write import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
+from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
 
 #: The two shared validators, built once.  ``validate.Range`` instances are
@@ -50,6 +64,15 @@ _CADENCE_DAYS_RANGE = validate.Range(
 )
 _PERIOD_BATCH_RANGE = validate.Range(
     min=PERIOD_BATCH_MIN, max=PERIOD_BATCH_MAX,
+)
+#: The window a stated pay-history opening may fall in, from
+#: :mod:`app.utils.dates`, which OWNS it.  Not the column's own rule, unlike
+#: the two ranges above: it is how far this application's calendar reaches,
+#: and ``ck_pay_schedule_history_opens_range`` mirrors the same pair onto the
+#: table.  Reading the constant here rather than an alias of it is what keeps
+#: one number from acquiring a fourth name.
+_HISTORY_OPENS_RANGE = validate.Range(
+    min=CALENDAR_DATE_MIN, max=CALENDAR_DATE_MAX,
 )
 
 
@@ -81,6 +104,35 @@ def num_periods_field(**kwargs) -> fields.Integer:
         The field, carrying the shared range validator.
     """
     return fields.Integer(validate=_PERIOD_BATCH_RANGE, **kwargs)
+
+
+def history_opens_on_field(**kwargs) -> fields.Date:
+    """Return a when-did-these-paychecks-start field bounded by the column's CHECK.
+
+    Plan step **balance:X-bh-2**.  Two doors ask the question -- registration
+    and the pay-periods settings section -- so the bound is declared once here
+    beside the cadence and batch fields, for the reason the module docstring
+    gives.
+
+    ``allow_none`` is fixed rather than forwarded, because a blank answer is
+    the field's ORDINARY value and means something: the owner has not stated a
+    history, so the engine counts only their recorded paydays (ruling
+    **balance:R-IA** as amended 2026-08-31).  A door that wanted it required
+    would be asking a different question.  Its callers pair
+    it with :func:`~app.schemas.validation._helpers._normalize_empty_inputs`,
+    which is what turns an untouched HTML date input's ``""`` into that
+    ``None`` rather than into "not a valid date".
+
+    Args:
+        **kwargs: Forwarded to :class:`marshmallow.fields.Date` -- the
+            per-schema half of the declaration; see :func:`cadence_days_field`.
+
+    Returns:
+        The field, carrying the shared range validator.
+    """
+    return fields.Date(
+        validate=_HISTORY_OPENS_RANGE, allow_none=True, **kwargs
+    )
 
 
 class PayPeriodGenerateSchema(BaseSchema):
@@ -170,6 +222,31 @@ class PayPeriodResetSchema(BaseSchema):
     num_periods = num_periods_field(required=True)
     cadence_days = cadence_days_field(required=True)
     confirm = fields.Boolean(load_default=False)
+
+
+class PayHistorySchema(BaseSchema):
+    """Validates POST data for the pay-history opening.
+
+    Plan step **balance:X-bh-2**.  One optional field, and it is its own form
+    rather than a field on the rolling-window one beside it: that form
+    configures a WRITE (how far ahead to keep generating) and this states a
+    fact about the owner, so pressing Save on either must not restate the
+    other's answer.
+
+    ``load_default=None`` and ``allow_none`` together mean a submission with
+    the box cleared -- or with the field absent -- stores ``NULL``, which is
+    how an owner WITHDRAWS a statement and returns to being counted from the
+    record.  Clearing it is a real user action rather than a missing input,
+    which is exactly the distinction
+    :func:`~app.schemas.validation._helpers._normalize_empty_inputs` draws.
+    """
+
+    history_opens_on = history_opens_on_field(load_default=None)
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Map the cleared date input's ``""`` to an explicit ``None``."""
+        return _normalize_empty_inputs(self, data)
 
 
 class PayScheduleSchema(BaseSchema):

@@ -172,7 +172,7 @@ _PER_PLAN = ("app.services.retirement_projection", "project_accounts_with_batch"
 #:
 #: **It named the LOADER (``calendar_for``) until plan step C4, and that made
 #: it a name list rather than a rule.**  ``pay_calendar`` grew a second loader
-#: door -- ``calendar_at_cadence``, for the rolling top-up, which runs BEFORE
+#: door -- ``calendar_at_schedule``, for the rolling top-up, which runs BEFORE
 #: the render opens its pass and so cannot share one -- and every count here
 #: stayed at 1 while ``/grid`` and ``/dashboard`` began deriving twice.  A
 #: guard that enumerates doors is blind to the next door by construction;

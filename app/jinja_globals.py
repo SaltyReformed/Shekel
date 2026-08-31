@@ -51,6 +51,7 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.models.pay_schedule import CADENCE_DAYS_MAX
+from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.schemas.validation.pay_periods import CADENCE_DAYS_FORM_MIN
 from app.services.pay_period_write import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 
@@ -193,4 +194,15 @@ def register_pay_calendar_bound_globals(app: Flask) -> None:
         "CADENCE_DAYS_MAX": CADENCE_DAYS_MAX,
         "PERIOD_BATCH_MIN": PERIOD_BATCH_MIN,
         "PERIOD_BATCH_MAX": PERIOD_BATCH_MAX,
+        # How far this application's calendar reaches (plan step
+        # balance:X-bh-2), which is what bounds the two pay-history date
+        # inputs.  Named for the FACT rather than for the column that happens
+        # to be bounded by it: one number with a second name is how
+        # ``EFFECTIVE_DATE_*`` and ``_STARTS_ON_*`` already came to exist.
+        # ISO strings rather than ``date`` objects because both are rendered
+        # straight into an ``<input type="date">``'s ``min`` / ``max``, and a
+        # template calling ``.isoformat()`` at two sites is two places for the
+        # format to drift from the one the browser parses.
+        "CALENDAR_DATE_MIN": CALENDAR_DATE_MIN.isoformat(),
+        "CALENDAR_DATE_MAX": CALENDAR_DATE_MAX.isoformat(),
     })

@@ -821,6 +821,7 @@ class TestTheChartMarkersAskTheWindowWhereTheDateFALLS:
                 for index in range(10)
             ],
             14, user_id=1,
+            history_opens_on=None,
         )
         return calendar.window(first_index=first_index, count=count)
 

@@ -44,9 +44,13 @@ DISPLAY_TIMEZONE = ZoneInfo("America/New_York")
 # re-exports, so nothing that imported them from there had to move.
 #
 # The values are the ones ``routes/salary/tax_config.py`` uses for a tax YEAR.
-# Two tables mirror them for writers that never see a schema:
-# ``ck_template_amount_versions_effective_date_range`` and
-# ``ck_recurrence_rules_starts_on_range``.
+# THREE tables mirror them for writers that never see a schema:
+# ``ck_template_amount_versions_effective_date_range``,
+# ``ck_recurrence_rules_starts_on_range`` and, since plan step
+# balance:X-bh-2, ``ck_pay_schedule_history_opens_range``.  The count is
+# restated rather than left at "two", which is what it read until that step
+# added the third: a number in prose about a set that grows is the copy
+# nobody re-reads.
 #
 # An HTML date input accepts a four- or five-digit-year typo, and both columns
 # STORE what they are given: a stray ``0202`` becomes a template's earliest

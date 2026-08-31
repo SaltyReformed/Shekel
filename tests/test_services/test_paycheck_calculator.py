@@ -967,20 +967,30 @@ class TestDeductionAnnualCap:
         return (Decimal(annual) / 26).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     def _amounts_over(self, profile, periods, *, timing="pre_tax",
-                      month_ordinal=1):
+                      month_ordinal=1, history_opens_on=None):
         """Per-period deduction amount for the single deduction on ``profile``.
 
         ``month_ordinal`` is stated rather than derived so these cases grade
         the CAP and nothing else: every one of them uses a 26-per-year
         deduction, which is taken on every payday, so ordinal 1 makes the
         cadence arm a no-op and any zero in the result is the cap's doing.
+
+        ``history_opens_on`` says how far back the owner's paychecks reach and
+        defaults to the column's own ``None``, which since ruling
+        **balance:R-IA**'s 2026-08-31 amendment means NOT STATED: the engine
+        counts only the recorded paydays.  So every case here measures what it
+        measured before plan step **balance:X-bh-2**, and the one case about
+        the backward rhythm states its floor.
         """
         gross = self._gross(str(profile.annual_salary))
         amounts = []
         for p in periods:
             lines = _calculate_deductions(
                 _DeductionContext(
-                    payroll_basis(profile, periods), p, gross, month_ordinal,
+                    payroll_basis(
+                        profile, periods, history_opens_on=history_opens_on,
+                    ),
+                    p, gross, month_ordinal,
                 ),
                 _timing_id(timing),
             )
@@ -1024,23 +1034,59 @@ class TestDeductionAnnualCap:
             Decimal("200"), Decimal("200"),
         ]
 
-    def test_cap_is_calendar_year_scoped_and_resets(self):
-        """The cap resets each January: a new-year period starts fresh."""
-        profile = FakeProfile(
+    def _december_opening_profile(self):
+        """A $600 deduction under a $1,000 cap, on a December-opening set."""
+        return FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
             deductions=[FakeDeduction(name="HSA", amount="600",
                                       annual_cap="1000")],
-        )
-        periods = [
+        ), [
             _period(start_date=date(2026, 12, 4), period_id=1),
             _period(start_date=date(2026, 12, 18), period_id=2),
             _period(start_date=date(2027, 1, 1), period_id=3),
         ]
+
+    def test_cap_is_calendar_year_scoped_and_resets(self):
+        """The cap resets each January: a new-year period starts fresh.
+
+        Stated with NO pay history, which since ruling **balance:R-IA**'s
+        2026-08-31 amendment is an owner nobody has asked -- so the engine
+        counts only the three recorded paydays and the hand-computed figures
+        below are unchanged by plan step balance:X-bh-2.  That the default is
+        the SAFE one is the amendment's whole point, and this case is where it
+        shows: a fixture that says nothing measures what it always measured.
+        """
+        profile, periods = self._december_opening_profile()
+
         # 2026 exhausts the cap (600 then 400); the 2027 period counts only
         # same-year prior periods (none), so the cap is fresh -> full 600.
         assert self._amounts_over(profile, periods) == [
             Decimal("600"), Decimal("400"), Decimal("600"),
         ]
+
+    def test_a_STATED_history_exhausts_the_cap_BEFORE_the_record_opens(self):
+        """What the backward rhythm changes for a cap, stated as money.
+
+        Plan step **balance:X-bh-2**.  The same three periods for an owner who
+        HAS said when their paychecks began: the rhythm runs back to that day,
+        so by the time the record opens on 2026-12-04 they have already been
+        paid 24 times that year and a $1,000 cap on a $600 deduction is long
+        gone.  Both December periods clamp to zero and January resets.
+
+        This is finding **N-390** priced on the deduction side: before this
+        step the same owner was charged $1,000 of a cap they had already
+        spent, because the year opened where the RECORD did rather than where
+        they did.
+        """
+        profile, periods = self._december_opening_profile()
+
+        # 2026-12-04 less 24 fortnights is 2026-01-02, so the year holds 24
+        # rhythm paydays before the record opens -- 24 x $600 against a
+        # $1,000 cap.
+        assert (periods[0].start_date - date(2026, 1, 2)).days == 24 * 14
+        assert self._amounts_over(
+            profile, periods, history_opens_on=date(2025, 1, 1),
+        ) == [Decimal("0"), Decimal("0"), Decimal("600")]
 
     def test_percentage_deduction_capped_on_dollar_total(self):
         """A percentage deduction is clamped on its cumulative dollar amount."""
@@ -1176,14 +1222,35 @@ class TestThirdPaycheckDetection:
         assert _month_ordinal(basis.calendar, first_of_march.start_date) == 1
         assert _month_ordinal(basis.calendar, second_of_march.start_date) == 2
 
-    def test_a_payday_below_the_opening_counts_only_what_is_recorded(self):
-        """The rhythm is NOT projected backwards, which is ledger row N-390.
+    def test_a_payday_below_the_opening_is_counted_for_a_STATED_owner(self):
+        """The rhythm runs backwards too, which is plan step balance:X-bh-2.
 
         The calendar opens 2026-01-16, so the January payday two weeks before
-        it is unrecorded and this reads 1 where the owner was really paid
-        twice.  Pinned as the LIVE behaviour rather than as the right answer:
-        plan step **balance:X-bh-2** is what changes it, and this case is what
-        will show that it did.
+        it -- 2026-01-02 -- is one the owner was really paid on and the app
+        holds no row for.  It is counted once they SAY their paychecks began
+        earlier: the opening payday then reads 2 and the one after it reads 3,
+        so a 24-per-year deduction is SKIPPED on 2026-01-30 where before this
+        step it was taken, and a 12-per-year one stops being taken on
+        2026-01-16.  That is ledger row **N-390** on the month side.
+        """
+        opening = _period(start_date=date(2026, 1, 16), period_id=1)
+        later = _period(start_date=date(2026, 1, 30), period_id=2)
+        basis = payroll_basis(
+            FakeProfile(annual_salary=60000), [opening, later],
+            history_opens_on=date(2025, 1, 1),
+        )
+
+        assert _month_ordinal(basis.calendar, opening.start_date) == 2
+        assert _month_ordinal(basis.calendar, later.start_date) == 3
+
+    def test_an_UNSTATED_owner_counts_only_the_record(self):
+        """THE CONTROL, and the reading every owner starts at.
+
+        The same two paydays for somebody nobody has asked: nothing runs below
+        the record, so the ordinals are 1 and 2 -- exactly what this calendar
+        answered for every owner before plan step balance:X-bh-2.  ``NULL`` is
+        an absence, not a claim (ruling **balance:R-IA** as amended
+        2026-08-31), and the safe direction for an absence is to count less.
         """
         opening = _period(start_date=date(2026, 1, 16), period_id=1)
         later = _period(start_date=date(2026, 1, 30), period_id=2)
@@ -1193,9 +1260,27 @@ class TestThirdPaycheckDetection:
         assert _month_ordinal(basis.calendar, opening.start_date) == 1
         assert _month_ordinal(basis.calendar, later.start_date) == 2
 
+    def test_a_floor_ON_the_opening_payday_also_counts_only_the_record(self):
+        """The owner whose first paycheck IS the first one recorded.
+
+        Distinct from the case above in what it MEANS -- a statement rather
+        than an absence -- and identical in what it answers, which is why both
+        stand: ``pay_calendar:R-PC14`` calls this owner ordinary, and the
+        engine must not tell them apart.
+        """
+        opening = _period(start_date=date(2026, 1, 16), period_id=1)
+        later = _period(start_date=date(2026, 1, 30), period_id=2)
+        basis = payroll_basis(
+            FakeProfile(annual_salary=60000), [opening, later],
+            history_opens_on=opening.start_date,
+        )
+
+        assert _month_ordinal(basis.calendar, opening.start_date) == 1
+        assert _month_ordinal(basis.calendar, later.start_date) == 2
+
 
 class TestTheEngineRefusesAPaycheckItCannotPlace:
-    """The PUBLIC door refuses a payday below the opening, from a caller's shape.
+    """The PUBLIC door refuses a payday off the owner's rhythm, from a caller's shape.
 
     ``_month_ordinal``'s refusal is graded directly in
     ``test_pay_calendar_rhythm``; this grades it where a caller meets it --
@@ -1212,29 +1297,68 @@ class TestTheEngineRefusesAPaycheckItCannotPlace:
     a wrong figure.  This case is that caller, written from their shape.  If
     one ever appears for real, it fails HERE rather than 500ing in production.
 
+    **Plan step balance:X-bh-2 narrowed WHAT is unplaceable and did not remove
+    the refusal**, which is why these cases changed shape rather than going
+    away.  A day BELOW the opening payday used to be unplaceable by
+    construction; the rhythm now runs backward, so such a day is placed when
+    it falls on the rhythm and inside the owner's stated history.  Two kinds
+    remain: a day OFF the rhythm's phase -- another owner's payday, or one
+    assembled by hand -- and a day below a stated ``history_opens_on``.
+
     Measured on the developer's own schedule (opening 2026-03-26): the payday
     2026-03-12, which he really was paid on and the app holds no row for,
-    answered ``net $2,454.10`` before this step.  That answer was not right; it
-    was unexamined.
+    answered ``net $2,454.10`` at plan step X-bh-1's ancestor, then RAISED at
+    X-bh-1, and is priced correctly as March's first paycheck now.  The last
+    case below is that day.
     """
 
-    def test_a_payday_below_the_opening_is_refused_not_priced(
+    @staticmethod
+    def _biweekly_from_march():
+        """The developer's shape: six biweekly paydays opening 2026-03-26."""
+        return [
+            _period(start_date=date(2026, 3, 26) + timedelta(days=14 * i),
+                    period_id=i + 1)
+            for i in range(6)
+        ]
+
+    def test_a_payday_OFF_the_rhythm_is_refused_not_priced(
         self, simple_tax_configs,
     ):
-        """A period built by hand, below the opening payday, raises."""
+        """A period built by hand, one day out of phase, raises.
+
+        2026-03-13 is a day nobody on this schedule is paid on: the rhythm
+        runs 2026-03-12, 03-26, 04-09 in both directions from the record, and
+        a day between two paydays has no position in its month to answer with.
+        This is the shape a form value or another owner's period has.
+        """
         profile = FakeProfile(
             annual_salary=91675, created_at=date(2026, 1, 1),
             deductions=[FakeDeduction(name="Health", amount="500",
                                       deductions_per_year=24)],
         )
-        schedule = [
-            _period(start_date=date(2026, 3, 26) + timedelta(days=14 * i),
-                    period_id=i + 1)
-            for i in range(6)
-        ]
-        basis = payroll_basis(profile, schedule)
-        # NOT drawn from the calendar -- the shape a form value or a backfill
-        # would hand in, which is the whole point of the case.
+        basis = payroll_basis(profile, self._biweekly_from_march())
+        unheld = _period(start_date=date(2026, 3, 13), period_id=99)
+
+        with pytest.raises(PayCalendarError, match="is not paid on"):
+            calculate_paycheck(basis, unheld, simple_tax_configs)
+
+    def test_a_payday_below_a_STATED_opening_is_refused_not_priced(
+        self, simple_tax_configs,
+    ):
+        """On the rhythm, below the floor: the owner says they were not paid then.
+
+        The other half of what stays unplaceable after plan step
+        balance:X-bh-2.  2026-03-12 IS on this schedule's rhythm, so it is
+        priced for an owner who has stated nothing -- but an owner whose
+        paychecks began on 2026-03-26 was not paid on it, and answering a
+        position anyway would put a 12-per-year deduction on a paycheck that
+        never happened.
+        """
+        profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
+        schedule = self._biweekly_from_march()
+        basis = payroll_basis(
+            profile, schedule, history_opens_on=date(2026, 3, 26),
+        )
         unheld = _period(start_date=date(2026, 3, 12), period_id=99)
 
         with pytest.raises(PayCalendarError, match="is not paid on"):
@@ -1249,19 +1373,14 @@ class TestTheEngineRefusesAPaycheckItCannotPlace:
         is what the message this asserts exists to prevent.
         """
         profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
-        schedule = [
-            _period(start_date=date(2026, 3, 26) + timedelta(days=14 * i),
-                    period_id=i + 1)
-            for i in range(6)
-        ]
-        basis = payroll_basis(profile, schedule)
-        unheld = _period(start_date=date(2026, 3, 12), period_id=99)
+        basis = payroll_basis(profile, self._biweekly_from_march())
+        unheld = _period(start_date=date(2026, 3, 13), period_id=99)
 
         with pytest.raises(PayCalendarError) as caught:
             calculate_paycheck(basis, unheld, simple_tax_configs)
 
         message = str(caught.value)
-        assert "2026-03-12" in message
+        assert "2026-03-13" in message
         assert "user 1" in message
 
     def test_a_payday_the_calendar_DOES_hold_is_priced(
@@ -1273,17 +1392,59 @@ class TestTheEngineRefusesAPaycheckItCannotPlace:
         refused everything.
         """
         profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
-        schedule = [
-            _period(start_date=date(2026, 3, 26) + timedelta(days=14 * i),
-                    period_id=i + 1)
-            for i in range(6)
-        ]
+        schedule = self._biweekly_from_march()
         basis = payroll_basis(profile, schedule)
 
         result = calculate_paycheck(basis, schedule[0], simple_tax_configs)
 
         # $91,675 / 26 = $3,525.96, the rate ruling balance:R-HW fixed.
         assert result.earnings.gross_biweekly == Decimal("3525.96")
+
+    def test_the_owners_real_unrecorded_payday_is_PRICED_once_he_STATES_it(
+        self, simple_tax_configs,
+    ):
+        """THE SECOND CONTROL, and it is what plan step balance:X-bh-2 bought.
+
+        2026-03-12 is a day the developer really was paid on and the app holds
+        no row for -- the exact day X-bh-1's refusal named.  Once he says his
+        paychecks began earlier it is on the rhythm, so it prices at the same
+        rate as a recorded paycheck AND takes March's first position, which is
+        the one a 12-per-year deduction is charged on.
+
+        Paired with the two refusals above, this is what separates "the rhythm
+        reaches here" from "the engine answers anything": one day apart, 03-12
+        prices and 03-13 raises.
+        """
+        profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
+        schedule = self._biweekly_from_march()
+        basis = payroll_basis(
+            profile, schedule, history_opens_on=date(2025, 1, 1),
+        )
+        unrecorded = _period(start_date=date(2026, 3, 12), period_id=99)
+
+        result = calculate_paycheck(basis, unrecorded, simple_tax_configs)
+
+        assert result.earnings.gross_biweekly == Decimal("3525.96")
+        assert _month_ordinal(basis.calendar, unrecorded.start_date) == 1
+
+    def test_the_same_day_still_RAISES_for_an_owner_who_stated_nothing(
+        self, simple_tax_configs,
+    ):
+        """The amendment, graded at the door a caller meets.
+
+        ``NULL`` is not a claim, so an owner nobody has asked has no rhythm
+        below their record and 2026-03-12 is unplaceable for them -- exactly
+        as it was at plan step balance:X-bh-1, and for the same reason: the
+        engine would otherwise answer a confident number for a paycheck it has
+        no basis to place.  This is the pair that makes the case above about
+        the STATED fact rather than about the day.
+        """
+        profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
+        basis = payroll_basis(profile, self._biweekly_from_march())
+        unrecorded = _period(start_date=date(2026, 3, 12), period_id=99)
+
+        with pytest.raises(PayCalendarError, match="is not paid on"):
+            calculate_paycheck(basis, unrecorded, simple_tax_configs)
 
 
 class TestFirstPaycheckOfMonth:

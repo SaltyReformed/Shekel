@@ -493,6 +493,7 @@ class TestBothDoorsReachOneDerivation:
         """``PayCalendar.cadence`` is built from the calendar's own days."""
         calendar = PayCalendar.from_paydays(
             paydays=(), cadence_days=7, user_id=1,
+            history_opens_on=None,
         )
         assert calendar.cadence == PayCadence(cadence_days=7)
         assert calendar.cadence.periods_per_year == Decimal("52")
@@ -544,6 +545,7 @@ class TestAnAbsentCadenceIsRefusedRatherThanDefaulted:
         """An empty calendar has no cadence, and says so rather than guessing."""
         empty = PayCalendar.from_paydays(
             paydays=(), cadence_days=None, user_id=42,
+            history_opens_on=None,
         )
         with pytest.raises(PayCalendarError, match="no pay cadence"):
             _ = empty.cadence

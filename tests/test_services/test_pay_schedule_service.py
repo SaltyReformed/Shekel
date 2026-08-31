@@ -10,6 +10,9 @@ behaviours matter:
   * ``resolve_cadence`` prefers the stored cadence and falls back to
     inferring it from the last period's length for a legacy user with
     periods but no schedule row.
+  * ``resolve_schedule`` answers BOTH calendar facts from that one read
+    (plan step **balance:X-bh-2**), and ``set_history_opening`` is the one
+    writer of the second.
 
 See ``docs/plans/implementation_plan_pay_period_crud.md``.
 """
@@ -20,8 +23,14 @@ from datetime import date
 import pytest
 
 from app.exceptions import ValidationError
+from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
-from app.services import pay_period_write, pay_schedule_service
+from app.services.pay_calendar import calendar_for, paydays_in_month_through
+from app.services import (
+    pay_period_admin,
+    pay_period_write,
+    pay_schedule_service,
+)
 
 
 class TestGetSchedule:
@@ -258,3 +267,412 @@ class TestResolveCadence:
                 pay_schedule_service.resolve_cadence(bare_user["user"].id)
                 is None
             )
+
+
+class TestResolveSchedule:
+    """``resolve_schedule`` answers both calendar facts from one read.
+
+    Plan step **balance:X-bh-2**.  ``resolve_cadence`` is its cadence half
+    now, so the two cannot disagree about the same owner; what these grade is
+    the pair, and the ASYMMETRY of the legacy fallback.
+    """
+
+    def test_it_carries_both_facts_off_the_row(self, app, bare_user):
+        """The stored pair comes back as the stored pair."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, cadence_days=10)
+            pay_schedule_service.set_history_opening(
+                user_id, date(2024, 3, 1),
+            )
+
+            facts = pay_schedule_service.resolve_schedule(user_id)
+
+            assert facts.cadence_days == 10
+            assert facts.history_opens_on == date(2024, 3, 1)
+
+    def test_resolve_cadence_is_its_HALF_and_not_a_second_answer(
+        self, app, bare_user,
+    ):
+        """One derivation, two doors, so a change to either moves both.
+
+        Two implementations of "what cadence does this owner have" is the
+        drift this whole package's docstrings are about; this is the
+        reconciler for the pair.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, cadence_days=7)
+
+            assert (
+                pay_schedule_service.resolve_cadence(user_id)
+                == pay_schedule_service.resolve_schedule(user_id).cadence_days
+                == 7
+            )
+
+    def test_the_legacy_fallback_covers_the_cadence_and_NOT_the_history(
+        self, app, db, bare_user,
+    ):
+        """The asymmetry, asserted rather than described.
+
+        A legacy owner with paydays and no schedule row has a cadence that can
+        be INFERRED -- the last period's length -- and a pay history that
+        cannot: nothing in ``budget.pay_periods`` says when the job began, and
+        the first recorded payday is a record boundary rather than an answer.
+        So the fallback fills one field and leaves the other ``None``, which
+        reads as "run the rhythm back to the app's calendar floor".
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id,
+                first_payday=date(2026, 3, 1),
+                num_periods=4,
+                cadence_days=9,
+            )
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete(
+                synchronize_session=False,
+            )
+            db.session.flush()
+
+            facts = pay_schedule_service.resolve_schedule(user_id)
+
+            assert pay_schedule_service.get_schedule(user_id) is None
+            assert facts.cadence_days == 9
+            assert facts.history_opens_on is None
+
+    def test_no_row_and_no_periods_answers_a_pair_of_nones(
+        self, app, bare_user,
+    ):
+        """The companion's shape: nothing stored, nothing inferable."""
+        with app.app_context():
+            facts = pay_schedule_service.resolve_schedule(
+                bare_user["user"].id,
+            )
+
+            assert facts.cadence_days is None
+            assert facts.history_opens_on is None
+
+    def test_the_facts_value_names_the_CALENDAR_columns(self, app, bare_user):
+        """``ScheduleFacts.of`` is where "which columns" is stated.
+
+        The rolling configuration lives on the same row and is deliberately
+        NOT here: it configures a write, where these two describe the owner's
+        rhythm.  A caller that took the whole row could quietly start reading
+        one of them.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+            pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=7,
+            )
+            row = pay_schedule_service.get_schedule(user_id)
+
+            facts = pay_schedule_service.ScheduleFacts.of(row)
+
+            assert facts == pay_schedule_service.ScheduleFacts(14, None)
+            assert not hasattr(facts, "rolling_enabled")
+
+
+class TestSetHistoryOpening:
+    """The one writer of ``history_opens_on`` (ruling **balance:R-IA**)."""
+
+    def test_it_stores_the_day(self, app, bare_user):
+        """The ordinary write, and the CONTROL for the refusals below."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+
+            row = pay_schedule_service.set_history_opening(
+                user_id, date(2024, 6, 1),
+            )
+
+            assert row.history_opens_on == date(2024, 6, 1)
+            assert pay_schedule_service.get_schedule(
+                user_id,
+            ).history_opens_on == date(2024, 6, 1)
+
+    def test_None_is_a_WRITE_and_clears_a_stored_day(self, app, bare_user):
+        """Clearing the field is a real user action, not a skipped input.
+
+        It is how an owner says "I have been paid this way longer than the
+        app needs to know", and a door that treated the empty box as "no
+        change" would make the field unclearable -- which is the defect
+        ``_clear_nullable_empties`` exists to prevent one tier up.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+            pay_schedule_service.set_history_opening(user_id, date(2024, 6, 1))
+
+            pay_schedule_service.set_history_opening(user_id, None)
+
+            assert pay_schedule_service.get_schedule(
+                user_id,
+            ).history_opens_on is None
+
+    def test_it_leaves_the_cadence_and_the_rolling_config_alone(
+        self, app, bare_user,
+    ):
+        """A door of its own, so saving one fact never restates another."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, cadence_days=9)
+            pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=13,
+            )
+
+            pay_schedule_service.set_history_opening(user_id, date(2024, 6, 1))
+            row = pay_schedule_service.get_schedule(user_id)
+
+            assert row.cadence_days == 9
+            assert row.rolling_enabled is True
+            assert row.rolling_target_periods == 13
+
+    def test_an_owner_with_no_schedule_row_is_refused(self, app, bare_user):
+        """A floor bounds a rhythm, and there is no rhythm without a cadence."""
+        with app.app_context():
+            with pytest.raises(ValidationError, match="Generate a pay-period"):
+                pay_schedule_service.set_history_opening(
+                    bare_user["user"].id, date(2024, 6, 1),
+                )
+
+    def test_a_day_outside_the_apps_calendar_is_REFUSED_not_500(
+        self, app, bare_user,
+    ):
+        """``ck_pay_schedule_history_opens_range`` as a 400, not an IntegrityError.
+
+        An HTML date input accepts a five-digit-year typo, so the value the
+        CHECK refuses arrives from an ordinary form rather than from an
+        attack.  A refusal the surface can render is the difference between a
+        message and a stack trace.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+
+            with pytest.raises(ValidationError, match="2100-12-31"):
+                pay_schedule_service.set_history_opening(
+                    user_id, date(9999, 1, 1),
+                )
+
+            assert pay_schedule_service.get_schedule(
+                user_id,
+            ).history_opens_on is None
+
+    def test_a_day_after_the_first_recorded_payday_is_refused(
+        self, app, db, bare_user,
+    ):
+        """Paychecks cannot have begun after the first one the app holds.
+
+        Measured against ``min(start_date)`` rather than the lowest
+        ``period_index``: the two agree only while the index is in date order,
+        and that is a stored column plan step C4 drops.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id,
+                first_payday=date(2026, 3, 1),
+                num_periods=4,
+                cadence_days=14,
+            )
+            db.session.flush()
+
+            with pytest.raises(ValidationError, match="2026-03-01"):
+                pay_schedule_service.set_history_opening(
+                    user_id, date(2026, 3, 2),
+                )
+
+    def test_a_day_ON_the_first_recorded_payday_is_ACCEPTED(
+        self, app, db, bare_user,
+    ):
+        """THE CONTROL, and it is an ordinary owner rather than an edge.
+
+        A floor on the opening payday means "count nothing below the record",
+        which is what somebody whose first payday has not happened yet states
+        (``pay_calendar:R-PC14``).  Without this case the refusal above would
+        pass against a door that refused every day beside a schedule.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id,
+                first_payday=date(2026, 3, 1),
+                num_periods=4,
+                cadence_days=14,
+            )
+            db.session.flush()
+
+            row = pay_schedule_service.set_history_opening(
+                user_id, date(2026, 3, 1),
+            )
+
+            assert row.history_opens_on == date(2026, 3, 1)
+
+
+class TestTheHistoryRefusalsAreOneRuleEach:
+    """Both refusals are functions because two doors ask them.
+
+    Registration asks them of the payday its FORM states, before the ``User``
+    row exists; :func:`set_history_opening` asks them of the payday the
+    schedule RECORDS.  These grade the rules directly, where the cases above
+    grade them through the write door.
+    """
+
+    @pytest.mark.parametrize("day", [None, date(2000, 1, 1), date(2100, 12, 31)])
+    def test_the_window_refusal_passes_the_ends_and_the_null(self, day):
+        """``None`` passes -- it is the column's ordinary value, not a gap."""
+        pay_schedule_service.reject_out_of_range_history_opening(day)
+
+    @pytest.mark.parametrize("day", [date(1999, 12, 31), date(2101, 1, 1)])
+    def test_the_window_refusal_names_the_offending_day(self, day):
+        """A message a surface can render verbatim."""
+        with pytest.raises(ValidationError, match=day.isoformat()):
+            pay_schedule_service.reject_out_of_range_history_opening(day)
+
+    @pytest.mark.parametrize(("opening", "payday"), [
+        (None, date(2026, 3, 1)),
+        (date(2026, 3, 1), None),
+        (date(2026, 3, 1), date(2026, 3, 1)),
+        (date(2026, 2, 28), date(2026, 3, 1)),
+    ])
+    def test_the_ordering_refusal_passes_absence_and_equality(
+        self, opening, payday,
+    ):
+        """Either side absent is nothing to contradict; equality is ordinary."""
+        pay_schedule_service.reject_history_opening_after_payday(
+            opening, payday,
+        )
+
+    def test_the_ordering_refusal_names_both_days(self):
+        """The owner is told what they said AND what it conflicts with."""
+        with pytest.raises(ValidationError) as caught:
+            pay_schedule_service.reject_history_opening_after_payday(
+                date(2026, 3, 2), date(2026, 3, 1),
+            )
+
+        assert "2026-03-02" in str(caught.value)
+        assert "2026-03-01" in str(caught.value)
+
+
+class TestAStoredOpeningCanBeSTRANDEDByAReset:
+    """The one route that outlives the rule, enumerated rather than assumed.
+
+    ``history_opens_on <= the first recorded payday`` is checked at both write
+    doors and is NOT an invariant the database can hold -- it spans two tables.
+    ``/pay-periods/reset`` wipes every pay period and rebuilds from a stated
+    day without touching ``budget.pay_schedule``, so a floor that was legal
+    when it was written can end up above the record.
+
+    **The direction matters and is the half that is easy to get backwards.**
+    Only a reset to an EARLIER first payday can do it: the floor was already at
+    or below the old opening, so an opening that moves UP stays above the floor
+    and nothing is contradicted.  An adversarial review of plan step
+    balance:X-bh-2 caught a docstring naming the opposite direction, which is
+    the same as not having enumerated the route at all.
+
+    These grade the whole consequence: the value SURVIVES, the rhythm goes
+    inert rather than wrong, the recorded paydays below it are still counted,
+    and the settings card will refuse the value it renders -- which is a real
+    cost, stated here so it is a known state rather than a surprise.
+    """
+
+    @staticmethod
+    def _stranded(db_session, bare_user):
+        """Write a legal floor, then reset the schedule to an earlier payday."""
+        user_id = bare_user["user"].id
+        pay_period_write.record_paydays(
+            user_id=user_id, first_payday=date(2026, 3, 1),
+            num_periods=4, cadence_days=14,
+        )
+        db_session.flush()
+        pay_schedule_service.set_history_opening(user_id, date(2026, 2, 1))
+        db_session.flush()
+
+        pay_period_admin.reset_pay_periods(
+            user_id, date(2025, 1, 1), 4, 14,
+        )
+        db_session.flush()
+        return user_id
+
+    def test_the_reset_moves_the_opening_below_the_stored_floor(
+        self, app, db, bare_user,
+    ):
+        """THE PREMISE, asserted before anything is concluded from it.
+
+        Without this the three cases below could pass on a reset that never
+        moved the opening at all.
+        """
+        with app.app_context():
+            user_id = self._stranded(db.session, bare_user)
+
+            opening = min(
+                period.start_date
+                for period in db.session.query(PayPeriod).filter_by(
+                    user_id=user_id,
+                ).all()
+            )
+            assert opening == date(2025, 1, 1)
+            assert pay_schedule_service.get_schedule(
+                user_id,
+            ).history_opens_on == date(2026, 2, 1) > opening
+
+    def test_the_stated_value_SURVIVES_the_reset(self, app, db, bare_user):
+        """Reset does not clear it, and must not: it is the owner's statement.
+
+        ``upsert_schedule``'s conflict set is ``cadence_days`` alone, so the
+        rebuild cannot clobber the column.  Silently dropping a fact the owner
+        entered would be worse than carrying a stale one.
+        """
+        with app.app_context():
+            user_id = self._stranded(db.session, bare_user)
+
+            assert pay_schedule_service.get_schedule(
+                user_id,
+            ).history_opens_on == date(2026, 2, 1)
+
+    def test_the_rhythm_goes_INERT_rather_than_wrong(self, app, db, bare_user):
+        """The backward half empties; the RECORD is untouched.
+
+        This is what makes the stranded state safe rather than a money defect:
+        the floor bounds the projection only, so the four recorded 2025
+        paydays are still counted and nothing below them is invented.
+        """
+        with app.app_context():
+            user_id = self._stranded(db.session, bare_user)
+            calendar = calendar_for(user_id)
+
+            # January 2025 opens the rebuilt record: 01-01, 01-15, 01-29.
+            assert paydays_in_month_through(
+                calendar, date(2025, 1, 31),
+            ) == (date(2025, 1, 1), date(2025, 1, 15), date(2025, 1, 29))
+            # And nothing is projected below it, because the floor is above.
+            assert paydays_in_month_through(calendar, date(2024, 12, 31)) == ()
+
+    def test_the_stranded_value_can_no_longer_be_RE_SAVED(
+        self, app, db, bare_user,
+    ):
+        """The cost, stated rather than discovered by an owner.
+
+        The settings card pre-fills the stored day, and submitting it back
+        unchanged is refused -- correctly, since it now contradicts the
+        record.  The message names both days, so the owner is told what to
+        change rather than left to guess; clearing the box also works.
+        """
+        with app.app_context():
+            user_id = self._stranded(db.session, bare_user)
+
+            with pytest.raises(ValidationError) as caught:
+                pay_schedule_service.set_history_opening(
+                    user_id, date(2026, 2, 1),
+                )
+
+            assert "2026-02-01" in str(caught.value)
+            assert "2025-01-01" in str(caught.value)
+            # Clearing it is always available.
+            pay_schedule_service.set_history_opening(user_id, None)
+            assert pay_schedule_service.get_schedule(
+                user_id,
+            ).history_opens_on is None

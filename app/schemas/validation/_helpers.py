@@ -136,14 +136,49 @@ def _normalize_empty_inputs(schema, data):
         declared on the schema (e.g. ``csrf_token``) are dropped when
         empty, exactly as before.
     """
+    return {
+        key: value
+        for key, value in _clear_nullable_empties(schema, data).items()
+        if value != ""
+    }
+
+
+def _clear_nullable_empties(schema, data):
+    """Map each ``""`` to ``None`` for an ``allow_none`` field; keep the rest.
+
+    :func:`_normalize_empty_inputs`' first half, extracted at plan step
+    **balance:X-bh-2** because one door wants ONLY it.  "Which fields read an
+    empty control as null" is a single rule and this is where it is stated;
+    that function is this plus "an empty non-nullable input was not provided",
+    and the two are separable because a form can want the first without the
+    second.
+
+    ``RegisterSchema`` is the door that does.  Its optional pay-history date
+    needs the ``""`` an untouched HTML date input submits turned into ``None``,
+    but it must NOT drop an empty ``display_name``: dropping one turns the
+    field's own "Display name is required." into marshmallow's "Missing data
+    for required field.", and that schema's docstring is explicit that the
+    user-facing credential messages stay stable.  Measured rather than
+    reasoned -- routing registration through the full normalizer changed that
+    message and two suites said so.
+
+    Args:
+        schema: the schema instance (``self`` inside a ``@pre_load`` hook);
+            nullability is read from ``schema.fields``.
+        data: the incoming ``@pre_load`` payload (a mapping).
+
+    Returns:
+        A new dict, ``""`` mapped to ``None`` for every ``allow_none`` field
+        declared on *schema* and every other entry passed through unchanged --
+        an empty non-nullable input included, which is the whole difference.
+    """
     cleaned = {}
     for key, value in data.items():
-        if value != "":
-            cleaned[key] = value
-            continue
         field = schema.fields.get(key)
-        if field is not None and field.allow_none:
+        if value == "" and field is not None and field.allow_none:
             cleaned[key] = None
+        else:
+            cleaned[key] = value
     return cleaned
 
 
