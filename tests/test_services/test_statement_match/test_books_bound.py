@@ -551,6 +551,36 @@ class TestTheThreeDoorsRefuseIt:
     A page rendered before a restatement moved the books forward posts line
     ids the current books no longer hold, so every one of these is reachable
     by an ordinary owner rather than only by a crafted request.
+
+    **WHAT THESE CASES CATCH BETWEEN THEM, MEASURED BY MUTATION 2026-08-31**,
+    and it is written here rather than in either arc document because the
+    person it is for is the one deciding whether an EIGHTH case is needed.
+    The CREATE door's refusal must fire before the writes it guards, and
+    "before" is not one position -- there are two writes and the cases have
+    DISJOINT fail sets:
+
+    ==================================== ============ ==============
+    refusal moved below                  MINT case    EXISTING case
+    ==================================== ============ ==============
+    ``resolve_destination``              FAILS        passes
+    ``_born_purchase`` / ``close_``      FAILS        FAILS
+    ==================================== ============ ==============
+
+    So ``test_the_CREATE_door_refuses_and_MINTS_NO_ENVELOPE`` catches a
+    refusal that has slipped past the MINT, and
+    ``test_the_CREATE_door_refuses_an_EXISTING_destination_and_STAGES_NOTHING``
+    catches one that has slipped past the WRITE -- **and the first cannot
+    catch the second's mutation.**  The reason is that on the
+    existing-destination path ``resolve_destination`` mints nothing, so no row
+    is staged between those two positions for that case's assertion to see.
+    Neither case alone pins the placement; the pair brackets it.
+
+    **This was found by disbelieving a docstring rather than by a failure.**
+    The EXISTING case shipped claiming it graded placement "as its siblings
+    do"; the two mutations above measured that false, and a docstring that
+    overstates what a case controls is worse than a missing case, because it
+    retires the question.  An eighth case here should say which mutation it
+    kills that these seven do not.
     """
 
     def test_the_CREATE_door_refuses_and_MINTS_NO_ENVELOPE(
@@ -665,20 +695,12 @@ class TestTheThreeDoorsRefuseIt:
         bound fires first.  It needs an account whose books open INSIDE the
         calendar, which is :func:`_an_account_opening_inside_the_calendar`.
 
-        **What this case controls, MEASURED rather than asserted, because the
-        obvious claim is false.**  Moving the refusal below
-        ``resolve_destination`` -- the mutation
-        ``test_the_CREATE_door_refuses_and_MINTS_NO_ENVELOPE`` kills -- leaves
-        this case GREEN, because on the existing-destination path that call
-        MINTS nothing and there is no staged row between the two positions.
-        What this one kills is the refusal moved below ``_born_purchase`` /
-        ``close_container``, which is the first thing this path actually
-        stages.
-
-        So the two cases BRACKET the window rather than duplicate it: the
-        sibling catches a refusal that has slipped past the MINT, this one
-        catches a refusal that has slipped past the WRITE, and neither catches
-        the other's mutation.  Both were run.
+        **What this case controls was MEASURED, and it is NOT what a first
+        draft of this docstring claimed.**  It kills a refusal moved below
+        ``_born_purchase`` -- the first thing this path stages -- and it does
+        NOT kill one moved below ``resolve_destination``, which its mint-path
+        sibling does.  The class docstring carries both mutations and both
+        fail sets; the table is stated once, there.
         """
         account, opened_on = _an_account_opening_inside_the_calendar(
             db, seed_user, days_in=10,
