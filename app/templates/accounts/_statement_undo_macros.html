@@ -1,21 +1,29 @@
 {% from "_money_macros.html" import money %}
 
-{# The UNDO control for one accepted match, stated ONCE for its two readers.
+{# The UNDO control for one accepted match, stated ONCE for its three
+   readers.
 
-   Plan step bank_import:X-ge.  The register lists every accepted act and the
-   statements page receipts the ones a standing rule filed at import, and both
-   render this identical control -- so it is a macro rather than a second copy.
-   The reason is not tidiness: what this markup states is a DESTRUCTION and its
-   figure, and the whole point of taking both from the release door's own
-   derivation (`planned_removals`) is that a control cannot promise what the
-   button will not do.  Two copies of the sentence would put that guarantee one
-   edit away from being false on one of the two pages.
+   Plan step bank_import:X-ge.  The RECONCILE page's two settled tabs list every
+   applied act (plan step bank_import:X-gj-1c), the register does the same until
+   X-gi deletes it, and the statements page receipts the ones a standing rule
+   filed at import; all three render this identical control -- so it is a macro
+   rather than a third copy.  The reason is not tidiness: what this markup
+   states is a DESTRUCTION and its figure, and the whole point of taking both
+   from the release door's own derivation (`planned_removals`) is that a control
+   cannot promise what the button will not do.  Three copies of the sentence
+   would put that guarantee one edit away from being false on one of the pages.
 
    THE ACTION IS A PARAMETER (plan step bank_import:X-gf-2), because the door
    returns the owner to the page they pressed it on and the URL is what says
    which page that is.  Both surfaces posted to one route until then, and it
    redirected to the review screen -- which after this step lists no accepted
    match at all.
+
+   THE URL ALSO SAYS WHICH VIEW OF THAT PAGE, and the Reconcile tabs are why:
+   `release_and_return` reads its tab and its bound through `request.values`,
+   which a POST's own query string feeds -- so an action carrying them needs no
+   hidden field, and there is still nothing on the wire a submitter could aim
+   somewhere else.
 
    EVERY PRESS CONFIRMS (ruling bank_import:R-GY, developer 2026-08-27).  The
    dialog was attached only where the undo also removed rows the act had
@@ -35,7 +43,18 @@
    `data-confirm` is the project's own destructive-action pattern; base.html
    includes the modal and confirm.js sets the body with textContent, so a row
    LABEL taken from a bank line cannot inject. #}
-{% macro undo_match(action, group) %}
+{# THE CONTROL IS TWO MACROS AND ONE DERIVATION (plan step
+   bank_import:X-gj-1c).  The register and the import receipt render both parts
+   in one place and call undo_match, which is unchanged.  The RECONCILE act
+   card cannot: its grid puts Undo where OK sits on a bank line, a fixed narrow
+   column that cannot hold a list of removals, so the notice spans the card
+   below the grid and only the button sits in the cell.
+
+   THE SPLIT IS PRESENTATIONAL AND THE DERIVATION IS NOT.  Both halves read
+   group.removes, which is the release door's own planned_removals -- so the
+   sentence and the confirmation still cannot promise what the button will not
+   do, wherever the two are placed. #}
+{% macro undo_removals(group) %}
 {% if group.removes.refusal %}
 {# The undo would be REFUSED, so the row says so instead of listing removals it
    will not perform.  Same derivation as the door, which is the whole point: a
@@ -56,6 +75,9 @@
   {% endfor %}
 </div>
 {% endif %}
+{% endmacro %}
+
+{% macro undo_form(action, group) %}
 <form method="post" action="{{ action }}"
       {% if group.removes.rows %}
       data-confirm="Undo this match? It puts {{ group.descriptions | length }} statement line(s) back among the unexplained, and it REMOVES the {{ group.removes.rows | length }} row(s) this match created{% if group.removes.moves_money %}, worth {{ money(group.removes.cash_amount) }} of money the app currently records{% endif %}. Settle dates on rows the match only re-dated are NOT changed."
@@ -64,7 +86,23 @@
       {% endif %}>
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="match_id" value="{{ group.match_id }}">
+  {# THE BUTTON SAYS WHICH ACT IT UNDOES, to anything that cannot see the row
+     it sits in.  A settled tab renders one of these per act -- 50 on the
+     developer's bounded Explained tab and 221 unbounded -- and every one of
+     them had the accessible name "Undo" and nothing else, on a flat run of
+     divs with no per-act landmark: a reader browsing by button got 221
+     indistinguishable controls, each of which DESTROYS a match record.
+     Named by adversarial review 2026-08-31.  The day and the figure are what
+     the card itself leads with, so the label names the same two facts. #}
   <button type="submit"
+          aria-label="Undo the match of {{ group.posts_on }} for {{ money(group.amount) }}"
           class="btn btn-sm {% if group.removes.rows %}btn-outline-danger{% else %}btn-outline-secondary{% endif %}">Undo</button>
 </form>
+{% endmacro %}
+
+{% macro undo_match(action, group) %}
+{#- The two halves together, which is what the register and the import receipt
+    render: the notice, then the form. -#}
+{{ undo_removals(group) }}
+{{ undo_form(action, group) }}
 {% endmacro %}

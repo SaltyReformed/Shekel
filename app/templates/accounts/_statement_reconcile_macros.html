@@ -1,10 +1,21 @@
 {% from "_money_macros.html" import money %}
+{% from "accounts/_statement_undo_macros.html" import undo_form, undo_removals %}
 
-{# ONE CARD PER BANK LINE, and the panel one click behind it.
+{# THE TWO CARDS THIS PAGE IS MADE OF, and the panel one click behind one of
+   them.
 
-   Plan step bank_import:X-gj-1b; rulings R-HP, R-HQ, R-HR, R-HS, R-HW, R-HX.
-   Locked at Loop A round 4 on 2026-08-29: one bordered card per line, amount
-   then sentence then OK, no checkbox and no confidence pill.
+   Plan steps bank_import:X-gj-1b (`line_card`, a bank line the books have not
+   settled) and X-gj-1c (`act_card`, an act already applied); rulings R-HP,
+   R-HQ, R-HR, R-HS, R-HU, R-HW, R-HX.  Locked at Loop A round 4 on 2026-08-29:
+   one bordered card per line, amount then sentence then OK, no checkbox and no
+   confidence pill -- and the settled tabs are "the same card with the sentence
+   in the past tense, and Undo where OK was".
+
+   THE TWO SHARE THE GRID AND THE SENTENCE AND NOTHING ELSE.  They are two
+   values in the service (LineCard and ActCard) carrying disjoint facts, which
+   is what stops a template printing an act's Undo beside a line's OK: the
+   field is not there to print.  Which kind a tab holds is the TAB's own fact
+   (Tab.holds_settled_acts), asked once by the body.
 
    THE CARD SHOWS THE DECISION AND THE PANEL DISCLOSES EVERYTHING ELSE
    (R-HR).  The card carries the bank's facts, the amount, ONE sentence whose
@@ -408,4 +419,149 @@
     </div>
   </div>
 </details>
+{% endmacro %}
+
+{% macro act_card(action, card) %}
+{#- ONE ACT ALREADY APPLIED, as the same card one tense over.
+
+    Plan step bank_import:X-gj-1c; rulings bank_import:R-HU (the Explained tab
+    replaces the register) and R-GY (every Undo confirms).  The locked
+    direction: "the same card with the sentence in the past tense, newest
+    first, and Undo where OK was".
+
+    IT IS FLAT WHERE A BANK LINE'S CARD DISCLOSES, and that is the card's own
+    shape rather than a saving.  A line card opens onto four verbs, a row list
+    and a destination picker; an act has none of those.  What it could still
+    disclose is three things, and each gets a band that renders only when it
+    has something to say -- measured on a restored production clone 2026-08-31,
+    220 acts on the developer's own account: 0 acts would remove a row, 0 have
+    stopped holding, and 1 names more rows than its sentence can fit (217 name
+    one, 2 name two, 1 names four).  So 219 of 220 are one grid row.
+
+    AN EARLIER DRAFT OF THIS COMMENT SAID "0 of 221 acts have either to say"
+    AND IT WAS FALSE.  That figure is the REMOVALS one -- `_statement_undo_
+    macros.html` records it as 0 of 221 accepted matches being in that state --
+    and applying it to member rows was measured wrong by adversarial review:
+    the register this tab retires printed every row label, and a card that
+    named three of four would have dropped one silently.
+
+    IT ALSO CANNOT BE A DISCLOSURE.  Undo is a form, a summary's content model
+    admits only phrasing content, and the whole tab sits outside the Apply form
+    because a form cannot nest in a form.  The bank-line card gets away with an
+    OK checkbox in its summary because a checkbox IS phrasing content.
+
+    THE GRID IS THE LINE CARD'S, so the two kinds of card line their amounts up
+    down one list: facts, amount, sentence, control.  A reader moving between
+    tabs is reading one list five ways, which is the whole direction. -#}
+<div class="rec-card rec-act">
+  <div class="rec-summary">
+    <div class="rec-facts">
+      <div class="rec-merchant">
+        {# THE DAY THE ACT ASSERTED IS THE HEADLINE FACT, where a bank line's
+           card leads with the merchant.  That is the shape of what is here
+           rather than a choice: the day is the latest of the act's own bank
+           days, derived rather than stored (app/models/statement_match.py),
+           and an act's MERCHANT is not on it -- `descriptions` carries the
+           bank's raw words, which the line below prints, and reaching a
+           merchant name would be a lazy load per act on a tab that renders
+           fifty.  The sentence names the ROW the act explains, which is the
+           thing a reader is scanning for. #}
+        <span class="font-mono">{{ card.act.posts_on }}</span>
+        {# NO "filed by your rule" BADGE, and its absence is the tab.
+           `applied_by_rule` is the one fact about a match that is not
+           derivable from what it names (R-GT), and on the register -- which
+           listed BOTH halves in one table -- a badge was the only way to tell
+           them apart.  Here it is the axis the two tabs partition on:
+           `_tab_sections` asks `accepted_register` for `applied_by_rule=False`
+           on Explained and `True` on Filed by rules, so the flag is uniformly
+           False on one tab and uniformly True on the other.  A badge would
+           have been a branch that is dead on one tab and always taken on the
+           other, restating the tab's own name -- and it shipped for one
+           adversarial review as an unlabelled glyph carrying its meaning in a
+           `title`, which assistive technology mostly does not announce. #}
+      </div>
+      {# THE BANK'S OWN WORDS FOR EVERY LINE THIS ACT EXPLAINS.  A group names
+         several, and each is one line ellipsised by CSS -- the same treatment
+         the bank-line card gives its single description. #}
+      {% for description in card.act.descriptions %}
+      <div class="rec-raw font-mono">{{ description }}</div>
+      {% endfor %}
+    </div>
+    <div class="rec-amount font-mono{% if card.act.amount < 0 %} rec-out{% endif %}">
+      {{ money(card.act.amount) }}
+    </div>
+    <div class="rec-sentence">
+      {{ sentence(card.sentence) }}
+    </div>
+    <div class="rec-ok">
+      {{ undo_form(action, card.act) }}
+    </div>
+  </div>
+
+  {% if not card.act.agrees %}
+  {# WHAT CAN UNMAKE AN ACT WITHOUT TOUCHING IT (finding N-349).  Four doors
+     elsewhere in the app delete a row a match names -- deleting a recurring
+     definition's rows, archiving statements in bulk, retiring paydays, and the
+     recurrence retire sweep -- and each leaves the act standing with one fewer
+     row and no word said.  The act is not corrupt: it explains less than it
+     claims, and the honest answer is to re-review it.  `accepted_register`
+     sorts these to the TOP of the tab whatever their age, and this band is
+     what says why they are there.
+
+     THE SENTENCE ALREADY CARRIES "this no longer holds" (`for_accepted`).
+     What this adds is the per-ROW detail for the ONE of `_still_holds`'s four
+     reasons that is per-row and visible: a member whose day has moved off the
+     one the act asserted.  The other three -- an act that lost every row, a
+     member the amount model can no longer price, and a sum that no longer
+     matches the bank because a member stopped contributing -- leave every
+     surviving row's `agrees` True, so the loop prints nothing and the
+     paragraph above stands alone.  That is the honest state: the app knows
+     the act has stopped holding and cannot say which row did it, and Undo
+     puts the question back either way. #}
+  <div class="rec-act-drift">
+    <p class="small mb-1">
+      This no longer holds -- re-review it. Undoing puts its statement line(s)
+      back among the ones to explain.
+    </p>
+    {% for row in card.act.rows %}
+    {% if not row.agrees %}
+    <p class="small mb-0">
+      {{ row.label }} -- now dated
+      <span class="font-mono">{{ row.settled_on or 'not recorded' }}</span>,
+      not the bank's day.
+    </p>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# WHAT THE UNDO WOULD DESTROY, or why it would be refused -- the other half
+     of the control in the cell above, from the same derivation.  It spans the
+     card because it is a list, and the control column is a fixed narrow track
+     so amounts line up.  ABSENT for every act that would neither remove nor
+     refuse, which is most of them: 0 of the developer's own 221. #}
+  {% if card.rows_not_named %}
+  {# WHAT THE SENTENCE COULD NOT FIT.  `for_accepted` names at most
+     NAMED_ROW_LIMIT member rows and then says "and N more"; the count was
+     never silent but the NAMES were, and the register this tab retires
+     printed every one.  An owner deciding whether to undo has to be able to
+     see which rows the act claims.
+
+     WHICH ROWS THOSE ARE IS THE SERVICE'S (`ActCard.rows_not_named`), read
+     off the same constant the sentence uses, so the two cannot disagree about
+     where the cut falls.  It renders on 1 of the developer's 220 acts. #}
+  <div class="rec-act-rows">
+    <p class="small mb-0">
+      also
+      {% for label in card.rows_not_named %}{% if not loop.first %}, {% endif %}{{ label }}{% endfor %}
+    </p>
+  </div>
+  {% endif %}
+
+  {% if card.act.removes.says_anything %}
+  <div class="rec-act-removes">
+    {{ undo_removals(card.act) }}
+  </div>
+  {% endif %}
+</div>
 {% endmacro %}

@@ -56,7 +56,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from ._accepted_view import accepted_counts, accepted_register
+from ._accepted_view import REGISTER_LIMIT, accepted_counts, accepted_register
 from ._cards import (
     CardSection,
     LineCard,
@@ -102,6 +102,23 @@ class Tab(enum.Enum):
         """
         return _TAB_LABELS[self]
 
+    @property
+    def holds_settled_acts(self) -> bool:
+        """Return whether this tab's cards are ACTS rather than bank lines.
+
+        Plan step ``bank_import:X-gj-1c``.  **The one fact a template needs to
+        pick a partial**, and it is the service's rather than a Jinja
+        condition over the tab's name: which KIND a tab's cards are is already
+        stated as the tab's own fact (:attr:`~._cards.CardSection.cards`), and
+        the two kinds carry disjoint controls -- a bank line takes an OK
+        inside the Apply form, an applied act takes an Undo which is a form of
+        its own and may not nest inside one.
+
+        Returns:
+            ``True`` for :attr:`EXPLAINED` and :attr:`FILED_BY_RULES`.
+        """
+        return _TAB_HOLDS_ACTS[self]
+
 
 #: What each tab is called.  A table rather than a property full of branches,
 #: for the reason :data:`~._verbs._WORDS` is one.
@@ -111,6 +128,19 @@ _TAB_LABELS: "dict[Tab, str]" = {
     Tab.FILED_BY_RULES: "Filed by rules",
     Tab.TRANSFERS: "Transfers",
     Tab.SKIPPED: "Skipped",
+}
+
+#: Which tabs hold :class:`~._cards.ActCard` and which hold
+#: :class:`~._cards.LineCard`.  A TOTAL table beside :data:`_TAB_LABELS`
+#: rather than a membership test against two names, so a sixth tab added later
+#: fails loudly here -- exactly as :func:`_tab_sections`' dispatch does -- and
+#: cannot default into rendering a bank-line card for acts.
+_TAB_HOLDS_ACTS: "dict[Tab, bool]" = {
+    Tab.TO_EXPLAIN: False,
+    Tab.EXPLAINED: True,
+    Tab.FILED_BY_RULES: True,
+    Tab.TRANSFERS: False,
+    Tab.SKIPPED: False,
 }
 
 
@@ -424,7 +454,6 @@ def _hero(agreement: "BankAgreement | None", to_explain: int) -> Hero:
 def _chips(
     review: "ReviewSet",
     transfers: "tuple[LineCard, ...]",
-    explained: int,
 ) -> "tuple[HoldingChip, ...]":
     """Return the quiet counts under the hero.
 
@@ -432,13 +461,25 @@ def _chips(
     row.  **A chip whose count is zero is omitted**, so the row says something
     or is not there.
 
+    **There was a third chip, *already explained*, and plan step
+    ``bank_import:X-gj-1c`` DELETED it.**  It carried
+    :attr:`~._accepted_view.AcceptedCounts.total` and led to the register,
+    which renders every accepted act; once the two settled TABS exist that
+    total is the union of two tabs, so the chip would have promised a number
+    neither of the tabs it could link to delivers -- the caption-over-a-count
+    defect :func:`~._queue._sweeps_for` exists to refuse.  The tab bar states
+    both halves with their own counts, which is the same fact said once per
+    place it is true rather than twice.
+
     Args:
         review: The pass, which owns the pay-calendar bound.
         transfers: The cards on the Transfers tab.
-        explained: How many acts this account has already applied.
 
     Returns:
-        The chips, in reading order.
+        The chips, in reading order.  **Every one of them names a tab this
+        page serves or names no tab at all**, which is what lets the route
+        turn :attr:`HoldingChip.tab` into a URL without an arm for a tab it
+        cannot render.
     """
     chips = []
     if transfers:
@@ -460,14 +501,6 @@ def _chips(
             amount=None,
             day=bounds.before_calendar_last_day,
             tab=None,
-        ))
-    if explained:
-        chips.append(HoldingChip(
-            label="already explained",
-            count=explained,
-            amount=None,
-            day=None,
-            tab=Tab.EXPLAINED,
         ))
     return tuple(chips)
 
@@ -515,6 +548,7 @@ def reconcile_page(
     scope: "ReviewScope",
     agreement: "BankAgreement | None",
     tab: Tab,
+    limit: "int | None" = REGISTER_LIMIT,
 ) -> ReconcilePage:
     """Return everything the Reconcile page renders, for ONE of its tabs.
 
@@ -530,7 +564,7 @@ def reconcile_page(
     query, ``bank_agreement`` 0.108 s.
 
     **The two settled tabs' CARDS are built only when one is open.**  Their
-    counts come from :func:`~._accepted_view.accepted_counts`, which is two
+    counts come from :func:`~._accepted_view.accepted_counts`, which is three
     aggregates over one indexed read; building them would value EVERY act on
     the account -- :data:`~._accepted_view.REGISTER_LIMIT` bounds what is
     rendered and not what is priced -- re-deriving each one's removals and
@@ -548,6 +582,18 @@ def reconcile_page(
             :class:`~app.services.balance_at.BalanceContext`, and only a route
             builds one of those either.
         tab: Which tab's cards to build (:class:`Tab`).
+        limit: How many SETTLED acts a settled tab may render, or ``None`` for
+            the whole record -- which is what the tab's own *show the other N*
+            link asks for (plan step ``bank_import:X-gj-1c``).  It defaults to
+            :data:`~._accepted_view.REGISTER_LIMIT`, and an act that NO LONGER
+            HOLDS is never subject to it whatever this says: which acts the
+            bound may reach is
+            :func:`~._accepted_view.accepted_register`'s rule and is not
+            restated here.  **The link exists because this page retires the
+            register** (**R-HU**): the register offered exactly this, and on
+            the developer's own account it reaches 171 of his 221 acts, so
+            dropping it would put them out of reach rather than merely
+            unlisted.
 
     Returns:
         The :class:`ReconcilePage`.
@@ -604,7 +650,7 @@ def reconcile_page(
         + len(review.recordable_inflows)
     )
 
-    sections = _tab_sections(scope, review, tab, holding)
+    sections = _tab_sections(scope, review, tab, holding, limit)
     return ReconcilePage(
         tab=tab,
         hero=_hero(agreement, to_explain),
@@ -617,7 +663,7 @@ def reconcile_page(
         # account -- so the provenance costs about a two-thousandth of what
         # the page already pays to exist.
         last_import=last_import(scope.owner_id, scope.account_id),
-        chips=_chips(review, transfers, counts.total),
+        chips=_chips(review, transfers),
         counts=(
             TabCount(tab=Tab.TO_EXPLAIN, count=to_explain),
             TabCount(tab=Tab.EXPLAINED, count=counts.by_hand),
@@ -654,6 +700,7 @@ def _tab_sections(
     review: "ReviewSet",
     tab: Tab,
     holding: "dict[Tab, tuple[LineCard, ...]]",
+    limit: "int | None",
 ) -> "tuple[CardSection, ...]":
     """Return the cards of the open tab, and of no other.
 
@@ -666,6 +713,10 @@ def _tab_sections(
         review: The pass.
         tab: Which tab is open.
         holding: The cards of each holding tab, keyed by that tab.
+        limit: How many SETTLED acts a settled tab may render, or ``None`` for
+            all of them.  It reaches only the two settled arms: the inbox is
+            bounded by what the pass found and a holding tab renders every
+            line in its state (see :func:`_holding`).
 
     Returns:
         The sections, empty where the tab has no cards.
@@ -679,7 +730,7 @@ def _tab_sections(
         return to_explain_sections(review)
     if tab is Tab.EXPLAINED:
         return act_sections(accepted_register(
-            scope.owner_id, scope.account_id, applied_by_rule=False,
+            scope.owner_id, scope.account_id, limit, applied_by_rule=False,
         ))
     if tab is Tab.FILED_BY_RULES:
         # **The register's reader and not** :func:`~._filing.rule_filed_acts`,
@@ -689,7 +740,7 @@ def _tab_sections(
         # stopped holding to the top.  The two surfaces ask different
         # questions of one set, so each keeps its own reader.
         return act_sections(accepted_register(
-            scope.owner_id, scope.account_id, applied_by_rule=True,
+            scope.owner_id, scope.account_id, limit, applied_by_rule=True,
         ))
     if tab in holding:
         # **A holding tab withholds nothing**: it renders every line in its

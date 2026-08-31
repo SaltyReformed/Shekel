@@ -1,5 +1,5 @@
 {% from "_money_macros.html" import money %}
-{% from "accounts/_statement_reconcile_macros.html" import line_card %}
+{% from "accounts/_statement_reconcile_macros.html" import act_card, line_card %}
 
 {# THE WHOLE RECONCILE SURFACE, and the Apply door's own answer.
 
@@ -25,8 +25,9 @@
    ticked -- so a pre-filled destination on a card nobody touched writes
    nothing.  There is no state in which an untouched control moves money.
 
-   Context: account, page (ReconcilePage), tabs (the TabCounts this build
-   serves), chips ((HoldingChip, href) pairs), categories, outcome
+   Context: account, page (ReconcilePage), show_all (whether this render
+   lifted the bound on settled acts), chips ((HoldingChip, href) pairs),
+   categories, outcome
    (BatchOutcome or None), offers (the RuleOffers a pass earned -- one per
    merchant it filed spending for), rules (StatedRules or None -- a SEPARATE
    receipt because stating where a merchant goes moves no money), error (a
@@ -314,12 +315,15 @@
   {% endif %}
 
   {# ── The tab bar ───────────────────────────────────────────────────── #}
-  {# ONLY THE TABS THIS BUILD RENDERS CARDS FOR.  Which those are is the
-     route's fact (``_TABS_SERVED``), not a condition here: Explained and
-     Filed by rules are plan step X-gj-1c's, and a tab that led nowhere would
-     be the affordance-that-cannot-succeed shape R-HW bounds. #}
+  {# EVERY TAB, since plan step X-gj-1c.  The route narrowed this to the three
+     it had cards for while Explained and Filed by rules were unbuilt -- a tab
+     that led nowhere would be the affordance-that-cannot-succeed shape R-HW
+     bounds -- and both are built now, so the whole of `page.counts` is the
+     bar.  A LINK DROPS `all`: the bound is a fact about how much of ONE tab
+     you asked to see, so arriving at another opens it bounded, and its own
+     footer offers the rest. #}
   <nav class="rec-tabs" aria-label="Reconcile">
-    {% for count in tabs %}
+    {% for count in page.counts %}
     <a class="rec-tab{% if count.tab == page.tab %} rec-tab-open{% endif %}"
        href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab=count.tab.value) }}"
        {% if count.tab == page.tab %}aria-current="page"{% endif %}>
@@ -347,6 +351,68 @@
   </p>
 
   {# ── The cards ─────────────────────────────────────────────────────── #}
+  {# WHICH KIND THIS TAB HOLDS IS THE SERVICE'S FACT (Tab.holds_settled_acts,
+     plan step X-gj-1c), asked once here.  It is not a name test in Jinja: the
+     two kinds are two values carrying disjoint fields, and the tab is what
+     decides which the sections hold.
+
+     AN ACT TAB RENDERS OUTSIDE THE APPLY FORM, and that is structural rather
+     than tidiness.  Undo is a form of its own, a form cannot nest in a form,
+     and there is nothing on a settled tab to Apply -- no OK checkbox, no
+     sweep, no submit -- so rendering the band at all would be a control that
+     cannot succeed (R-HW). #}
+  {% if page.tab.holds_settled_acts %}
+  {% for section in page.sections %}
+  {% for card in section.cards %}
+  {# THE ACTION CARRIES THE VIEW.  `release_and_return` reads the tab and the
+     bound out of request.values, which a POST's own query string feeds, so the
+     owner comes back to the tab they were on showing what they had asked to
+     see.  `url_for` drops a None argument, so the ordinary render posts the
+     plain URL. #}
+  {{ act_card(
+       url_for('accounts.release_from_reconcile',
+               account_id=account.id, tab=page.tab.value,
+               all=1 if show_all else None),
+       card) }}
+  {% endfor %}
+  {% if section.withheld %}
+  {# THE BOUND, SAID, AND A WAY PAST IT (ruling R-GX, carried over from the
+     register at plan step X-gj-1c).  A truncated list that does not say it is
+     truncated is a page claiming to be the whole record, and these tabs are
+     now the only surface where an act can be found and undone.  Every act that
+     NO LONGER HOLDS is above this whatever its age -- which is
+     `accepted_register`'s rule, not a promise made here. #}
+  <p class="rec-more small">
+    <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab=page.tab.value, all=1) }}">Show
+    the other {{ section.withheld }} act(s)</a>
+    -- the newest are listed above, and any that no longer hold are always
+    listed whatever their age.
+  </p>
+  {% endif %}
+  {% else %}
+  <div class="rec-empty">
+    <i class="bi bi-check2-circle"></i>
+    <p class="mb-0">Nothing on this tab.</p>
+  </div>
+  {% endfor %}
+  {% if page.sections %}
+  {# WHAT UNDO DOES AND DOES NOT DO, said once under the list rather than on
+     every card.  Only where there IS a list: on an empty tab it would be a
+     paragraph about a control nothing renders. #}
+  {% if show_all %}
+  <p class="rec-more small text-body-secondary">
+    Every act on this tab is listed.
+  </p>
+  {% endif %}
+  <p class="rec-more small text-body-secondary">
+    Undoing an act puts its statement line(s) back among the ones to explain.
+    It does not put the dates back -- your bank is still the best record of
+    when that money moved. It DOES remove rows the act itself created: a
+    purchase recorded from a bank line, a recorded difference, and the budget
+    line created to hold a purchase where nothing else is filed under it.
+  </p>
+  {% endif %}
+  {% else %}
   <form method="post"
         action="{{ url_for('accounts.apply_statement_reconcile', account_id=account.id) }}"
         hx-post="{{ url_for('accounts.apply_statement_reconcile', account_id=account.id) }}"
@@ -429,6 +495,8 @@
     </div>
     {% endif %}
   </form>
+
+  {% endif %}
 
   {# ── What this pass did NOT look at ────────────────────────────────── #}
   {# WHICH bounds belong here is decided in the SERVICE

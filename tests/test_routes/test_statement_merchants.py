@@ -1235,3 +1235,168 @@ class TestTheCeilingDoesNotHideTheRowYouAsked:
         )
 
         assert f"rule-{_the_last_merchant.id}" in rule_form_controls(page)
+
+
+class TestTheNewEnvelopeAnswerNeedsNOTHINGToRun:
+    """Finding **bank_import:N-403**, plan step ``bank_import:X-gj-1c``.
+
+    **A chooser whose submission can never succeed** -- the shape this package
+    has now closed six times -- surviving in the one state nothing scripted a
+    check for.  The shared macro rendered the new-envelope name and category
+    boxes inside containers marked ``d-none`` on a merchant with no rule, and
+    ``statement_rules.js`` was the only thing that could ever un-hide them.
+    With scripting off the owner could pick *a new envelope*, never see the
+    category box, and be refused by the door every time.
+
+    **Measured on this page 2026-08-31 before the fix**, by scraping it and
+    posting its own bytes: containers ``col-12 col-lg-4 d-none`` and
+    ``col-12 col-lg-3 d-none``, a scrape carrying ``rule_category-1=''``, and a
+    designed 400 reading *needs both a name and a category*.  Three of the four
+    answers landed fine; this one could not.
+
+    **The refusal itself is CORRECT and stays.**  A new envelope stated by
+    halves is unwritable (``ck_merchant_rules_one_answer``), so
+    ``_reject_incomplete_new_envelope`` turning that into a sentence is right.
+    What changed is that the owner can now reach the half they were missing:
+    the stylesheet expresses the dependency, and a browser that cannot read it
+    shows both boxes always.
+
+    **The cases post what THIS PAGE RENDERS**, which is the whole reason the
+    defect survived: a scraper cannot see whether a control is visible, so a
+    payload naming the category directly would have been green throughout.
+    """
+
+    def _category_offered(self, page, merchant_id):
+        """Return a category id the page's own picker offers, and its label.
+
+        Args:
+            page: The rendered page.
+            merchant_id: Whose row to read.
+
+        Returns:
+            ``(value, label)`` for the first real option, or ``None`` when the
+            picker offers nothing but its empty opening state.
+        """
+        select = re.search(
+            rf'name="rule_category-{merchant_id}"(?:.|\n)*?</select>', page,
+        )
+        assert select is not None, "the category picker is not on the page"
+        options = re.findall(
+            r'<option value="(\d+)"[^>]*>\s*([^<]+?)\s*</option>',
+            select.group(0),
+        )
+        return options[0] if options else None
+
+    def test_neither_field_is_hidden_by_a_class(
+        self, auth_client, db, seed_user,
+    ):
+        """FIRING CONTROL: both containers carried ``d-none`` before the fix.
+
+        Asked of a merchant with NO rule, which is the state the class was
+        emitted for -- an answered merchant's row rendered them visible all
+        along, so a case over one would have passed throughout.
+        """
+        merchant = a_merchant(seed_user, "Walmart")
+        db.session.commit()
+
+        page = _page(auth_client, seed_user["account"].id, edit=merchant.id)
+
+        assert page.count("data-rule-new-field") == 2
+        assert not re.search(
+            r'class="[^"]*\bd-none\b[^"]*"[^>]*data-rule-new-field', page,
+        )
+        assert "js/statement_rules.js" not in page
+
+    def test_the_answer_LANDS_from_what_a_no_script_browser_can_send(
+        self, auth_client, db, seed_user,
+    ):
+        """The whole round trip, with every value taken off the page.
+
+        The category is set to one the page's OWN picker offers, because that
+        is exactly what an owner does now that they can see it.
+
+        **This case would pass on the PRE-FIX markup**, and that is stated
+        rather than left to be discovered: setting the category by hand is what
+        an owner does with a visible box and also what a script-driven page
+        did, so the reveal is not what it measures.  What it measures is that
+        the round trip WORKS -- the answer, the prefilled name and the chosen
+        category reach the door and land as the new-envelope arm.  The reveal's
+        own firing controls are
+        :meth:`test_neither_field_is_hidden_by_a_class` above and the
+        stylesheet gate in
+        ``tests/test_arch/test_a_control_rendered_invisible_has_a_rule_that_shows_it.py``.
+        Measured by adversarial test-quality review 2026-08-31.
+        """
+        merchant = a_merchant(seed_user, "Walmart")
+        db.session.commit()
+
+        page = _page(auth_client, seed_user["account"].id, edit=merchant.id)
+        category_id, _ = self._category_offered(page, merchant.id)
+        payload = dict(rule_form_controls(page))
+        payload[f"rule-{merchant.id}"] = "new"
+        payload[f"rule_category-{merchant.id}"] = category_id
+        payload["csrf_token"] = "x"
+
+        response = auth_client.post(_save_action(page), data=payload)
+        rule = _rule_of(db, merchant.id)
+
+        assert response.status_code == 200, response.get_data(as_text=True)
+        assert rule is not None
+        # The NEW-ENVELOPE arm on the row itself: a name and a category and no
+        # template, which is one of the three shapes
+        # ``ck_merchant_rules_one_answer`` admits.
+        assert rule.template_id is None
+        assert rule.envelope_name == "Walmart"
+        assert rule.category_id == int(category_id)
+
+    def test_the_name_the_page_PREFILLS_is_what_lands(
+        self, auth_client, db, seed_user,
+    ):
+        """The scraped name is the merchant's, and it is not hard-coded here.
+
+        Reading it back off the page rather than asserting the literal is what
+        keeps this case honest if the prefill ever changes: the claim is that
+        what the owner SEES is what is recorded.
+        """
+        merchant = a_merchant(seed_user, "Food Lion")
+        db.session.commit()
+
+        page = _page(auth_client, seed_user["account"].id, edit=merchant.id)
+        scraped = rule_form_controls(page)
+        category_id, _ = self._category_offered(page, merchant.id)
+        payload = dict(scraped)
+        payload[f"rule-{merchant.id}"] = "new"
+        payload[f"rule_category-{merchant.id}"] = category_id
+        payload["csrf_token"] = "x"
+
+        auth_client.post(_save_action(page), data=payload)
+
+        assert scraped[f"rule_name-{merchant.id}"] == "Food Lion"
+        assert _rule_of(db, merchant.id).envelope_name == "Food Lion"
+
+    def test_a_new_envelope_stated_by_HALVES_is_still_refused(
+        self, auth_client, db, seed_user,
+    ):
+        """The door's own rule, unchanged: the fix reveals, it does not admit.
+
+        Posting the page's bytes with only the ANSWER changed is what a person
+        does who picks *a new envelope* and chooses no category -- now a
+        visible omission rather than an invisible one -- and it must still be
+        refused, because the row is unwritable
+        (``ck_merchant_rules_one_answer``).
+        """
+        merchant = a_merchant(seed_user, "Walmart")
+        db.session.commit()
+
+        page = _page(auth_client, seed_user["account"].id, edit=merchant.id)
+        payload = dict(rule_form_controls(page))
+        payload[f"rule-{merchant.id}"] = "new"
+        payload["csrf_token"] = "x"
+
+        response = auth_client.post(_save_action(page), data=payload)
+
+        assert response.status_code == 400
+        assert "needs both a name and a category" in response.get_data(
+            as_text=True,
+        )
+        assert _rule_of(db, merchant.id) is None

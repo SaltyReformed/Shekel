@@ -1,8 +1,11 @@
 // Statement review: the per-class sweep, and the create arm's envelope reveal.
 //
-// The merchant-rule control's own reveal is statement_rules.js, which this
-// page also loads: that control is rendered on two surfaces since plan step
-// bank_import:X-gf-2 and its behaviour belongs to neither of them alone.
+// The merchant-rule control's own reveal was statement_rules.js, which this
+// page also loaded.  That file is DELETED (finding bank_import:N-403, plan
+// step bank_import:X-gj-1c): the fields it revealed are hidden and shown by
+// the stylesheet now, from the answer select's own selected option, so that
+// answer is reachable with nothing running -- which it was not while a script
+// was the only thing that could un-hide them.
 //
 // Plan step bank_import:X-f6a-3c-2.  Both behaviours are conveniences over a
 // form that works entirely without them, and that is deliberate: with

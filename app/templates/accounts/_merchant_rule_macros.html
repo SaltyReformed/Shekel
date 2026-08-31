@@ -79,15 +79,29 @@
       <option value="never"{% if row.rule and row.rule.is_never %} selected{% endif %}>-- never a purchase --</option>
     </select>
   </div>
-  <div class="col-12 col-lg-4{% if not (row.rule and row.rule.is_new_envelope) %} d-none{% endif %}"
-       data-rule-new-field>
+  {# THE TWO FIELDS THE "a new envelope" ANSWER NEEDS, and they are in the
+     document at every answer.  The stylesheet hides them where another answer
+     is chosen, keyed on the select's own selected option -- so the dependency
+     is a fact about the DOCUMENT and nothing has to run for the answer to be
+     reachable (finding bank_import:N-403, plan step bank_import:X-gj-1c).
+
+     THEY WERE `d-none` UNTIL A SCRIPT SHOWED THEM, and that is the defect: the
+     category select opens on its empty option, so with scripting off an owner
+     could pick "a new envelope", never see the category box, and be refused by
+     `_reject_incomplete_new_envelope` every time -- on all three surfaces that
+     render this macro.  Measured 2026-08-31 by scraping the merchants page and
+     posting its own bytes: a designed 400, "needs both a name and a category",
+     every press.  `statement_rules.js` is DELETED with the class.
+
+     THE REFUSAL STAYS.  A new envelope stated by halves is still refused by
+     the service; what changed is that the owner can now state both halves. #}
+  <div class="col-12 col-lg-4" data-rule-new-field>
     <input class="form-control form-control-sm" type="text"
            name="rule_name-{{ idx }}" maxlength="200"
            value="{{ row.rule.envelope_name if row.rule and row.rule.is_new_envelope else row.merchant }}"
            aria-label="Name for the envelope to create">
   </div>
-  <div class="col-12 col-lg-3{% if not (row.rule and row.rule.is_new_envelope) %} d-none{% endif %}"
-       data-rule-new-field>
+  <div class="col-12 col-lg-3" data-rule-new-field>
     <select class="form-select form-select-sm"
             name="rule_category-{{ idx }}"
             aria-label="Category for the envelope to create">

@@ -32,6 +32,11 @@
 {% endblock content %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/statement_rules.js') }}"></script>
+{# `statement_rules.js` was here and is DELETED (finding bank_import:N-403,
+   plan step bank_import:X-gj-1c).  It revealed the new-envelope name and
+   category fields, which the stylesheet now hides and shows from the answer
+   select's own selected option -- so the answer is reachable with nothing
+   running, which it was not while a script was the only thing that could
+   un-hide them. #}
 <script src="{{ url_for('static', filename='js/statement_review.js') }}"></script>
 {% endblock scripts %}
