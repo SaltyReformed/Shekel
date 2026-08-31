@@ -70,6 +70,8 @@ from ._reads import review_set
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from datetime import date
 
+    from ._gaps import BooksBound
+
     from app.services.bank_agreement import BankAgreement
 
     from ._bars import ParkedLine
@@ -264,14 +266,17 @@ class TabCount:
 class ReconcilePage:  # pylint: disable=too-many-instance-attributes
     """Everything the Reconcile page renders, for ONE of its five tabs.
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- **eight because the page
-    renders eight distinct things**: which tab is open, the hero, what the
-    last import did, the holding chips, the tab bar, the cards, the sweeps and
-    the footer's disclosure.  Every one of them is read by
-    ``_statement_reconcile_body.html``, so the count is re-derivable rather
-    than asserted; folding any pair would be the speculative nesting
-    ``CLAUDE.md`` rule 13 forbids, and :class:`~._reads.ReviewSet` carries the
-    same disable for the same reason.
+    Pylint: ``too-many-instance-attributes`` (9/7) -- **nine because the page
+    renders nine distinct things**: which tab is open, the hero, what the last
+    import did, the holding chips, the tab bar, the cards, the sweeps, the
+    footer's disclosure and what the account's opening already accounts for.
+    Every one of them is read by ``_statement_reconcile_body.html``, so the
+    count is re-derivable rather than asserted; folding any pair would be the
+    speculative nesting ``CLAUDE.md`` rule 13 forbids, and
+    :class:`~._reads.ReviewSet` carries the same disable for the same reason.
+    *It read (8/7) until plan step balance:X-f3c-2b-2b added the ninth* --
+    a count in a rationale is a measurement, and this one went stale in the
+    same commit that made it stale.
 
     **It carried an ``account_id`` until plan step ``bank_import:X-gj-1b``,
     and NOTHING read it** -- not a template, not the route, not a test.  Every
@@ -300,6 +305,17 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             is empty for every tab but To explain.
         unexamined: What this pass did NOT look at, one sentence each, for the
             footer's disclosure.  Empty when it examined everything.
+        books_bound: The lines this account's opening equity already
+            accounts for
+            (:class:`~._gaps.BooksBound`), or ``None`` where it accounts
+            for none.  **Named ``books_bound`` and not ``books``**, because
+            :attr:`Hero.books` on the same page is the app's own BALANCE and
+            one page carrying two unrelated ``books`` is a misreading waiting
+            to happen.  **Carried whole rather than flattened into**
+            :attr:`unexamined`, because unlike every sentence in that tuple
+            this one ends in an ACT, and the template has to render that act
+            as a link -- which is the one fact a service may not build
+            (:attr:`~._bars.ParkedLine.answer_door`).
     """
 
     tab: Tab
@@ -310,6 +326,7 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
     sections: "tuple[CardSection, ...]"
     sweeps: "tuple[Sweep, ...]"
     unexamined: "tuple[str, ...]"
+    books_bound: "BooksBound | None"
 
     @property
     def is_done(self) -> bool:
@@ -432,8 +449,16 @@ def _chips(
     row.  **A chip whose count is zero is omitted**, so the row says something
     or is not there.
 
+    **The books bound is NOT a chip**, and it was one until an adversarial
+    design review measured what that cost (2026-08-31): the chip carried the
+    count, the day and a link, and the sentence under it repeated all three
+    three lines later.  That is the clutter :func:`_unexamined` one function
+    down says this rebuild removed.  It renders as
+    :attr:`ReconcilePage.books_bound` instead -- once, with the act as a link, the
+    way the review body and the workbench already render the same value.
+
     Args:
-        review: The pass, which owns the pay-calendar bound.
+        review: The pass, which owns the pay-calendar and books bounds.
         transfers: The cards on the Transfers tab.
         explained: How many acts this account has already applied.
 
@@ -475,12 +500,16 @@ def _chips(
 def _unexamined(review: "ReviewSet") -> "tuple[str, ...]":
     """Return what this pass did NOT look at, one sentence each.
 
-    **Three of the four bounds, and the partition is decided HERE.**  The
-    fourth, :attr:`~._gaps.ReviewBounds.before_calendar_count`, is a
-    :class:`HoldingChip` above the fold, and stating it twice on one screen is
-    the clutter this rebuild removed.  A template picking three of four would
-    be the *second place for a partition to be wrong* this package refuses
-    everywhere else.
+    **Three of the five bounds, and the partition is decided HERE.**  The
+    other two are stated elsewhere on the page and stating either twice is
+    the clutter this rebuild removed:
+    :attr:`~._gaps.ReviewBounds.before_calendar_count` is a
+    :class:`HoldingChip` above the fold, and
+    :attr:`~._gaps.ReviewBounds.books` is
+    :attr:`ReconcilePage.books_bound`, which carries an ACT and so cannot
+    be one of these plain sentences.  A template picking three of five
+    would be the *second place for a partition to be wrong* this package
+    refuses everywhere else.
 
     Args:
         review: The pass.
@@ -618,6 +647,7 @@ def reconcile_page(
         # the page already pays to exist.
         last_import=last_import(scope.owner_id, scope.account_id),
         chips=_chips(review, transfers, counts.total),
+        books_bound=review.bounds.books,
         counts=(
             TabCount(tab=Tab.TO_EXPLAIN, count=to_explain),
             TabCount(tab=Tab.EXPLAINED, count=counts.by_hand),

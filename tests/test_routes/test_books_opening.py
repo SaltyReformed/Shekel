@@ -26,14 +26,17 @@ way -- so the field names asserted below are read out of the RENDERED page.
 from datetime import timedelta
 from decimal import Decimal
 
+import sqlalchemy as sa
+
 from app import ref_cache
 from app.enums import AccountOpeningSourceEnum
 from app.extensions import db
-from app.services import cash_ledger
+from app.services import account_service, cash_ledger
 from app.models.account_opening import AccountOpening
 from app.utils.dates import display_today
 from tests._test_helpers import (
     account_never_asserted,
+    match_two_lines,
     create_account_of_type,
     create_settled_cash_transaction,
 )
@@ -390,11 +393,23 @@ class TestWhatTheCardSAYS:
     def test_the_ceiling_is_TODAY_when_the_account_records_nothing(
         self, app, auth_client, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The third term, and the only state in which it is the smallest.
+        """The clock term, and the only state in which it is the smallest.
 
         An account with neither an assertion nor a movement is bounded only by
         the clock, and the help text says so rather than naming a bound that
         does not exist.
+
+        **The sentence CHANGED at plan step balance:X-f3c-2b-2b and the
+        assertion changed with it.**  It read "This account records nothing
+        yet, so any past day will do" -- a claim about the account's RECORDS,
+        which was safe only while a Jinja ``{% else %}`` kept it to the state
+        where there were none.  Composing the ceiling in the route made the
+        clock the first of four candidates, and ``min`` keeps the first
+        minimum, so it began winning every TIE -- and a brand-new account ties
+        it against its own origination assertion at today.  The sentence now
+        says why TODAY bounds the box and asserts nothing about the records,
+        which is true in both states.  ``test_a_BRAND_NEW_account_is_not_told_
+        it_records_nothing`` is the case that would fail if it went back.
         """
         with app.app_context():
             account = account_never_asserted(
@@ -414,7 +429,7 @@ class TestWhatTheCardSAYS:
             html = auth_client.get(f"/accounts/{account.id}/edit").data.decode()
 
             assert f'max="{display_today().isoformat()}"' in html
-            assert "records nothing yet" in html
+            assert "has not happened yet" in html
 
     def test_an_account_with_NO_opening_row_still_renders_its_edit_page(
         self, app, auth_client, seed_user, seed_periods,
@@ -505,3 +520,203 @@ class TestOwnership:
                 },
             )
             assert resp.status_code == 302
+
+
+class TestTheCeilingNamesTheBoundThatBinds:
+    """The date box's ``max`` and the sentence under it are ONE decision.
+
+    Plan step **balance:X-f3c-2b-2b**.  The card chose which bound to name
+    itself, in Jinja, in the order movement-then-assertion -- which is not the
+    order the ``min`` behind ``max`` resolves them in.  So an account could be
+    shown a true sentence about a bound that was not the one stopping it, and
+    adding the fourth term would have made a two-way disagreement three-way.
+    The route composes both now, and these cases grade that they agree.
+    """
+
+    def test_the_MATCHED_LINE_term_bounds_the_box(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The fourth term, isolated by an account that records nothing else.
+
+        FIRING CONTROL: without it the ceiling reads TODAY on an account whose
+        books may not pass a bank line it has already matched -- the same
+        shape the assertion term was added for, one row set over.
+        """
+        with app.app_context():
+            account = account_never_asserted(
+                seed_user, db.session, name="Ceiling Matched",
+            )
+            db.session.flush()
+            opened = seed_periods[0].start_date
+            db.session.add(AccountOpening(
+                account_id=account.id,
+                opened_on=opened,
+                opening_equity=Decimal("10.00"),
+                source_id=ref_cache.account_opening_source_id(
+                    AccountOpeningSourceEnum.USER_DECLARED,
+                ),
+            ))
+            db.session.commit()
+            early = opened + timedelta(days=10)
+            match_two_lines(
+                db.session, account, seed_user["user"].id,
+                early, early + timedelta(days=10),
+            )
+            assert cash_ledger.earliest_assertion_day(account.id) is None
+            assert cash_ledger.earliest_recorded_movement_day(
+                account.id,
+            ) is None, "this case isolates the MATCHED-LINE term"
+
+            html = auth_client.get(
+                f"/accounts/{account.id}/edit",
+            ).data.decode()
+
+            assert f'max="{(early - _ONE_DAY).isoformat()}"' in html
+            assert "matched a bank line" in html
+            assert early.strftime("%b %-d, %Y") in html
+
+    def test_the_MATCHED_LINE_term_WINS_over_a_LATER_movement(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The PRODUCTION shape, which no other case renders.
+
+        Every other matched-line case isolates the term on an account that
+        records no movement at all, so the route could have computed the
+        matched entry off ``earliest_recorded_movement_day`` by copy-paste and
+        every one of them would still pass.  Here BOTH terms exist and the
+        matched line is strictly EARLIER -- which is the arrangement the whole
+        arm exists for, because a match settles its members on the LATEST of
+        its bank days -- so only a ceiling that really read the matched row
+        set names the right day and the right sentence.
+
+        Found by adversarial test review 2026-08-31.
+        """
+        with app.app_context():
+            account = account_never_asserted(
+                seed_user, db.session, name="Ceiling Both Terms",
+            )
+            db.session.flush()
+            opened = seed_periods[0].start_date
+            db.session.add(AccountOpening(
+                account_id=account.id,
+                opened_on=opened,
+                opening_equity=Decimal("10.00"),
+                source_id=ref_cache.account_opening_source_id(
+                    AccountOpeningSourceEnum.USER_DECLARED,
+                ),
+            ))
+            db.session.commit()
+            early = opened + timedelta(days=10)
+            match_two_lines(
+                db.session, account, seed_user["user"].id,
+                early, early + timedelta(days=10),
+            )
+            # A settled movement well AFTER the matched line, so the movement
+            # bound is the looser of the two and must not win.
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[1], Decimal("25.00"),
+                settled_on=early + timedelta(days=40),
+                name="later-than-the-matched-line", account=account,
+            )
+            db.session.commit()
+
+            movement = cash_ledger.earliest_recorded_movement_day(account.id)
+            matched = cash_ledger.earliest_matched_line_day(account.id)
+            assert movement is not None and matched is not None, (
+                "this case needs BOTH terms present to mean anything"
+            )
+            assert matched < movement, (
+                "the matched line must be the tighter bound or the case "
+                "grades nothing the movement term does not already grade"
+            )
+
+            html = auth_client.get(
+                f"/accounts/{account.id}/edit",
+            ).data.decode()
+
+            assert f'max="{(matched - _ONE_DAY).isoformat()}"' in html
+            assert f'max="{(movement - _ONE_DAY).isoformat()}"' not in html
+            assert "matched a bank line" in html
+            assert "already records money moving" not in html
+
+    def test_the_sentence_names_the_bound_the_MAX_came_from(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """FIRING CONTROL for the defect this refactor fixed.
+
+        An account asserted early and first settled LATER: the ceiling comes
+        from the assertion, and the card used to print the movement's sentence
+        because its ``{% if %}`` asked about movements first.  Both facts are
+        read out of the rendered page, so a sentence naming the other bound
+        fails here rather than being noticed by a reader.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            first_assertion = cash_ledger.earliest_assertion_day(account.id)
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[1], Decimal("25.00"),
+                settled_on=first_assertion + timedelta(days=60),
+                name="later-than-the-assertion",
+            )
+            db.session.commit()
+            movement = cash_ledger.earliest_recorded_movement_day(account.id)
+            assert movement > first_assertion, (
+                "the whole point of this case is a movement LATER than the "
+                "assertion, so the two bounds disagree about which binds"
+            )
+
+            html = auth_client.get(
+                f"/accounts/{account.id}/edit",
+            ).data.decode()
+
+            # The NEGATIVE is derived from the fixture's own arithmetic
+            # rather than from a reader, which is what makes this case able to
+            # fail: the positive below reads the same producer the route does,
+            # so on its own it would pass even if that producer were wrong.
+            # The defect actually guarded here is the route picking the
+            # MOVEMENT bound, and this is the assertion that sees it.
+            movement_ceiling = movement - timedelta(days=1)
+            assert f'max="{movement_ceiling.isoformat()}"' not in html
+            assert f'max="{first_assertion.isoformat()}"' in html
+            assert "already recorded a balance" in html
+            assert "already records money moving" not in html
+
+    def test_a_BRAND_NEW_account_is_not_told_it_records_nothing(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """FIRING CONTROL for the TIE, which is the ordinary case and not an edge.
+
+        ``account_service.create_account`` writes the origination opening and
+        its assertion on ONE day, so a fresh account ties the clock bound
+        against the assertion bound at today -- and ``min`` keeps the FIRST
+        minimum, which is the clock's.  A first draft of this refactor gave
+        the clock entry the template's old ``{% else %}`` sentence, "This
+        account records nothing yet, so any past day will do", which only ever
+        ran when no other bound existed.  Here it won the tie and told the
+        owner of an account holding an asserted balance that it recorded
+        nothing.  Found by adversarial design review 2026-08-31.
+        """
+        with app.app_context():
+            account = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=seed_user["account"].account_type_id,
+                    name="Brand New",
+                    anchor_balance=Decimal("100.00"),
+                ),
+            )
+            db.session.commit()
+            assert cash_ledger.earliest_assertion_day(
+                account.id,
+            ) == display_today(), (
+                "this case is about the TIE; the assertion has to land on "
+                "today for the clock bound to be tied with it"
+            )
+
+            html = auth_client.get(
+                f"/accounts/{account.id}/edit",
+            ).data.decode()
+
+            assert f'max="{display_today().isoformat()}"' in html
+            assert "records nothing yet" not in html
+            assert "has not happened yet" in html

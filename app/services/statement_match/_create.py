@@ -444,6 +444,17 @@ def create_purchase_from_line(
     # so resolving one first would answer a request that may not be made with a
     # sentence about the answer it gave (ruling **R-GJ**).
     reject_barred_line(line, bars)
+    # **Before the destination is resolved and before anything is staged**
+    # (plan step **balance:X-f3c-2b-2b**, finding **N-383**).  A line the
+    # account's books cannot hold is money already inside its opening equity,
+    # so there is no destination that would make recording it legal -- the
+    # same reason the bar above runs where it does.  ``create_entry``'s settle
+    # verb refuses the day too, and refuses it AFTER ``resolve_destination``
+    # may have minted an envelope for a purchase that will never exist; this
+    # module's own promise is that every refusal fires before anything is
+    # written (:func:`~._income.record_income_from_line`), and the savepoint
+    # that would have covered it is the batch's rather than this door's.
+    scope.reject_line_before_books_open(line.posted_on, "this purchase")
     made_on = _made_on(line)
     # ONE construction of the bank's own day for this act, for the two
     # writers that need it: the purchase is born carrying it, and the

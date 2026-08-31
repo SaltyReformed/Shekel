@@ -471,15 +471,44 @@ _FENCED_MODULE_RULINGS = {
         # the reason ``governing_anchor`` carries ``resolve_anchor``'s: same
         # row, same query, and only the empty-state policy differs.
         "governing_account_opening",
-        # ``_books`` (X-f3c-2b, N-378; X-f3c-2b-2a) -- THREE REFUSALS stating
-        # the books boundary, each returning nothing, plus the two DAYS they
-        # bound against.  A refusal compares ONE date against a stored row, and
-        # "may this day be recorded" is the opposite direction from "what is
-        # held at T"; the readers are a bare ``MIN`` over a date column, public
-        # because the restatement form renders both, and a day is not a
-        # balance (the ``latest_statement_day`` hatch, ruled below).
+        # ``_books`` (X-f3c-2b, N-378; X-f3c-2b-2a; X-f3c-2b-2b, N-383) -- FIVE
+        # REFUSALS stating the books boundary, each returning nothing, plus the
+        # three DAYS they bound against and the one COMPARISON they share.
+        # (It read "FOUR ... two DAYS" until the counts were taken against the
+        # module: it states five ``reject_*`` and three ``earliest_*``, and its
+        # own docstring says so.  A count in a ruling is a claim like any
+        # other.)  A
+        # refusal compares ONE date against a stored row, and "may this day be
+        # recorded" is the opposite direction from "what is held at T"; the
+        # readers are a bare ``MIN`` over a date column, public because the
+        # restatement form renders both, and a day is not a balance (the
+        # ``latest_statement_day`` hatch, ruled below).
+        #
+        # ``books_hold`` is the strongest case in the set rather than the
+        # weakest: it takes two dates, returns a ``bool`` and reads nothing at
+        # all, so it cannot answer a balance whatever a caller does with it.
+        # It is public because the SCREEN asks it -- ``statement_match``
+        # splits its bank lines on the same comparison the doors refuse on, and
+        # a second spelling of it there is the drift this whole set exists to
+        # make visible.
+        "books_hold",
         "reject_books_open_after_an_assertion",
+        # ``reject_books_open_on_or_after_matched_lines`` and its reader
+        # (X-f3c-2b-2b) carry the same ruling as the movement pair beside
+        # them, over the second row set: a ``MIN`` over ``posted_on`` on the
+        # bank lines an account's matches name, and a refusal comparing one
+        # date against it.  A bank line's posting day is the BANK's record of
+        # when money moved, which is the same kind of fact as a settle day and
+        # is no more a balance than one.
+        "reject_books_open_on_or_after_matched_lines",
+        "earliest_matched_line_day",
         "reject_books_open_on_or_after_movements",
+        # ``reject_line_before_books_open`` (X-f3c-2b-2b) takes a LOADED
+        # opening rather than an account id, which is the one shape difference
+        # in this group and does not change the ruling: it is handed the fact
+        # by the pass that already read it, compares one date against it and
+        # returns nothing.
+        "reject_line_before_books_open",
         "reject_movement_before_books_open",
         "earliest_assertion_day",
         "earliest_recorded_movement_day",
