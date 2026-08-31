@@ -156,7 +156,6 @@ from ._derive import (
 from ._searches import (
     containing_period,
     earliest_started_period,
-    earliest_start_in_month,
     final_covered_day,
     latest_started_period,
     materialised_periods,
@@ -219,6 +218,16 @@ class PayCalendar:
             payday is plan finding **P8**'s broken state and is refused at
             construction.  Every method that reads it is reachable only from a
             non-empty calendar, so none of them tests it.
+        history_opens_on: How far back this owner's PAYCHECKS reach, from
+            ``budget.pay_schedule``, or ``None`` for NOT STATED -- in which
+            case the backward rhythm answers nothing and only the RECORD is
+            counted (ruling **balance:R-IA**, amended 2026-08-31).  Carried
+            HERE for the reason :attr:`cadence_days` is: the paydays and the
+            bound on them are one owner's one rhythm, and a bound arriving
+            separately can be paired with another owner's schedule.
+            :mod:`._rhythm` is its only reader, and the column's comment
+            carries the rule and why the null is an absence rather than a
+            claim.
         periods: The owner's SAVED periods, ``start_date`` ascending.  DERIVED
             at construction, never passed in, and excluded from equality so two
             calendars compare on their facts.
@@ -230,6 +239,7 @@ class PayCalendar:
     user_id: int
     paydays: "tuple[tuple[int | None, date], ...]"
     cadence_days: "int | None"
+    history_opens_on: "date | None"
     periods: "tuple[DerivedPeriod, ...]" = field(
         init=False, repr=False, compare=False,
     )
@@ -274,6 +284,7 @@ class PayCalendar:
         paydays: "Iterable[tuple[int | None, date]]",
         cadence_days: "int | None",
         user_id: int,
+        history_opens_on: "date | None",
     ) -> "PayCalendar":
         """Build a calendar from an owner's COMPLETE payday set.
 
@@ -288,6 +299,12 @@ class PayCalendar:
                 period to infer one from.  ``None`` beside a non-empty
                 *paydays* is refused.
             user_id: The owner these paydays belong to.
+            history_opens_on: How far back the owner's paychecks reach, or
+                ``None`` -- see the class docstring.  **Required rather than
+                defaulted**: ``None`` is a legitimate stored value AND what a
+                forgetful caller would get, so a default would let a calendar
+                claim an unbounded rhythm the owner never stated -- a wrong
+                figure rather than an error.
 
         Returns:
             The frozen calendar.
@@ -299,6 +316,7 @@ class PayCalendar:
             user_id=user_id,
             paydays=tuple(paydays),
             cadence_days=cadence_days,
+            history_opens_on=history_opens_on,
         )
 
     # ---- how often this owner is paid --------------------------------
@@ -826,23 +844,6 @@ class PayCalendar:
                 f"which needs a transaction that is not one snapshot."
             )
         return period
-
-    def earliest_start_in_month(self, year: int, month: int) -> "date | None":
-        """Return the earliest payday falling in *year* / *month*, else ``None``.
-
-        What ``Monthly First`` asks: that pattern fires on a month's FIRST
-        paycheck, so honouring it depends on when that paycheck lands.
-
-        Args:
-            year: Calendar year.
-            month: Calendar month, 1-12.
-
-        Returns:
-            The earliest ``start_date`` in that month, or ``None`` when the
-            SAVED schedule opens no period there -- a month a long cadence
-            skips, or one past the horizon.
-        """
-        return earliest_start_in_month(self.periods, year, month)
 
     # ---- views, never calendars --------------------------------------
     #

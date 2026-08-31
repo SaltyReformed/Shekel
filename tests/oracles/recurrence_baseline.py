@@ -514,6 +514,7 @@ def build_shape_calendar(
         paydays=[(period.id, period.start_date) for period in periods],
         cadence_days=cadence_days,
         user_id=SHAPE_USER_ID,
+        history_opens_on=None,
     )
 
 

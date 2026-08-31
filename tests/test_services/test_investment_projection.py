@@ -67,6 +67,7 @@ def _periods(*paydays, cadence=14):
     return PayCalendar.from_paydays(
         [(index, payday) for index, payday in enumerate(paydays, start=1)],
         cadence, user_id=1,
+        history_opens_on=None,
     ).saved()
 
 

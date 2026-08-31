@@ -47,20 +47,73 @@ value object should not have to open it to ask a question of it -- nor be able
 to pair one owner's paydays with another owner's cadence.  ``_derive`` ->
 ``_searches`` -> ``_window`` -> ``_views`` -> ``_calendar`` -> this.  **It is
 not a method on that class**, and that is a measured constraint rather than
-taste: ``_calendar.py`` stands at 995 of pylint's 1,000-line ceiling and 20 of
-its 20 public methods, and ledger row **P77** records that the next step
-touching it breaks both -- which is exactly what happened at
-``recurrence:R16-b-1``, resolved by putting that step's one method here in the
-package instead.
+taste: ``_calendar.py`` stands within a handful of lines of pylint's
+1,000-line ceiling and at 19 of its 20 permitted public methods, and ledger row
+**P77** records that the next step touching it breaks both -- which is exactly
+what happened at ``recurrence:R16-b-1``, resolved by putting that step's one
+method here in the package instead.  *No line count is quoted, deliberately:
+the 995 stated here was true for one commit.  Plan step balance:X-bh-2 added a
+field to the class and deleted the unreached ``earliest_start_in_month``
+method (ledger row N-396), which loosened the METHOD budget by one slot and
+left the file one line CLOSER to the ceiling, not further -- an adversarial
+review of that step corrected a draft of this sentence that claimed the
+deletion paid for the addition.  pylint measures the number on every commit; a
+copy in prose only decays, and this one decayed within its own step.*
 
-**What it does NOT yet answer, stated because the gap is a live finding.**  The
-forward continuation past the schedule's horizon is here (ruling
-``pay_calendar:R-PC9``); the BACKWARD one below the opening payday is not, so a
-month or a year that the recorded schedule opens inside is counted from the
-first recorded payday rather than from the owner's first real one.  That is the
-remaining half of ledger row **N-390** and it is plan step **balance:X-bh-2**'s
-subject, which also stores the fact the projection needs -- when the owner's
-pay history begins, which no derivation can supply.
+**The rhythm runs in BOTH directions, and the two ends are NOT symmetric.**
+Forward past the schedule's horizon it runs to
+:data:`~app.utils.dates.CALENDAR_DATE_MAX` (ruling ``pay_calendar:R-PC9``) --
+a property of the APPLICATION, and genuinely unbounded, because the balance
+axis projects years out and :func:`~._walks.paychecks_from` walks to the end of
+the app's calendar.  Backward below the opening payday it runs to
+``budget.pay_schedule.history_opens_on`` (ruling ``balance:R-IA``, plan step
+**balance:X-bh-2**) -- a property of the OWNER, which no derivation can supply,
+and which is asked for rather than assumed.  **A ``NULL`` there means NOT
+STATED and the backward half answers nothing**, which is the ruling's
+2026-08-31 amendment: an owner nobody has asked has made no claim, and the
+first form of the rule let the absence of a question stand in for one.
+
+The backward end does not need to be unbounded and is not: the only two readers
+of this rhythm ask over one calendar month or one calendar year, so it never
+reaches more than about twelve months below the record.  The mirror with
+``CALENDAR_DATE_MAX`` was aesthetic, and an adversarial review of this step
+priced what taking it literally cost -- a ``$200,000`` salary whose record
+opens mid-2026 withholding ``$1,437.91`` less Social Security tax, because a
+year of paychecks nobody had claimed retired the wage base early.
+
+Until this step the backward half did not exist at all, so a month or a year
+the record opens inside was counted from the first RECORDED payday: measured on
+the production owner, whose schedule opens 2026-03-26, the 2026 wage total for
+2026-05-21 read ``$14,103.84`` from four paydays against the ``$31,733.64`` of
+the nine he was really paid (ledger row **N-390**).  He states his opening and
+the rhythm answers it; an owner who states nothing keeps that reading.
+
+**The backward bound is a FLOOR and never an anchor**, which is what keeps the
+two halves one rhythm rather than two.  The days below the record are stepped
+back from the FIRST RECORDED payday at the owner's cadence and dropped once
+they fall under the floor; the stored day is not itself treated as a payday.
+Anchoring on it instead would put a short gap at the seam whenever the day the
+owner remembers does not land on the recorded rhythm -- which it need not, and
+for the production owner does not.  A short gap inflates that month's payday
+count by one, which is exactly the ordinal the deduction cadence reads.
+
+*What the floor GIVES UP, said because an adversarial review of plan step
+balance:X-bh-2 found only the other half written down.*  An anchor would place
+the owner's real first paycheck on its real day, and a floor cannot: the
+earliest day this returns is a phase-derived one within a cadence of the
+stated day, never the stated day itself.  Where the real first paycheck was
+shifted ACROSS a year boundary that is a wage-base year attributed wrongly --
+ledger row **N-398**'s subject, which is therefore partly a consequence of
+this choice rather than an independent limitation.  The seam cost was judged
+the larger because it lands on every month of the projection while the
+attribution cost lands on one day of one year.
+
+**The floor bounds the PROJECTION and never the RECORD.**  A saved payday
+below a stated ``history_opens_on`` is still counted, because a row the owner
+entered is a fact and the bound is a statement about the unrecorded past.  The
+pairing is reachable -- ``/pay-periods/reset`` rebuilds a schedule from an
+EARLIER first payday without touching ``budget.pay_schedule`` -- and it
+degrades to "no backward rhythm" rather than to a wrong count.
 
 Pure: no session, no clock, no Flask.  Every answer is a function of the
 paydays and the cadence the calendar carries.
@@ -70,6 +123,7 @@ from datetime import date, timedelta
 from itertools import takewhile
 
 from ._calendar import PayCalendar
+from ._derive import cadence_steps_to
 from ._searches import paydays_between
 from ._views import projected_paychecks
 
@@ -93,6 +147,18 @@ def paydays_in_month_through(
     the year overview disagreed about the same month before this step, because
     each counted over whatever period set its own caller happened to hold.
 
+    **A consequence of the backward half worth stating, because it looks like
+    a loss and is not** (plan step balance:X-bh-2).  In the month the record
+    OPENS, an earlier rhythm payday can now take ordinal 1 -- so a 12-per-year
+    deduction, which is taken only at ordinal 1, moves onto a paycheck the app
+    holds no row for and is charged in that month to NOTHING.  That is the
+    honest answer rather than a gap: the owner really paid it on the earlier
+    paycheck, and charging it to the recorded one put a deduction on a paycheck
+    that did not have it.  It happens once per owner, in one month, and only
+    for a deduction taken at ordinal 1.  **The direction is UP** -- that
+    paycheck's net rises by the deduction -- which is the optimistic direction
+    and so the one to say out loud.
+
     Args:
         calendar: The owner's schedule.
         day: Any calendar day.  Its month is the span, and it is the inclusive
@@ -103,8 +169,8 @@ def paydays_in_month_through(
     Returns:
         The paydays, ascending, as plain ``date`` values.  Empty when the month
         holds none at or before *day*, which is a real answer: a cadence longer
-        than a month leaves months empty, and the recorded schedule opens
-        somewhere.
+        than a month leaves months empty, and a stated ``history_opens_on``
+        stops the rhythm somewhere.
     """
     return _paydays_between(calendar, _month_opens(day), day)
 
@@ -194,22 +260,33 @@ def paydays_in_year_before(
 def _paydays_between(
     calendar: PayCalendar, first_day: date, last_day: date,
 ) -> "tuple[date, ...]":
-    """Return every payday in ``[first_day, last_day]``, saved then projected.
+    """Return every payday in ``[first_day, last_day]``: back, saved, forward.
 
-    The one span search both public questions above are asked through.  Saved
-    where the schedule reaches and projected at the owner's cadence beyond it,
-    which is the same pairing :func:`~._views.axis_window` makes and the same
-    continuation producer -- :func:`~._views.projected_paychecks`, the ONE loop
-    that steps the forward rhythm (ledger row **P6**).
+    The one span search both public questions above are asked through.  Stepped
+    backward below the record's opening payday, read off the schedule where it
+    reaches, and projected at the owner's cadence beyond it -- three segments of
+    ONE rhythm, in that order, each ascending and none overlapping the next.
 
-    **It COMPOSES two producers and states only where the span stops.**  The
-    saved half is :func:`~._searches.paydays_between`, which owns the bisect
-    pair and the empty-span disposition; the continuation is
-    :func:`~._views.projected_paychecks`, told where to START so its cost is
-    the size of the answer rather than the distance from the horizon -- an
-    adversarial review of this step measured **442 ms** on one year-overview
-    render before that argument existed, against **0.6 ms** after
-    (2026-08-30).
+    **It COMPOSES producers and states only where the span stops.**  The saved
+    half is :func:`~._searches.paydays_between`, which owns the bisect pair and
+    the empty-span disposition; the forward continuation is
+    :func:`~._views.projected_paychecks`, the ONE loop that steps it (ledger row
+    **P6**), told where to START so its cost is the size of the answer rather
+    than the distance from the horizon -- an adversarial review of plan step
+    balance:X-bh-1 measured **442 ms** on one year-overview render before that
+    argument existed, against **0.6 ms** after (2026-08-30).  The backward
+    continuation is :func:`_backdated_paydays` below.
+
+    **The two continuations do not share a producer, and that asymmetry is
+    deliberate.**  The forward one must yield :class:`~._derive.DerivedPeriod`
+    values because :func:`~._views.axis_window` and :mod:`._walks` consume the
+    same sequence, so a second forward walk here would be the duplicate row P6
+    counts.  Nothing else asks for the backward one, and it must NOT produce
+    periods at all -- a fabricated period is a thing a consumer could try to
+    file into, which is exactly what ruling ``pay_calendar:R-PC14`` refuses.
+    What the two DO share is the arithmetic: both step the progression through
+    :func:`~._derive.cadence_steps_to`, so there is one statement of where a
+    paycheck lands at a cadence and two directions of reading it.
 
     **It reads every payday the calendar HOLDS, saved or not**, where the
     producers it replaced read :meth:`~._calendar.PayCalendar.saved`.  For a
@@ -221,40 +298,135 @@ def _paydays_between(
     schedule, so routing a count through it would make "how many paydays does
     this month hold" raise for a state that has an answer.
 
-    **Nothing is projected BACKWARD below the schedule's opening payday yet**,
-    so a span opening before it is answered from the first recorded payday
-    onward.  That is the live half of ledger row **N-390**; see the module
-    docstring.
-
     Args:
         calendar: The owner's schedule.
-        first_day: Inclusive lower bound.
+        first_day: Inclusive lower bound.  May lie below the schedule's opening
+            payday, which is what the backward rhythm is for.
         last_day: Inclusive upper bound.  May lie past the schedule's horizon,
-            which is what the projection is for.
+            which is what the forward projection is for.
 
     Returns:
-        The paydays, ``start_date`` ascending, as plain ``date`` values.
+        The paydays, ascending, as plain ``date`` values.
     """
     if last_day < first_day or not calendar.periods:
         return ()
     periods = calendar.periods
+    backdated = ()
+    if first_day < periods[0].start_date:
+        backdated = _backdated_paydays(calendar, first_day, last_day)
     saved = paydays_between(periods, first_day, last_day)
-    if last_day <= periods[-1].end_date:
-        return saved
-    # ``takewhile`` rather than a hand-rolled loop so the stop condition is the
-    # whole of what this adds.  The filter keeps the paydays that OPEN in the
-    # span rather than the periods that overlap it -- this counts paychecks,
-    # not coverage -- and it is what absorbs the one period ``from_day`` may
-    # yield from before the span, which that argument documents as deliberate.
-    projected = tuple(
-        period.start_date
-        for period in takewhile(
-            lambda paycheck: paycheck.start_date <= last_day,
-            projected_paychecks(periods, calendar.cadence_days, first_day),
+    projected = ()
+    if last_day > periods[-1].end_date:
+        # ``takewhile`` rather than a hand-rolled loop so the stop condition is
+        # the whole of what this adds.  The filter keeps the paydays that OPEN
+        # in the span rather than the periods that overlap it -- this counts
+        # paychecks, not coverage -- and it is what absorbs the one period
+        # ``from_day`` may yield from before the span, which that argument
+        # documents as deliberate.
+        projected = tuple(
+            period.start_date
+            for period in takewhile(
+                lambda paycheck: paycheck.start_date <= last_day,
+                projected_paychecks(periods, calendar.cadence_days, first_day),
+            )
+            if period.start_date >= first_day
         )
-        if period.start_date >= first_day
-    )
-    return saved + projected
+    return backdated + saved + projected
+
+
+def _backdated_paydays(
+    calendar: PayCalendar, first_day: date, last_day: date,
+) -> "tuple[date, ...]":
+    """Return the rhythm's paydays in the span that fall BELOW the record.
+
+    Plan step **balance:X-bh-2**, ruling **balance:R-IA** as amended
+    2026-08-31.  The mirror of :func:`~._views.projected_paychecks` for the
+    other end of the schedule: the owner's paydays continue at their cadence
+    below the first RECORDED one just as they do above the last, and until this
+    existed the engine counted nothing there -- so a month or a calendar year
+    the record opens inside was measured from the record's boundary rather than
+    from the owner's.
+
+    **An UNSTATED history answers ``()``, which is the amendment and the whole
+    disposition of this function.**  ``history_opens_on`` is ``NULL`` for every
+    owner nobody has asked, and NULL means exactly that -- not "this owner has
+    always been paid this way".  Two facts with opposite epistemics cannot
+    share one encoding: R-IA's first form let NULL mean the claim, so an owner
+    who had never seen the question was counted as having made it.  That is
+    the guessing the ruling set out to stop, relocated into the default.
+
+    **The direction is why the unstated answer is the RECORD and not the
+    calendar's floor.**  Under-counting a year-to-date reaches the FICA wage
+    base late and exhausts an ``annual_cap`` late, both of which UNDERSTATE
+    net; under-counting a month ordinal makes a 24-per-year deduction more
+    likely to be taken, which understates net again.  Over-counting inverts
+    all three.  An application that budgets should guess poor, so where it has
+    not been told it counts only what it holds -- which is also, exactly, the
+    behaviour before this step, so stating nothing changes nothing.
+
+    **Two bounds decide the rest, and they are different kinds of thing.**  The
+    ceiling is the record: strictly below ``periods[0].start_date``, because at
+    and above it the saved half is authoritative and a day counted twice would
+    inflate every ordinal and every year-to-date.  The floor is the OWNER's
+    stated day, inclusive -- a day ON the rhythm is kept, which is the natural
+    answer to the question both forms ask.
+
+    **A floor at or after the opening payday yields nothing, and that is a real
+    answer rather than a degenerate one.**  It is what an owner whose first
+    payday has not happened yet states.  It is also reachable AFTER the fact:
+    ``/pay-periods/reset`` rebuilds a schedule from an EARLIER first payday and
+    leaves the stored floor untouched, so a bound accepted when it was written
+    can end up above the record.  The producer stays total for that, and the
+    saved half is unaffected -- the floor bounds the projection, never the rows.
+
+    **``CALENDAR_DATE_MIN`` is no longer a MEANING here, only a bound.**  It is
+    where ``ck_pay_schedule_history_opens_range`` stops, so a stated floor
+    cannot precede the application's own calendar; nothing reads it as "as far
+    back as possible" any more.  An owner who has been paid this way for years
+    says so by entering an early date, and because the only two readers of this
+    rhythm ask over one calendar month or one calendar year, any day at or
+    before 1 January of their earliest priced year is equivalent.
+
+    ARITHMETIC rather than a walk from the anchor, for
+    :func:`~._derive.project_period_after`'s reason: the highest rhythm day in
+    the span is one division away, so the loop below runs once per payday
+    RETURNED rather than once per payday between the span and the record.  At
+    the one-day cadence ``budget.pay_schedule`` admits, a January question
+    asked of a 2029 record is 31 steps here and would be ~1,100 from the anchor.
+
+    Args:
+        calendar: The owner's schedule.  Non-empty, and *first_day* is already
+            known to fall below its opening payday -- both are the caller's,
+            which is the only caller.
+        first_day: Inclusive lower bound of the span being counted.
+        last_day: Inclusive upper bound of the span being counted.  Clamped
+            here to below the opening payday; the saved half answers above it.
+
+    Returns:
+        The paydays, ascending, as plain ``date`` values.  **Empty when the
+        owner has stated no history**, which is the commonest answer and the
+        first thing this checks; empty too when the floor, the span and the
+        record leave no room between them.
+    """
+    floor_day = calendar.history_opens_on
+    if floor_day is None:
+        return ()
+    opening = calendar.periods[0].start_date
+    lower = max(first_day, floor_day)
+    upper = min(last_day, opening - timedelta(days=1))
+    if upper < lower:
+        return ()
+    cadence = calendar.cadence_days
+    # Negative, since ``upper`` is strictly below the anchor: the count of
+    # whole cadences from the record's opening payday back to the last rhythm
+    # day at or before ``upper``.
+    steps = cadence_steps_to(opening, cadence, upper)
+    day = opening + timedelta(days=steps * cadence)
+    descending = []
+    while day >= lower:
+        descending.append(day)
+        day -= timedelta(days=cadence)
+    return tuple(reversed(descending))
 
 
 __all__ = [

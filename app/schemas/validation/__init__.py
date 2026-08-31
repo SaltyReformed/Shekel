@@ -123,6 +123,7 @@ from app.schemas.validation.loans import (
     RefinanceSchema,
 )
 from app.schemas.validation.pay_periods import (
+    PayHistorySchema,
     PayPeriodExtendSchema,
     PayPeriodGenerateSchema,
     PayPeriodRegenerateSchema,
@@ -220,6 +221,7 @@ __all__ = [
     "MfaConfirmSchema",
     "MfaDisableSchema",
     "MfaVerifySchema",
+    "PayHistorySchema",
     "PayPeriodExtendSchema",
     "PayPeriodGenerateSchema",
     "PayPeriodRegenerateSchema",

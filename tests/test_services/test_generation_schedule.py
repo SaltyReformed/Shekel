@@ -76,7 +76,10 @@ from app.routes._period_population import populate_new_periods
 from app.services import pay_period_write, period_population, recurrence_engine
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.pay_calendar import PayCalendar
+from app.services.pay_calendar import (
+    PayCalendar,
+    saved_paydays_in_month_through,
+)
 from tests._test_helpers import (
     all_periods,
     counting_calls,
@@ -656,9 +659,16 @@ class TestThePaycheckSeesTheWholeSchedule:
             whole_break = paycheck_calculator.calculate_paycheck(
                 PayrollBasis(profile, calendar), derived_period, configs,
             )
+            # The narrow calendar states nothing about the owner's pay
+            # history, which since ruling balance:R-IA's 2026-08-31 amendment
+            # is what every unasked owner has -- so it still counts one
+            # January payday and still calls a third paycheck a first.  D25's
+            # shape survives plan step balance:X-bh-2 unchanged for the
+            # default reading, and that is deliberate: the step widens what a
+            # calendar can be TOLD, not what it assumes.
             windowed_break = paycheck_calculator.calculate_paycheck(
-                payroll_basis(profile, [derived_period]), derived_period,
-                configs,
+                payroll_basis(profile, [derived_period]),
+                derived_period, configs,
             )
             whole = whole_break.earnings.net_pay
             windowed = windowed_break.earnings.net_pay
@@ -669,6 +679,23 @@ class TestThePaycheckSeesTheWholeSchedule:
                 "the window and the whole schedule now agree for this period, "
                 "so this test no longer guards anything -- check that "
                 "seed_periods still puts three paydays in January"
+            )
+            # What X-bh-2 added, asserted rather than described: the SAME
+            # one-payday calendar, told that the owner's paychecks began
+            # earlier, reconstructs January's other two paydays from the
+            # cadence and prices this paycheck exactly as the whole schedule
+            # does.  So the narrow context is no longer enough to misprice ON
+            # ITS OWN -- it must also be paired with an owner who has stated
+            # a history, and stating a TRUE history makes it agree.
+            assert paycheck_calculator.calculate_paycheck(
+                payroll_basis(
+                    profile, [derived_period],
+                    history_opens_on=date(2025, 1, 1),
+                ),
+                derived_period, configs,
+            ).earnings.net_pay == whole, (
+                "with the owner's history stated, the backward rhythm "
+                "reconstructs January's other two paydays from the cadence"
             )
             # The direction is the money: the truncated read took a deduction
             # a third paycheck does not pay, so it UNDERSTATED the income.
@@ -930,9 +957,16 @@ class TestAWindowMustBelongToTheOwner:
             target = seed_periods[4]
 
             whole = GenerationSchedule.for_period_ids(ctx, {target.id})
-            assert whole.calendar.earliest_start_in_month(2026, 2) == (
-                seed_periods[3].start_date
-            ) != target.start_date, (
+            # Through ``saved_paydays_in_month_through`` since plan step
+            # balance:X-bh-2, which deleted ``earliest_start_in_month`` as
+            # unreached in ``app/`` (ledger row N-396).  The SAVED twin, not
+            # the total one: this asks what the recorded February holds, and
+            # the rhythm's backward half would answer about a month the record
+            # opens inside -- a different question from the one the premise
+            # states.
+            assert saved_paydays_in_month_through(
+                whole.calendar, date(2026, 2, 28),
+            )[0] == seed_periods[3].start_date != target.start_date, (
                 "the premise: February's FIRST payday is not the target's"
             )
 
@@ -965,14 +999,17 @@ class TestAWindowMustBelongToTheOwner:
                     paydays=[(target.id, target.start_date)],
                     cadence_days=calendar.cadence_days,
                     user_id=seed_user["user"].id,
+                    history_opens_on=None,
                 )
             )
             narrowed = GenerationSchedule.for_period_ids(
                 narrowed_ctx, {target.id},
             )
-            assert narrowed.calendar.earliest_start_in_month(2026, 2) == (
-                target.start_date
-            ), "the control: the slice thinks the target IS February's first"
+            assert saved_paydays_in_month_through(
+                narrowed.calendar, date(2026, 2, 28),
+            ) == (target.start_date,), (
+                "the control: the slice thinks the target IS February's first"
+            )
             # And it does not merely ANSWER differently, it answers wrongly:
             # the slice's only period runs to a cadence projection, so January
             # AND February both land in it, where the whole-schedule read

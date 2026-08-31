@@ -160,6 +160,63 @@ class TestRegisterSchema:
             "last_payday": "2026-08-05",
         }
 
+    def test_an_untouched_history_date_loads_as_None(self):
+        """A browser posts ``""`` for the optional date, and it means NULL.
+
+        Plan step **balance:X-bh-2**.  An HTML form submits every control it
+        renders, so the field arrives empty from every sign-up that skipped
+        the question -- and ``fields.Date`` would refuse ``""`` as "Not a
+        valid date." without the schema's own pre-load.  ``None`` is the
+        answer, not the absence of one.
+        """
+        payload = dict(self._valid_payload(), history_opens_on="")
+
+        assert RegisterSchema().load(payload)["history_opens_on"] is None
+
+    def test_an_omitted_history_date_loads_as_None(self):
+        """The API-shaped payload, which has no control to leave blank."""
+        assert RegisterSchema().load(
+            self._valid_payload(),
+        )["history_opens_on"] is None
+
+    def test_a_stated_history_date_loads_as_a_date(self):
+        """THE CONTROL: the field is read, not merely tolerated."""
+        payload = dict(self._valid_payload(), history_opens_on="2024-06-03")
+
+        assert RegisterSchema().load(payload)["history_opens_on"] == date(
+            2024, 6, 3,
+        )
+
+    def test_a_history_date_outside_the_apps_calendar_is_refused(self):
+        """The schema tier refuses what ``ck_pay_schedule_history_opens_range``
+        would, so the CHECK is never the thing a user meets.
+        """
+        payload = dict(self._valid_payload(), history_opens_on="9999-01-01")
+
+        with pytest.raises(ValidationError) as caught:
+            RegisterSchema().load(payload)
+
+        assert "history_opens_on" in caught.value.messages
+
+    def test_an_empty_display_name_still_gets_its_OWN_message(self):
+        """The pre-load clears nullable empties and drops nothing else.
+
+        Plan step balance:X-bh-2 routed this form through a normalizer to make
+        the empty date null.  The full ``_normalize_empty_inputs`` would also
+        DROP an empty ``display_name``, turning this schema's own "Display
+        name is required." into marshmallow's "Missing data for required
+        field." -- so the form takes the nullable half only, and this is the
+        case that says which.
+        """
+        payload = dict(self._valid_payload(), display_name="")
+
+        with pytest.raises(ValidationError) as caught:
+            RegisterSchema().load(payload)
+
+        assert caught.value.messages["display_name"] == [
+            "Display name is required.",
+        ]
+
     def test_valid_data(self):
         """Happy path: all fields satisfy their validators."""
         data = RegisterSchema().load(self._valid_payload())

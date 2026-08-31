@@ -826,6 +826,7 @@ class TestTheEngineOverARealAxis:
         # only the first two are saved.
         calendar = PayCalendar.from_paydays(
             [(11, date(2026, 1, 2)), (12, date(2026, 1, 16))], 14, user_id=1,
+            history_opens_on=None,
         )
         whole = calendar.axis(date(2026, 1, 2), date(2026, 12, 4))
         result = project_balance(

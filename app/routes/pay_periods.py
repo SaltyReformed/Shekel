@@ -26,6 +26,7 @@ from app.exceptions import (
 from app.routes._period_population import populate_new_periods
 from app.routes.settings import render_settings_dashboard
 from app.schemas.validation import (
+    PayHistorySchema,
     PayPeriodExtendSchema,
     PayPeriodGenerateSchema,
     PayPeriodRegenerateSchema,
@@ -45,6 +46,7 @@ _truncate_schema = PayPeriodTruncateSchema()
 _regenerate_schema = PayPeriodRegenerateSchema()
 _reset_schema = PayPeriodResetSchema()
 _schedule_schema = PayScheduleSchema()
+_history_schema = PayHistorySchema()
 
 
 def _pay_periods_redirect():
@@ -335,6 +337,47 @@ def reset():
 
     db.session.commit()
     flash(f"Reset your schedule: {len(new_periods)} new period(s).", "success")
+    return _pay_periods_redirect()
+
+
+@pay_periods_bp.route("/pay-periods/history", methods=["POST"])
+@login_required
+@require_owner
+def history():
+    """Save how far back the owner's paychecks reach.
+
+    Plan step **balance:X-bh-2** (ruling **balance:R-IA**).  The second door
+    onto ``budget.pay_schedule.history_opens_on``, and the only one an existing
+    owner has: registration asks the question once, and every owner who signed
+    up before the column existed holds ``NULL`` with no sign-up form left to
+    revisit.
+
+    A cleared field stores ``NULL``, which is a real answer rather than a
+    no-op -- "I have been paid this way longer than the app needs to know" --
+    so this route submits whatever the schema loaded rather than skipping an
+    absent value.  The service refuses a day outside the app's calendar window
+    or after the owner's first recorded payday, and both come back as a flash
+    rather than a 500.
+    """
+    errors = _history_schema.validate(request.form)
+    if errors:
+        flash(_summarize_errors(errors), "danger")
+        return _pay_periods_redirect()
+
+    data = _history_schema.load(request.form)
+    try:
+        pay_schedule_service.set_history_opening(
+            current_user.id, data["history_opens_on"],
+        )
+    except ValidationError as exc:
+        # Nothing is staged before the refusal -- the setter validates ahead of
+        # its one assignment -- so this needs no rollback, unlike the four
+        # structural doors above it.
+        flash(str(exc), "danger")
+        return _pay_periods_redirect()
+
+    db.session.commit()
+    flash("Saved when your paychecks started.", "success")
     return _pay_periods_redirect()
 
 

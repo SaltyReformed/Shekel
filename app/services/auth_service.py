@@ -704,7 +704,7 @@ class RegistrationSpec:
     Frozen, so a constructed spec is an immutable record of one sign-up
     request, and modelled on
     :class:`app.services.account_service.AccountSpec` for the same reason --
-    six co-loaded values are one concept, not a keyword list.
+    seven co-loaded values are one concept, not a keyword list.
 
     **No field carries a default, deliberately.**  ``first_payday`` has no
     defensible one, and giving the other two a default here would put a second
@@ -712,6 +712,12 @@ class RegistrationSpec:
     (``BaseConfig.DEFAULT_PAY_CADENCE_DAYS`` / ``DEFAULT_PAY_PERIOD_HORIZON``,
     applied by the Marshmallow layer and by ``scripts/seed_user.py``).  This
     module reads no Flask config by design -- see the module docstring.
+    **That holds for ``history_opens_on`` too, and it is the field where the
+    rule is least obvious**: ``None`` is its commonest value and would look
+    like a harmless default.  It is now the SAFE reading -- not stated, so
+    count only the record -- but a caller still has to reach it deliberately,
+    because the field is the difference between an owner who answered and one
+    who was never asked.
 
     Attributes:
         email: The user's email address.  Stripped and lowercased by
@@ -737,6 +743,16 @@ class RegistrationSpec:
             **P8**).
         num_periods: How many periods to generate forward from
             *first_payday*.
+        history_opens_on: How far back the owner's paychecks reach, or ``None``
+            for NOT STATED, which counts only the recorded paydays (plan step
+            **balance:X-bh-2**, ruling **balance:R-IA** as amended
+            2026-08-31).  The FLOOR on the
+            backward payday rhythm the paycheck engine counts a month position
+            and a year-to-date over.  It may not fall after *first_payday*:
+            paychecks cannot have begun after the most recent one.  Asked here
+            because the app knows the CADENCE and cannot derive when a job
+            began, and asked at SIGN-UP because the form is already asking the
+            other two halves of the same rhythm.
     """
 
     email: str
@@ -745,6 +761,7 @@ class RegistrationSpec:
     first_payday: date
     cadence_days: int
     num_periods: int
+    history_opens_on: "date | None"
 
 
 def register_user(spec: RegistrationSpec):
@@ -772,9 +789,11 @@ def register_user(spec: RegistrationSpec):
     Raises:
         ValidationError: The email format is invalid, the display name is
             empty, the password is too short or too long, the cadence falls
-            outside ``ck_pay_schedule_cadence_range``, or the stated payday is
+            outside ``ck_pay_schedule_cadence_range``, the stated payday is
             not one the owner could have been LAST paid on -- in the future,
-            or more than one cadence back.
+            or more than one cadence back -- or the stated pay-history opening
+            falls outside ``ck_pay_schedule_history_opens_range`` or after that
+            payday.
         ConflictError: A user with the given email already exists.
     """
     # Sanitize inputs.
@@ -808,10 +827,22 @@ def register_user(spec: RegistrationSpec):
     # cadence or a zero horizon refuse several statements after the ``User``
     # row exists, under a message about accounts rather than about the input.
     pay_schedule_service.reject_out_of_range_cadence(spec.cadence_days)
+    pay_schedule_service.reject_out_of_range_history_opening(
+        spec.history_opens_on,
+    )
     pay_period_write.reject_unmaterialisable_batch(
         spec.num_periods, spec.cadence_days,
     )
     _reject_impossible_first_payday(spec.first_payday, spec.cadence_days, today)
+    # Against the payday the FORM states rather than the one the schedule will
+    # record, which are the same day here and are asked of one shared rule
+    # (see that function).  Asking it now is what keeps this block the whole
+    # of registration's refusals: ``set_history_opening`` below asks the same
+    # question of the recorded schedule, and reaching a refusal there would
+    # leave a half-built owner in the session.
+    pay_schedule_service.reject_history_opening_after_payday(
+        spec.history_opens_on, spec.first_payday,
+    )
 
     # Check email uniqueness.
     if User.query.filter_by(email=email).first():
@@ -846,6 +877,19 @@ def register_user(spec: RegistrationSpec):
         num_periods=spec.num_periods,
         cadence_days=spec.cadence_days,
     )
+    # How far back those paychecks reach (plan step balance:X-bh-2, ruling
+    # balance:R-IA) -- AFTER the batch, because that call is what creates the
+    # ``budget.pay_schedule`` row this writes into (the cadence rule) and this
+    # door refuses an owner without one.  It is a separate call rather than an
+    # argument to ``record_paydays`` because a batch of paydays does not state
+    # when a job began: every extend and regenerate would otherwise have to
+    # restate, or deliberately not restate, the owner's answer.  ``None`` is
+    # written as ``None``, which is what the column already holds -- the call
+    # is unconditional so the field cannot be silently skipped by a future
+    # edit that reads it as optional.  A sign-up that leaves the box blank
+    # therefore stores an ABSENCE, and the engine counts that owner from their
+    # recorded paydays until they say otherwise.
+    pay_schedule_service.set_history_opening(user.id, spec.history_opens_on)
 
     # Create the baseline scenario BEFORE the first account (Build-Order
     # Step 5): ``account_service.create_account`` posts the new account's

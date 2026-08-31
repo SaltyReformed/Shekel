@@ -107,6 +107,29 @@
                    value="{{ request.form.get('cadence_days') or config['DEFAULT_PAY_CADENCE_DAYS'] }}">
             <div class="form-text">14 for every other week, 7 for weekly.</div>
           </div>
+          {# When these paychecks started (plan step balance:X-bh-2, ruling
+             balance:R-IA as amended 2026-08-31).  OPTIONAL, and blank means
+             NOT STATED: Shekel then counts only the paychecks it records,
+             which is the conservative reading and what it did before this
+             field existed.  The engine needs it because it counts a
+             payday's position in its month and the wages already paid this
+             year, and below the first payday above it would otherwise count
+             nothing at all.  The entered day is a FLOOR, not a payday: the
+             rhythm is stepped back from the payday above at the cadence below
+             and stops here, so the wording asks when the paychecks started
+             rather than for a specific one.  ``max`` is a browser convenience
+             on top of the app's calendar window; the real upper bound is the
+             payday above, which auth_service refuses past. #}
+          <div class="mb-3">
+            <label for="history_opens_on" class="form-label">When did these paychecks start?</label>
+            <input type="date" class="form-control" id="history_opens_on" name="history_opens_on"
+                   min="{{ CALENDAR_DATE_MIN }}" max="{{ CALENDAR_DATE_MAX }}"
+                   value="{{ request.form.get('history_opens_on', '') }}">
+            <div class="form-text">Tell us and Shekel counts the paychecks that
+              came before your first one above, so tax and deduction limits are
+              right from the start of the year. Leave it blank and it counts
+              only the paychecks it records.</div>
+          </div>
           <div class="mb-3">
             <label for="num_periods" class="form-label">Paychecks to plan ahead</label>
             <input type="number" class="form-control" id="num_periods" name="num_periods"

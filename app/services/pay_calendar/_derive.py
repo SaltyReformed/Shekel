@@ -434,6 +434,39 @@ def derive_periods(
     )
 
 
+def cadence_steps_to(anchor: date, cadence_days: int, day: date) -> int:
+    """Return the whole cadences from *anchor* to the last rhythm day at or before *day*.
+
+    **The one statement of "an owner's paydays are an arithmetic progression at
+    their cadence"**, and it is a function because the progression is now read
+    from BOTH ends.  :func:`project_period_after` steps it forward from the
+    last saved payday; :mod:`._rhythm` steps it backward from the first, below
+    which the app used to count nothing at all (ledger row **N-390**, plan step
+    **balance:X-bh-2**).  Two copies of ``(day - anchor).days // cadence_days``
+    would be two places for the rhythm's own arithmetic to disagree, which is
+    exactly the class ledger row **P6** counted seven of for the containment
+    question.
+
+    Floor division, so it answers in both directions off one expression: a
+    *day* before *anchor* gives a NEGATIVE count, and ``anchor + steps *
+    cadence_days`` is the rhythm day at or before *day* either way.  Python's
+    ``//`` floors toward negative infinity, which is what makes that true
+    rather than a coincidence -- C-style truncation would round a backward step
+    toward the anchor and name a day AFTER *day*.
+
+    Args:
+        anchor: A day the owner is paid on.  The progression passes through it.
+        cadence_days: Days between paydays, a positive ``int``.
+        day: The day to place.  May precede, equal or follow *anchor*.
+
+    Returns:
+        The signed number of whole cadences: ``0`` when *day* falls in
+        ``[anchor, anchor + cadence_days)``, negative below *anchor*, positive
+        above.
+    """
+    return (day - anchor).days // cadence_days
+
+
 def project_period_after(
     periods: "tuple[DerivedPeriod, ...]", cadence_days: int, day: date,
 ) -> DerivedPeriod:
@@ -453,7 +486,9 @@ def project_period_after(
     paydays continue at *cadence_days*, so the period covering *day* is the
     ``n``-th one after the last saved payday where ``n`` is the whole number of
     cadences between them.  Computing it directly means the cost does not grow
-    with how far past the horizon a caller asks.
+    with how far past the horizon a caller asks.  **That count is
+    :func:`cadence_steps_to`** since plan step balance:X-bh-2, which reads the
+    same progression backward for the rhythm's other end.
 
     Every projected period reports ``end_is_projected`` ``True``, which stays
     faithful to plan step C1's meaning of that flag: the end comes from the
@@ -477,8 +512,7 @@ def project_period_after(
         a ``period_index`` continuing the saved sequence.
     """
     last = periods[-1]
-    elapsed = (day - last.start_date).days
-    steps = elapsed // cadence_days
+    steps = cadence_steps_to(last.start_date, cadence_days, day)
     start = last.start_date + timedelta(days=steps * cadence_days)
     return DerivedPeriod(
         period_id=None,

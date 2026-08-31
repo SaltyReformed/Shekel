@@ -38,9 +38,10 @@ class PayrollBasis:
     **$502.45** (ledger row **D25**).  A calendar is constructible only from a
     COMPLETE payday set, so the narrow context is now unrepresentable rather
     than forbidden by a docstring, and the cadence comes off the same
-    derivation as the paydays.  That is finding **N-390**'s first half; the
-    second is what the calendar can answer BELOW its opening payday, which is
-    plan step **balance:X-bh-2**.
+    derivation as the paydays.  That closed finding **N-390**'s first half;
+    the second -- what the calendar can answer BELOW its opening payday --
+    closed at plan step **balance:X-bh-2**, which gave the calendar the owner's
+    stored ``history_opens_on`` and made its rhythm run in both directions.
 
     **The pair, as one value, is plan step R-F16's fix for finding F-16.**  The
     engine needs two facts to price a paycheck -- what the job pays a year, and

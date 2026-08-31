@@ -36,15 +36,18 @@ row (``docs/plans/implementation_plan_pay_calendar.md`` section 1); ``end_date``
 and ``period_index`` are derived here from it.  So the query is already written
 against the schema plan step C4 leaves behind: C4 drops both columns and this
 module needs no edit for it.  *It said C4 "does not touch this module" until
-C4's FIRST commit, which ADDED :func:`calendar_at_cadence` here -- not because the
+C4's FIRST commit, which ADDED :func:`calendar_at_schedule` here -- not because the
 drop reached the query, but because the rolling top-up needed this read without
 the cadence read in front of it.  The claim about the COLUMNS still holds; the
 claim about the FILE did not.*
 
-The cadence comes from ``pay_schedule_service.resolve_cadence`` rather than from
-a second query of ``budget.pay_schedule``, because that function carries the
-fallback for an owner with no schedule row, and a second copy of it would be a
-second copy of plan finding **P8**'s circularity.
+The schedule facts come from ``pay_schedule_service.resolve_schedule`` rather
+than from a second query of ``budget.pay_schedule``, because that function
+carries the fallback for an owner with no schedule row, and a second copy of it
+would be a second copy of plan finding **P8**'s circularity.  It answers BOTH
+calendar facts in one read since plan step **balance:X-bh-2** -- the cadence
+and ``history_opens_on``, the floor the backward rhythm stops at -- so a
+calendar load is still the two queries it always was rather than three.
 """
 
 from app.extensions import db
@@ -96,8 +99,11 @@ def calendar_for(user_id: int) -> PayCalendar:
             -- or the rows cannot define a calendar, which for a duplicate
             payday ``uq_pay_periods_user_start`` already prevents.
     """
-    # The CADENCE is read first, deliberately, and the nesting is what orders
-    # the two reads: Python evaluates this argument before the call it feeds.
+    # The SCHEDULE ROW is read first, deliberately, and the nesting is what
+    # orders the two reads: Python evaluates this argument before the call it
+    # feeds.  ``resolve_schedule`` answers both calendar facts from that one
+    # read (plan step balance:X-bh-2), so widening the calendar to carry the
+    # owner's history bound did not add a third query or a second ordering.
     #
     # **Whether the two reads can differ at all now depends on WHO is asking**
     # (plan step balance:X-i3, ruling `balance:R-GU`).  Inside a QUERY -- every render,
@@ -114,23 +120,31 @@ def calendar_for(user_id: int) -> PayCalendar:
     # paydays and no cadence, which REFUSES.  Narrowing toward the answerable
     # state is the right way to lose a race a lock would otherwise have to
     # prevent.
-    return calendar_at_cadence(
-        user_id, pay_schedule_service.resolve_cadence(user_id),
+    return calendar_at_schedule(
+        user_id, pay_schedule_service.resolve_schedule(user_id),
     )
 
 
-def calendar_at_cadence(
-    user_id: int, cadence_days: "int | None",
+def calendar_at_schedule(
+    user_id: int, facts: pay_schedule_service.ScheduleFacts,
 ) -> PayCalendar:
-    """Return *user_id*'s pay calendar at a cadence the CALLER already holds.
+    """Return *user_id*'s pay calendar from schedule facts the CALLER already holds.
 
     Plan step **C4**.  :func:`calendar_for`'s body, minus the read that
-    resolves the cadence -- for a caller that has the owner's
+    resolves the schedule -- for a caller that has the owner's
     ``budget.pay_schedule`` row in hand and would otherwise pay for a second
     read of it.
 
+    **It took a bare ``cadence_days`` and was named ``calendar_at_cadence``
+    until plan step balance:X-bh-2**, which gave the calendar a second fact off
+    the same row.  A door named for one of the two facts it needs is the drift
+    this package spends its docstrings preventing, so the parameter became the
+    pair :class:`~app.services.pay_schedule_service.ScheduleFacts` and the name
+    followed it.  Passing the pair rather than two arguments is what stops a
+    caller supplying one owner's cadence beside another's history bound.
+
     **One caller today and it is not a convenience** (finding **P70**):
-    ``pay_period_admin._future_period_count`` counts the owner's remaining
+    ``pay_period_rolling._future_period_count`` counts the owner's remaining
     paychecks on the rolling top-up, which ``/grid`` and ``/dashboard`` run
     BEFORE they open their read pass -- deliberately, so that pass sees the
     rows the top-up creates.  So it can neither take a calendar off a pass nor
@@ -147,10 +161,12 @@ def calendar_at_cadence(
 
     Args:
         user_id: The owning user.
-        cadence_days: Days between paydays, as the caller already resolved it.
-            ``None`` is legal ONLY for an owner with no paydays, which is the
-            pairing :func:`~._derive.derive_periods` enforces; a caller holding
-            a schedule row never has one.
+        facts: The owner's ``budget.pay_schedule`` calendar facts, as the
+            caller already resolved them.  ``cadence_days`` may be ``None``
+            ONLY for an owner with no paydays, which is the pairing
+            :func:`~._derive.derive_periods` enforces; a caller holding a
+            schedule row never has one.  ``history_opens_on`` is ``None`` for
+            the owner who has stated nothing, which is its ordinary value.
 
     Returns:
         The frozen :class:`~._calendar.PayCalendar` over the owner's COMPLETE
@@ -167,7 +183,10 @@ def calendar_at_cadence(
         .all()
     )
     return PayCalendar.from_paydays(
-        paydays=paydays, cadence_days=cadence_days, user_id=user_id,
+        paydays=paydays,
+        cadence_days=facts.cadence_days,
+        user_id=user_id,
+        history_opens_on=facts.history_opens_on,
     )
 
 

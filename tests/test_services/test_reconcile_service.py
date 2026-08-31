@@ -1711,6 +1711,7 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
             ],
             whole.cadence_days,
             seed_user["user"].id,
+            history_opens_on=None,
         )
 
     def test_a_row_in_a_period_the_calendar_lacks_is_not_offered(

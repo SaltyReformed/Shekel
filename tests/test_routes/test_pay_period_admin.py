@@ -378,6 +378,187 @@ class TestScheduleRoute:
             assert resp.status_code == 404
 
 
+class TestHistoryRoute:
+    """POST /pay-periods/history (when the owner's paychecks started).
+
+    Plan step **balance:X-bh-2**, ruling **balance:R-IA**.  The SECOND door
+    onto ``budget.pay_schedule.history_opens_on``, and the only one an
+    existing owner has: registration asks the question once, and every owner
+    who signed up before the column existed holds ``NULL`` with no sign-up
+    form left to revisit.
+    """
+
+    def test_it_saves_the_day_and_redirects(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The ordinary save, and the CONTROL for the refusals below.
+
+        **Re-read on a FRESH session, which is the whole difference between
+        this asserting a COMMIT and asserting a flush.**  An adversarial review
+        of plan step balance:X-bh-2 deleted this route's ``db.session.commit()``
+        and 817 cases stayed green: the test wraps its post in
+        ``with app.app_context()``, Flask reuses an already-pushed app context
+        rather than pushing the request's own, so ``teardown_appcontext`` never
+        fires, Flask-SQLAlchemy's ``session.remove()`` never runs, and the
+        request's FLUSH is still visible to a query in the same session.  In
+        production the answer would be discarded at teardown while the page
+        still flashed "Saved when your paychecks started."
+
+        ``db.session.remove()`` discards anything uncommitted, so what the
+        assertion below reads came off the database.  This is the project's
+        own recorded lesson -- a staged mutation check cannot tell a rollback
+        from a flush -- in a new instance.
+        """
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            db.session.commit()
+
+            resp = auth_client.post(
+                "/pay-periods/history",
+                data={"history_opens_on": "2023-06-03"},
+            )
+
+            assert resp.status_code == 302
+            assert "pay-periods" in resp.headers["Location"]
+            db.session.remove()
+            assert pay_schedule_service.get_schedule(
+                seed_user["user"].id,
+            ).history_opens_on == date(2023, 6, 3)
+
+    def test_an_empty_box_CLEARS_a_stored_day(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A cleared control is a real answer, not a missing one.
+
+        An HTML form submits every control it renders, so the untouched field
+        arrives as ``""`` -- and it has to become ``NULL`` rather than "leave
+        it alone", because clearing it is how an owner says "I have been paid
+        this way longer than the app needs to know".  A door that read the
+        empty box as no-change would make the field unclearable from the UI.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            pay_schedule_service.upsert_schedule(user_id, 14)
+            pay_schedule_service.set_history_opening(user_id, date(2023, 6, 3))
+            db.session.commit()
+
+            resp = auth_client.post(
+                "/pay-periods/history", data={"history_opens_on": ""},
+            )
+
+            assert resp.status_code == 302
+            # Fresh session: the CLEAR has to be committed too, and a flushed
+            # NULL is indistinguishable from a committed one in the session
+            # the request left behind.  See the case above.
+            db.session.remove()
+            assert pay_schedule_service.get_schedule(
+                user_id,
+            ).history_opens_on is None
+
+    def test_a_day_outside_the_apps_calendar_flashes_and_stores_nothing(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The schema bound as a rendered message, never an IntegrityError 500.
+
+        An ``<input type="date">`` accepts a five-digit year, so this arrives
+        from an ordinary browser rather than from a crafted post.
+        """
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            db.session.commit()
+
+            resp = auth_client.post(
+                "/pay-periods/history",
+                data={"history_opens_on": "9999-01-01"},
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert pay_schedule_service.get_schedule(
+                seed_user["user"].id,
+            ).history_opens_on is None
+
+    def test_a_day_after_the_first_payday_flashes_the_services_message(
+        self, app, db, auth_client, seed_user,
+    ):
+        """Paychecks cannot have begun after the first one the app holds.
+
+        The service's own sentence reaches the page, so the owner is told
+        which day it conflicts with rather than being sent to look.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id,
+                first_payday=date(2026, 7, 3),
+                num_periods=3,
+                cadence_days=14,
+            )
+            db.session.commit()
+            opening = min(p.start_date for p in all_periods(user_id))
+
+            resp = auth_client.post(
+                "/pay-periods/history",
+                data={
+                    "history_opens_on": (
+                        opening + timedelta(days=1)
+                    ).isoformat(),
+                },
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert opening.isoformat().encode() in resp.data
+            assert pay_schedule_service.get_schedule(
+                user_id,
+            ).history_opens_on is None
+
+    def test_no_schedule_row_flashes_error(self, app, auth_client, seed_user):
+        """A floor bounds a rhythm, and a row-less owner has no cadence."""
+        with app.app_context():
+            assert pay_schedule_service.get_schedule(
+                seed_user["user"].id,
+            ) is None
+
+            resp = auth_client.post(
+                "/pay-periods/history",
+                data={"history_opens_on": "2023-06-03"},
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Generate a pay-period schedule" in resp.data
+            assert pay_schedule_service.get_schedule(
+                seed_user["user"].id,
+            ) is None
+
+    def test_companion_cannot_set_the_history_opening(
+        self, app, companion_client,
+    ):
+        """A companion is not the owner -- the route 404s (IDOR)."""
+        with app.app_context():
+            resp = companion_client.post(
+                "/pay-periods/history",
+                data={"history_opens_on": "2023-06-03"},
+            )
+
+            assert resp.status_code == 404
+
+    def test_the_route_EXISTS_for_a_signed_in_owner(self, app, auth_client):
+        """Pairs with the 404 above, which a moved route would leave passing.
+
+        A 404 from the URL map and a 404 from ``require_owner`` are
+        indistinguishable, so the ownership case alone would go on passing if
+        this endpoint were renamed or removed.
+        """
+        with app.app_context():
+            resp = auth_client.post(
+                "/pay-periods/history", data={"history_opens_on": ""},
+            )
+
+            assert resp.status_code != 404
+
+
 class TestResetRoute:
     """POST /pay-periods/reset (bounded full-schedule reset)."""
 
@@ -568,6 +749,10 @@ class TestOwnerOnlyAndUi:
             # The rolling-window controls render too.
             assert b"Continuous rolling window" in resp.data
             assert b'name="rolling_target_periods"' in resp.data
+            # And the pay-history card (plan step balance:X-bh-2), which is
+            # the only door an already-registered owner has onto that column.
+            assert b"When your paychecks started" in resp.data
+            assert b'name="history_opens_on"' in resp.data
 
     def test_the_truncate_select_offers_ids_not_ordinals(
         self, app, db, auth_client, seed_user,
@@ -597,6 +782,44 @@ class TestOwnerOnlyAndUi:
             assert b'name="keep_through_period_id"' in resp.data
             for period in owner_periods:
                 assert f'<option value="{period.id}">'.encode() in resp.data
+
+    def test_the_history_card_is_prefilled_from_the_schedule_row(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A stored opening comes back in the control, not as a blank box.
+
+        Plan step **balance:X-bh-2**.  A form that renders empty over a stored
+        value teaches the owner they have not answered, and the next Save
+        CLEARS it -- the field's empty box is a real answer, so an unprefilled
+        control is a silent write rather than a cosmetic bug.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _future_periods(db.session, seed_user, count=3)
+            pay_schedule_service.set_history_opening(user_id, date(2023, 6, 3))
+            db.session.commit()
+
+            resp = auth_client.get("/settings?section=pay-periods")
+
+            assert resp.status_code == 200
+            assert b'value="2023-06-03"' in resp.data
+
+    def test_the_history_card_renders_empty_when_nothing_is_stored(
+        self, app, db, auth_client, seed_user,
+    ):
+        """THE CONTROL: the prefill is read, not a literal in the template."""
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            pay_schedule_service.set_history_opening(
+                seed_user["user"].id, None,
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/settings?section=pay-periods")
+
+            assert resp.status_code == 200
+            assert b'id="history_opens_on"' in resp.data
+            assert b'value="2023-06-03"' not in resp.data
 
     def test_rolling_controls_prefilled_from_schedule(
         self, app, db, auth_client, seed_user,

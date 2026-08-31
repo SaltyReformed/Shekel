@@ -45,7 +45,7 @@ grades over both modules.
 from datetime import date
 
 from app.services import pay_period_admin, pay_schedule_service, user_write_lock
-from app.services.pay_calendar import calendar_at_cadence
+from app.services.pay_calendar import calendar_at_schedule
 from app.utils.dates import display_today
 
 
@@ -106,7 +106,9 @@ def top_up_rolling_window(user_id, as_of=None):
         return []
 
     target = schedule.rolling_target_periods
-    if _future_period_count(user_id, schedule.cadence_days, as_of) >= target:
+    if _future_period_count(
+        user_id, pay_schedule_service.ScheduleFacts.of(schedule), as_of,
+    ) >= target:
         return []
 
     # A deficit exists: serialize concurrent top-ups, then re-count under
@@ -123,7 +125,7 @@ def top_up_rolling_window(user_id, as_of=None):
     # the same re-read row, so the deficit is one snapshot rather than two.
     schedule = pay_schedule_service.reread_schedule(user_id)
     deficit = schedule.rolling_target_periods - _future_period_count(
-        user_id, schedule.cadence_days, as_of,
+        user_id, pay_schedule_service.ScheduleFacts.of(schedule), as_of,
     )
     if deficit <= 0:
         return []
@@ -151,7 +153,11 @@ def top_up_rolling_window(user_id, as_of=None):
     return pay_period_admin.extend_pay_periods(user_id, deficit)
 
 
-def _future_period_count(user_id: int, cadence_days: int, as_of: date) -> int:
+def _future_period_count(
+    user_id: int,
+    facts: pay_schedule_service.ScheduleFacts,
+    as_of: date,
+) -> int:
     """Count the user's current-and-future periods (those not ended by *as_of*).
 
     Includes the period containing ``as_of``, so this is the count the rolling
@@ -165,9 +171,17 @@ def _future_period_count(user_id: int, cadence_days: int, as_of: date) -> int:
     end is named here now at all, which is the property
     ``TestTheDestructiveDoorsHoldNoDerivedColumn`` grades.
 
-    **It loads at the cadence the caller HOLDS rather than calling**
+    **It loads at the schedule facts the caller HOLDS rather than calling**
     :func:`~app.services.pay_calendar.calendar_for`, which would re-read the
-    schedule row :func:`top_up_rolling_window` already has.  It cannot take a
+    schedule row :func:`top_up_rolling_window` already has.  It takes the
+    FACTS rather than the two columns, which is what plan step balance:X-bh-2
+    made matter: a calendar needs both, and
+    :meth:`~app.services.pay_schedule_service.ScheduleFacts.of` is the one
+    place that says which columns those are -- so a third calendar fact
+    reaches here without this signature moving.  Plain data rather than the
+    ORM row, for this package's standing reason: the row carries the rolling
+    configuration too, and a helper that took it could quietly start reading
+    a field that is not a calendar fact at all.  It cannot take a
     read pass's calendar instead -- ``/grid`` and ``/dashboard`` run the top-up
     BEFORE they open one, deliberately, so that pass sees the rows this
     creates.
@@ -185,12 +199,15 @@ def _future_period_count(user_id: int, cadence_days: int, as_of: date) -> int:
 
     Args:
         user_id: The owning user's id.
-        cadence_days: Days between paydays, from the caller's own schedule row.
-            Read only for the LAST period's end, so a wrong one can move
-            exactly one period in or out of this count.
+        facts: The caller's own resolved schedule facts.  ``cadence_days`` is
+            read only for the LAST period's end, so a stale one can move
+            exactly one period in or out of this count; ``history_opens_on``
+            is not read by this question at all and travels only because a
+            calendar carries both -- and dropping it here would build a
+            calendar that lies about the owner's rhythm.
         as_of: The reference date.
 
     Returns:
         The number of periods whose DERIVED end is on or after ``as_of``.
     """
-    return len(calendar_at_cadence(user_id, cadence_days).current_and_future(as_of))
+    return len(calendar_at_schedule(user_id, facts).current_and_future(as_of))

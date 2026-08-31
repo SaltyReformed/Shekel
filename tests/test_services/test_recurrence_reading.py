@@ -229,6 +229,7 @@ class TestTheEmptySchedule:
         with app.app_context():
             empty = PayCalendar.from_paydays(
                 paydays=(), cadence_days=None, user_id=_USER_ID,
+                history_opens_on=None,
             )
             rule = _rule(MONTHLY)
 
@@ -239,6 +240,7 @@ class TestTheEmptySchedule:
         with app.app_context():
             empty = PayCalendar.from_paydays(
                 paydays=(), cadence_days=None, user_id=_USER_ID,
+                history_opens_on=None,
             )
             rule = _rule(EVERY_PERIOD)
 
@@ -252,6 +254,7 @@ class TestTheEmptySchedule:
         with app.app_context():
             empty = PayCalendar.from_paydays(
                 paydays=(), cadence_days=None, user_id=_USER_ID,
+                history_opens_on=None,
             )
             rule = _rule(EVERY_PERIOD)
 

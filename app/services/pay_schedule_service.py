@@ -3,8 +3,17 @@ Shekel Budget App -- Pay Schedule Service
 
 Reads and writes the per-user ``budget.pay_schedule`` row: the
 persisted pay-period cadence that the extend / regenerate paths
-continue an existing schedule from, plus the rolling-window
-configuration the continuous top-up consumes.
+continue an existing schedule from, the day the owner's paychecks
+began, and the rolling-window configuration the continuous top-up
+consumes.
+
+**The row holds two facts about the RHYTHM and two about a WRITE**, and
+the doors here are split on that line.  ``cadence_days`` and
+``history_opens_on`` are what a pay CALENDAR is derived from, and
+:func:`resolve_schedule` answers both in one read as
+:class:`ScheduleFacts`; ``rolling_enabled`` and
+``rolling_target_periods`` configure the on-request top-up and are read
+off the row itself by the caller that is about to write.
 
 **It no longer owns the advisory lock that serializes the structural
 pay-period mutations** (plan step X-f1c3c).  That lock moved, unchanged
@@ -22,7 +31,10 @@ never commits: the route layer owns the transaction.
 """
 
 import logging
+from dataclasses import dataclass
+from datetime import date
 
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.exceptions import ValidationError
@@ -33,8 +45,66 @@ from app.models.pay_schedule import (
     CADENCE_DAYS_MIN,
     PaySchedule,
 )
+from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ScheduleFacts:
+    """The two ``budget.pay_schedule`` facts a pay CALENDAR is built from.
+
+    Plan step **balance:X-bh-2**.  One value rather than two return types
+    because they arrive from one row and are read by one consumer -- a
+    :class:`~app.services.pay_calendar.PayCalendar` needs both, and resolving
+    them separately would be two queries of the same row per calendar load,
+    which is exactly the redundant-schedule-read defect ledger rows **P68** and
+    **P69** record.
+
+    **It carries the calendar facts and NOT the rolling ones.**
+    ``rolling_enabled`` and ``rolling_target_periods`` configure a WRITE
+    (the on-request top-up); these two describe the owner's rhythm, which is
+    what a calendar derives from.  A caller that needs the rolling half wants
+    the row itself (:func:`get_schedule`), because it is about to write.
+
+    Attributes:
+        cadence_days: Days between paydays, or ``None`` for an owner with
+            neither a schedule row nor a pay period to infer one from.  See
+            :func:`resolve_cadence` for the legacy fallback and its
+            circularity (plan finding **P8**).
+        history_opens_on: How far back this owner's paychecks reach, or
+            ``None`` for NOT STATED (ruling **balance:R-IA**, amended
+            2026-08-31) -- an absence rather than a claim, and one the
+            backward rhythm answers by counting only the record.  There is NO
+            fallback for it: an owner with no schedule row has stated nothing,
+            and the first recorded payday is a record boundary rather than an
+            answer.
+    """
+
+    cadence_days: int | None
+    history_opens_on: date | None
+
+    @classmethod
+    def of(cls, schedule: PaySchedule) -> "ScheduleFacts":
+        """Return the calendar facts carried by an existing schedule *row*.
+
+        For a caller that already holds the row -- the rolling top-up, which
+        reads it to decide whether to write at all and must not pay for a
+        second read (finding **P70**).  A classmethod rather than two attribute
+        reads at that caller so WHICH columns are the calendar facts is stated
+        once: a third fact added to the table joins the value here, and the
+        top-up inherits it without its author remembering.
+
+        Args:
+            schedule: The owner's ``budget.pay_schedule`` row.
+
+        Returns:
+            Its :class:`ScheduleFacts`.
+        """
+        return cls(
+            cadence_days=schedule.cadence_days,
+            history_opens_on=schedule.history_opens_on,
+        )
 
 
 def get_schedule(user_id: int) -> PaySchedule | None:
@@ -137,6 +207,152 @@ def reject_out_of_range_cadence(cadence_days: int) -> None:
             f"Days between paydays must be between {CADENCE_DAYS_MIN} and "
             f"{CADENCE_DAYS_MAX}; got {cadence_days}."
         )
+
+
+def reject_out_of_range_history_opening(history_opens_on: date | None) -> None:
+    """Refuse an opening ``ck_pay_schedule_history_opens_range`` would refuse.
+
+    :func:`reject_out_of_range_cadence`'s sibling, written for the same reason
+    and asked by the same two kinds of caller: :func:`set_history_opening`, the
+    column's one writer, asks it immediately before writing, and
+    ``auth_service.register_user`` asks it in its up-front validation block,
+    before the ``User`` row exists.  A value outside the CHECK reaches the
+    database as an ``IntegrityError`` 500 rather than as something a form can
+    render, and an HTML date input accepts a five-digit-year typo, so this is
+    the ordinary path rather than a defensive one.
+
+    ``None`` passes, and it is the column's ordinary value: it means the
+    owner has not stated a history, which the rhythm answers by counting only
+    the recorded paydays (ruling **balance:R-IA**, amended 2026-08-31).
+
+    Args:
+        history_opens_on: The candidate opening day, or ``None``.
+
+    Raises:
+        ValidationError: The day falls outside
+            :data:`~app.utils.dates.CALENDAR_DATE_MIN` ..
+            :data:`~app.utils.dates.CALENDAR_DATE_MAX`.  The message
+            names the offending day and both bounds so a surface can render it
+            verbatim.
+    """
+    if history_opens_on is None:
+        return
+    if not CALENDAR_DATE_MIN <= history_opens_on <= CALENDAR_DATE_MAX:
+        raise ValidationError(
+            f"The day your paychecks started must fall between "
+            f"{CALENDAR_DATE_MIN.isoformat()} and "
+            f"{CALENDAR_DATE_MAX.isoformat()}; got "
+            f"{history_opens_on.isoformat()}."
+        )
+
+
+def reject_history_opening_after_payday(
+    history_opens_on: date | None, opening_payday: date | None,
+) -> None:
+    """Refuse an opening later than the first payday it is a floor below.
+
+    **One rule, asked of two different sources**, which is why it is a function
+    rather than an inline test at either.  ``auth_service.register_user`` asks
+    it of the payday the sign-up form STATES, up front, before the ``User`` row
+    is added -- that module's standing property, and the reason its
+    pay-calendar checks all sit in one block.  :func:`set_history_opening` asks
+    it of the payday the schedule RECORDS, because by then there is a schedule
+    to read.  Two spellings of "your paychecks cannot have begun after your
+    first one" would be two chances for the two doors to admit different sets.
+
+    Equality passes, and it is the ordinary answer for one whole class of
+    owner: a floor ON the opening payday means "count nothing below the
+    record", which is what somebody whose first payday has not happened yet
+    states (ruling ``pay_calendar:R-PC14`` calls that an ordinary state).
+
+    Args:
+        history_opens_on: The candidate opening day, or ``None`` -- which
+            passes, being the absence of a claim rather than a claim.
+        opening_payday: The first payday to measure against, or ``None`` for an
+            owner with no paydays at all -- which also passes, there being no
+            rhythm for a floor to contradict.
+
+    Raises:
+        ValidationError: *history_opens_on* falls after *opening_payday*.  The
+            message names both days, so a surface can render it verbatim.
+    """
+    if history_opens_on is None or opening_payday is None:
+        return
+    if history_opens_on > opening_payday:
+        raise ValidationError(
+            f"Your paychecks cannot have started on "
+            f"{history_opens_on.isoformat()}: that is after your first "
+            f"payday, {opening_payday.isoformat()}.  Enter that day or an "
+            f"earlier one, or leave it blank."
+        )
+
+
+def set_history_opening(
+    user_id: int, history_opens_on: date | None,
+) -> PaySchedule:
+    """Store how far back this owner's paychecks reach.
+
+    Plan step **balance:X-bh-2** (ruling **balance:R-IA**).  The ONE writer of
+    ``history_opens_on``, for the two doors that ask the question:
+    registration, which asks it beside the payday and cadence it already asks
+    for, and the pay-periods settings section, which is where an owner corrects
+    it or states it for the first time -- every owner who registered before
+    this column existed holds ``NULL``, and ``NULL`` is not a state a sign-up
+    form can revisit.
+
+    **It is a door of its own rather than an argument to**
+    :func:`upsert_schedule`, and the lifecycles are why.  That function is
+    called by ``pay_period_write.record_paydays`` on EVERY batch -- generate,
+    extend, regenerate, reset -- because a batch that records a payday
+    establishes the cadence it was spaced by (the cadence rule, plan step
+    C3-b).  When a job began is not a fact a batch of paydays states, so
+    threading it through that door would either overwrite the owner's answer
+    on every extend or add a "leave this one alone" argument, which is the
+    conditional-write shape ``set_rolling`` already avoids by being separate.
+
+    **``None`` is a real value to write, not a skip.**  Clearing the field is
+    how an owner WITHDRAWS a statement -- after which the engine counts only
+    their recorded paydays again -- so this door stores what it is given.
+
+    A schedule row must already exist, exactly as :func:`set_rolling` requires:
+    the value bounds a rhythm, and an owner with no row has no cadence for a
+    rhythm to run at.  Registration satisfies that by writing its paydays --
+    and with them the schedule row -- before it calls here.
+
+    Args:
+        user_id: The owning user's id.
+        history_opens_on: The day the owner's paychecks began, or ``None``
+            to state nothing, which counts only the record.
+
+    Returns:
+        The updated :class:`PaySchedule` row, flushed.
+
+    Raises:
+        ValidationError: The user has no schedule row, the day falls outside
+            the window ``ck_pay_schedule_history_opens_range`` admits, or it
+            falls after the owner's first recorded payday.
+    """
+    reject_out_of_range_history_opening(history_opens_on)
+    schedule = get_schedule(user_id)
+    if schedule is None:
+        raise ValidationError(
+            "Generate a pay-period schedule before saying when your "
+            "paychecks started."
+        )
+    # The owner's own paydays, not a calendar: this asks for ONE day and the
+    # derivation would build every period to answer it.  ``min`` rather than
+    # the lowest ``period_index``, because the floor is measured against the
+    # earliest payday and the two agree only while the index is in date order
+    # -- which is a stored column plan step C4 drops.
+    reject_history_opening_after_payday(
+        history_opens_on,
+        db.session.query(func.min(PayPeriod.start_date))
+        .filter(PayPeriod.user_id == user_id)
+        .scalar(),
+    )
+    schedule.history_opens_on = history_opens_on
+    db.session.flush()
+    return schedule
 
 
 def upsert_schedule(user_id: int, cadence_days: int) -> PaySchedule:
@@ -244,17 +460,22 @@ def set_rolling(user_id: int, enabled: bool, target_periods: int) -> PaySchedule
     return schedule
 
 
-def resolve_cadence(user_id: int) -> int | None:
-    """Resolve the cadence to continue the user's schedule with.
+def resolve_schedule(user_id: int) -> ScheduleFacts:
+    """Resolve the two facts a pay calendar is derived from, in ONE read.
 
-    Prefers the persisted ``pay_schedule.cadence_days``.  A legacy user
-    who has periods but no schedule row (they generated before this
-    table existed) falls back to inferring the cadence from the last
-    period's length: the LAST period's end is
+    Plan step **balance:X-bh-2**.  :func:`resolve_cadence`'s body, widened to
+    the pair -- because :func:`app.services.pay_calendar.calendar_for` needs
+    both and asking for them separately would query one row twice per calendar
+    load, which is the redundant per-render schedule read ledger rows **P68**
+    and **P69** record.
+
+    Prefers the persisted row.  A legacy user who has periods but no schedule
+    row (they generated before this table existed) falls back to inferring the
+    CADENCE from the last period's length: the LAST period's end is
     ``start_date + (cadence_days - 1)``, so the cadence is
-    ``(end_date - start_date).days + 1``.  The last period is the
-    highest ``period_index`` -- the one a forward extend continues
-    from -- so its length is the right cadence to continue with.
+    ``(end_date - start_date).days + 1``.  The last period is the highest
+    ``period_index`` -- the one a forward extend continues from -- so its
+    length is the right cadence to continue with.
 
     **The fallback is CIRCULAR and pay-calendar finding P8 owns that**: since
     plan step C3-b :func:`app.services.pay_period_write.record_paydays` derives
@@ -264,17 +485,24 @@ def resolve_cadence(user_id: int) -> int | None:
     payday upserts the row (the cadence rule) -- so it names legacy data only.
     Plan step C4 removes the fallback with the column it reads.
 
+    **The fallback covers ONE of the two facts and that asymmetry is the
+    point.**  ``history_opens_on`` has no derivation to fall back on: the last
+    period's length says how far apart the paydays are, and nothing in
+    ``budget.pay_periods`` says when the job began.  A row-less owner has
+    stated nothing, so the answer is ``None`` -- and ``None`` reads as exactly
+    that, an owner nobody asked, whose rhythm is therefore their record.
+
     Args:
         user_id: The owning user's id.
 
     Returns:
-        The cadence in days, or ``None`` when the user has neither a
-        schedule row nor any pay period to infer from.  The extend
-        path treats ``None`` as "generate your first schedule first".
+        The :class:`ScheduleFacts`.  ``cadence_days`` is ``None`` when the user
+        has neither a schedule row nor any pay period to infer from; the extend
+        path treats that as "generate your first schedule first".
     """
     schedule = get_schedule(user_id)
     if schedule is not None:
-        return schedule.cadence_days
+        return ScheduleFacts.of(schedule)
 
     last = (
         db.session.query(PayPeriod)
@@ -283,5 +511,29 @@ def resolve_cadence(user_id: int) -> int | None:
         .first()
     )
     if last is None:
-        return None
-    return (last.end_date - last.start_date).days + 1
+        return ScheduleFacts(cadence_days=None, history_opens_on=None)
+    return ScheduleFacts(
+        cadence_days=(last.end_date - last.start_date).days + 1,
+        history_opens_on=None,
+    )
+
+
+def resolve_cadence(user_id: int) -> int | None:
+    """Resolve the cadence to continue the user's schedule with.
+
+    :func:`resolve_schedule`'s cadence half, for the callers that need only
+    that -- the extend and rolling paths, the writer's own re-read, and
+    :func:`app.services.pay_calendar.cadence_for`.  It is a forward rather than
+    a second implementation: plan step **balance:X-bh-2** widened the read to a
+    pair, and leaving this reading the row itself would have been two answers
+    to "what cadence does this owner have" the moment one of them changed.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        The cadence in days, or ``None`` when the user has neither a
+        schedule row nor any pay period to infer from.  The extend
+        path treats ``None`` as "generate your first schedule first".
+    """
+    return resolve_schedule(user_id).cadence_days

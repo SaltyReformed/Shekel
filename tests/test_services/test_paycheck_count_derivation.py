@@ -79,6 +79,7 @@ def _calendar(cadence_days, count, user_id=1, first=date(2026, 1, 1)):
         ],
         cadence_days=cadence_days,
         user_id=user_id,
+        history_opens_on=None,
     )
 
 

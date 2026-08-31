@@ -796,6 +796,7 @@ class TestNoneMeansDoesNotRepeat:
         tmpl = _create_expense(seed_user, QUARTERLY, Decimal("60.00"), day_of_month=2, month_of_year=3)
         empty = PayCalendar.from_paydays(
             paydays=(), cadence_days=14, user_id=seed_user["user"].id,
+            history_opens_on=None,
         )
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
@@ -810,6 +811,7 @@ class TestNoneMeansDoesNotRepeat:
         db.session.flush()
         empty = PayCalendar.from_paydays(
             paydays=(), cadence_days=14, user_id=seed_user["user"].id,
+            history_opens_on=None,
         )
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
@@ -826,6 +828,7 @@ class TestNoneMeansDoesNotRepeat:
         tmpl = _create_expense(seed_user, None, Decimal("25.00"))
         empty = PayCalendar.from_paydays(
             paydays=(), cadence_days=14, user_id=seed_user["user"].id,
+            history_opens_on=None,
         )
 
         view = recurring_view.build_view([], [tmpl], [], empty, date.today())
@@ -870,6 +873,7 @@ class TestAnAbsentCadenceIsRefused:
         tmpl = _create_expense(seed_user, None, Decimal("25.00"))
         cadence_less = PayCalendar.from_paydays(
             paydays=(), cadence_days=None, user_id=seed_user["user"].id,
+            history_opens_on=None,
         )
 
         with pytest.raises(PayCalendarError, match="no pay cadence"):
