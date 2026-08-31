@@ -16,7 +16,12 @@ until something else acts:
   them by one selector;
 * **the panel's primary button** -- one per OPEN verb, all `display: none`
   until the verb radio its tab belongs to is checked.
-  ``static/css/accounts.css`` reveals the right one.
+  ``static/css/accounts.css`` reveals the right one;
+* **the merchant-rule control's new-envelope fields** (plan step
+  ``bank_import:X-gj-1c``, finding **N-403**) -- the name and category boxes
+  that belong to ONE option of the answer select, `display: none` until that
+  option is chosen.  ``static/css/accounts.css`` hides and reveals them, and
+  both halves sit inside one ``@supports`` guard.
 
 Why this test exists, and what it caught
 ----------------------------------------
@@ -29,6 +34,17 @@ every scripted-only control on the page permanently invisible, with the whole
 suite green -- the same defect the ``hidden`` attribute exists to prevent,
 arrived at from the other side.
 
+**The third family is here because its predecessor was the defect.**  Those
+fields were hidden by a CLASS the server emitted and revealed by a script --
+so with nothing running the answer could not be completed and the door refused
+it every time, on three surfaces, for as long as the control had existed.  The
+remedy moves the dependency into the stylesheet, which is the same shape as the
+second family above and fails the same way: if the REVEAL selector stops
+matching while the HIDE selector still does, the fields are invisible in every
+modern browser and no route test can tell -- the markup is correct either way.
+Two adversarial reviews on 2026-08-31 measured that the whole ``@supports``
+block could be DELETED with the suite green.
+
 **It grades the RENDERED page against the shipped assets**, which is the shape
 :mod:`.test_the_confirm_guard_binds_first` already keeps for the same reason:
 the property is a relationship between a document and a file, and an assertion
@@ -40,6 +56,7 @@ import pathlib
 import re
 
 from tests.test_services.test_statement_match._builders import (
+    a_merchant,
     a_rule,
     an_envelope,
     an_unexplained_outflow,
@@ -231,4 +248,170 @@ class TestThePanelsPrimaryButtonHasARuleThatShowsIt:
             ), (
                 f"the page renders a {verb!r} button and accounts.css carries "
                 f"no rule that shows it, so that verb's tab offers nothing"
+            )
+
+
+def _merchants_page(auth_client, db, seed_user):
+    """Return the merchants page with one UNANSWERED merchant's row open.
+
+    **Unanswered is the state the defect lived in**: the class was emitted
+    only where the row had no rule, so a page showing an answered merchant
+    would grade the arm that was never broken.
+
+    Args:
+        auth_client: The logged-in client.
+        db: The session fixture.
+        seed_user: The seeded user bundle.
+
+    Returns:
+        The rendered page.
+    """
+    merchant = a_merchant(seed_user, "Walmart")
+    db.session.commit()
+
+    response = auth_client.get(
+        f"/accounts/{seed_user['account'].id}/statements/merchants"
+        f"?edit={merchant.id}",
+    )
+    assert response.status_code == 200
+    return response.get_data(as_text=True)
+
+
+class TestTheNewEnvelopeFieldsHaveARuleThatShowsThem:
+    """Finding **bank_import:N-403**: hide and reveal are one pairing.
+
+    The hide rule alone is the defect.  So this grades that BOTH exist, that
+    both name what the page actually emits, and that neither can be left
+    outside the ``@supports`` guard -- which is the arrangement that makes a
+    browser unable to read a select's chosen option fall back to showing the
+    fields rather than to hiding them forever.
+    """
+
+    #: The guarded block, as one string.  Read rather than asserted on in
+    #: pieces, because what this grades is a RELATIONSHIP between two rules and
+    #: a guard, and three separate searches would pass over any pair of them.
+    def _guarded(self):
+        """Return the body of the ``@supports`` block that owns this pairing.
+
+        Returns:
+            The block's text.
+        """
+        css = _CSS.read_text(encoding="utf-8")
+        found = re.search(
+            r"@supports\s+selector\([^)]*:has\([^)]*\)[^)]*\)\s*\{"
+            r"(?P<body>(?:[^{}]|\{[^{}]*\})*)\}",
+            css,
+        )
+        assert found is not None, (
+            "accounts.css carries no @supports selector(...:has(...)) block, "
+            "so the new-envelope reveal has moved and this gate must move "
+            "with it"
+        )
+        return found.group("body")
+
+    def test_the_page_renders_the_fields_at_all(
+        self, auth_client, db, seed_user,
+    ):
+        """Every arm below is satisfied by zero without this."""
+        page = _merchants_page(auth_client, db, seed_user)
+
+        assert page.count("data-rule-new-field") == 2, (
+            "the merchants page rendered no new-envelope field pair, so "
+            "every arm in this class is grading an empty set"
+        )
+
+    def test_no_CLASS_hides_them_any_more(
+        self, auth_client, db, seed_user,
+    ):
+        """The defect itself: the server emitted ``d-none`` and a script lifted it.
+
+        Asserted on the rendered page rather than on the macro, because what
+        broke was what a browser received.
+        """
+        page = _merchants_page(auth_client, db, seed_user)
+
+        assert not re.search(
+            r'class="[^"]*\bd-none\b[^"]*"[^>]*data-rule-new-field', page,
+        ), "a new-envelope field container is hidden by a class again"
+
+    def test_the_stylesheet_both_hides_and_reveals_them(
+        self, auth_client, db, seed_user,
+    ):
+        """One rule without the other is the defect, in one direction or none.
+
+        Hide with no reveal is N-403 restored -- invisible in every browser
+        that can apply the hide.  Reveal with no hide is merely untidy: the
+        fields are always visible and the answer still lands.  So both are
+        required and the FAILURE MESSAGE says which is missing.
+        """
+        body = self._guarded()
+
+        hides = re.search(
+            r"\[data-rule-new-field\][^{}]*\{[^{}]*display:\s*none", body,
+        )
+        reveals = re.search(
+            r':has\([^{}]*option\[value="new"\]:checked[^{}]*\)'
+            r'[^{}]*\[data-rule-new-field\][^{}]*\{[^{}]*display:\s*(?!none)',
+            body,
+        )
+        assert hides is not None, (
+            "nothing hides the new-envelope fields; if that is deliberate, "
+            "this gate and the macro's comment both have to say so"
+        )
+        assert reveals is not None, (
+            "the fields are hidden and NO rule pairs the answer select's "
+            "`new` option with them, so choosing a new envelope reveals "
+            "nothing -- which is finding N-403 exactly"
+        )
+
+    def test_the_HIDE_never_ships_outside_the_guard(
+        self, auth_client, db, seed_user,
+    ):
+        """The arrangement the comment calls load-bearing, graded.
+
+        A browser that cannot read a select's chosen option applies NEITHER
+        rule and shows both fields, which still saves.  Hoisting the hide out
+        of the guard -- a plausible tidying edit -- leaves exactly the old
+        defect in exactly the browsers that cannot fix it.
+        """
+        css = _CSS.read_text(encoding="utf-8")
+        guarded = self._guarded()
+        outside = css.replace(guarded, "")
+
+        assert not re.search(
+            r"\[data-rule-new-field\][^{}]*\{[^{}]*display:\s*none",
+            outside,
+        ), (
+            "a rule hiding the new-envelope fields sits OUTSIDE the @supports "
+            "guard, so a browser that cannot reveal them still hides them"
+        )
+
+    def test_both_selectors_name_what_the_PAGE_emits(
+        self, auth_client, db, seed_user,
+    ):
+        """A rename on either side, caught from whichever side moved.
+
+        The reveal pairs three things the template emits -- the row wrapper,
+        the answer select and its ``new`` option -- and a selector naming one
+        the page has stopped rendering reaches nothing while reading as
+        coverage.
+        """
+        page = _merchants_page(auth_client, db, seed_user)
+        body = self._guarded()
+
+        for token, rendered in (
+            ("data-rule-row", "data-rule-row"),
+            ("data-rule", " data-rule"),
+            ('option[value="new"]', 'value="new"'),
+            ("data-rule-new-field", "data-rule-new-field"),
+        ):
+            assert token in body, (
+                f"the reveal no longer names {token!r}; either the control "
+                f"was renamed and this rule was left behind, or the pairing "
+                f"has been narrowed"
+            )
+            assert rendered in page, (
+                f"the stylesheet pairs on {token!r} and the page emits no "
+                f"{rendered!r}; the selector is carrying a name a rename left "
+                f"behind"
             )

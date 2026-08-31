@@ -47,6 +47,7 @@ from app.utils.log_events import (
 )
 
 from ._release import (
+    NAMES_A_BANK_LINE,
     PlannedRemovals,
     acts_of,
     planned_removals,
@@ -236,42 +237,38 @@ def accepted_groups(
 
     groups = []
     for match in matches:
-        # **Every act has at least one line, and the guarantee is three parts
-        # rather than one** (plan step ``bank_import:X-f6a-4``): ``record_match``
-        # refuses an empty side at the ONE writer,
-        # ``fk_statement_match_members_line_account`` no longer cascades so the
-        # database refuses to remove a line a match names, and migration
-        # ``e4a7c0f13b92`` DELETED the acts that already held none -- a foreign
-        # key cannot see an absence, so the third part is not implied by the
-        # second.
+        # **Every act reaching this fold names a bank line, and that is now the
+        # LOADER's clause rather than a guard here** (plan step
+        # ``bank_import:X-gj-1c``, finding **N-389**).  A Python skip sitting
+        # here was the same invariant spelled a second time, in a language
+        # :func:`accepted_counts` could not share -- so the caption came from
+        # the table and the cards from this loop, and one lineless act made the
+        # Explained tab promise a card it could not draw.
+        # :data:`~._release.NAMES_A_BANK_LINE` is that invariant stated once;
+        # ``acts_of`` narrows on it and the counts read narrows and ALARMS on
+        # it, so there is nothing left for this loop to defend against.
         #
-        # There USED to be a guard here skipping a lineless act, and skipping it
-        # was the defect: such an act is invisible on this screen and yet still
-        # claims its transactions in ``matched_subjects``, so those rows could
-        # never be matched again and no release button existed to free them.
-        # The skip is BACK and it is no longer a silence: the act is logged at
-        # ERROR naming the row to delete.  Two adversarial reviews 2026-08-20
-        # measured why each of the three alternatives is worse.  Skipping
-        # SILENTLY was the original defect.  RAISING takes the whole review
-        # surface down for the account -- including the release control that
-        # would repair it -- which is the rule ``_accepted_row`` below already
-        # states for its own degraded case, in as many words: a raise here "would
-        # make the screen permanently unreachable for the account, with no
-        # in-app repair, which is finding N-302's shape".  Rendering a husk
-        # would need a group with no day, no amount and no wording, which is
-        # not a group.  So the screen stays up, the operator is told, and the
-        # state itself is what the three guarantees above prevent.
+        # The three guarantees that make the state unreachable at all are still
+        # ``record_match``'s refusal at the one writer,
+        # ``fk_statement_match_members_line_account`` no longer cascading, and
+        # migration ``e4a7c0f13b92``'s deletion of the acts that already held
+        # none (plan step ``bank_import:X-f6a-4``).
+        #
+        # **The clause and this loop read two different things, and the gap is
+        # the SESSION** -- named by adversarial review 2026-08-31.  The WHERE
+        # runs in the database; ``match.members`` is a loaded collection, and
+        # SQLAlchemy does not overwrite one already populated without
+        # ``populate_existing()``.  So an act whose members were emptied
+        # IN-SESSION while the rows still stand would satisfy the clause and
+        # reach ``max()`` empty.  Nothing in ``app/`` produces that: the one
+        # writer that empties a membership is ``release_match``, which deletes
+        # the ACT in the same flush, so there is no state in which this fold
+        # can be handed one.  It is recorded rather than guarded because a
+        # guard here would be the second spelling finding **N-389** is about.
         match_lines = [
             member.line for member in match.members
             if member.bank_statement_line_id is not None
         ]
-        if not match_lines:
-            log_event(
-                _logger, logging.ERROR, EVT_STATEMENT_MATCH_LINELESS, ERROR,
-                "An accepted match names no bank line.",
-                account_id=account_id, match_id=match.id,
-            )
-            continue
         posts_on = max(line.posted_on for line in match_lines)
         rows = [
             _accepted_row(
@@ -352,7 +349,9 @@ class AcceptedCounts:
     subtraction in Jinja would be computing in a template.
 
     Attributes:
-        total: Every accepted act on this account.
+        total: Every accepted act on this account that a tab can render --
+            which is every act it holds, the state these exclude being one the
+            app's writers cannot produce (:data:`~._release.NAMES_A_BANK_LINE`).
         by_rule: Those a standing rule performed (**R-GT**).
     """
 
@@ -372,7 +371,7 @@ class AcceptedCounts:
 def accepted_counts(owner_id: int, account_id: int) -> AcceptedCounts:
     """Return how many acts this account has accepted, and how many by rule.
 
-    **ONE read of two aggregates**, rather than two queries or one list
+    **ONE read of three aggregates**, rather than three queries or one list
     valued for its length.
 
     **It filters on the OWNER as well as the account**, which is the narrowing
@@ -380,22 +379,66 @@ def accepted_counts(owner_id: int, account_id: int) -> AcceptedCounts:
     the account implies the owner, and a reader feeding a screen narrows by
     the same columns the write door does.
 
+    **It counts what a TAB CAN DRAW, through the loader's own clause**
+    (:data:`~._release.NAMES_A_BANK_LINE`, plan step ``bank_import:X-gj-1c``,
+    finding **N-389**).  It counted the table until then, while
+    :func:`accepted_groups` skipped an act naming no bank line in Python -- so
+    a caption derived here and cards derived there disagreed by one for every
+    such act.  Measured on a planted act 2026-08-31: caption ``1``, rendered
+    ``0``, withheld ``0``.  One clause now narrows both.
+
+    **The excluded acts are counted in the SAME aggregate and logged at
+    ERROR, NAMING each one**, which is where the alarm the Python skip used to
+    raise went.  It belongs here rather than in the fold for two reasons: this
+    is the read the Reconcile page performs on EVERY render whichever tab is
+    open, so the operator is told whenever anyone looks; and it is the only
+    reader that sees the whole set, the fold now being unable to receive one.
+    Skipping SILENTLY was the original defect (two adversarial reviews,
+    2026-08-20) -- such an act goes on claiming its transactions in
+    ``matched_subjects``, so those rows can never be matched again and no
+    release control exists to free them -- and RAISING would take the screen
+    down for the account with no in-app repair, which is finding **N-302**'s
+    shape.
+
+    **The IDS are what the alarm is FOR, and a first version dropped them.**
+    The Python skip it replaced logged ``match_id``, and its own comment called
+    that "naming the row to delete"; carrying only a count told an operator how
+    many rows they could not find.  Adversarial review measured the loss
+    2026-08-31.  The second read runs ONLY when the count is non-zero -- which
+    is never, on any account the app's own writers built -- so the ordinary
+    render still pays one query.
+
     Args:
         owner_id: The user the route proved owns the account.
         account_id: The account to count for.
 
     Returns:
-        The :class:`AcceptedCounts`.
+        The :class:`AcceptedCounts`, over the acts a tab can render.
     """
-    total, by_rule = db.session.query(
-        db.func.count(StatementMatch.id),
+    total, by_rule, lineless = db.session.query(
+        db.func.count(StatementMatch.id).filter(NAMES_A_BANK_LINE),
         db.func.count(StatementMatch.id).filter(
+            NAMES_A_BANK_LINE,
             StatementMatch.applied_by_rule.is_(True),
         ),
+        db.func.count(StatementMatch.id).filter(~NAMES_A_BANK_LINE),
     ).filter(
         StatementMatch.account_id == account_id,
         StatementMatch.user_id == owner_id,
     ).one()
+    if lineless:
+        log_event(
+            _logger, logging.ERROR, EVT_STATEMENT_MATCH_LINELESS, ERROR,
+            "Accepted match(es) on this account name no bank line.",
+            account_id=account_id, lineless_count=lineless,
+            match_ids=sorted(
+                row[0] for row in db.session.query(StatementMatch.id).filter(
+                    StatementMatch.account_id == account_id,
+                    StatementMatch.user_id == owner_id,
+                    ~NAMES_A_BANK_LINE,
+                ).all()
+            ),
+        )
     return AcceptedCounts(total=total, by_rule=by_rule)
 
 

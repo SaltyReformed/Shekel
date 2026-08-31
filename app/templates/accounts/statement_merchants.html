@@ -46,23 +46,16 @@
 {% include "accounts/_statement_merchants_body.html" %}
 {% endblock content %}
 
-{% block scripts %}
-{# The new-envelope name and category fields are revealed by the answer select,
-   which is the same control and the same script the register and the review
-   queue use.
+{# NO SCRIPT BLOCK, and that is the point (finding bank_import:N-403, plan
+   step bank_import:X-gj-1c).  This page carried `statement_rules.js`, whose
+   only job was revealing the new-envelope name and category fields -- and
+   whose absence made that answer unreachable: the macro rendered both fields
+   `d-none` on a merchant with no rule, the category select opened on its empty
+   option, and the door refused the answer every time.  Measured on this page
+   2026-08-31 by scraping it and posting its own bytes back: a designed 400,
+   "needs both a name and a category".
 
-   WHAT THIS DOES AND DOES NOT SURVIVE WITH SCRIPTING OFF.  Three of the four
-   answers do: a recurring envelope, "never a purchase" and "ask me every time"
-   are the select's own value and land with no script at all.  "A new envelope"
-   does NOT -- on a merchant with no rule the macro renders both of its fields
-   `d-none` and the category select opens on the empty option, so the answer
-   reaches the door missing its category and is refused every time.
-
-   That is the behaviour of the SHARED control and it predates this page; what
-   was new here was a sentence claiming the opposite, which an adversarial
-   review measured false on 2026-08-31.  Correcting the sentence is this step's
-   scope; revealing the fields would change a money-adjacent control the review
-   queue and the register also render, which is a decision for the step that
-   owns them. #}
-<script src="{{ url_for('static', filename='js/statement_rules.js') }}"></script>
-{% endblock scripts %}
+   The stylesheet expresses the dependency now, keyed on the select's own
+   selected option, so the whole page works with nothing running.  The comment
+   that used to sit here explained the broken behaviour and asked the owning
+   step to fix it; this is that step. #}
