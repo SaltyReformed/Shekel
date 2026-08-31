@@ -195,7 +195,8 @@ def _chip_href(account_id: int, chip) -> "str | None":
 
     Returns:
         The URL, or ``None`` for a chip that states a fact with no way in --
-        the lines older than the pay calendar, which no surface lists.
+        the lines older than the pay calendar, which no surface lists and
+        whose remedy is a pay schedule rather than an account.
     """
     if chip.tab is None:
         return None

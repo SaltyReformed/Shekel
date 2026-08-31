@@ -52,6 +52,7 @@ from app.services.statement_match import NewEnvelope, PurchaseCreation
 # it, so exporting it would be the surface rule 13 forbids; a test for a
 # module reaches into it, which is the allowance every sibling here takes.
 from app.services.statement_match import _create  # pylint: disable=protected-access
+from tests._test_helpers import open_books_before_the_first_assertion
 
 from ._builders import (
     accepted_acts,
@@ -729,15 +730,27 @@ class TestWhatTheCreateDoorRefuses:
         ``transactions.pay_period_id`` is NOT NULL -- so the honest answer is a
         sentence naming the day rather than a row filed under the nearest
         period, which would misplace real money.
+
+        **The books are opened before the line first, and that is what keeps
+        this case reachable at all** (plan step balance:X-f3c-2b-2b).  A
+        default fixture account opens its books the day before the bootstrap
+        period, so a line 400 days earlier is inside its opening equity and
+        meets the books refusal instead -- correctly, because that money is
+        already counted.  Books that open BEFORE the budget did is the real
+        shape this arm serves: it is what finding **N-368**'s import will
+        leave on the developer's own Checking account.
         """
         with app.app_context():
             statement = an_import(seed_user)
+            day = (
+                seed_user["bootstrap_period"].start_date
+                - timedelta(days=400)
+            )
+            open_books_before_the_first_assertion(
+                db.session, seed_user["account"], also_before=day,
+            )
             line = a_bank_line(
-                seed_user, statement, amount="-57.96",
-                posted_on=(
-                    seed_user["bootstrap_period"].start_date
-                    - timedelta(days=400)
-                ),
+                seed_user, statement, amount="-57.96", posted_on=day,
             )
 
             with pytest.raises(ValidationError, match="No pay period covers"):

@@ -221,6 +221,13 @@ def record_income_from_line(
     # and :func:`~app.services.status_seam.day_is_in_the_future` is the same
     # predicate the screen asks so it renders no tick for such a line.
     reject_future_settle_day(_observed(line))
+    # **The other end of the same clock** (plan step **balance:X-f3c-2b-2b**,
+    # finding **N-383**): the refusal above bounds the line at TODAY, and this
+    # one bounds it at the day the account's books open.  ``mint_uncategorized``
+    # writes and settles, and the settle verb refuses the day only after the
+    # row exists -- which is the ordering this comment's neighbour above
+    # exists because of, one bound over.
+    scope.reject_line_before_books_open(line.posted_on, "this deposit")
     # A line posted past the last SAVED pay period is not split off by the
     # review screen's own bounds, so this refusal is live rather than
     # theoretical.

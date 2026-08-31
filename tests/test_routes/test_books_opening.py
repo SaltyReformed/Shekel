@@ -36,6 +36,7 @@ from app.models.account_opening import AccountOpening
 from app.utils.dates import display_today
 from tests._test_helpers import (
     account_never_asserted,
+    match_two_lines,
     create_account_of_type,
     create_settled_cash_transaction,
 )
@@ -527,10 +528,116 @@ class TestTheCeilingNamesTheBoundThatBinds:
     Plan step **balance:X-f3c-2b-2b**.  The card chose which bound to name
     itself, in Jinja, in the order movement-then-assertion -- which is not the
     order the ``min`` behind ``max`` resolves them in.  So an account could be
-    shown a true sentence about a bound that was not the one stopping it.  The
-    route composes the day and the sentence together now, and these cases
-    grade that they agree.
+    shown a true sentence about a bound that was not the one stopping it, and
+    adding the fourth term would have made a two-way disagreement three-way.
+    The route composes both now, and these cases grade that they agree.
     """
+
+    def test_the_MATCHED_LINE_term_bounds_the_box(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The fourth term, isolated by an account that records nothing else.
+
+        FIRING CONTROL: without it the ceiling reads TODAY on an account whose
+        books may not pass a bank line it has already matched -- the same
+        shape the assertion term was added for, one row set over.
+        """
+        with app.app_context():
+            account = account_never_asserted(
+                seed_user, db.session, name="Ceiling Matched",
+            )
+            db.session.flush()
+            opened = seed_periods[0].start_date
+            db.session.add(AccountOpening(
+                account_id=account.id,
+                opened_on=opened,
+                opening_equity=Decimal("10.00"),
+                source_id=ref_cache.account_opening_source_id(
+                    AccountOpeningSourceEnum.USER_DECLARED,
+                ),
+            ))
+            db.session.commit()
+            early = opened + timedelta(days=10)
+            match_two_lines(
+                db.session, account, seed_user["user"].id,
+                early, early + timedelta(days=10),
+            )
+            assert cash_ledger.earliest_assertion_day(account.id) is None
+            assert cash_ledger.earliest_recorded_movement_day(
+                account.id,
+            ) is None, "this case isolates the MATCHED-LINE term"
+
+            html = auth_client.get(
+                f"/accounts/{account.id}/edit",
+            ).data.decode()
+
+            assert f'max="{(early - _ONE_DAY).isoformat()}"' in html
+            assert "matched a bank line" in html
+            assert early.strftime("%b %-d, %Y") in html
+
+    def test_the_MATCHED_LINE_term_WINS_over_a_LATER_movement(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The PRODUCTION shape, which no other case renders.
+
+        Every other matched-line case isolates the term on an account that
+        records no movement at all, so the route could have computed the
+        matched entry off ``earliest_recorded_movement_day`` by copy-paste and
+        every one of them would still pass.  Here BOTH terms exist and the
+        matched line is strictly EARLIER -- which is the arrangement the whole
+        arm exists for, because a match settles its members on the LATEST of
+        its bank days -- so only a ceiling that really read the matched row
+        set names the right day and the right sentence.
+
+        Found by adversarial test review 2026-08-31.
+        """
+        with app.app_context():
+            account = account_never_asserted(
+                seed_user, db.session, name="Ceiling Both Terms",
+            )
+            db.session.flush()
+            opened = seed_periods[0].start_date
+            db.session.add(AccountOpening(
+                account_id=account.id,
+                opened_on=opened,
+                opening_equity=Decimal("10.00"),
+                source_id=ref_cache.account_opening_source_id(
+                    AccountOpeningSourceEnum.USER_DECLARED,
+                ),
+            ))
+            db.session.commit()
+            early = opened + timedelta(days=10)
+            match_two_lines(
+                db.session, account, seed_user["user"].id,
+                early, early + timedelta(days=10),
+            )
+            # A settled movement well AFTER the matched line, so the movement
+            # bound is the looser of the two and must not win.
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[1], Decimal("25.00"),
+                settled_on=early + timedelta(days=40),
+                name="later-than-the-matched-line", account=account,
+            )
+            db.session.commit()
+
+            movement = cash_ledger.earliest_recorded_movement_day(account.id)
+            matched = cash_ledger.earliest_matched_line_day(account.id)
+            assert movement is not None and matched is not None, (
+                "this case needs BOTH terms present to mean anything"
+            )
+            assert matched < movement, (
+                "the matched line must be the tighter bound or the case "
+                "grades nothing the movement term does not already grade"
+            )
+
+            html = auth_client.get(
+                f"/accounts/{account.id}/edit",
+            ).data.decode()
+
+            assert f'max="{(matched - _ONE_DAY).isoformat()}"' in html
+            assert f'max="{(movement - _ONE_DAY).isoformat()}"' not in html
+            assert "matched a bank line" in html
+            assert "already records money moving" not in html
 
     def test_the_sentence_names_the_bound_the_MAX_came_from(
         self, app, auth_client, db, seed_user, seed_periods,

@@ -4098,6 +4098,16 @@ def open_books_before_the_first_assertion(
       nothing a door accepts can precede it;
     * the earliest day the account ALREADY records money moving, so a helper
       called after the rows exist cannot strand them;
+    **A matched BANK LINE bounds the books too and is deliberately NOT a term
+    here, because it cannot change the answer** (plan step
+    balance:X-f3c-2b-2b).  It was added as one and then removed on a proof
+    rather than on taste: this helper only ever moves the books BACKWARD (it
+    clamps to the standing opening), and the database constraint already
+    guarantees the standing opening sits strictly below every line the account
+    has matched.  So ``min(matched) - 1`` is never smaller than the clamp, and
+    the term is dead in every state the boundary permits.  A defensive term
+    that cannot fire is the *born dead* shape ``lessons.md`` names, and it
+    would have read as protection nobody had.
     * *also_before*, when the caller knows a day of its own -- a loan's
       ORIGINATION is the one that exists, because its payment schedule runs
       from there and the owner's calendar may start later.
@@ -6914,3 +6924,75 @@ def count_amount_bases(monkeypatch):
 
     monkeypatch.setattr(income_service, "salary_pricing", _counted)
     return built
+
+
+#: One import, two bank lines and one match naming BOTH, in the shape
+#: ``statement_match._accept.record_match`` leaves: the group's EARLIEST line
+#: posts before the row that explains it settles.
+#:
+#: **Raw SQL, and ONE copy of it.**  It lived in three test modules
+#: byte-identically until an adversarial test-quality review counted them --
+#: and the query has to agree with
+#: :data:`app.opening_infrastructure.MATCHED_LINE_DAYS_SQL`'s row set, so
+#: three copies were three places for that to drift silently.  That is this
+#: arc's own stated root cause, in its own test suite.
+#:
+#: It is raw because what the cases using it grade IS a database trigger and a
+#: raw-SQL reader; a case grading a DOOR should build its match through
+#: ``accept_match`` instead -- what the DOOR leaves is not what this
+#: builds, and a case grading a door has never seen the row shape a
+#: door produces if it uses this.
+_A_MATCHED_GROUP = """
+    WITH import_row AS (
+        INSERT INTO budget.statement_imports
+               (account_id, user_id, source_id, file_name, file_digest,
+                period_start, period_end, line_count, recorded_count)
+        SELECT :a, :u,
+               (SELECT id FROM ref.statement_sources ORDER BY id LIMIT 1),
+               'books-boundary-probe.csv', :digest, :early, :late, 2, 2
+        RETURNING id
+    ), line_rows AS (
+        INSERT INTO budget.bank_statement_lines
+               (account_id, import_id, posted_on, amount, description,
+                sequence_in_group)
+        SELECT :a, import_row.id, day.posted_on, -15.96, 'PROBE', 0
+          FROM import_row, (VALUES (:early), (:late)) AS day(posted_on)
+        RETURNING id
+    ), match_row AS (
+        INSERT INTO budget.statement_matches
+               (account_id, user_id, applied_by_rule)
+        VALUES (:a, :u, false)
+        RETURNING id
+    )
+    INSERT INTO budget.statement_match_members
+           (match_id, account_id, bank_statement_line_id)
+    SELECT match_row.id, :a, line_rows.id FROM match_row, line_rows
+"""
+
+
+def match_two_lines(db_session, account, owner_id, early, late):
+    """Match two bank lines on *account*, posted *early* and *late*.
+
+    The state plan step **balance:X-f3c-2b-2b**'s matched-line bound is about:
+    a group whose earliest line posts strictly before the row explaining it
+    settles, which is every multi-day match.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` to match on.
+        owner_id: Its owner.
+        early: The earlier line's posting day.
+        late: The later one's.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep avoidance
+    # as the loan helpers above.
+    import sqlalchemy as _sa
+
+    db_session.execute(_sa.text(_A_MATCHED_GROUP), {
+        "a": account.id,
+        "u": owner_id,
+        "digest": f"probe-{account.id}-{early}",
+        "early": early,
+        "late": late,
+    })
+    db_session.commit()

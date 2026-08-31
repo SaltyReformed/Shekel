@@ -192,7 +192,7 @@ from app import create_app
 from app.append_only_infrastructure import apply_append_only_infrastructure
 from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
 from app.extensions import db
-from app.opening_infrastructure import apply_opening_infrastructure
+from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.posting_infrastructure import (
     apply_ledger_append_only_privileges,
     apply_posting_infrastructure,
@@ -308,8 +308,12 @@ def _populate_template(app) -> None:
         # a FIXTURE can trip: a test that settles a row on or before its
         # account's opening day is building a state production cannot hold,
         # and this is what makes the suite say so.
+        # ``ALL_ARMS``: this builds a database at HEAD, which is the one
+        # caller shape that wants whatever arms the module currently has.  A
+        # MIGRATION names its arms literally instead -- see that constant.
         apply_opening_infrastructure(
-            lambda statement: db.session.execute(db.text(statement))
+            lambda statement: db.session.execute(db.text(statement)),
+            arms=ALL_ARMS,
         )
         db.session.commit()
 

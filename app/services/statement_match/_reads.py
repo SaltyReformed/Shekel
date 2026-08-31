@@ -9,7 +9,7 @@ lists what it could explain and says nothing about what it could not reads as
 a clean sweep:
 
 * lines that predate the owner's pay calendar, which nothing can ever match --
-  130 of the developer's own 361 lines, and listing them beside genuine
+  130 of the developer's own 378 lines, and listing them beside genuine
   failures would bury the ones worth acting on;
 * days too crowded to search for groups, as the SEARCH reports them
   (:attr:`~._propose.ProposedMatches.crowded_days`);
@@ -32,6 +32,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatchMember
+from app.services.cash_ledger import account_opening_fact
 
 from ._candidates import (
     act_still_names_a_row,
@@ -45,7 +46,7 @@ from ._offers import (
     MatchProposal,
 )
 from ._bars import ParkedLine
-from ._gaps import ReviewBounds, search_gap
+from ._gaps import ReviewBounds, bounded_lines, search_gap
 from ._leftovers import CreatableLine, RecordableInflow, leftovers
 from ._propose import propose
 from ._queue import StatementQueue, statement_queue
@@ -686,16 +687,22 @@ def awaiting_review_count(account_id: int, opens: "date | None") -> int:
     links to is the expensive one (:meth:`~._scope.ReviewScope.build`), and a
     control on the app's hottest render path may not pay for it.
 
-    **It applies exactly the two predicates
+    **It applies exactly the three predicates
     :func:`review_set` splits on, and no others**, which is what lets the
     number and the screen agree:
 
-    * no accepted match names the line (:func:`_spoken_for`), and
+    * no accepted match names the line (:func:`_spoken_for`);
     * the line is not BEFORE the owner's first payday
-      (:func:`_split_at_calendar_open`), because a line the pay calendar
-      never covers can never be matched -- 130 of 361 on the developer's own
-      export -- and counting those would leave the figure permanently
-      non-zero and therefore meaningless.
+      (:func:`~._gaps._split_at_calendar_open`), because a line the pay calendar
+      never covers can never be matched -- 130 of the developer's own 378
+      recorded lines -- and counting those would leave the figure
+      permanently non-zero and therefore meaningless;
+    * the line is not one this ACCOUNT's opening equity already accounts for
+      (:func:`~._gaps._split_at_books_open`, plan step **balance:X-f3c-2b-2b**), for
+      the same reason one place along: such a line reaches no card, no
+      proposal and no door, so counting it would promise work the screen does
+      not offer -- 4 more on the developer's own Checking, which opens its
+      books on the pay calendar's own first day.
 
     It deliberately does NOT run the proposer.  A line a proposal explains is
     still work until the owner ACCEPTS it, so the count is the whole of the
@@ -708,7 +715,7 @@ def awaiting_review_count(account_id: int, opens: "date | None") -> int:
             (:meth:`~app.services.pay_calendar.PayCalendar.opening_bound`),
             or ``None`` for an owner with no periods at all -- in which case
             nothing is before the calendar, matching
-            :func:`_split_at_calendar_open`.  **Taken as a parameter rather
+            :func:`~._gaps._split_at_calendar_open`.  **Taken as a parameter rather
             than derived here**: the grid route already holds the pass's
             memoized calendar, and a producer below the route reads the
             pass's derivation instead of building a second one.
@@ -735,12 +742,39 @@ def awaiting_review_count(account_id: int, opens: "date | None") -> int:
             project's DRY violation, and the read this replaced was a second
             ``budget.pay_periods`` scan on the app's hottest render path.
 
+            **The BOOKS bound is NOT a parameter beside it, and the asymmetry
+            is that same reason applied honestly rather than copied.**  The
+            grid route holds a memoized calendar and holds no opening, so
+            taking one would make every caller derive a fact only this
+            function needs -- and the point of the parameter was to consume a
+            derivation the caller already had, never to push work outward.  It
+            is one primary-key-ordered read of a single account's opening
+            rows per grid render, against the ``budget.pay_periods`` scan
+            the parameter removed.  **Not a row count**, which would be an
+            undated measurement of one database quoted as a cost.
+
     Returns:
         The count, ``0`` when the account has nothing recorded.
+
+    Raises:
+        RuntimeError: From
+            :func:`~app.services.cash_ledger.account_opening_fact`, when the
+            account carries no opening row at all -- a broken invariant, and
+            the same fail-loud policy :meth:`~._scope.ReviewScope.build`
+            inherits.  Answering "then every line is work" would put a badge
+            on the grid for lines the review screen cannot show.
     """
     query = db.session.query(db.func.count(BankStatementLine.id)).filter(
         BankStatementLine.account_id == account_id,
         BankStatementLine.id.notin_(_spoken_for(account_id)),
+        # **STRICTLY after**, which is :func:`~app.services.cash_ledger
+        # .books_hold` in SQL and is the one place this module states that
+        # comparison as a filter rather than asking the predicate.  A column
+        # expression cannot call it; the ``>`` is the same test, and the
+        # arm that grades them together is what stops the two drifting.
+        BankStatementLine.posted_on > account_opening_fact(
+            account_id,
+        ).opened_on,
     )
     if opens is not None:
         query = query.filter(BankStatementLine.posted_on >= opens)
@@ -787,32 +821,6 @@ def _as_bank_line(row: BankStatementLine) -> BankLine:
         merchant=row.merchant_name,
         source_category=row.source_category,
     )
-
-
-def _split_at_calendar_open(
-    recorded: "list[BankStatementLine]", opens: "date | None",
-) -> "tuple[list[BankStatementLine], list[BankStatementLine]]":
-    """Split the account's unmatched lines at the owner's first payday.
-
-    Args:
-        recorded: Every recorded line no match explains.
-        opens: The first day the pay calendar covers, or ``None`` for an owner
-            with no periods at all -- in which case nothing is BEFORE, because
-            "before the calendar" is not a fact about a calendar that does not
-            exist, and the lines are reported as unexplained rather than as
-            out of reach.
-
-    Returns:
-        ``(before, inside)``.  A line before the first payday can never be
-        matched -- there are no rows before that day for it to match -- so it
-        is COUNTED by :class:`ReviewBounds` rather than listed as work.
-    """
-    before = [
-        line for line in recorded
-        if opens is not None and line.posted_on < opens
-    ]
-    before_ids = {line.id for line in before}
-    return before, [line for line in recorded if line.id not in before_ids]
 
 
 def _rows_the_bank_never_showed(
@@ -912,9 +920,12 @@ def review_set(scope: ReviewScope) -> ReviewSet:
     calendar = scope.calendar
     account_id = scope.account_id
     opens = calendar.opening_bound()
-    before, inside = _split_at_calendar_open(
-        _unmatched_lines(account_id), opens,
-    )
+    # **The two DAY bounds, applied in sequence and stated once**
+    # (:func:`~._gaps.bounded_lines`, plan step **balance:X-f3c-2b-2b**).  They
+    # are different facts with different remedies -- the owner's pay schedule
+    # and this ACCOUNT's opening -- and they overlap on real data, so the order
+    # they are applied in decides whether their counts add up.
+    lines = bounded_lines(_unmatched_lines(account_id), opens, scope.opening)
 
     # **What is already CLAIMED is read HERE, not carried in the scope.**  The
     # doors re-read it per act, and this screen is rendered after them inside
@@ -923,7 +934,7 @@ def review_set(scope: ReviewScope) -> ReviewSet:
     matched = matched_subjects(account_id)
     candidates = scope.candidates
     offerable = unmatched_rows(candidates, matched)
-    bank_lines = [_as_bank_line(line) for line in inside]
+    bank_lines = [_as_bank_line(line) for line in lines.inside]
     proposed = propose(bank_lines, offerable)
     proposals = proposed.proposals
     unmatched = _unexplained(bank_lines, proposals)
@@ -933,9 +944,10 @@ def review_set(scope: ReviewScope) -> ReviewSet:
     )
     bounds = ReviewBounds(
         calendar_opens=opens,
-        before_calendar_count=len(before),
+        before_calendar_count=len(lines.before_calendar),
         before_calendar_last_day=(
-            max(line.posted_on for line in before) if before else None
+            max(line.posted_on for line in lines.before_calendar)
+            if lines.before_calendar else None
         ),
         # **The days the SEARCH skipped, published by the search** (finding
         # **N-322**).  This reader re-derived them over every candidate until
@@ -945,6 +957,7 @@ def review_set(scope: ReviewScope) -> ReviewSet:
         crowded_days=proposed.crowded_days,
         unpriceable_count=len(candidates.unpriceable_ids),
         impossible_day_count=parts.impossible_day_count,
+        books=lines.books,
     )
     return ReviewSet(
         proposals=proposals,

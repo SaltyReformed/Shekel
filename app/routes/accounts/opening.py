@@ -102,6 +102,7 @@ class OpeningCeiling:
 def _opening_ceilings(
     earliest_movement: "date | None",
     earliest_assertion: "date | None",
+    earliest_matched_line: "date | None",
 ) -> "list[OpeningCeiling]":
     """Return every bound on this account's opening day, in REFUSAL order.
 
@@ -118,6 +119,8 @@ def _opening_ceilings(
             ``None`` where it records none.
         earliest_assertion: The earliest day the owner has asserted a balance
             for, or ``None``.
+        earliest_matched_line: The earliest day the account has matched a bank
+            line on, or ``None``.
 
     Returns:
         One :class:`OpeningCeiling` per bound that applies, always non-empty --
@@ -150,6 +153,18 @@ def _opening_ceilings(
                 "have to open before that day."
             ),
         ))
+    if earliest_matched_line is not None:
+        ceilings.append(OpeningCeiling(
+            # MINUS a day, with the movement term: a bank line dated ON the
+            # opening day is inside the opening equity.
+            day=earliest_matched_line - timedelta(days=1),
+            said=(
+                "You have matched a bank line your bank posted on "
+                f"{earliest_matched_line.strftime('%b %-d, %Y')}, so the "
+                "books have to open before that day -- undo that match first "
+                "if your records really do start earlier."
+            ),
+        ))
     if earliest_assertion is not None:
         ceilings.append(OpeningCeiling(
             # NOT minus a day: an opening EQUAL to the earliest assertion is
@@ -169,6 +184,7 @@ def _opening_ceilings(
 def _latest_legal_opening_day(
     earliest_movement: "date | None",
     earliest_assertion: "date | None",
+    earliest_matched_line: "date | None",
 ) -> OpeningCeiling:
     """Return the latest day this account's books may legally open on.
 
@@ -211,15 +227,23 @@ def _latest_legal_opening_day(
             after the ceiling offered TODAY on every account with no settled
             movement -- which is every investment, retirement and property
             account the developer holds.
+        earliest_matched_line: The earliest day the account has matched a bank
+            line on, or ``None``.  Plan step **balance:X-f3c-2b-2b**, and it is
+            a SEPARATE term rather than folded into *earliest_movement*
+            because it can be strictly EARLIER: a match settles every member on
+            the LATEST of its bank days, so the group's first line predates the
+            row that explains it.
 
     Returns:
         The binding :class:`OpeningCeiling` -- the EARLIEST of the owner's
-        today, the day before the account's first recorded movement, and the
-        day of its first asserted balance -- carrying the sentence that names
-        it.
+        today, the day before the account's first recorded movement, the day
+        before its first matched bank line, and the day of its first asserted
+        balance -- carrying the sentence that names it.
     """
     return min(
-        _opening_ceilings(earliest_movement, earliest_assertion),
+        _opening_ceilings(
+            earliest_movement, earliest_assertion, earliest_matched_line,
+        ),
         key=lambda ceiling: ceiling.day,
     )
 
@@ -265,6 +289,11 @@ def books_opening_context(account: Account) -> "dict | None":
     # rather than a cost.
     earliest = cash_ledger.earliest_recorded_movement_day(account.id)
     first_assertion = cash_ledger.earliest_assertion_day(account.id)
+    # The fourth bound (plan step **balance:X-f3c-2b-2b**), read here beside
+    # the other two for the reason stated above them: one render asks each
+    # question once, and the ceiling and the sentence explaining it come from
+    # the same answer.
+    first_matched = cash_ledger.earliest_matched_line_day(account.id)
     return {
         "opened_on": opening.opened_on,
         "equity": opening.opening_equity,
@@ -280,7 +309,9 @@ def books_opening_context(account: Account) -> "dict | None":
         # refused by a bound they cannot see reads it as the form being
         # broken, and a card that picked which bound to name would be picking
         # in a different order from the ``min`` that set the box's own ``max``.
-        "ceiling": _latest_legal_opening_day(earliest, first_assertion),
+        "ceiling": _latest_legal_opening_day(
+            earliest, first_assertion, first_matched,
+        ),
     }
 
 

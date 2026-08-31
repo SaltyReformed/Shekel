@@ -64,7 +64,7 @@ that does not touch a constraint cannot be wrong about whether it touched one.
 
 from alembic import op
 
-from app.opening_infrastructure import apply_opening_functions
+from app.opening_infrastructure import MOVEMENT_ARM, apply_opening_functions
 
 
 # revision identifiers, used by Alembic.
@@ -103,30 +103,60 @@ $$ LANGUAGE sql STABLE
 
 
 def upgrade():
-    """Swap every books-boundary function body to the in-code definition.
+    """Swap the MOVEMENT arm's function bodies to the in-code definition.
 
-    All FOUR function bodies, not the two this revision changed, and that is
-    deliberate: re-applying the set is what keeps the revision honest if a
-    later edit moves a different one, where naming two would silently stop
-    tracking the module they came from.  ``CREATE OR REPLACE FUNCTION`` is
-    idempotent, so re-stating an unchanged body costs nothing and asserts
-    nothing false.
+    Every body this revision's arms cover, not only the one it changed, and
+    that is deliberate: re-applying the set is what keeps the revision honest
+    if a later edit moves a different one, where naming a single body would
+    silently stop tracking the module it came from.
+    ``CREATE OR REPLACE FUNCTION`` is idempotent, so re-stating an unchanged
+    body costs nothing and asserts nothing false.
+
+    *The count is not spelled out here on purpose.*  It read "all FOUR function
+    bodies" until plan step balance:X-f3c-2b-2b grew the module to nine and the
+    sentence went stale without anything noticing -- the decaying-premise shape
+    this arc keeps finding.  The arm names what it covers; the module owns how
+    many statements that is.
 
     The three constraint TRIGGERS are deliberately not re-applied -- see the
     module docstring for why that is what makes this revision's own
     ``Review:`` line true.
     """
-    apply_opening_functions(op.execute)
+    # ``arms=(MOVEMENT_ARM,)``: the MATCHED-LINE arm does not exist at this
+    # point in history -- ``d1f6a83c9e47`` installs it, after censusing the
+    # matched lines already in the way.  Naming the arm is what keeps this
+    # revision installing what it declared rather than whatever the shared
+    # builder has grown into; see ``opening_infrastructure.ALL_ARMS``.
+    apply_opening_functions(op.execute, arms=(MOVEMENT_ARM,))
 
 
 def downgrade():
-    """Restore both function bodies the previous revision installed.
+    """Restore the governing-day lookup the previous revision installed.
 
-    ONE body, because this revision changes one: the governing-day lookup's
-    ordering.  The two predicates, the openings dispatcher and the three
-    constraint triggers are byte-identical across it and are deliberately left
-    alone -- re-applying them would be a no-op that reads as though something
-    else moved.
+    ONE body, because this revision changes one: the governing-day ordering.
+
+    **It is NOT a full inverse of the upgrade, and since plan step
+    balance:X-f3c-2b-2b it is further from one.**  ``upgrade`` calls
+    ``apply_opening_functions(arms=(MOVEMENT_ARM,))``, which emits FIVE
+    statements: the two BASE functions -- including ``budget.books_hold``,
+    which does not exist below this revision at all -- and the movement arm's
+    three.  This downgrade replaces one of them.  So downgrading to
+    ``a7e3c95d2f18`` leaves ``budget.books_hold`` standing as an orphan, plus
+    two predicate bodies that call it.
+
+    **Nothing breaks**: the orphan survives precisely because nothing drops it,
+    so every call still resolves, and ``d3b6f1c8a274``'s own downgrade
+    (``remove_opening_infrastructure``) takes the whole boundary away one
+    revision further down.  What is untrue is the tidier claim this docstring
+    used to make -- that the predicates, the dispatcher and the triggers are
+    "byte-identical across it and deliberately left alone".  They were, at the
+    time.  Two of the three bodies now change here, because they ask
+    ``budget.books_hold`` rather than spelling ruling R-HG's comparison.
+
+    Left as it is rather than "fixed" by freezing more bodies: a frozen copy is
+    the thing ``d1f6a83c9e47`` deleted, and re-introducing one here to tidy an
+    intermediate stamp nobody deploys to would trade a real maintenance hazard
+    for a cosmetic one.  Stated instead, which is what a reader needs.
 
     *A draft of this revision also carried an assertion bound into the
     openings predicate, and the suite refused it: the state it forbade is one
