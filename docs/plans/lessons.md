@@ -96,7 +96,8 @@ no reconciler.
 ## Tests and controls that cannot fail
 
 - **Every guard gets a negative control shown to fire, and a REPAIR for a dead control is itself a
-  control needing the same mutation.** A correction can carry the defect it corrects.
+  control needing the same mutation.** A correction carries the defect it corrects, and
+  **a CARVE-OUT needs a mutation per DIRECTION**: absent and too-permissive are ONE experiment.
 - **A TEST THAT REPLACES A DELETED FEATURE'S TEST MUST BE RUN AGAINST THE REVERT.** Deleting a
   behaviour and its test lowers coverage silently unless the replacement is shown to fail without
   the change (two of X-f1e1's four controls passed on the old code).
