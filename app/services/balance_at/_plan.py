@@ -319,11 +319,8 @@ def _planned_from_shadows(
     with :func:`~app.services.cash_ledger.display_amounts_by_id`.
 
     **Until then a projected row's figure is a stored copy of its definition's
-    price and nothing keeps the two equal.**  (The finding id ``balance:N-401``
-    is RESERVED for this and its row is not yet written; the registries were
-    held behind two branches when this shipped.  Named as reserved rather than
-    cited, because a citation to a row that does not exist is the invented
-    reference this project has been bitten by.)  They are equal today -- all 48
+    price and nothing keeps the two equal** (finding **N-401**, owned by
+    ``X-au-f``).  They are equal today -- all 48
     projected loan shadows match their definition to the cent on the same clone
     -- but an edit to a generator-written row moves the derived payoff with no
     signal: halving the Van Loan's 24 future rows while the definition sat at
