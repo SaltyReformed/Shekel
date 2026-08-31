@@ -39,7 +39,11 @@ from app.services.investment_projection import (
     AdaptedDeduction,
     _compute_deduction_per_period,
 )
-from app.services.pay_calendar import DerivedPeriod, PayCadence
+from app.services.pay_calendar import (
+    DerivedPeriod,
+    PayCadence,
+    PayCalendarError,
+)
 from app.services.payroll_basis import gross_per_paycheck
 from tests._test_helpers import payroll_basis
 
@@ -1188,6 +1192,98 @@ class TestThirdPaycheckDetection:
 
         assert _month_ordinal(basis.calendar, opening.start_date) == 1
         assert _month_ordinal(basis.calendar, later.start_date) == 2
+
+
+class TestTheEngineRefusesAPaycheckItCannotPlace:
+    """The PUBLIC door refuses a payday below the opening, from a caller's shape.
+
+    ``_month_ordinal``'s refusal is graded directly in
+    ``test_pay_calendar_rhythm``; this grades it where a caller meets it --
+    through :func:`calculate_paycheck` -- and it exists because the argument
+    that the refusal is unreachable is an ONLY-WAY argument.
+
+    Every one of the 13 call sites in ``app/`` draws its period from the same
+    calendar it prices against, so none can reach this today.  That claim is
+    one unenumerated writer from false, and plan step **balance:X-bh-1** made
+    it expensive rather than cheap to be wrong about: the engine used to return
+    a confident number for a payday it could not place and now RAISES, so a
+    14th caller -- a period built from a form value, a saved template, a
+    backfill script -- meets a ``PayCalendarError`` on a money path instead of
+    a wrong figure.  This case is that caller, written from their shape.  If
+    one ever appears for real, it fails HERE rather than 500ing in production.
+
+    Measured on the developer's own schedule (opening 2026-03-26): the payday
+    2026-03-12, which he really was paid on and the app holds no row for,
+    answered ``net $2,454.10`` before this step.  That answer was not right; it
+    was unexamined.
+    """
+
+    def test_a_payday_below_the_opening_is_refused_not_priced(
+        self, simple_tax_configs,
+    ):
+        """A period built by hand, below the opening payday, raises."""
+        profile = FakeProfile(
+            annual_salary=91675, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="Health", amount="500",
+                                      deductions_per_year=24)],
+        )
+        schedule = [
+            _period(start_date=date(2026, 3, 26) + timedelta(days=14 * i),
+                    period_id=i + 1)
+            for i in range(6)
+        ]
+        basis = payroll_basis(profile, schedule)
+        # NOT drawn from the calendar -- the shape a form value or a backfill
+        # would hand in, which is the whole point of the case.
+        unheld = _period(start_date=date(2026, 3, 12), period_id=99)
+
+        with pytest.raises(PayCalendarError, match="is not paid on"):
+            calculate_paycheck(basis, unheld, simple_tax_configs)
+
+    def test_the_refusal_names_the_day_so_a_traceback_is_actionable(
+        self, simple_tax_configs,
+    ):
+        """The message carries the payday and the owner, not just a type.
+
+        A refusal a reader cannot act on sends them to the wrong cause, which
+        is what the message this asserts exists to prevent.
+        """
+        profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
+        schedule = [
+            _period(start_date=date(2026, 3, 26) + timedelta(days=14 * i),
+                    period_id=i + 1)
+            for i in range(6)
+        ]
+        basis = payroll_basis(profile, schedule)
+        unheld = _period(start_date=date(2026, 3, 12), period_id=99)
+
+        with pytest.raises(PayCalendarError) as caught:
+            calculate_paycheck(basis, unheld, simple_tax_configs)
+
+        message = str(caught.value)
+        assert "2026-03-12" in message
+        assert "user 1" in message
+
+    def test_a_payday_the_calendar_DOES_hold_is_priced(
+        self, simple_tax_configs,
+    ):
+        """THE CONTROL: the refusal fires on the mismatch, not on every call.
+
+        Without this, both cases above would pass against an engine that
+        refused everything.
+        """
+        profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
+        schedule = [
+            _period(start_date=date(2026, 3, 26) + timedelta(days=14 * i),
+                    period_id=i + 1)
+            for i in range(6)
+        ]
+        basis = payroll_basis(profile, schedule)
+
+        result = calculate_paycheck(basis, schedule[0], simple_tax_configs)
+
+        # $91,675 / 26 = $3,525.96, the rate ruling balance:R-HW fixed.
+        assert result.earnings.gross_biweekly == Decimal("3525.96")
 
 
 class TestFirstPaycheckOfMonth:
