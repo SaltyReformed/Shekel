@@ -74,7 +74,7 @@
     Importing a statement stores the bank's own lines so the app has a record
     of when money actually moved. That part changes no balance. A new swipe
     from a merchant you have given a
-    <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}#merchant-rules">standing
+    <a href="{{ url_for('accounts.statement_merchants', account_id=account.id) }}#merchant-rules">standing
     rule</a> is <em>also</em> filed as a purchase where that rule says it goes
     -- listed below, and undoable one at a time. Anything that would change a
     row you made yourself -- its date, its amount, marking it paid -- is never
@@ -358,8 +358,8 @@
     <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}">review
     screen</a>; the Undo itself leaves you here. To stop a merchant filing
     itself, change its answer to <em>ask me every time</em> on
-    <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}#merchant-rules">what
-    you have already decided</a>.
+    <a href="{{ url_for('accounts.statement_merchants', account_id=account.id) }}#merchant-rules">where
+    your merchants go</a>.
   </div>
 </div>
 {% endif %}
