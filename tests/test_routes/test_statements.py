@@ -392,10 +392,25 @@ class TestTheImportPost:
             message for _, message in toasts
         )
         # The header button and the standing-rule anchor, which are how an
-        # owner reaches that page without reading a flash.
-        register = f"/accounts/{seed_user['account'].id}/statements/register"
+        # owner reaches those places without reading a flash.
+        #
+        # THE TWO LINKS LEAD TO DIFFERENT PAGES SINCE ``bank_import:X-gk``
+        # (ruling **bank_import:R-IC**, developer 2026-08-31), and the split is
+        # this case's own reasoning applied one step further.  The button is
+        # about the ACTS -- accepted matches, which are still the register's.
+        # The anchor is about the standing RULE, and the register renders only
+        # the merchants already answered for: measured on a clone of the
+        # developer's own database, 32 of his 62 merchants were on no surface
+        # at all, so the anchor explaining what a standing rule does pointed at
+        # a page that could not show, or answer for, half the merchants it was
+        # explaining.  That is the same *chooser whose submission can never
+        # succeed* shape this case was written for, which is why the
+        # destination moved rather than the assertion being dropped.
+        account_id = seed_user["account"].id
+        register = f"/accounts/{account_id}/statements/register"
+        merchants = f"/accounts/{account_id}/statements/merchants"
         assert f'href="{register}"' in page
-        assert f'href="{register}#merchant-rules"' in page
+        assert f'href="{merchants}#merchant-rules"' in page
 
     def test_undoing_a_filed_act_LEAVES_THE_OWNER_HERE(
         self, auth_client, db, seed_user,
