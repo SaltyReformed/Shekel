@@ -18,10 +18,17 @@ this pass has an unexplained outflow for and the owner has never answered
 about, which is a decision they OWE.  :class:`MerchantRegister` is the
 REGISTER's: every answer they have already GIVEN, shown so it can be restated.
 They share a row (:class:`MerchantSummary`) and an option list
-(:func:`_offered`), because *which merchant, and what did they say* is one
+(:func:`offered_answers`), because *which merchant, and what did they say* is one
 question wherever it is asked; what they do not share is this pass's waiting
 lines, which only the queue measures and only the queue states
 (:class:`WaitingMerchant`).
+
+**A THIRD control reads both of those since plan step ``bank_import:X-gk``**
+and it lives in :mod:`._directory`, not here: the DIRECTORY lists every
+merchant this account has ever seen -- answered or not, waiting or not -- and
+it needs a QUERY to do it (the merchant list and the statement record), which
+this module is disciplined not to make.  So the two shared names became public
+and the surface that reads a database stayed on the other side of that line.
 
 Nothing changed on the way across from :mod:`._reads` except what R-GJ added: a
 row says whether a SOURCE files this merchant as a payment to a credit card,
@@ -276,7 +283,7 @@ class _Waiting:
     total: Decimal = Decimal("0.00")
 
 
-def _merchant_summary(
+def merchant_summary(
     merchant_id: int,
     merchant: str,
     view: RuleView,
@@ -284,11 +291,19 @@ def _merchant_summary(
 ) -> MerchantSummary:
     """Return one merchant and what the owner has said about it.
 
-    **Shared by both controls** (plan step ``bank_import:X-gf-2``): the queue
-    asks about a merchant with no answer and the register shows one with an
-    answer, and *which merchant, and what did they say* is the same question on
-    both.  What differs is only what surrounds it -- this pass's waiting lines
-    on one side (:class:`WaitingMerchant`), nothing on the other.
+    **Shared by all THREE controls** (plan step ``bank_import:X-gf-2``; the
+    third arrived at ``bank_import:X-gk``): the queue asks about a merchant
+    with no answer, the register shows one with an answer, and the DIRECTORY
+    lists every merchant this account has seen whether or not either is true.
+    *Which merchant, and what did they say* is the same question on all three.
+    What differs is only what surrounds it -- this pass's waiting lines on one
+    side (:class:`WaitingMerchant`), this account's whole statement record on
+    another (:class:`~._directory.MerchantEntry`), nothing on the third.
+
+    **PUBLIC because a second module reads it** -- :mod:`._directory` -- which
+    is this project's rule for a name reached from another module rather than
+    borrowed through an underscore (finding **N-33**'s shape).  It was
+    ``_merchant_summary`` while both readers lived here.
 
     Args:
         merchant_id: The merchant row this asks about.
@@ -389,7 +404,7 @@ def merchant_section(
     return MerchantSection(
         merchants=tuple(
             WaitingMerchant(
-                summary=_merchant_summary(
+                summary=merchant_summary(
                     merchant_id, names[merchant_id], view, bars,
                 ),
                 line_count=share.count,
@@ -408,7 +423,7 @@ def merchant_section(
                 key=lambda pair: names[pair[0]],
             )
         ),
-        templates=_offered(view),
+        templates=offered_answers(view),
     )
 
 
@@ -437,21 +452,25 @@ def answered_merchants(
     """
     return MerchantRegister(
         merchants=tuple(
-            _merchant_summary(rule.merchant_id, rule.merchant, view, bars)
+            merchant_summary(rule.merchant_id, rule.merchant, view, bars)
             for rule in sorted(
                 view.rules.values(), key=lambda rule: rule.merchant,
             )
         ),
-        templates=_offered(view),
+        templates=offered_answers(view),
     )
 
 
-def _offered(view: RuleView) -> "tuple[tuple[int, str], ...]":
-    """Return the option list both controls render, ascending by name.
+def offered_answers(view: RuleView) -> "tuple[tuple[int, str], ...]":
+    """Return the option list every merchant control renders, ascending by name.
 
-    One spelling, because the two controls offer the same answers: what
-    differs between them is which merchants are asked about, never what may be
-    said.
+    One spelling, because the controls offer the same answers: what differs
+    between them is which merchants are asked about, never what may be said.
+
+    **PUBLIC because a third module reads it** -- :mod:`._directory`, which is
+    the DIRECTORY's assembly (plan step ``bank_import:X-gk``) -- which is this
+    project's rule for a name reached from another module rather than borrowed
+    through an underscore (finding **N-33**'s shape).
 
     Args:
         view: What the owner has said and what it can resolve against.
