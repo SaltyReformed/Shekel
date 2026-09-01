@@ -1305,6 +1305,62 @@ class TestComputeRemaining:
 
             assert remaining == Decimal("-50.00")
 
+    def test_a_REFUND_carries_remaining_ABOVE_the_budget(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """`$100.00` budget, one `-$50.00` refund: remaining is `$150.00`.
+
+        Developer ruling 2026-09-01, ruling **bank_import:R-II**, plan step
+        ``bank_import:X-gj-2b-3``.  A merchant credit files as a NEGATIVE
+        purchase, so this figure is UNBOUNDED ABOVE and the base is a NET cash
+        target: `$150.00` of net spending may still be recorded against a
+        `$100.00` plan, because `-$50.00` of it has already happened.
+
+        Capping it at the budget was put to the developer with these numbers
+        and refused -- it breaks ``sum(entries) + remaining == budget``, which
+        every surface that renders this depends on, and it would make the
+        dashboard disagree with the balance reservation beside it.  Asserted
+        because a cap is the change somebody will reach for when they meet
+        `$150.00` on a `$100.00` envelope and read it as a bug.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _make_entry(
+                txn, seed_user["user"], amount="-50.00",
+                description="Amazon refund",
+            )
+
+            remaining = entry_service.compute_remaining(
+                Decimal("100.00"), [entry],
+            )
+
+            assert remaining == Decimal("150.00")
+            # THE IDENTITY the figure exists inside.
+            assert remaining + entry.amount == Decimal("100.00")
+
+    def test_a_PARTLY_refunded_envelope_nets_below_its_budget(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The control: `$80.00` spent and `$30.00` back is `$50.00` consumed.
+
+        Without it the case above is satisfied by an implementation that
+        ignores negative entries entirely, which would answer `$100.00` there
+        and `$20.00` here.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            entries = [
+                _make_entry(txn, user, amount="80.00"),
+                _make_entry(
+                    txn, user, amount="-30.00", description="Amazon refund",
+                ),
+            ]
+
+            assert entry_service.compute_remaining(
+                Decimal("100.00"), entries,
+            ) == Decimal("50.00")
+
     def test_compute_remaining_empty_entries(self, app):
         """No entries: remaining equals the estimated amount."""
         with app.app_context():

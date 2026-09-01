@@ -99,8 +99,15 @@ class CashPeriodFigures:
         income: Every row ATTRIBUTED to this period whose type is income --
             settled at its confirmed cash leg, still-projected at its live or
             entries-aware amount.  A magnitude, cent-quantized.
-        expense: The same, for expense rows.  A magnitude (positive), so the
-            column reads ``income`` minus ``expense``.
+        expense: The same, for expense rows, so the column reads ``income``
+            minus ``expense``.  **A magnitude in the ordinary case and NOT a
+            bound**: an expense whose cash leg inverts contributes NEGATIVELY
+            here, which :func:`_budget_legs` derives and
+            ``test_a_row_counts_on_its_TYPE_row_even_when_its_cash_leg_inverts``
+            pins.  A settled envelope whose refunds exceeded its purchases is a
+            second way in since ruling **bank_import:R-II**; the word
+            *(positive)* stood here until plan step ``bank_import:X-gj-2b-3``
+            and contradicted that function 250 lines below it.
         net: ``round_money(income - expense)`` -- rounded ONCE at the boundary
             rather than as the difference of two separately-rounded legs,
             because it is the figure the balance roll-forward has to reconcile
@@ -361,8 +368,10 @@ def _budget_legs(
         window: The reported periods.
 
     Returns:
-        ``{period_id: (income, expense)}`` -- both magnitudes, UNROUNDED (the
-        caller rounds once at the boundary), and total over the window.
+        ``{period_id: (income, expense)}`` -- SIGNED, UNROUNDED (the caller
+        rounds once at the boundary), and total over the window.  Each is a
+        magnitude in the ordinary case; the paragraph above states the two
+        shapes that invert one.
     """
     income = _zeroed(window)
     expense = _zeroed(window)
@@ -372,8 +381,12 @@ def _budget_legs(
         if fact.is_income:
             income[fact.pay_period_id] += fact.delta
         else:
-            # A settled expense's leg is NEGATIVE (money left), and the expense
-            # row on screen is a magnitude.
+            # A settled expense's leg is NEGATIVE (money left), so negating it
+            # puts the row on screen the right way up.  **Total over both
+            # directions**: a leg that inverted -- a correction below the card
+            # entries, or an envelope its refunds carried below zero (ruling
+            # **bank_import:R-II**) -- comes out as a NEGATIVE expense, which
+            # is the classification this function pins by TYPE.
             expense[fact.pay_period_id] -= fact.delta
     by_period: "dict[int, list[Transaction]]" = defaultdict(list)
     for txn in plan.rows:

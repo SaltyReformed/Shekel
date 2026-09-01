@@ -231,7 +231,17 @@ class OutstandingPurchase:
             what the row is captioned with.  Never the day it settled: an
             outstanding purchase has no settle day, which is the definition.
         description: The purchase's own description, as typed.
-        amount: The purchase's amount, positive.
+        amount: The purchase's amount, SIGNED.  **It said POSITIVE until plan
+            step ``bank_import:X-gj-2b-3``**, which held only while
+            ``ck_transaction_entries_positive_amount`` said ``amount > 0``.
+            Ruling **bank_import:R-II** made a merchant credit a NEGATIVE
+            purchase and one REACHES this set: the scope selects debit
+            purchases with no recorded posting day, and a refund has none
+            wherever the owner typed the negative on the edit door or cleared a
+            posting day they had recorded.  It is not the bank-import door's
+            refunds -- ``_born_purchase`` gives those the bank's own posting
+            day at birth, so they are outside this set by construction.  The
+            panel prints the figure through ``money()``, which signs it.
     """
 
     entry_id: int
@@ -429,7 +439,16 @@ class OutstandingSet:
         purchase_count: How many PURCHASES the set offers -- entries whose
             posting day has not been recorded.  Ticking one moves no money on
             its own; it releases that much of its envelope's reservation.
-        purchase_total: The sum of those purchases.
+            **A refund is one of them** (ruling **bank_import:R-II**), which is
+            that ruling's own vocabulary rather than a widening: a refund IS a
+            negative purchase, and one the bank has not been seen to pay back
+            is outstanding in exactly the sense this panel asks about.
+        purchase_total: The sum of those purchases, SIGNED and NETTED.  Two
+            offers of `$120.00` and `-$45.00` come to `$75.00`, and the panel's
+            *N purchase(s) (X) still held back* reads on that net -- which is
+            what the envelope's reservation is really holding, since `$120.00`
+            is expected to leave and `$45.00` to arrive.  The count stays a
+            count of ROWS: it says how many ticks the owner has to make.
         payment_count: How many EXPENSE rows the set offers -- an envelope's
             own close, or a bill.  Ticking one settles the row.
         payment_total: What those rows would book.

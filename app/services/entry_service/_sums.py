@@ -325,6 +325,27 @@ def compute_remaining(
     credit) because the remaining balance represents budget consumption,
     not checking impact.  Negative values indicate overspending.
 
+    **THE BASE IS A NET CASH TARGET, SO THIS IS UNBOUNDED IN BOTH DIRECTIONS**
+    (developer ruling 2026-09-01, ruling **bank_import:R-II**, plan step
+    ``bank_import:X-gj-2b-3``).  A merchant credit files as a NEGATIVE
+    purchase, so ``sum(entries)`` can be negative and this can exceed the
+    budget: an envelope budgeting `$100.00` that holds one `-$50.00` refund and
+    nothing else answers `$150.00`, which is *`$150.00` of net spending may
+    still be recorded against a `$100.00` plan*.  The alternative -- clamping
+    at the budget -- was put to the developer with those numbers and refused,
+    because it breaks the identity every surface that renders this depends on
+    (``sum(entries) + remaining == budget``) and because
+    ``cash_ledger._amounts._entry_checking_impact`` already reads the plan the
+    same way: its own derivation says that treating a refund as spending
+    nothing further *is the opposite of what a reservation is for*.
+
+    **The COST is recorded rather than hidden.**  A refund of a purchase made
+    in an EARLIER pay period lands in the period the bank posted it (the same
+    developer's ruling of 2026-09-01, on the cash basis, because the
+    alternative moves a figure the balance projection depends on), so it
+    enlarges an envelope whose own purchases it did not reverse.  That is a
+    known and accepted consequence, not a defect to re-report.
+
     Per E-21 (audit MED-03 / F-028 / F-056) the budget base for an
     entry-tracked bill row is the row's own AMOUNT unconditionally --
     never ``actual_amount`` and never status-dependent.  This is why
@@ -376,7 +397,14 @@ def pct_complete(total: Decimal, target: Decimal) -> Decimal:
     notation in ``%`` values.
 
     Args:
-        total: Sum of entries against the budgeted line.
+        total: Sum of entries against the budgeted line.  **It can be
+            NEGATIVE since ruling bank_import:R-II** -- an envelope whose
+            refunds exceeded its purchases -- which makes
+            :func:`~app.utils.money.percent_complete`'s negative-ratio arm
+            reachable where it was not.  ``0`` is the right answer and the
+            arm was censused and kept at plan step ``bank_import:X-gj-2b-3``:
+            this drives a progress BAR's width, a bar cannot be negative, and
+            the figure it sits beside is rendered unclamped.
         target: Budgeted estimated amount.  If <= 0 the function
             returns ``Decimal("0")`` rather than dividing by zero or
             producing a misleading negative percentage.

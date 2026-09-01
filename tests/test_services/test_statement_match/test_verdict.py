@@ -662,3 +662,56 @@ class TestARefundIsWithheldWhenTheBooksMayAlreadyHoldIt:
         )
 
         assert "count the same money twice" not in line.verdict.withheld
+
+    def test_a_COLLISION_is_reported_before_the_double_count(self):
+        """The middle rung of the ladder, which NO case reached.
+
+        Plan step ``bank_import:X-gj-2b-3``.  :func:`ruled` chooses one
+        withholding from three in a fixed order -- the gap, then a destination
+        this statement already explains, then the double count -- and only the
+        FIRST boundary was graded.  No case staged a line that was BOTH
+        proposed-explained and already-held, so swapping those two ``elif``
+        arms changed nothing any test could see.
+
+        **The order is an argument, not an accident.**  A destination this
+        statement explains on its own makes the purchase impossible to accept
+        (:data:`~._verdict._ALREADY_EXPLAINED`) -- a conclusion this pass HAS
+        reached about this line -- while the double count says the money
+        *could* already be in the books.  The harder fact is named first, and
+        its advice resolves the softer one too: accepting the match, or filing
+        the line elsewhere, ends both.
+
+        Asserts the ABSENCE of the other sentence as well as the presence of
+        this one, because a producer that concatenated both would satisfy a
+        one-sided case while printing two reasons for one line -- the
+        two-sentences-per-line shape ruling **bank_import:R-HR** removed.
+        """
+        [line] = _lines(
+            (_creatable(_records_in()),),
+            proposals=(_proposal(_row(row_id=ENVELOPE_ID)),),
+            already_held={7: _held("2473.38")},
+        )
+
+        assert "makes that match impossible to accept" in line.verdict.withheld
+        assert "count the same money twice" not in line.verdict.withheld
+        assert line.warning.endswith(
+            "Accept that match first, or file this line somewhere else.",
+        )
+
+    def test_the_double_count_is_reported_when_NO_proposal_collides(self):
+        """The control for the case above, on the same two facts.
+
+        Identical staging with the proposal removed: the line is still
+        already-held, and now the double count is what it is told.  Without it
+        the case above passes on a producer that never reports the double count
+        at all -- which is the state this whole class was written to end.
+        """
+        [line] = _lines(
+            (_creatable(_records_in()),),
+            already_held={7: _held("2473.38")},
+        )
+
+        assert "count the same money twice" in line.verdict.withheld
+        assert "makes that match impossible to accept" not in (
+            line.verdict.withheld
+        )

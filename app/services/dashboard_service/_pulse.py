@@ -733,7 +733,17 @@ def _row_still_due(
     An entry-tracked (envelope) row contributes its entries-aware
     remaining (its resolved BUDGET minus the sum of all recorded
     entries, via :func:`compute_remaining`) floored at zero -- so an
-    over-budget envelope contributes ``0`` rather than a negative.  A
+    over-budget envelope contributes ``0`` rather than a negative.
+
+    **It is floored BELOW and deliberately not above** (developer ruling
+    2026-09-01, plan step ``bank_import:X-gj-2b-3``).  Since ruling
+    **bank_import:R-II** a refund files as a negative purchase, so an
+    envelope's remaining can EXCEED its budget -- `$150.00` still due against a
+    `$100.00` plan, for one holding a `-$50.00` refund and nothing else -- and
+    that figure is what the ruled net basis means: the envelope's plan is
+    `$100.00` of NET spending and `-$50.00` of it has happened.  Capping it at
+    the budget was refused with those numbers, because the dashboard would then
+    disagree with the balance projection beside it.  A
     non-tracked row contributes what the row is WORTH (the obligation the
     bill row already displays; positive for an expense).  Returned
     unrounded; the caller rounds the period sum once at the boundary.
