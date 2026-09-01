@@ -68,10 +68,12 @@ from app.services.statement_match import (
     MintedEnvelopes,
     NewEnvelope,
     PurchaseCreation,
+    RuleView,
     Tab,
     accept_match,
     awaiting_review_count,
     create_purchase_from_line,
+    file_new_swipes,
     reconcile_page,
     record_income_from_line,
     review_set,
@@ -82,6 +84,7 @@ from ._builders import (
     a_scope,
     a_submission,
     a_transaction,
+    a_rule,
     an_import,
 )
 
@@ -766,6 +769,55 @@ class TestTheThreeDoorsRefuseIt:
         db.session.flush()
         assert recorded.transaction_id == envelope.id
         assert len(envelope.entries) == 1
+    def test_a_STANDING_RULE_cannot_auto_file_a_deposit_before_the_books(
+        self, app, db, seed_user,
+    ):
+        """The no-press path, and WHICH of two mechanisms holds it.
+
+        **Two independent things guard this today and that is not redundancy
+        until their fail sets are known.**  ``_gaps._split_at_books_open``
+        takes a pre-books line OUT of the pass, so a rule never sees it; and
+        this door's own refusal sits above the write, so a line that somehow
+        reached it is refused.  Either alone would hold the line -- which means
+        a regression in either is INVISIBLE until the day the other is also
+        touched, and by then two changes are in flight and neither looks
+        responsible.
+
+        So this case pins the FIRST: it asserts the deposit never reaches
+        ``recordable_inflows`` at all, and therefore that the filing pass files
+        nothing and reports nothing about it.  Break the split and this fails
+        even while the door still refuses.
+
+        Its pair is :meth:`test_the_INCOME_door_refuses_and_WRITES_NO_ROW`,
+        which pins the second by calling the door directly.
+        """
+        a_rule(
+            seed_user, "Dividend Earned",
+            income_category_id=seed_user["categories"]["Salary"].id,
+        )
+        day = _the_calendars_first_day(db, seed_user)
+        statement = an_import(seed_user)
+        a_bank_line(
+            seed_user, statement, amount="0.15", posted_on=day,
+            merchant="Dividend Earned",
+            description="DIVIDEND EARNED (Dividend Earned)",
+        )
+        db.session.commit()
+
+        scope = a_scope(seed_user)
+        review = review_set(scope)
+        filing = file_new_swipes(scope, statement.id)
+        db.session.flush()
+
+        # THE MECHANISM: the line is not in the pass, so no rule can reach it.
+        assert [
+            inflow.line.line_id for inflow in review.recordable_inflows
+        ] == []
+        # ...and therefore nothing is filed and nothing is withheld: a line the
+        # pass does not hold is not this pass declining to act on it.
+        assert filing.filed_count == 0
+        assert filing.withheld == ()
+        assert tuple(filing.outcome.refused) == ()
 
     def test_the_INCOME_door_refuses_and_WRITES_NO_ROW(
         self, app, db, seed_user,
@@ -795,7 +847,10 @@ class TestTheThreeDoorsRefuseIt:
         with pytest.raises(
             ValidationError, match="Your bank posted this line on",
         ):
-            record_income_from_line(IncomeCreation(line_id=line.id), scope)
+            record_income_from_line(
+                IncomeCreation(line_id=line.id), scope,
+                RuleView.build(scope.owner_id, scope.account_id),
+            )
 
         assert db.session.query(Transaction).filter(
             Transaction.name.like("ACH DEPOSIT TOWN OF CLAYTON%"),

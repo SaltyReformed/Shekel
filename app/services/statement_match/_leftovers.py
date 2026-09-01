@@ -61,7 +61,12 @@ from app.services.status_seam import day_is_in_the_future
 from ._bars import CreationBars, ParkedLine
 from ._creations import PurchaseDestination, envelope_answer_key
 from ._offers import BankLine
-from ._placement import Placement, placements_for
+from ._placement import (
+    InflowPlacement,
+    Placement,
+    inflow_placement_for,
+    placements_for,
+)
 from ._rules import RuleView
 from ._scope import ReviewScope, no_period_refusal
 from ._section import MerchantSection, merchant_section
@@ -150,13 +155,23 @@ class CreatableLine:
 class RecordableInflow:
     """One unmatched bank line of money COMING IN, and where it would land.
 
-    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  :class:`CreatableLine`
-    without its two chooser fields, and the absence is the whole difference: a
-    purchase is filed against a container the owner picks between, and an
-    income row is filed against nothing -- so there are no destinations to
-    offer and no placement to suggest, and a value carrying empty versions of
-    both would be a control one Jinja condition away from rendering.  That is
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.
+    :class:`CreatableLine` without its DESTINATIONS, and that absence is still
+    the difference: a purchase is filed against a container the owner picks
+    between, and an income row is filed against nothing -- so there is no
+    offer set here and a field holding an empty one would be a destination
+    select one Jinja condition away from rendering beside a deposit.  That is
     the argument :class:`~._bars.ParkedLine` already makes beside them.
+
+    **It DOES carry a placement since plan step ``bank_import:X-gj-2a``, and
+    this docstring said it could not.**  It read *no placement to suggest*,
+    which was true only while a rule's answer was always a CONTAINER: ruling
+    **R-HT(a)** gave the answer set a member that names an income CATEGORY,
+    which is a classification rather than a container, so it suggests
+    something without offering anything to pick between.
+    :class:`~._placement.InflowPlacement` is a different type from
+    :class:`~._placement.Placement` for exactly that reason, so the field that
+    would have rendered a select still cannot.
 
     Attributes:
         line: The bank's own record of the movement.
@@ -165,6 +180,11 @@ class RecordableInflow:
             transaction day**, which is the residual's rule rather than the
             purchase's: this row has no budget clock of its own because it IS
             the movement (:meth:`~._scope.ReviewScope.period_holding`).
+        placement: What the owner's standing rule comes to for this deposit
+            (:func:`~._placement.inflow_placement_for`), or ``None`` where no
+            rule reaches it -- which is the ordinary state and is the same
+            three-facts-not-distinguished absence :attr:`CreatableLine
+            .placement` carries.
         withheld: Why this line may NOT be recorded, or ``None`` when it may.
             **ONE server-derived sentence rather than two Jinja conditions**,
             which is :attr:`~._bars.ParkedLine.reason`'s argument: a template
@@ -187,6 +207,7 @@ class RecordableInflow:
     line: BankLine
     pay_period_id: "int | None"
     withheld: "str | None" = None
+    placement: InflowPlacement | None = None
 
 
 def _creatable_lines(
@@ -283,7 +304,7 @@ def _creatable_lines(
 
 
 def _recordable_inflows(
-    calendar, unmatched: "list[BankLine]",
+    calendar, unmatched: "list[BankLine]", view: RuleView,
 ) -> "tuple[RecordableInflow, ...]":
     """Return the unmatched lines of money COMING IN, each placed by its day.
 
@@ -305,24 +326,41 @@ def _recordable_inflows(
     outflow; a deposit is not spending, and neither of the two bars has an arm
     that could be true of one.
 
+    **A RULE is asked, since plan step ``bank_import:X-gj-2a``** (ruling
+    **R-HT(a)**), and the two are not in tension: a bar refuses an act, and
+    this suggests one.  A merchant answered *never a purchase* still reaches
+    :func:`~._placement.inflow_placement_for` and still resolves to nothing
+    there, so the bar's silence about deposits costs no safety -- the answer
+    simply names no income category, which is the same as having said nothing.
+
     Args:
         calendar: The owner's
             :class:`~app.services.pay_calendar.PayCalendar`, which places each
             line.  Taken rather than loaded, so one request holds ONE calendar.
         unmatched: The bank lines inside the calendar no proposal explains.
+        view: What the owner has said and what it can resolve against.  **The
+            SAME view the outflow half is given**, read once by
+            :func:`leftovers` -- so one request asks ``merchant_rules`` once
+            and the two directions cannot resolve against answers read at two
+            different instants.
 
     Returns:
         One :class:`RecordableInflow` per inflow, in the order the lines were
         given.
     """
     return tuple(
-        _one_inflow(line, _period_id_for(calendar, line.posted_on))
+        _one_inflow(
+            line, _period_id_for(calendar, line.posted_on),
+            inflow_placement_for(line.merchant_id, view),
+        )
         for line in unmatched if line.amount > 0
     )
 
 
 def _one_inflow(
-    line: BankLine, pay_period_id: "int | None",
+    line: BankLine,
+    pay_period_id: "int | None",
+    placement: InflowPlacement | None,
 ) -> RecordableInflow:
     """Return one inflow, and why the door would refuse it if it would.
 
@@ -334,6 +372,11 @@ def _one_inflow(
     Args:
         line: The unexplained inflow.
         pay_period_id: The period covering the day it POSTED, or ``None``.
+        placement: What a standing rule says this deposit is, or ``None``.
+            **Resolved by the caller and threaded rather than looked up here**,
+            for the reason every other fact on this value is: one pass holds
+            one :class:`~._rules.RuleView`, and a per-line read of it would be
+            the redundant producer call this project treats as a defect.
 
     Returns:
         Its :class:`RecordableInflow`.
@@ -353,6 +396,7 @@ def _one_inflow(
         # the day its period is resolved from -- one derivation, so the screen
         # cannot offer a control the door then refuses.
         line=line, pay_period_id=pay_period_id, withheld=withheld,
+        placement=placement,
     )
 
 
@@ -530,7 +574,9 @@ def leftovers(
     return Leftovers(
         creatable=creatable,
         parked=parked,
-        recordable_inflows=_recordable_inflows(scope.calendar, unmatched),
+        recordable_inflows=_recordable_inflows(
+            scope.calendar, unmatched, view,
+        ),
         # **Both halves**, because a merchant is parked for want of an answer
         # and this control is the only place one is given: counting only the
         # creatable half would refuse the act and hide the door that permits

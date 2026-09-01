@@ -34,8 +34,8 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     settlement_basis_id,
 )
+from app.services.cash_ledger import _resolve_loan_basis
 from app.services.loan_payment_service import (
-    _resolve_loan_basis,
     compute_contractual_pi,
     get_payment_history,
     prepare_payments_for_engine,
@@ -1089,6 +1089,14 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
     ``tests/manual/verify_loan_pricing_ignores_payment_feed.py``: both live
     loans answer one figure (``1293.96`` and ``531.94``) across a FULL 29-record
     feed, an EMPTY one, the confirmed 5 alone, and a DOUBLED 58.
+
+    **The producer moved to ``cash_ledger`` at plan step X-au-g-2a and this
+    control did NOT follow it**, deliberately: what it grades is the
+    RELATIONSHIP between the two packages -- the first test calls
+    :func:`get_payment_history` to prove the feed is non-empty before emptying
+    it -- and both tests build their loan with this module's
+    ``_create_loan_account`` / ``_create_transfer_to_loan``.  Moving the class
+    would either duplicate those two fixtures or move them for one caller.
     """
 
     def test_the_price_is_unchanged_when_every_payment_row_is_deleted(

@@ -80,10 +80,22 @@ class Unofferable:
             Archiving is what ``archive_helpers.category_has_usage`` now
             produces where a permanent delete used to cascade the rule away,
             so this is live state rather than a hypothetical.
+        income_category: The same, for the category a stored INCOME answer
+            files a DEPOSIT under (**R-HT(a)**, plan step
+            ``bank_import:X-gj-2a``).  **A THIRD arm rather than a second use
+            of** :attr:`category`, for the reason the column and the field are
+            their own: a merchant carries one answer, so only one arm is ever
+            set -- but the option each renders carries a DIFFERENT wire value
+            (``i:`` against the new-envelope arm's separate fields), and a
+            template that read one arm for both would round-trip the stored
+            answer as the other one.  That is the *submitted as something the
+            owner never chose* failure this whole value exists to prevent,
+            which is why the arm is added rather than shared.
     """
 
     template: "str | None" = None
     category: "str | None" = None
+    income_category: "str | None" = None
 
 
 @dataclass(frozen=True)
@@ -352,6 +364,13 @@ def merchant_summary(
                 if rule is not None
                 and rule.category_id is not None
                 and rule.category_id not in view.active_categories
+                else None
+            ),
+            income_category=(
+                view.category_label_for(rule.income_category_id)
+                if rule is not None
+                and rule.income_category_id is not None
+                and rule.income_category_id not in view.active_categories
                 else None
             ),
         ),

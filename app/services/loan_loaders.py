@@ -589,7 +589,7 @@ def projected_income_shadows(
 
     Carries no period bound and NO cash: the plan builder resolves each shadow's
     live D3 cash
-    (:meth:`~app.services.loan_payment_service.LoanPricing.live_cash`), its due
+    (:meth:`~app.services.cash_ledger.LoanPricing.live_cash`), its due
     date (:func:`loan_payment_due_date`), and its escrow as the plan is assembled.
     ``pay_period`` and ``status`` are eager-loaded by :func:`query_shadow_income`.
 
@@ -817,7 +817,7 @@ def latest_settled_payment_due_date(
     Keys on the payment's DUE date -- contract time, the EXACT date the fold's
     walk (:func:`app.services.loan_ledger.walk_loan_ledger`) and the settle-time
     cash freeze
-    (:func:`app.services.loan_payment_service._shadow_live_amount`) resolve each
+    (:func:`app.services.cash_ledger._loan_installment._shadow_live_amount`) resolve each
     payment's escrow at (ruling D5, finding N-34).  It is the SAME
     :func:`_settled_payment_due_dates` derivation the anchor-ordering guards
     read, so the escrow guard, the walk, and the tax figure provably agree on
@@ -834,7 +834,7 @@ def latest_settled_payment_due_date(
     earlier installment is the same structural property the tracking-start guard
     carries; a settled payment's escrow is additionally frozen by
     capture-on-settle
-    (:meth:`~app.services.loan_payment_service.LoanPricing.live_cash`).
+    (:meth:`~app.services.cash_ledger.LoanPricing.live_cash`).
 
     Args:
         account_id: The loan account whose settled payments to scan.

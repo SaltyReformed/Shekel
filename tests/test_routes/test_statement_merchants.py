@@ -46,6 +46,7 @@ from collections import namedtuple
 import pytest
 
 from app.models.account import Account
+from app.models.category import Category
 from app.models.merchant_rule import MerchantRule
 from app.models.user import User, UserSettings
 from app.services import auth_service
@@ -1400,3 +1401,173 @@ class TestTheNewEnvelopeAnswerNeedsNOTHINGToRun:
             as_text=True,
         )
         assert _rule_of(db, merchant.id) is None
+
+
+class TestTheINCOMEAnswerIsReachableFromABrowser:
+    """Ruling **R-HT(a)**, plan step ``bank_import:X-gj-2a``, through the page.
+
+    **The control is what makes the answer sayable, and this arc has shipped
+    four answers whose control was broken in a way no service test could see.**
+    N-403 and N-404 were arms hidden behind a ``d-none`` only scripting
+    removed; the stale-template and archived-category options were arms with no
+    ``selected`` value, so the select submitted its FIRST and a Save silently
+    restated a rule the owner never touched.  So the income answer is graded
+    the way those were finally graded: by reading what a BROWSER would submit
+    and posting exactly that back.
+    """
+
+    def _open(self, auth_client, seed_user, merchant_id):
+        """Return the page with one merchant's row open for editing."""
+        return _page(
+            auth_client, seed_user["account"].id, edit=merchant_id,
+        )
+
+    def test_the_page_OFFERS_an_income_category_option(
+        self, auth_client, db, seed_user,
+    ):
+        """An answer with no option is one no owner can ever give.
+
+        This is the check that would have caught N-403 and N-404 on their own
+        surfaces: the service can store the answer perfectly and the page can
+        still make it unreachable.
+        """
+        merchant_id = a_merchant(seed_user, "Dividend Earned").id
+        category = seed_user["categories"]["Salary"]
+        db.session.commit()
+
+        page = self._open(auth_client, seed_user, merchant_id)
+
+        # **The option's own value and its own LABEL.**  Asserting
+        # ``category.display_name in page`` alone proves nothing here: the
+        # new-envelope arm's category select renders every category's display
+        # name, so that half passes even if the income optgroup carries no
+        # label at all.
+        assert re.search(
+            rf'<option value="i:{category.id}"[^>]*>\s*income: '
+            + re.escape(category.display_name),
+            page,
+        ), "the income option is not offered with its category named"
+
+    def test_posting_what_the_page_EMITS_stores_the_income_answer(
+        self, auth_client, db, seed_user,
+    ):
+        """The whole round trip, in the direction a browser drives it.
+
+        **The WHOLE payload is what the page emits, and the ACTION is the
+        page's own.**  A first version scraped only the option value, hand-wrote
+        the other three fields and posted to a URL built here -- which is
+        verbatim the two anti-patterns this module was rewritten after (a
+        hand-picked body that omitted controls the page renders, and a
+        hand-built URL that the real save form does not carry).  Measured
+        2026-08-31: a browser submits FOUR fields, not the three that version
+        sent.  ``rule_form_controls`` reads every control at the value it
+        renders, and ``_save_action`` reads the form's own target, so this case
+        can no longer pass over a page that emits something else.
+        """
+        merchant_id = a_merchant(seed_user, "Dividend Earned").id
+        category = seed_user["categories"]["Salary"]
+        db.session.commit()
+        page = self._open(auth_client, seed_user, merchant_id)
+        controls = rule_form_controls(page)
+        assert f'value="i:{category.id}"' in page, (
+            "the page emitted no income option to select"
+        )
+        # The owner picks the income answer; every other control keeps the
+        # value the page rendered.
+        controls[f"rule-{merchant_id}"] = f"i:{category.id}"
+
+        response = auth_client.post(
+            _save_action(page), data={"csrf_token": "x", **controls},
+        )
+
+        assert response.status_code == 200
+        stored = _rule_of(db, merchant_id)
+        assert stored.income_category_id == category.id
+        # ...and no OTHER answer's column came with it, which is what the
+        # widened CHECK makes unwritable and what a shared field would have
+        # made possible.
+        assert stored.template_id is None
+        assert stored.envelope_name is None
+        assert stored.category_id is None
+        assert stored.never_a_purchase is False
+
+    def test_a_STORED_income_answer_renders_back_SELECTED(
+        self, auth_client, db, seed_user,
+    ):
+        """The defect class this arc has paid for three times.
+
+        A select whose stored value carries no ``selected`` option displays --
+        and submits -- its FIRST.  On this control that is *I have not said*,
+        so opening the row and pressing Save would silently restate a money
+        rule as no answer at all.
+        """
+        merchant_id = a_merchant(seed_user, "Dividend Earned").id
+        category = seed_user["categories"]["Salary"]
+        a_rule(
+            seed_user, "Dividend Earned", income_category_id=category.id,
+        )
+        db.session.commit()
+
+        page = self._open(auth_client, seed_user, merchant_id)
+
+        assert re.search(
+            rf'<option value="i:{category.id}" selected>', page,
+        ), "the stored income answer rendered without SELECTED"
+
+    def test_an_ARCHIVED_income_answer_still_round_trips_from_the_browser(
+        self, auth_client, db, seed_user,
+    ):
+        """The option with no ``selected`` value, on the newest arm.
+
+        **This is the defect this class's own docstring names, and the class
+        had no case for it** (mutation review 2026-08-31).  With
+        `Unofferable.income_category` suppressed, a browser on a merchant whose
+        stored answer is *income under Salary* -- after Salary is archived --
+        submits ``rule-N='new'`` with an empty category, an incomplete
+        new-envelope answer the door refuses. The owner would read a refusal
+        about an answer they never gave, for a merchant they did not touch.
+
+        Read through ``rule_form_controls``, which is what a BROWSER would
+        send, rather than by searching the markup.
+        """
+        merchant_id = a_merchant(seed_user, "Dividend Earned").id
+        category_id = seed_user["categories"]["Salary"].id
+        a_rule(
+            seed_user, "Dividend Earned", income_category_id=category_id,
+        )
+        db.session.get(Category, category_id).is_active = False
+        db.session.commit()
+
+        controls = rule_form_controls(
+            self._open(auth_client, seed_user, merchant_id),
+        )
+
+        assert controls[f"rule-{merchant_id}"] == f"i:{category_id}"
+
+    def test_the_row_SAYS_the_income_answer_without_opening_it(
+        self, auth_client, db, seed_user,
+    ):
+        """A closed row states its answer, or the page cannot be read.
+
+        It is the arm ``says_of`` fell through on: before this step a stored
+        income rule printed *Ask me every time* -- the answer the owner did not
+        give -- on the one page whose whole subject is what they said.
+        """
+        a_rule(
+            seed_user, "Dividend Earned",
+            income_category_id=seed_user["categories"]["Salary"].id,
+        )
+        db.session.commit()
+
+        page = _page(auth_client, seed_user["account"].id)
+
+        # **Read as a ROW and stated in FULL.**  Asserting only the prefix
+        # *Deposits are income under* passes on the `-- archived` phrasing too,
+        # which a mutation review demonstrated by making `_income_phrase`
+        # always return it: 959 tests stayed green while every LIVE income
+        # answer on the page described itself as archived.
+        said = _rows(page)["Dividend Earned"].says
+        assert said == (
+            f"Deposits are income under "
+            f"{seed_user['categories']['Salary'].display_name}"
+        ), said

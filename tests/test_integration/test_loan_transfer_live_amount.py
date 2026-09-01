@@ -3,7 +3,7 @@
 Commit 5 of the loan rate-period work.  A recurring loan-payment
 transfer flagged ``derive_from_loan`` reflects the loan's current
 monthly payment (P&I + escrow) via the read-time override
-(:func:`app.services.loan_payment_service.live_loan_transfer_amounts`),
+(:meth:`app.services.cash_ledger.LoanPricing.live_cash`),
 and an escrow change reflows that amount WITHOUT regenerating the
 transfer -- the stored ``Transfer.amount`` stays put; only the live
 override changes.
@@ -23,8 +23,8 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
+    cash_ledger,
     loan_ledger,
-    loan_payment_service,
     loan_posting_service,
     transfer_recurrence,
 )
@@ -45,7 +45,7 @@ def _live_overrides(scenario_id, rows):
     """The loan-payment live override map for *rows*, built per row.
 
     Plan step X-au-c2b split ``live_loan_transfer_amounts`` into an owner-scoped
-    DERIVATION (:func:`loan_payment_service.loan_pricing`) and a per-row lookup,
+    DERIVATION (:func:`app.services.cash_ledger.loan_pricing`) and a per-row lookup,
     and collapsed the settle-time twin ``live_loan_payment_amount`` into the
     same rule.  The ``{transaction_id: Decimal}`` map this file grades is now
     something a caller builds, so it is built here and every assertion below
@@ -62,7 +62,7 @@ def _live_overrides(scenario_id, rows):
     Returns:
         ``{transaction_id: Decimal}`` over the rows that have a live figure.
     """
-    pricing = loan_payment_service.loan_pricing(scenario_id, date.today())
+    pricing = cash_ledger.loan_pricing(scenario_id, date.today())
     answers = {}
     for row in rows:
         cash = pricing.live_cash(row)
@@ -419,7 +419,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
     199.10 (= P&I 1,199.10 - interest 1,000.00).
 
     The stored ``estimated_amount`` is deliberately left alone: it is the base
-    ``loan_payment_service._manual_shadow_amount`` derives from, so a settle
+    ``cash_ledger._loan_installment._manual_shadow_amount`` derives from, so a settle
     that wrote it would make the next settle derive from its own output.
     """
     with app.app_context():
@@ -535,7 +535,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
 
         # The freeze is one-shot: the derivation returns None for a settled
         # shadow, so the settle capture can never fire a second time.
-        assert loan_payment_service.loan_pricing(
+        assert cash_ledger.loan_pricing(
             scenario_id, date.today(),
         ).live_cash(settled) is None
 

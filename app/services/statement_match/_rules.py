@@ -54,9 +54,9 @@ from app.models.transaction_template import TransactionTemplate
 
 
 class RuleAnswer(enum.Enum):
-    """Which of the four answers a stated rule gives (ruling **R-GI**).
+    """Which of the five answers a stated rule gives (**R-GI**, **R-HT(a)**).
 
-    **A closed set of four, and the model's CHECK is what closes it**
+    **A closed set of five, and the model's CHECK is what closes it**
     (``ck_merchant_rules_one_answer``).  It is derived from which columns a row
     carries plus one boolean rather than stored beside them, because a stored
     discriminator is a second statement of what the columns already say --
@@ -71,18 +71,32 @@ class RuleAnswer(enum.Enum):
     question still owed to the owner and the other is a question already
     answered.
 
-    **Two of the four SUGGEST and two do not, and the split is not cosmetic.**
-    :attr:`TEMPLATE` and :attr:`NEW_ENVELOPE` name a container, so
-    :func:`~._placement.placements_for` can resolve them against one line.
-    :attr:`NEVER` names none and BARS -- it is a
+    **Three of the five SUGGEST and two do not, and the split is not
+    cosmetic.**  :attr:`TEMPLATE` and :attr:`NEW_ENVELOPE` name a container for
+    money LEAVING, so :func:`~._placement.placements_for` resolves them against
+    one outflow line.  :attr:`INCOME_CATEGORY` names what money ARRIVING is, so
+    :func:`~._placement.inflow_placement_for` resolves it against one inflow
+    line.  :attr:`NEVER` names none and BARS -- it is a
     :class:`~._bars.CreationBar`, resolved before a destination is looked for
     (ruling **R-GJ**) -- and :attr:`ALWAYS_ASK` names none and bars nothing,
     which makes it the only answer whose effect on money is exactly the effect
     of having said nothing.
+
+    **The three that suggest are told apart by DIRECTION as well as by
+    container, and no answer resolves in both directions.**  An outflow under
+    :attr:`INCOME_CATEGORY` names no container, and an inflow under
+    :attr:`TEMPLATE` or :attr:`NEW_ENVELOPE` is a merchant CREDIT -- a refund,
+    which ruling **R-HT(a)** files as a NEGATIVE purchase back into that same
+    container.  **That second arm is `bank_import:X-gj-2b`'s and is not built
+    here**, because a negative purchase is unwritable today
+    (``ck_transaction_entries_positive_amount`` declares ``amount > 0``), so
+    until it ships such a line is reported as unresolved rather than filed
+    somewhere the owner did not name.
     """
 
     TEMPLATE = "template"
     NEW_ENVELOPE = "new_envelope"
+    INCOME_CATEGORY = "income_category"
     NEVER = "never"
     ALWAYS_ASK = "always_ask"
 
@@ -100,15 +114,23 @@ class RuleAnswer(enum.Enum):
 
         Returns:
             Its :class:`RuleAnswer`.  TOTAL with no fall-through arm, because
-            ``ck_merchant_rules_one_answer`` has already made the four
+            ``ck_merchant_rules_one_answer`` has already made the five
             combinations exclusive -- and, in particular, pins
-            ``never_a_purchase`` false on both container answers, so the order
-            these are asked in cannot change the answer.
+            ``never_a_purchase`` false on all three answers that name
+            something, so the order these are asked in cannot change the
+            answer.  **That is what the migration adding the fifth had to widen
+            every PRE-EXISTING arm for** (plan step ``bank_import:X-gj-2a``): a
+            CHECK naming only the new column's own arm would still admit a row
+            carrying a template AND an income category, and this reading takes
+            the container first, so such a row would file SPENDING under an
+            answer stated about deposits.
         """
         if row.template_id is not None:
             return cls.TEMPLATE
         if row.envelope_name is not None:
             return cls.NEW_ENVELOPE
+        if row.income_category_id is not None:
+            return cls.INCOME_CATEGORY
         return cls.NEVER if row.never_a_purchase else cls.ALWAYS_ASK
 
 
@@ -131,6 +153,14 @@ class StandingRule:
         envelope_name: What to call the envelope to create, for
             :attr:`RuleAnswer.NEW_ENVELOPE`; ``None`` otherwise.
         category_id: The category to create it under, likewise.
+        income_category_id: What a DEPOSIT from this merchant is, for
+            :attr:`RuleAnswer.INCOME_CATEGORY`; ``None`` otherwise.  **A
+            separate field from** :attr:`category_id` **for the reason the
+            column is separate from its own**: the two answer different
+            questions -- where this merchant's spending goes, and what its
+            deposits are -- and one field holding either would need every
+            reader to know which answer it was looking at before it could read
+            it.
     """
 
     merchant_id: int
@@ -139,6 +169,7 @@ class StandingRule:
     template_id: "int | None" = None
     envelope_name: "str | None" = None
     category_id: "int | None" = None
+    income_category_id: "int | None" = None
 
     @property
     def is_new_envelope(self) -> bool:
@@ -151,6 +182,16 @@ class StandingRule:
         unreachable from a browser at plan step X-f6a-3b.
         """
         return self.answer is RuleAnswer.NEW_ENVELOPE
+
+    @property
+    def is_income_category(self) -> bool:
+        """Return whether this answer says what a DEPOSIT from here is.
+
+        Asked here for the reason :attr:`is_new_envelope` is: the screen's own
+        question, answered on the value that states it rather than inferred in
+        a Jinja condition from whether an id happens to be set.
+        """
+        return self.answer is RuleAnswer.INCOME_CATEGORY
 
     @property
     def is_never(self) -> bool:
@@ -199,6 +240,7 @@ class StandingRule:
             template_id=row.template_id,
             envelope_name=row.envelope_name,
             category_id=row.category_id,
+            income_category_id=row.income_category_id,
         )
 
 
@@ -292,7 +334,13 @@ class RuleView:
             account may name (:func:`offerable_templates`) -- the option list,
             and the sentence an unresolvable placement explains itself with.
         active_categories: The categories a new envelope may still be created
-            under (:func:`active_category_ids`).
+            under, and the ones an income answer may still file a deposit into
+            (:func:`active_category_names`).  **One mapping for both**,
+            because it is one question -- has the owner retired this category
+            -- and an answer naming a retired one is reported rather than acted
+            on, in either direction.  It carries the NAMES too, so the card
+            that states an income answer prints the label from the same read
+            that resolved the answer.
         stale_templates: What to call a template a stored rule NAMES that is
             no longer offerable, by id.  **A rendered control must be able to
             show the answer it holds, even a stale one**: without this the
@@ -303,9 +351,15 @@ class RuleView:
             ``routes/templates/crud.py``, so this is live user state rather
             than a hypothetical.  Found by adversarial financial review
             2026-08-19.  Usually empty, and then it costs no query at all.
-        stale_categories: The same, for a CATEGORY a stored *new envelope*
-            answer names that is no longer active, by id (plan step
-            ``bank_import:X-gd-2``).  **The template arm had this and the
+        stale_categories: The same, for a CATEGORY a stored answer names that
+            is no longer active, by id (plan step ``bank_import:X-gd-2``).
+            **BOTH answer columns feed it since plan step
+            ``bank_import:X-gj-2a``** -- the category a *new envelope* answer
+            creates under, and the income category a deposit answer files under
+            -- because what this dict answers is *what is this archived
+            category called*, which is one question and has no direction.  One
+            id can arrive from both answers on two different merchants, and a
+            set is what makes that cost one lookup.  **The template arm had this and the
             category arm did not**, and the category arm's failure was worse:
             with no option carrying the stored value the select submitted
             ``""``, which reaches the door as a NEW ENVELOPE answer missing its
@@ -321,7 +375,7 @@ class RuleView:
 
     rules: "dict[int, StandingRule]"
     template_names: "dict[int, str]"
-    active_categories: "frozenset[int]"
+    active_categories: "dict[int, str]"
     stale_templates: "dict[int, str]"
     stale_categories: "dict[int, str]"
 
@@ -341,7 +395,7 @@ class RuleView:
         """
         rules = rules_for(owner_id, account_id)
         offerable = offerable_templates(account_id)
-        active = active_category_ids(owner_id)
+        active = active_category_names(owner_id)
         return cls(
             rules=rules,
             template_names=offerable,
@@ -356,9 +410,9 @@ class RuleView:
             ),
             stale_categories=_named_categories(
                 {
-                    rule.category_id for rule in rules.values()
-                    if rule.category_id is not None
-                    and rule.category_id not in active
+                    named for rule in rules.values()
+                    for named in (rule.category_id, rule.income_category_id)
+                    if named is not None and named not in active
                 },
                 owner_id,
             ),
@@ -397,9 +451,19 @@ class RuleView:
             category_id: The category a stored *new envelope* answer names.
 
         Returns:
-            Its display name, or a phrase.
+            Its display name, or a phrase.  **Active first**, since plan step
+            ``bank_import:X-gj-2a``: this answered only for an ARCHIVED
+            category, which was every category a caller had reason to name
+            while the only readers were the two unresolved-placement sentences.
+            Ruling **R-HT(a)**'s card names a LIVE one, and a reader that fell
+            through to *an archived category* for it would print that phrase on
+            the sentence describing a working rule.
         """
-        return self.stale_categories.get(category_id) or "an archived category"
+        return (
+            self.active_categories.get(category_id)
+            or self.stale_categories.get(category_id)
+            or "an archived category"
+        )
 
 
 def rules_for(
@@ -524,7 +588,7 @@ def offerable_templates(account_id: int) -> "dict[int, str]":
     return {row.id: row.name for row in rows}
 
 
-def active_category_ids(owner_id: int) -> "frozenset[int]":
+def active_category_names(owner_id: int) -> "dict[int, str]":
     """Return the categories a new envelope may still be created under.
 
     **The create door's own clause, asked where the SUGGESTION is made.**
@@ -537,15 +601,29 @@ def active_category_ids(owner_id: int) -> "frozenset[int]":
     state that leaves the row pointing at something the door will refuse, so
     this is the live half.
 
+    **It returns the NAMES as well as the ids since plan step
+    ``bank_import:X-gj-2a``**, and the reason is that a second reader appeared
+    rather than that names are nice to have: ruling **R-HT(a)**'s income answer
+    is stated as a category, so the Reconcile card's sentence has to print what
+    that category is CALLED -- and reading it back in a second query would be
+    the redundant producer call this project treats as a DRY violation, with
+    the sharper risk that the label a card prints could then come from a
+    different instant than the answer it describes.  Membership is unchanged:
+    every existing reader asks ``id in view.active_categories``, which a
+    mapping answers exactly as a set did.
+
     Args:
         owner_id: The user whose categories may be reached.
 
     Returns:
-        Their active category ids.
+        ``{category_id: display name}``, built with
+        :attr:`~app.models.category.Category.display_name` for the reason
+        :func:`_named_categories` builds its own that way: a bare ``item_name``
+        reads as a different category from the one every other control shows.
     """
     rows = (
-        db.session.query(Category.id)
+        db.session.query(Category)
         .filter(Category.user_id == owner_id, Category.is_active.is_(True))
         .all()
     )
-    return frozenset(row[0] for row in rows)
+    return {row.id: row.display_name for row in rows}

@@ -387,19 +387,39 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
 class IncomeCreation:
     """What the owner submitted to record one bank line as an income row.
 
-    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **One id and nothing
-    else**, and the emptiness is the design rather than a stub: a purchase
-    needs a container to be filed against and asks the owner which
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **One id
+    and nothing else**, and the emptiness is the design rather than a stub: a
+    purchase needs a container to be filed against and asks the owner which
     (:class:`PurchaseCreation`), while a deposit reserves nothing, so there is
     no arm to choose between and no name or category to state.  The figure and
-    the day come from the recorded LINE inside the same transaction, so a stale
-    page cannot commit a number the bank did not state.
+    the day come from the recorded LINE inside the same transaction, so a
+    stale page cannot commit a number the bank did not state.
+
+    **It briefly carried a ``category_id`` and that was a defect** (plan step
+    ``bank_import:X-gj-2a``, caught by adversarial code review 2026-08-31).
+    Ruling **R-HT(a)** lets a standing rule say what a DEPOSIT is, and the
+    first build put that answer here -- set by
+    :meth:`~._placement.InflowPlacement.creation_for`, which the import-time
+    rule pass reaches and no route does.  The Reconcile card therefore said
+    *Add as Interest income* and its OK wrote an UNCATEGORIZED row: two
+    answers to one question, on the door that moves money.  The classification
+    is derived by :func:`~._income.record_income_from_line` from the stored
+    rule now, so both consents reach ONE derivation and this value goes back to
+    being the one id it was.
 
     **It is a value rather than a bare id, for the reason its sibling is one**:
     the batch carries two lists of acts, and a list of ints beside a list of
     submissions is a shape a caller can pass to the wrong door.  Whose account
     this is, is the :class:`~._scope.ReviewScope`'s -- one statement, which the
     route proved once.
+
+    **The Reconcile card renders no category picker, and that is a developer
+    ruling of 2026-08-31 rather than an omission.**  The rule is the answer, so
+    the form posts one id and the door reads the rule.  A picker was considered
+    and refused because a category typed at the card is a fact the app does not
+    remember -- next month's deposit from the same signature would ask again,
+    which is the ask-the-same-question-many-times shape ruling **R-GA** exists
+    to remove.
 
     Attributes:
         line_id: The bank line to record.

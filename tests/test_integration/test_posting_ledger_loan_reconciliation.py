@@ -1683,6 +1683,20 @@ _LEDGER_MODEL_NAMES = tuple(name.rsplit(".", 1)[-1] for name in _LEDGER_MODEL_MO
 # the fence by re-exporting the model name off the package.
 _LEDGER_MODEL_CLASS_NAMES = ("Posting", "JournalEntry", "LedgerAccount")
 
+#: Resolver-support modules that have MOVED OUT of a package in ``roots``.
+#:
+#: One entry per module, added by the step that moved it, so the fence covers
+#: the same SOURCE it covered before rather than the same package name.  Both
+#: of these were ``loan_payment_service`` leaves until plan step
+#: ``balance:X-au-g-2a`` moved amount rule 4's producer down into the amount
+#: model; see :func:`_resolver_stack_modules` for why a departure is the same
+#: hazard as a package split and why ``cash_ledger`` is NOT fenced whole here.
+_MOVED_FENCED_MODULES = (
+    "app.services.cash_ledger._loan_installment",
+    "app.services.cash_ledger._loan_pricing",
+)
+
+
 def _resolver_stack_modules() -> list:
     """Return every FILE-fenced module the un-seeded resolver reference is built from.
 
@@ -1706,14 +1720,36 @@ def _resolver_stack_modules() -> list:
     leaves out of scope silently -- the fence keeps passing while scanning a
     re-export list.  This list held ``loan_resolver``'s leaves by an explicit
     ``iter_modules`` walk for exactly that reason; when
-    ``loan_payment_service`` was split into four leaves the same hazard
-    appeared for it, and a second hand-written walk would only have deferred
-    the third instance.  Expanding whatever is a package covers every module
-    here, and any added later, by construction.
+    ``loan_payment_service`` was split into leaves the same hazard appeared for
+    it, and a second hand-written walk would only have deferred the third
+    instance.  Expanding whatever is a package covers every module here, and
+    any added later, by construction.
+
+    **A MODULE LEAVING a fenced package is the SAME hazard in mirror, and it is
+    what :data:`_MOVED_FENCED_MODULES` exists for.**  Expanding a package is
+    only generic over what stays in it.  Plan step ``balance:X-au-g-2a`` moved
+    ``loan_payment_service._basis`` and ``._pricing`` -- 511 lines -- into
+    ``cash_ledger``, and this set went from ten modules to eight with every
+    test here still green, because the anti-vacuity control below anchors on
+    ``load_loan_context`` / ``get_payment_history`` /
+    ``prepare_payments_for_engine``, all of which stayed.  Naming the two
+    successors restores exactly what left: no more, since the pair was never on
+    :func:`_resolver_balance`'s own path (it runs ``load_loan_context`` and the
+    resolver, never the pricing tier), and no less.
+
+    **Plan step ``X-au-g-2c`` is where this needs deciding rather than
+    extending.**  That step routes ``get_payment_history`` through
+    ``cash_ledger``, which puts the WHOLE package on the resolver reference's
+    transitive path -- and no token in :data:`_LEDGER_IMPORT_TOKENS` matches
+    ``cash_ledger``, so nothing would flag a posted-ledger import added there.
+    Fencing the package whole is free today (it is ledger-free, measured) but
+    it is a standing commitment: ``balance_at`` is itself a ledger token and
+    imports ``cash_ledger``, so all thirteen of its modules would be forbidden
+    ``balance_at``, ``posting_service`` and ``posting_reads`` forever.  That is
+    a decision to take deliberately, not to inherit from this docstring.
     """
-    roots = [loan_loaders, loan_payment_service, loan_resolver]
     modules = []
-    for root in roots:
+    for root in [loan_loaders, loan_payment_service, loan_resolver]:
         modules.append(root)
         if not hasattr(root, "__path__"):
             continue
@@ -1721,6 +1757,9 @@ def _resolver_stack_modules() -> list:
             modules.append(
                 importlib.import_module(f"{root.__name__}.{info.name}")
             )
+    modules.extend(
+        importlib.import_module(name) for name in _MOVED_FENCED_MODULES
+    )
     return modules
 
 
@@ -1903,6 +1942,38 @@ class TestResolverIsLedgerFree:
         assert not _ledger_imports_in_source(source)
         # ...and the scanner would say so if it were not: splicing in the exact
         # import the deleted read switch used to carry trips the fence.
+        assert _ledger_imports_in_source(
+            source + "\nfrom app.services import loan_posting_service\n"
+        ), "the ledger-import scanner failed to bite on a real ledger import"
+
+    def test_the_moved_pricing_pair_is_still_inside_the_fence(self):
+        """A module that LEFT a fenced package is still scanned, by name.
+
+        Anti-vacuity for :data:`_MOVED_FENCED_MODULES`, and it grades the
+        failure mode that has no other witness: expanding a package with
+        ``pkgutil.iter_modules`` is generic over what STAYS in it, so a module
+        moved OUT drops from the scanned set with every test here still green.
+        That happened at plan step ``balance:X-au-g-2a`` -- 511 lines of
+        ``loan_payment_service._basis`` / ``._pricing`` went to ``cash_ledger``
+        -- and the fence's own anti-vacuity control could not see it, because
+        that control anchors on three names the move did not touch.
+
+        Anchored on the DEFINITIONS rather than on a module count, for the same
+        reason its sibling is: a count says the set is the size somebody
+        expected, a definition says the source that must stay ledger-free is
+        actually being read.
+        """
+        source = "\n".join(
+            inspect.getsource(module) for module in _resolver_stack_modules()
+        )
+        # The pricing tier's own producers, whichever package holds them.
+        assert "def _resolve_loan_basis" in source
+        assert "def _shadow_live_amount" in source
+        assert "def _manual_shadow_amount" in source
+        assert "class LoanPricing" in source
+        # ...and the scanner still bites on that source, so the green above
+        # means "ledger-free" rather than "not looking".
+        assert not _ledger_imports_in_source(source)
         assert _ledger_imports_in_source(
             source + "\nfrom app.services import loan_posting_service\n"
         ), "the ledger-import scanner failed to bite on a real ledger import"

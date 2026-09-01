@@ -286,9 +286,15 @@ def live_override(txn, basis: AmountBasis):
         The override ``Decimal`` when either derivation answered for ``txn``,
         else None.
     """
-    # Pylint: ``import-outside-toplevel`` -- the paycheck / tax and
-    # loan-resolver stacks stay off this module's load path, the same reason
-    # ``_amount_source.amount_basis`` imports them at call time (finding N-267).
+    # Pylint: ``import-outside-toplevel`` -- the PAYCHECK / tax stack stays off
+    # this module's load path, the same reason ``_amount_basis.amount_basis``
+    # imports it at call time (finding N-267).  *The sentence named the
+    # loan-resolver stack too until plan step X-au-g-2a, and that half is now
+    # FALSE: ``_amount_basis`` imports ``._loan_pricing`` outright, so this
+    # module reaches ``loan_resolver`` / ``loan_loaders`` / ``escrow_calculator``
+    # through a module-level chain whatever this line does.  It also named
+    # ``_amount_source.amount_basis``, a symbol that has never existed --
+    # ``amount_basis`` lives in ``._amount_basis``.*
     # pylint: disable=import-outside-toplevel
     from app.services.income_service import live_projected_net
     loan = basis.loans.live_cash(txn)
@@ -811,7 +817,7 @@ def _expense_amount(txn, basis: AmountBasis):
     The expense-leg analogue of :func:`income_amount`.  When a live producer
     answered for the row -- e.g. a recurring loan-payment transfer whose cash
     debit is derived from the destination loan via
-    :meth:`~app.services.loan_payment_service.LoanPricing.live_cash` -- the
+    :meth:`~app.services.cash_ledger.LoanPricing.live_cash` -- the
     live amount replaces every other answer.  Otherwise it falls to
     :func:`_entry_aware_amount`, preserving the entry-checking formula for
     envelope expenses.

@@ -36,8 +36,9 @@
 <div class="small text-body-secondary">
   <i class="bi bi-arrow-left-right"></i>
   Your bank files this as a payment to an account you hold, not as spending, so
-  its lines cannot be recorded as purchases. <em>Never a purchase</em> is the
-  answer that fits.
+  its lines cannot be recorded as purchases -- and money coming back from it is
+  a transfer rather than income, so it cannot be recorded as that either.
+  <em>Never a purchase</em> is the answer that fits.
 </div>
 {% endif %}
 {% endmacro %}
@@ -73,6 +74,39 @@
       </option>
       {% endif %}
       <option value="new"{% if row.rule and row.rule.is_new_envelope %} selected{% endif %}>-- a new envelope --</option>
+      {# THE FIFTH ANSWER (ruling R-HT(a)): what a DEPOSIT from this merchant
+         IS.  Grouped, because it answers a different question from every
+         option above it -- those say where this merchant's SPENDING goes, and
+         these say what its money coming IN is -- and one flat list would read
+         as though an income category were another place to file a purchase. #}
+      {# WITHHELD for a merchant whose lines the bank files as paying an
+         account the owner holds (ruling R-GJ).  Such a merchant's money is
+         already in the books in another shape, so a CREDIT from it is a
+         transfer rather than earnings -- recording it as income is the same
+         $7,412.94 double count that ruling closed, in the other direction.
+         `_reject_spending_answer` refuses the submission, so rendering the
+         options would be the "chooser whose submission can never succeed"
+         shape this file's own note above says the package has closed four
+         times -- and the fifth would be this one. #}
+      {% if not row.pays_an_account %}
+      <optgroup label="Money coming IN from this merchant">
+        {% for category in categories %}
+        <option value="i:{{ category.id }}"{% if row.rule and row.rule.income_category_id == category.id %} selected{% endif %}>
+          income: {{ category.display_name }}
+        </option>
+        {% endfor %}
+        {# A STORED income answer whose category has been ARCHIVED, rendered
+           for the reason the stale template above is: without an option
+           carrying the stored value the select shows -- and submits -- its
+           FIRST, so a Save aimed at another merchant would silently restate
+           this one as something the owner never chose. #}
+        {% if row.unofferable.income_category %}
+        <option value="i:{{ row.rule.income_category_id }}" selected>
+          income: {{ row.unofferable.income_category }} -- archived
+        </option>
+        {% endif %}
+      </optgroup>
+      {% endif %}
       {# THE FOURTH ANSWER (ruling R-GS).  Asked through its own property
          rather than by comparing a string, exactly as the two beside it are. #}
       <option value="ask"{% if row.rule and row.rule.is_always_ask %} selected{% endif %}>-- ask me every time --</option>

@@ -44,9 +44,10 @@ own -- which is why the key carries the account.  What used to be a WITHDRAWAL
 fourth answer, *ask me every time*: the owner who wants no standing answer for
 a merchant has DECIDED that, and a decision is a row.  There is no delete door.
 
-**A cascade may still remove a rule, and that is not a contradiction.**  Both
-subject keys below are ``ON DELETE CASCADE``, so hard-deleting the template or
-the category an answer names takes the answer with it -- because an answer
+**A cascade may still remove a rule, and that is not a contradiction.**  All
+three ANSWER keys below are ``ON DELETE CASCADE``, so hard-deleting the
+template, the envelope's category or the income category an answer names takes
+the answer with it -- because an answer
 naming a row that no longer exists is not an answer, which is the same reason
 ``RESTRICT`` was refused (finding **N-302**).  R-GS governs what the OWNER may
 do at the control; referential integrity is a different subject.  What the
@@ -64,22 +65,38 @@ from app.models.mixins import (
 
 class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
                    db.Model):
-    """Where this owner has said one merchant's spending goes on one account.
+    """Where this owner has said one merchant's money goes on one account.
 
-    **FOUR ANSWERS, and they are the complete set rather than a menu** (ruling
-    **R-GI**).  A budget line either has a period-independent identity or it
-    does not: a recurring one is generated from a
+    **FIVE ANSWERS, and they are the complete set rather than a menu** (rulings
+    **R-GI** and **R-HT(a)**).  A budget line either has a period-independent
+    identity or it does not: a recurring one is generated from a
     ``budget.transaction_templates`` row and that template IS its identity
     across every period, while an ad-hoc one exists in a single period and
     nowhere else.  So *where does this merchant go* can be answered in exactly
-    four ways:
+    five ways:
 
     1. **a TEMPLATE** -- file into whatever row that template generated in the
        line's OWN pay period;
     2. **a NEW ENVELOPE** -- create one for the line's period, with this name
        and this category;
     3. **never a purchase** -- no container, :attr:`never_a_purchase` true;
-    4. **ask me every time** -- no container, :attr:`never_a_purchase` false.
+    4. **ask me every time** -- no container, :attr:`never_a_purchase` false;
+    5. **an INCOME CATEGORY** -- a DEPOSIT from this signature is income under
+       that category (plan step ``bank_import:X-gj-2a``).
+
+    **The fifth answers a different DIRECTION, and that is why it fits on this
+    row rather than on a table of its own.**  Every other answer here says
+    where money LEAVING goes; this one says what money ARRIVING is.  A merchant
+    could in principle want both -- and on the developer's own 378 recorded
+    lines none does, because ruling **R-HT(a)** makes a merchant CREDIT the
+    inverse of that merchant's spending answer rather than a second stored
+    fact: an Amazon refund files back into the Amazon envelope, so a merchant
+    with answer (1) or (2) already has its inflow answer and cannot need (5).
+    What (5) is for is a signature that only ever deposits -- ``Dividend
+    Earned``, ``IRS Tax Refund``, ``Member Deposit`` -- which is 4 of the 6
+    deposit signatures on that account.  One answer per merchant therefore
+    stays TRUE rather than merely convenient, and the exclusion is the CHECK's
+    rather than a reader's.
 
     A FIFTH state is the absence of a row: the owner has not said.  It is
     distinct from (4) -- *I have not decided* against *I have decided not to
@@ -87,7 +104,7 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
     reads: (4) stops the screen asking the owner to state a rule, and no row at
     all does not.
 
-    **The four are told apart by the COLUMNS plus one boolean** (ruling
+    **The five are told apart by the COLUMNS plus one boolean** (ruling
     **R-GS**).  A stored discriminator was refused on two grounds.  It would be
     a second statement of what the columns already say, which is
     ``statement_match._rules.RuleAnswer.of``'s own argument; and a CHECK cannot
@@ -136,6 +153,14 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             asked about* is that table rather than a union of two derivations.
         template_id -- answer (1), else NULL.
         envelope_name / category_id -- answer (2), else both NULL.
+        income_category_id -- answer (5), else NULL.  **What a DEPOSIT from
+            this merchant is**, not where its spending goes, which is why it
+            is a column of its own beside ``category_id`` rather than a second
+            reading of it.  Categories carry no income/expense class of their
+            own -- ``posting_service._settled_target`` takes the class from the
+            transaction TYPE -- so nothing here can refuse a category the owner
+            usually spends under, and nothing should: what makes the row income
+            is that the bank line is money arriving.
         never_a_purchase -- answer (3) when true.  It is the DISCRIMINATOR for
             the two answers that name no container, so on answers (1) and (2)
             it is pinned false by ``ck_merchant_rules_one_answer`` rather than
@@ -152,9 +177,9 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             history of what they said before is
             ``system.audit_log``'s, which this table has a trigger for.
 
-    **Both ANSWER keys CASCADE, and the consequence is deliberate.**  Deleting
-    a template or a category takes the rule with it, leaving the merchant
-    unanswered -- which is the truth, because an answer naming a row that no
+    **All three ANSWER keys CASCADE, and the consequence is deliberate.**
+    Deleting a template or either category takes the rule with it, leaving the
+    merchant unanswered -- which is the truth, because an answer naming a row that no
     longer exists is not an answer.  ``RESTRICT`` would refuse an ordinary
     delete because of a PREFERENCE the user cannot see from the thing they are
     deleting, which is the dead end finding **N-302** records one arc over.
@@ -182,12 +207,20 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             "account_id", "merchant_id",
             name="uq_merchant_rules_account_merchant",
         ),
-        # THE FOUR SHAPES, spelled as three shapes because the last two share
+        # THE FIVE SHAPES, spelled as four shapes because the last two share
         # their columns and differ only in the flag.  A count-the-NULLs form
         # (``ck_statement_match_members_one_subject``'s) cannot say this:
         # answer (2) sets TWO columns and answers (3) and (4) set none, so what
         # has to be constrained is which COMBINATIONS are legal rather than how
         # many columns are filled.
+        #
+        # **Every pre-existing arm gained an ``income_category_id IS NULL``
+        # term, and leaving them alone would have been the defect** (plan step
+        # ``bank_import:X-gj-2a``): a CHECK that names only the NEW column's own
+        # arm still admits a row carrying a template AND an income category,
+        # which is two answers to one question -- and ``RuleAnswer.of`` reads
+        # the container first, so such a row would file SPENDING under a rule
+        # the owner stated about deposits.
         #
         # **The flag is pinned FALSE on both container answers**, which is what
         # keeps ``RuleAnswer.of``'s reading total: without it a row could name a
@@ -198,11 +231,16 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
         # disagreement is a money disagreement.
         db.CheckConstraint(
             "(template_id IS NOT NULL AND envelope_name IS NULL "
-            "AND category_id IS NULL AND NOT never_a_purchase) "
+            "AND category_id IS NULL AND income_category_id IS NULL "
+            "AND NOT never_a_purchase) "
             "OR (template_id IS NULL AND envelope_name IS NOT NULL "
-            "AND category_id IS NOT NULL AND NOT never_a_purchase) "
+            "AND category_id IS NOT NULL AND income_category_id IS NULL "
+            "AND NOT never_a_purchase) "
             "OR (template_id IS NULL AND envelope_name IS NULL "
-            "AND category_id IS NULL)",
+            "AND category_id IS NULL AND income_category_id IS NOT NULL "
+            "AND NOT never_a_purchase) "
+            "OR (template_id IS NULL AND envelope_name IS NULL "
+            "AND category_id IS NULL AND income_category_id IS NULL)",
             name="ck_merchant_rules_one_answer",
         ),
         # The merchant this answer is about is one of THIS ACCOUNT's,
@@ -265,6 +303,17 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             name="fk_merchant_rules_category_owner",
             ondelete="CASCADE",
         ),
+        # ...and the INCOME category answer (5) names is this owner's too,
+        # by the same construction and for the same reason: a bare
+        # ``income_category_id`` FK is satisfied perfectly well by another
+        # owner's category, which is the IDOR every create door in this
+        # project probes for by hand and this one cannot be handed.
+        db.ForeignKeyConstraint(
+            ["income_category_id", "user_id"],
+            ["budget.categories.id", "budget.categories.user_id"],
+            name="fk_merchant_rules_income_category_owner",
+            ondelete="CASCADE",
+        ),
         # The review screen reads a whole account's rules at once.
         db.Index("idx_merchant_rules_account", "account_id"),
         {"schema": "budget"},
@@ -281,6 +330,16 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
     template_id = db.Column(db.Integer)
     envelope_name = db.Column(db.String(200))
     category_id = db.Column(db.Integer)
+    # Answer (5), reached through a composite key that holds the owner equal,
+    # exactly as ``category_id`` above is.  **A SEPARATE column rather than a
+    # second meaning for ``category_id``**, which would have needed no
+    # migration at all: sharing it would make answer (2) and answer (5)
+    # differ only by whether ``envelope_name`` is set, so a writer that
+    # omitted the NAME would store a valid INCOME rule instead of raising --
+    # which is the exact failure mode ``never_a_purchase``'s own note refuses
+    # one column down, and it fails into a money decision the owner never
+    # made.
+    income_category_id = db.Column(db.Integer)
     # **No default, server-side or Python-side, and that is deliberate.**  It
     # is the one column here whose absence would be silently answerable: the
     # three above are the answer's own subject and a row missing all of them is
