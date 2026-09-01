@@ -281,81 +281,37 @@ entry's overflow; nothing live depends on a line here.
       CALENDAR and no `owner_id` (**R-PC36**-**R-PC38**). `$0.00`.
 - [x] **C4-a-5 -- the two LABEL readers, and the model accessor goes.** `95b2dc67` (+ `ce96887a`).
       `PayPeriod.label` DELETED; the COLUMN is `C4-c`'s (**R-PC39**). Opened **N-413**.
-- [ ] **C4-b -- an owner with paydays HAS a recorded cadence.** The DECOMPOSED parent, split into
-      two leaves 2026-09-01 (developer), and what split it is that the FK's prerequisite turned out
-      to be the TEST CORPUS: `tests/conftest.py` builds by hand the exact owner the key forbids, so
-      the fixture leaf goes first (**R-PC40**). It ticks with `C4-b-2`.
-- [ ] **C4-b-1 -- every test owner's calendar comes from the doors that own it.** 23 sites across 18
-      files built a pay period as a bare `PayPeriod(...)` -- setting `end_date` and `period_index`,
-      the two values the writer DERIVES, and writing no `budget.pay_schedule` row beside them. No
-      door can produce that owner, and
-      **118 of the 300 `seed_user` files never reach a periods fixture**, so finding **P8**'s state
-      is what a third of the suite ran in while production has never held it. 21 of them go through
-      `pay_period_write.record_paydays` (`_test_helpers.open_owner_calendar`) and the recurrence
-      engine's two through `rebuild_calendar_from_spans`, while the five calendar fixtures that
-      un-did the seeded opening period go through `pay_period_admin.reset_pay_periods` -- DELETING
-      `_drop_seed_user_bootstrap`, 135 lines that re-implemented that door and renumbered
-      `period_index` in raw SQL. **It refutes N-392's diagnosis**, which calls the seeded account's
-      resting state one "no production path performs": `POST /pay-periods/reset` performs it. No
-      `app/` change, no migration. *Its first draft took only conftest's three; an adversarial
-      review measured 19 files still building the forbidden owner and the leaf was widened to the
-      whole corpus, so its own sentence is true when it ticks.* Closes **N-392**; opens **P78**, the
-      one calendar here the app cannot write (36 calendar MONTHS, and `record_paydays` spaces a
-      batch at one cadence).
-- [ ] **C4-b-2 -- the key itself, and the fallback goes.** One additive migration: backfill a
-      `budget.pay_schedule` row for every owner holding paydays (0 rows on dev and on production,
-      re-measured 2026-09-01), then
-      `FOREIGN KEY (user_id) REFERENCES budget.pay_schedule (user_id) ON DELETE CASCADE` on
-      `budget.pay_periods`, named for its target after `fk_statement_matches_owner`'s precedent
-      rather than after its column, which already carries the `auth.users` key. `resolve_schedule`'s
-      inferring fallback is then DELETED rather than left unreachable, with the ~25 docstrings that
-      assert it, and `MIN_MATERIALISABLE_CADENCE_DAYS`'s subject narrows to the stored cadence
-      alone. Closes **P8** and **P35**. **The double CASCADE is the thing to verify**:
-      `pay_periods.user_id` and `pay_schedule.user_id` both cascade from `auth.users`, so deleting
-      an owner must not deadlock or fail on ordering, and the migration test drives a real user
-      delete rather than arguing from the DDL.
-      **Three things `C4-b-1`'s adversarial review measured and handed forward.** (a) `CASCADE` vs
-      `RESTRICT` is a DESIGN FORK, not a testing note: nothing in `app/` deletes a schedule row, so
-      the cascade has no live source and its blast radius is every period, transaction and journal
-      entry the owner has -- decide it, do not inherit it. (b)
-      **Six tests DELETE a schedule row while periods live** and each starts cascading them away:
-      `test_pay_calendar_loader` `:325`, `test_pay_schedule_service` `:254` `:333`,
-      `test_pay_period_extend` `:268`, `test_savings_dashboard_service` `:4203` are the fallback's
-      own cases and go with it; `test_rf16_paycheck_count_migration` `:202` is NOT -- it grades that
-      migration's own downgrade backfill and needs a rework rather than a deletion. (c)
-      `af8254074bef`'s `downgrade()` drops `budget.pay_schedule` while `budget.pay_periods`
-      survives, which both produces the forbidden state and meets a dependent FK; the reverse chain
-      order has to be tested, not argued.
-
-**What deleting that fallback stops raising is row P35's blast radius, and it belongs to `C4-b-2`
-rather than to a ledger cell** (`conventions.md` rule 4). `resolve_cadence` infers an owner's
-cadence from their last period's LENGTH when they have no `budget.pay_schedule` row,
-`derive_periods` refuses anything outside 1..365, and `app/error_handlers.py` leaves the raise on a
-bare 500. Four steps joined renders to it after C2-c widened it to every balance page:
-
-- **`C2-f2b`** -- `/grid` derives the calendar BEFORE it looks at an account, so the zero-ACCOUNT
-  render, which used to reach `empty_grid_view()` without one, raises with the rest.
-- **`C2-f2e`** -- `/` and both its fragments answer "which period is current" from the derivation,
-  so a legacy owner whose stored span no longer covers today reaches the calendar where the pulse
-  producer's `None` used to give them the "No pay period covers today" CTA. That page's ZERO-ACCOUNT
-  render is deliberately still safe: the account guard runs before the derivation, which is the
-  opposite of `/grid`'s order and is stated at the site.
-- **`C2-f3b`** -- extend, truncate, regenerate and the settings section derive it too, and a bad
-  stored cadence stops being the `ValidationError` those routes flash.
-  **RESET does NOT derive one**: it reads its ids through `pay_period_write.owner_period_ids`, so
-  the door that rebuilds from a SUBMITTED cadence still repairs this owner -- it SUCCEEDED at the
-  merge base, and that regression stood until the step's review measured it.
-- **`C2-f3e`** -- the grid's three empty-cell fragments (`/transactions/new/quick`, `/new/full`,
-  `/empty-cell`) derive it to prove the submitted `period_id` belongs to the requester, where they
-  used to read the row by primary key. Same ordering argument as `C2-f2e`'s and no stronger: a
-  fragment is only ever swapped into a `/grid` that derived one to render at all, so an owner who
-  can reach these doors has a calendar that derives -- and because htmx does not swap a 500, the
-  failure there is a click that silently does nothing rather than a visible error page.
-
-Zero affected owners on either database (re-measured 2026-08-25: one owner with paydays, a schedule
-row, cadence 14 on 62 of 62 rows), so this is a state the fallback can produce rather than one it
-does.
-
+- [x] **C4-b -- an owner with paydays HAS a recorded cadence.** `5db9f8a0`. The DECOMPOSED parent,
+      ticked with `C4-b-2`; what split it in two was that the key's prerequisite turned out to be
+      the TEST CORPUS rather than any reader (**R-PC40**).
+- [x] **C4-b-1 -- every test owner's calendar comes from the doors that own it.** `eb6597ae`. The
+      hand-built `PayPeriod(...)` sites that built an ORDINARY owner go through `record_paydays` and
+      `reset_pay_periods`; `_drop_seed_user_bootstrap`'s 135 lines are DELETED. It REFUTED N-392's
+      diagnosis: `POST /pay-periods/reset` does perform that resting state. Closed **N-392**; opened
+      **P78**. **What `C4-c` must still obey**: read no COUNT of hand-built constructions out of any
+      document -- re-run the grep this file's `C4-c` entry states.
+- [x] **C4-b-2 -- the key itself, and the fallback goes.** `5db9f8a0` (+ `2e3c609e`). Migration
+      `f1c8b3d5e920`; `fk_pay_periods_schedule` is **`ON DELETE RESTRICT`** (**R-PC41**), the
+      inferring arm and its ~25 docstrings are gone, and `PayCalendarError` gains the handler
+      **P35** deferred (**R-PC42**). Closed **P8** and **P35**. **What a later step must obey**: the
+      backfill reads the PAYDAYS, not the stored span -- restoring `(end - start) + 1` writes a
+      2x-wrong cadence (row **P28**); and `MIN_MATERIALISABLE_CADENCE_DAYS` now bounds only stored.
+- [ ] **C4-d -- the cadence type stops admitting a row that cannot exist.** `ScheduleFacts` copies
+      two columns off one `budget.pay_schedule` row and types both optional, while the columns are
+      `NOT NULL` (`cadence_days`) and nullable (`history_opens_on`). So a pair naming no cadence
+      beside a stated opening is constructible in Python and unrepresentable in the database --
+      **the defect `C4-b-2` removed from the SCHEMA, surviving one tier up in the TYPE**, which is
+      why it is a leaf of this arc and not a tidy-up. `resolve_schedule` returns an OPTIONAL
+      `ScheduleFacts` whose `cadence_days` is non-optional.
+      **Its own fork, and the reason it is not folded into `C4-b-2`** (**R-PC44**): the direct blast
+      radius is 5 call sites in `app/`, two branching on `None` -- but `calendar_for` is
+      `resolve_schedule`'s sole consumer and today answers an EMPTY calendar for a schedule-less
+      owner. Returning `None` instead is the honest shape and reaches 48 call sites, which is a
+      question about what a PAGE does for an owner with no pay calendar. Doing the 5-site half alone
+      was weighed and refused: it moves the impossible pair from `ScheduleFacts` to `PayCalendar`
+      rather than deleting it. **Blocked by `C4-b-2`, not `C4-c`** -- the new type is true only once
+      `None` means "no schedule row", which deleting the inferring arm is what establishes; `C4-c`'s
+      columns are not this leaf's subject. *Call-site counts measured 2026-09-01; re-run them.*
 - [ ] **C4-c -- the drop.**
 
 `pay_period_write._write_derivation` stops authoring the two columns and `PayPeriodOverlapStored`
