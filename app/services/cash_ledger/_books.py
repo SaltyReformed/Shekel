@@ -540,9 +540,26 @@ def reject_books_open_after_an_assertion(account_id: int, day: date) -> None:
     **The comparison is ``>``, not ``>=``, and equality is the ORDINARY case.**
     ``account_service.create_account`` writes the origination opening and the
     origination assertion for the same day, so an opening EQUAL to the earliest
-    assertion is what every account starts life with -- three of the
-    developer's nine still sit exactly there.  Refusing equality would make the
-    factory's own output unrestatable.
+    assertion is what every account starts life with -- FOUR of the
+    developer's nine sit exactly there (accounts 4, 5, 6 and 11), the other
+    five having been moved below their first assertion by ``d3b6f1c8a274``'s
+    legalising restatement.  Refusing equality would make the factory's own
+    output unrestatable.
+
+    **That figure said THREE until 2026-09-01, and the correction is not the
+    point -- how it was wrong is** (finding **N-431**).  Three was never true
+    of an unmutated database.  It counted a state THIS DOCSTRING'S OWN
+    EXPERIMENT had created: "What that costs, reproduced on the developer's own
+    Roth IRA" above restates account 4 to 2026-08-01 at ``$100.00``, and that
+    restatement is exactly what took account 4 out of the count.  The mutating
+    row was written at 10:27:58Z and this docstring committed at 10:42:53Z,
+    fifteen minutes later, on the same clone.  **Dating it would not have
+    caught it**, which is why the remedy is to state the BASIS: measured
+    2026-09-01 on a clone of production restored fresh from a dump, at alembic
+    head ``e2d7a94f61c3``, reading each account's GOVERNING opening
+    (``_events.py``'s ``ORDER BY id DESC``) against ``MIN(observed_on)``.
+    Re-derive it that way or not at all; a figure measured on a clone this
+    module has been experimented against is measuring the experiment.
 
     Args:
         account_id: The account whose books are being restated.  Assumed
