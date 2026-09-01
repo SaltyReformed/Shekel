@@ -1,8 +1,21 @@
 """a transfer shadow's amount is its parent's, and it stores none
 
 Revision ID: c9a4e7b21d58
-Revises: e2d7a94f61c3
+Revises: f1c8b3d5e920
 Create Date: 2026-09-01 22:10:00.000000
+
+**RE-PARENTED at merge time, from ``e2d7a94f61c3`` to ``f1c8b3d5e920``.**  This
+was authored when ``e2d7a94f61c3`` was the single head on ``dev``, and
+``pay_calendar``'s ``f1c8b3d5e920`` was authored on that same parent on a branch
+this tree could not see.  A ``down_revision`` may only name a revision present in
+the SAME tree, so the re-point happens as the last edit before the PR rather than
+at authoring time -- pointing early at a revision your own tree lacks breaks
+``flask db upgrade``, ``build_test_template.py`` and CI while the other branch
+stays green.  ``c9f4b1e78d02`` records the identical situation between the
+identical two arcs, and the failure mode is worth restating: git merges two
+migrations on one parent perfectly cleanly, and neither pylint nor the plan gate
+reads Alembic, so nothing catches the two-head state until a refused
+``flask db upgrade``.
 
 Plan step **X-au-g-2c-2** of ``docs/audits/balance_architecture/README.md``
 section 5 -- the DATA half of ruling **R-FI** for transfer shadows, and the
@@ -75,7 +88,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "c9a4e7b21d58"
-down_revision = "e2d7a94f61c3"
+down_revision = "f1c8b3d5e920"
 branch_labels = None
 depends_on = None
 

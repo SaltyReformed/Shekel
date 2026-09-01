@@ -438,15 +438,12 @@ hides.
       EMPTY on production, so 47 of 58 projected shadows take its fallback -- `2c-2` would have
       shipped an `AmountUnresolvable` on `/savings`. Closed **N-266**; opened **N-432**. The ledger
       fence is a VALUE control now, with a static check reading W9908's own allowlist.
-    * [ ] **X-au-g-2c-2** `refactor(loans): a loan payment's shadow is derived` -- the DECLARATION.
-      Stamp `amount_source_id` on BOTH legs and empty their figure, which DELETES the loan half of
-      the read-time repair (`LoanPricing.live_cash`, `_manual_shadow_amount`) rather than leaving
-      it maintained. Dormant on production (`budget.loan_payment_settings` is EMPTY), so it moves
-      `$0.00` there and is graded on a seeded loan. **Two obligations it must not discover
-      mid-build:** `query_shadow_income` still eager-loads only `status` and `pay_period`, and a
-      DERIVED row's rule reads `transfer` -> `template` -> `settings` per row, so the eager load
-      belongs in that loader with the stamp; and X-au-f NULLs these same rows, so
-      `_manual_shadow_amount` must be gone before it lands.
+    * [x] **X-au-g-2c-2** `1f2b98a4` -- EVERY transfer shadow is DERIVED (**R-IN**), so Transfer
+      Invariant 3 is STRUCTURAL and both repairs that maintained it go with `live_cash`,
+      `_manual_shadow_amount` and `frozen_amount`. **Absorbs X-au-f's SHADOW half.** 350 rows,
+      `$0.00`, downgrade byte-identical on a production copy. Closed **N-401**. Record in
+      `archive/x_au_g_2c_2_as_built_2026-09-01.md`. **A LATER step must obey:** **R-IO** takes
+      ownership only when the figure MOVED, so X-au-h inherits that conflation, not a defect.
     * [ ] **X-au-g-2c-3** `fix(loans): escrow is charged once per installment` -- **N-409**, and
       the developer ruled its remedy on 2026-09-01. `prepare_payments_for_engine` floors the escrow
       subtraction at `amount - contractual_pi` while the fold's `apply_payment_cash` subtracts the
@@ -456,10 +453,17 @@ hides.
       the shortfall vanishes in the OPTIMISTIC direction. Escrow becomes a charge against the
       INSTALLMENT, once, in both producers. **MOVES MONEY**; `$0.00` on production, where every
       mortgage payment is exactly PITI and one per due month.
-* [ ] **X-au-f** `refactor(transfers): a shadow's amount is its parent's` -- the TRANSFER cutover.
-  `transfers.amount` resolves from the template series for a generated transfer, a shadow resolves
-  from its parent, and the copy at `transfer_service.py:534` with the drift corrector at `:814` both
-  go. **Transfer Invariant 3 becomes STRUCTURAL rather than maintained.** `uq_transfers_adhoc_dedupe`
+* [ ] **X-au-f** `refactor(transfers): a generated transfer's amount is its definition's` -- the
+  PARENT half of the transfer cutover. `transfers.amount` resolves from the template series for a
+  generated transfer.
+  **ITS SHADOW HALF SHIPPED AT `X-au-g-2c-2` (`1f2b98a4`, ruling R-IN)** -- a shadow resolves from
+  its parent, the copy in `update_transfer` and the drift corrector in `restore_transfer` are both
+  deleted, and **Transfer Invariant 3 is already STRUCTURAL**. This bullet claimed all three until
+  that step; they are struck rather than left, because a step description that claims work which
+  shipped elsewhere is how the next reader rebuilds it. What this step still owes is the parent,
+  and one consequence worth naming: once `transfers.amount` is empty for a generated transfer,
+  "the owner authored this figure" IS "the parent owns its amount", so
+  `transfer_service._amount.apply_amount_ownership`'s `stated_override` parameter dissolves. `uq_transfers_adhoc_dedupe`
   is unaffected: its predicate is `transfer_template_id IS NULL`, and an ad-hoc transfer owns its
   amount. **It runs AFTER the loan leaf and the first draft had them the other way round**, which an
   adversarial review reproduced: a loan-payment shadow IS a transfer shadow, so this step NULLs it,
