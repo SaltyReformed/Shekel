@@ -1204,6 +1204,13 @@ class TestTransactionEntryStaleFormPrevention:
                 f"/transactions/{txn.id}/entries/{entry_id}",
                 data={
                     "amount": "30.00",
+                    # The edit form emits the direction beside the amount
+                    # since plan step ``bank_import:X-gj-2b-3``, and the
+                    # route refuses one without the other rather than
+                    # guessing a sign.  Posted here because this case is
+                    # about the VERSION pin, and a payload the form cannot
+                    # produce would make it about something else.
+                    "direction": "charge",
                     "description": "Walmart",
                     "purchased_on": entry.purchased_on.isoformat(),
                     "version_id": str(v0),
