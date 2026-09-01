@@ -22,9 +22,12 @@ disable; a module's line count going over is a statement that it holds more than
 one subject, and this was the second one.
 
 What is deliberately NOT here is how a MATERIALISED row is priced
-(``loan_payment_service.LoanPricing``): that needs the loan resolved, its rate
-periods and its escrow history, which is the loan seam's work and not a read of
-a definition.  :func:`standing_installment_cash` is the definition's half of that
+(``cash_ledger.LoanPricing``): that needs the loan resolved, its rate
+periods and its escrow history, which is the AMOUNT MODEL's work -- rule 4 --
+and not a read of a definition.  *That rule's producer lived in
+``loan_payment_service`` until plan step X-au-g-2a moved it into
+``cash_ledger``; this sentence said "the loan seam's work" and now names the
+tier that actually owns it.*  :func:`standing_installment_cash` is the definition's half of that
 one rule and takes the loan's contribution -- the contractual P&I and the
 installment's escrow -- as arguments.
 """
@@ -242,7 +245,7 @@ class StandingPayment:
             a snapshot of the contract rather than a statement.
         extra_principal: The standing monthly overpayment (``0.00`` when none),
             added in BOTH modes exactly as
-            :meth:`~app.services.loan_payment_service.LoanPricing.live_cash`
+            :meth:`~app.services.cash_ledger.LoanPricing.live_cash`
             adds it to a materialised row.
     """
 
@@ -293,7 +296,7 @@ def standing_installment_cash(
     **The ONE rule for "what will this loan be paid on this date", asked about
     an installment no row covers** (plan step **R7d-a**).  A materialised row is
     priced by
-    :meth:`~app.services.loan_payment_service.LoanPricing.live_cash`; this is
+    :meth:`~app.services.cash_ledger.LoanPricing.live_cash`; this is
     the same question for a month whose row has not been written, and the arms
     are deliberately the same cases so the two cannot come to disagree:
 
@@ -314,7 +317,7 @@ def standing_installment_cash(
       owner is not paying.
 
     **The DERIVE arm's residue is TWO differences from what
-    :meth:`~app.services.loan_payment_service.LoanPricing.live_cash` prices the
+    :meth:`~app.services.cash_ledger.LoanPricing.live_cash` prices the
     same installment at, and both are named rather than absorbed.**  Finding
     **N-40**: that producer pins its P&I at the READ PASS's ``as_of`` while this
     reads the contract's P&I for the installment's OWN date, which differ only

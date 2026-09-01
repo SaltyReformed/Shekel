@@ -1,7 +1,7 @@
 """Prove a loan's PRICE does not depend on the loan's own payment rows.
 
 The regression harness for the balance step that deletes the pricing cycle:
-``loan_payment_service._resolve_loan_basis`` used to run
+``cash_ledger._resolve_loan_basis`` used to run
 :func:`~app.services.loan_payment_service.load_loan_context` and read
 ``resolve_loan(...).monthly_payment`` back out, which put
 :func:`~app.services.loan_payment_service.get_payment_history` on the pricing
@@ -62,10 +62,8 @@ from app.services.loan_loaders import (
     load_loan_params,
     load_rate_changes,
 )
-from app.services.loan_payment_service import (
-    _resolve_loan_basis,
-    load_loan_context,
-)
+from app.services.cash_ledger import _resolve_loan_basis
+from app.services.loan_payment_service import load_loan_context
 from app.services.balance_at import BalanceContext
 
 

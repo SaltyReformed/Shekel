@@ -1,11 +1,16 @@
 """
-Shekel Budget App -- The read pass's LOAN-PAYMENT derivation.
+Shekel Budget App -- Cash ledger: the read pass's LOAN-PAYMENT derivation.
 
 :class:`LoanPricing` is amount rule 4's producer, pinned to a scenario and an
 ``as_of``: which transfers are loan payments, and what each one's shadow costs.
 Lazy, so a pass that prices no loan payment issues no query.
 
-Sits above :mod:`._basis`, which owns the per-installment rules it delegates to.
+Sits above :mod:`._loan_installment`, which owns the per-installment rules it
+delegates to, and below :mod:`._amount_basis`, which holds ONE of these per
+read pass.
+
+**Moved here from ``loan_payment_service`` at plan step X-au-g-2a.**  The
+argument for the move is written once, in :mod:`._loan_installment`.
 """
 
 from dataclasses import dataclass
@@ -22,7 +27,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services.loan_loaders import load_escrow_lines
 from app.services.recurring_transfer_query import loan_payment_config
 from app.utils.balance_predicates import is_projected
-from ._basis import (
+from ._loan_installment import (
     _LoanCashBasis,
     _manual_shadow_amount,
     _resolve_loan_basis,
@@ -78,7 +83,7 @@ class LoanPricing:
     than a fix.**  Resolving a loan's rate-period P&I ``as_of`` the wall clock
     is finding **N-40**: a resolver may not read the clock, and ruling D5's rule
     -- a shadow's figure resolves on the shadow's own DUE date, as its escrow
-    already does -- is what plan step **X-au-g** applies to the P&I term.  Until
+    already does -- is what plan step **X-au-g-2b** applies to the P&I term.  Until
     then the read exists; pinning it here makes it one field a reader can see
     and one value a whole pass shares, where it was one ``date.today()`` per row
     set before.

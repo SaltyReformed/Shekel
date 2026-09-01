@@ -1,15 +1,70 @@
 """
-Shekel Budget App -- What one loan installment COSTS, resolved from the loan.
+Shekel Budget App -- Cash ledger: what one loan INSTALLMENT costs.
 
-The per-shadow cash tier: a loan's monthly P&I and payment day
-(:class:`_LoanCashBasis`), and the two rules that price one shadow against it
--- the DERIVE arm's P&I plus that installment's own escrow plus any standing
-extra, and the MANUAL arm's operator-owned base plus the extra.
+Amount rule 4's per-shadow tier: a loan's rate-period P&I and payment day
+(:class:`_LoanCashBasis`), and the two rules that price one shadow against
+them -- the DERIVE arm's P&I plus that installment's own escrow plus any
+standing extra, and the MANUAL arm's operator-owned base plus the extra.
+
+**It lives in THIS package rather than in ``loan_payment_service``, and plan
+step X-au-g-2a is what moved it.  This is the ONE place that argument is
+written; every other site states the conclusion and points here.**  Rule 4's
+producer answers *what does this row's amount resolve to*, which is the amount
+model's own question rather than the loan reader's -- so hosting it a tier UP
+forced the amount model to reach into ``loan_payment_service`` for it, and
+:mod:`app.services.row_valuation` exists as a separate leaf only because of
+that reach.  Moving the producer DOWN deletes it rather than routing around
+it: this module names only loan TERM primitives (``loan_loaders``,
+``loan_resolver``, ``escrow_calculator``), none of which names the cash ledger,
+so the arrow runs one way and the loan READING tier is free to import this
+package -- which is what plan step X-au-g-2c needs in order to route
+``get_payment_history`` through the resolver.  The unwind is the one
+:mod:`app.services.row_valuation` says plan step ``X-au-g`` owes.
+
+**THE CYCLE WAS REAL AND THE GATE COULD NOT SEE IT, which is why the number
+this argument used to quote has been replaced by a measurement with a date on
+it.**  Both this file and three others said a module-level ``cash_ledger``
+import anywhere in the loan stack "raised EIGHT ``cyclic-import`` findings"
+(measured 2026-08-12).  Re-measured 2026-08-31 while making this move, on a
+clean ``git archive HEAD``, with ``pylint app/ --disable=all
+--enable=cyclic-import`` and the exit code read unpiped:
+
+  ==================================================  =======
+  tree / experiment                                   R0401
+  ==================================================  =======
+  HEAD, untouched                                     0
+  HEAD + the loan stack importing this package        **0**
+  HEAD + that import, the ONE masking line deleted    **7**
+  post-move + that import                             0
+  post-move + that import, every mask here deleted    **0**
+  ==================================================  =======
+
+**pylint keys its excluded-edge set by ``(module, imported module)`` with no
+line granularity and excludes on ``in_type_checking_block``**, so
+``_amount_basis``'s ``if TYPE_CHECKING:`` import of ``loan_payment_service``
+suppressed the finding for the RUNTIME function-level import of the SAME
+module.  Row three deletes that ONE line and nothing else; row five deletes
+every remaining mask in this package, and is the only arm a mask cannot
+explain.  The count is not stable either -- pylint's cycle enumeration shares
+one visited set per root -- so what is measured is that the cycle EXISTED,
+that the gate reported nothing about it, and that after this move the
+experiment is green with the masks gone.  That is the difference between a
+green that is STRUCTURAL and one that is masked, and it is the whole
+evidential case for the move.  **The masking is not this step's to fix and is
+filed rather than repaired** (rule 6, finding **N-416**): asked with pylint's
+own resolver, ``app/`` carries 49 excluded edges over 22 modules and **11 of
+them are MASKS, over 9 modules** -- a target imported under
+``if TYPE_CHECKING:`` and again at runtime.
 
 **It reads the loan's TERMS and never its payment rows**, which is what makes
-this leaf independent of :mod:`._context` rather than merely ordered after it.
-The cycle that used to run through ``load_loan_context`` is deleted; see
+this leaf independent of the payment-history tier rather than merely ordered
+after it.  The cycle that used to run through
+:func:`app.services.loan_payment_service.load_loan_context` is deleted; see
 :func:`_resolve_loan_basis`.
+
+Imports no sibling, so it is the bottom of this package's pricing line:
+``_loan_installment`` -> :mod:`._loan_pricing` -> :mod:`._amount_basis` ->
+:mod:`._amount_source`.
 """
 
 from dataclasses import dataclass
