@@ -128,12 +128,20 @@ def _load_line(
     reaches the user as "Something went wrong" and logs a traceback for an
     ordinary stale page.
 
-    The third refusal IS this door's own, because it is about what a purchase
-    can be rather than about matching: the line must be money LEAVING.  A
+    The third refusal IS this door's own, because it is about what THIS DOOR
+    builds rather than about matching: the line must be money LEAVING.
+
+    **The reason is no longer the schema, and the difference matters** (ruling
+    **bank_import:R-II**, plan step ``bank_import:X-gj-2b``).  It read *a
     purchase is an expense (``ck_transaction_entries_positive_amount``), so a
-    deposit or a refund cannot become one -- and 16 of the developer's own
-    unexplained lines are inflows, including three card refunds, so this is the
-    ordinary shape rather than a crafted request.
+    deposit or a refund cannot become one* -- and that CHECK is ``amount <> 0``
+    now, so a refund IS a purchase the table can hold: a negative one, against
+    the envelope its merchant rule names.  What has not been built is the act
+    that FILES one, which is plan step ``bank_import:X-gj-2b-2``; until it
+    ships this door would have to guess a destination, and guessing is what
+    ruling **R-HX** refused.  16 of the developer's own unexplained lines are
+    inflows, including three card refunds, so this is the ordinary shape rather
+    than a crafted request.
 
     **What it SENDS the owner to changed at ruling bank_import:R-GW**, and the sentence
     with it.  It used to say *match it to the row it belongs to instead*,
@@ -285,10 +293,14 @@ def _born_purchase(
         transaction_id=envelope.id,
         user_id=scope.owner_id,
         details=entry_service.EntryDetails(
-            # **POSITIVE, from the line's own negative figure.**  A purchase is
-            # an expense (``ck_transaction_entries_positive_amount``) and only
-            # money LEAVING can become one (:func:`_load_line`), so the sign
-            # flip is total over everything that reaches here.
+            # **The line's own figure, NEGATED.**  The bank states an outflow
+            # as negative and a purchase records what it cost, so the flip is
+            # the whole conversion -- and it is TOTAL over both directions
+            # without a branch, which is why ruling **bank_import:R-II** needed
+            # no new arithmetic here: an inflow of ``+28.29`` becomes a refund
+            # of ``-28.29`` by the same expression.  Only outflows reach here
+            # today (:func:`_load_line`); plan step ``bank_import:X-gj-2b-2``
+            # is what lets a refund through, and this line already handles it.
             amount=-Decimal(str(line.amount)),
             # What the BANK NAMES the merchant, not the whole line
             # (:func:`~._offers.merchant_label`).  The app's own purchases are

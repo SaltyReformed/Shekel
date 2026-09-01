@@ -300,11 +300,15 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             the same line is offered to the hand-build form as something to
             GROUP and to the create door as something to RECORD, because those
             are different acts on the same fact and the owner is the one who
-            knows which it is.  Inflows are absent -- a purchase is an expense
-            (``ck_transaction_entries_positive_amount``), so a deposit or a
-            card refund is not one; since ruling **bank_import:R-GW** it has a door of its
-            own instead (:attr:`recordable_inflows`), and until then it had
-            none at all.  **A line that
+            knows which it is.  Inflows are absent because the CREATE DOOR
+            refuses them (:func:`~._create._load_line`), which since ruling
+            **bank_import:R-GW** sends them to a door of their own
+            (:attr:`recordable_inflows`) where until then they had none at all.
+            **The reason is that door's and no longer the schema's** (ruling
+            **bank_import:R-II**): ``ck_transaction_entries_positive_amount``
+            is ``amount <> 0``, so a card refund IS a purchase the table can
+            hold -- a negative one -- and plan step ``bank_import:X-gj-2b-2``
+            is what will move such a line into this list.  **A line that
             ruling R-GJ bars is not here** -- it is in :attr:`parked` -- so this
             list is exactly the lines a create control may be rendered for,
             and the screen cannot render one for a line the door would refuse.

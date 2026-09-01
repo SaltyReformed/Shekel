@@ -535,12 +535,19 @@ def inflow_placement_for(
     **A merchant with a SPENDING answer resolves to a REASON here, not to
     nothing**, and that is the one asymmetry with the outflow side.  Ruling
     **R-HT(a)** says a credit from such a merchant is a refund -- a NEGATIVE
-    purchase back into the container that answer names -- and that act is
-    unwritable until plan step ``bank_import:X-gj-2b`` relaxes
-    ``ck_transaction_entries_positive_amount``.  Reporting it is what keeps the
-    owner from reading *your rules did nothing* about a merchant they have
-    answered for; substituting income for it would be the misfiling ruling
-    **R-HX** measured and refused.
+    purchase back into the container that answer names.
+
+    **That purchase is now WRITABLE and this arm still does not file it, which
+    is a deliberate gap rather than an oversight.**  Plan step
+    ``bank_import:X-gj-2b-1`` relaxed
+    ``ck_transaction_entries_positive_amount`` to ``amount <> 0``, so the row a
+    refund needs can exist; what is not built is the RESOLUTION that names its
+    destination -- a refund files against the pass's offer set and yields a
+    ``PurchaseCreation``, where this function yields an ``IncomeCreation``
+    against a category.  Plan step ``bank_import:X-gj-2b-2`` is that work.
+    Until it ships, reporting is what keeps the owner from reading *your rules
+    did nothing* about a merchant they have answered for; substituting income
+    for it would be the misfiling ruling **R-HX** measured and refused.
     """
     if merchant_id is None:
         return None

@@ -23,8 +23,18 @@ nobody owes.  This door is what makes them disposable TRUTHFULLY, by recording
 the money instead of the opinion.
 
 **Why an INCOME row and never a purchase.**  A purchase is the app's record of
-one payment against a container that reserves for it, and a deposit reserves
-nothing -- ``ck_transaction_entries_positive_amount`` says so in the schema.
+one payment against a container that reserves for it, and a DEPOSIT reserves
+nothing.
+
+**That argument is about a deposit and NOT about every inflow, which the schema
+no longer decides for it** (ruling **bank_import:R-II**, plan step
+``bank_import:X-gj-2b``).  It used to end *-- ``ck_transaction_entries_positive_amount``
+says so in the schema*, and that citation is now false: the CHECK is
+``amount <> 0``, so a NEGATIVE purchase is writable and a merchant credit is one
+-- a refund back into the container its merchant rule names.  What still holds
+is the case this door is for: a deposit that no spending rule claims reserves
+nothing, so there is no container to file it against and income is the honest
+record.
 So this door asks the owner for no destination at all: there is nothing to pick
 between, which is why its control is a tick rather than a select.
 

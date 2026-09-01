@@ -125,8 +125,17 @@ def _purchase_target(entry, txn: Transaction, owner_id: int) -> dict[int, Decima
 
     The purchase analog of :func:`_settled_target`:
     ``{cash_ledger_id: -amount, category_ledger_id: +amount}``, summing to zero
-    by construction.  A purchase is always an EXPENSE and its whole amount
-    leaves the account, so there is no sign branch and no credit term.
+    by construction.  There is no sign branch and no credit term.
+
+    **The absence of a sign branch is what makes a REFUND work, and it was not
+    designed for one** (ruling **bank_import:R-II**).  A purchase's whole amount
+    leaves the account, so the expression was written for an expense -- and
+    because it is arithmetic rather than a case analysis, a NEGATIVE purchase
+    passes through it correctly: at ``-28.29`` it emits
+    ``{cash: +28.29, category: -28.29}``, money coming back and a
+    contra-expense, which is exactly what a merchant credit is.  Measured
+    end-to-end on a production clone before the constraint moved, against a
+    ``+28.29`` control that produced the mirror image.
 
     **The counter leg is the ENVELOPE's own category** (ruling **R-FM**,
     developer 2026-08-15).  A purchase carries no category of its own, and the

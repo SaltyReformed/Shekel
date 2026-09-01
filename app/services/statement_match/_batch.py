@@ -735,10 +735,13 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         tally.applied.append(AppliedItem(
             line_ids=line_ids, summary=_created_summary(recorded),
             # **NEGATED, onto the bank's convention.**
-            # ``CreatedPurchase.amount`` is the purchase's own figure and a
-            # purchase is an expense, so it is POSITIVE
-            # (``ck_transaction_entries_positive_amount``) -- and this door
-            # only ever creates one from a line whose own amount was negative
+            # ``CreatedPurchase.amount`` is the purchase's own figure and the
+            # bank states the same movement with the opposite sign, so the
+            # receipt negates it back.  **Sign-general by construction**: the
+            # negation is what the bank's convention is, not an assumption that
+            # the purchase is positive, so a refund recorded at ``-28.29``
+            # reports the ``+28.29`` the statement shows (ruling
+            # **bank_import:R-II**).  Only outflows reach this door today
             # (``_create._load_line`` refuses an inflow by name).
             amount=-recorded.amount,
         ))

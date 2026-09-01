@@ -87,11 +87,13 @@ class RuleAnswer(enum.Enum):
     :attr:`INCOME_CATEGORY` names no container, and an inflow under
     :attr:`TEMPLATE` or :attr:`NEW_ENVELOPE` is a merchant CREDIT -- a refund,
     which ruling **R-HT(a)** files as a NEGATIVE purchase back into that same
-    container.  **That second arm is `bank_import:X-gj-2b`'s and is not built
-    here**, because a negative purchase is unwritable today
-    (``ck_transaction_entries_positive_amount`` declares ``amount > 0``), so
-    until it ships such a line is reported as unresolved rather than filed
-    somewhere the owner did not name.
+    container.  **That second arm is `bank_import:X-gj-2b-2`'s and is not built
+    here.**  The row itself is no longer what blocks it: plan step
+    ``bank_import:X-gj-2b-1`` made ``ck_transaction_entries_positive_amount``
+    ``amount <> 0``, so a negative purchase is writable.  What is missing is the
+    resolution that names WHICH container, so until it ships such a line is
+    reported as unresolved rather than filed somewhere the owner did not
+    name.
     """
 
     TEMPLATE = "template"

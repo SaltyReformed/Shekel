@@ -22,6 +22,7 @@ raise or ``None`` out; no Flask import, no writes.
 """
 
 from datetime import date
+from decimal import Decimal
 
 from app import ref_cache
 from app.enums import SettledDayBasisEnum, SettlementBasisEnum
@@ -482,6 +483,43 @@ def _reject_settled_removal(txn: Transaction, entry) -> None:
     refusal = removal_refusal(txn, entry)
     if refusal is not None:
         raise ValidationError(refusal)
+
+
+def _reject_zero_amount(amount: Decimal | None) -> None:
+    """Refuse a purchase worth nothing -- ruling **bank_import:R-II**.
+
+    **The table's own invariant, stated where every caller meets it.**
+    ``ck_transaction_entries_positive_amount`` is ``amount <> 0`` since
+    migration ``b8e4c1f7a903``, and a constraint is a backstop rather than a
+    door: a zero reaching the database arrives as an ``IntegrityError``, which
+    the route layer renders as *Something went wrong* over a traceback for what
+    is an ordinary bad input.  Both write doors ask this instead, so the
+    refusal is a ``ValidationError`` naming the field.
+
+    **It is the NON-ZERO rule and deliberately not the positive one.**  R-II
+    splits the two by tier and the split is the ruling's point: *a purchase
+    worth nothing is not a purchase* is a fact about the row, so it belongs
+    here, on the path the bank-import door takes as well as the form; *a typed
+    negative is a typo* is a fact about a hand-entry FORM composing a new
+    purchase, so it stays on that form (``EntryCreateSchema``, the
+    add-purchase input's ``min``).  Stating positivity here would refuse the
+    refund this whole plan step exists to record.
+
+    Args:
+        amount: The submitted amount, or ``None`` where the caller is not
+            setting one -- a partial update that leaves ``amount`` alone must
+            not be refused for a value it is not writing, which is the same
+            narrowing :func:`_reject_future_purchase_date` gets at its update
+            call site.
+
+    Raises:
+        ValidationError: When *amount* is exactly zero.
+    """
+    if amount is not None and amount == 0:
+        raise ValidationError(
+            "A purchase amount cannot be zero. Enter what the purchase cost, "
+            "or what a refund returned as a negative amount."
+        )
 
 
 def _reject_future_purchase_date(purchased_on: date) -> None:

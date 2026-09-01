@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from marshmallow import ValidationError as MarshmallowValidationError
 
 from app.extensions import db
 from app.models.ref import Status, TransactionType
@@ -1615,6 +1616,121 @@ class TestEntryCreateSchema:
             assert data["amount"] == Decimal("51.00")
 
 
+class TestTheTwoDoorsBoundTheAmountDIFFERENTLY:
+    """R-II's tier split, asserted as the ASYMMETRY it actually is.
+
+    Ruling **bank_import:R-II** (developer 2026-08-31) puts two different rules
+    on two different tiers, and the whole point is that they disagree:
+
+    * the ROW invariant is ``amount <> 0`` -- a purchase worth nothing is not a
+      purchase -- stated at the service tier, so the bank-import door meets it
+      too (``entry_service._refusals._reject_zero_amount``);
+    * POSITIVITY is a claim about a hand-entry FORM composing a NEW purchase --
+      a typed negative is a typo -- so it lives on ``EntryCreateSchema`` and NOT
+      on ``EntryUpdateSchema``, whose row may carry a sign the BANK stated.
+
+    **Asserted as a pair, in one class, because the risk is that one drifts
+    onto the other.**  Re-adding ``Range(min=0.01)`` to the update schema is a
+    one-line edit that reads as a tightening and silently makes every imported
+    refund uneditable, and a test that only checked the create door would stay
+    green through it.
+    """
+
+    def test_create_schema_still_refuses_a_typed_negative(self, app):
+        """The ADD form's rule survives R-II: a typed negative is a typo."""
+        with app.app_context():
+            schema = EntryCreateSchema()
+            with pytest.raises(MarshmallowValidationError) as exc_info:
+                schema.load({
+                    "amount": "-28.29",
+                    "description": "Amazon refund",
+                    "purchased_on": "2026-01-05",
+                })
+            assert "amount" in exc_info.value.messages
+
+    def test_update_schema_ACCEPTS_a_negative_because_a_refund_is_one(self, app):
+        """The EDIT door takes a negative, which is what makes a refund editable.
+
+        The inline form renders ``value="{{ entry.amount }}"`` and submits every
+        control it holds, so an imported refund's own amount is resubmitted on
+        any edit.  A bound here would refuse a description or date change over a
+        figure the owner never touched.
+        """
+        with app.app_context():
+            schema = EntryUpdateSchema()
+            data = schema.load({"amount": "-28.29"})
+            assert data["amount"] == Decimal("-28.29")
+
+    def test_neither_door_lets_a_zero_through_to_the_database(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """Zero is refused as a ValidationError, never as an IntegrityError.
+
+        The CHECK is the backstop; a zero reaching it surfaces to the user as
+        *Something went wrong* over a traceback.  Both write doors ask
+        ``_reject_zero_amount`` instead, so the refusal names the field.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+
+            with pytest.raises(ValidationError, match="cannot be zero"):
+                entry_service.create_entry(
+                    transaction_id=txn.id,
+                    user_id=user.id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("0.00"),
+                        description="Nothing",
+                        purchased_on=date(2026, 1, 5),
+                    ),
+                )
+
+            entry = entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("10.00"),
+                    description="Real purchase",
+                    purchased_on=date(2026, 1, 5),
+                ),
+            )
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="cannot be zero"):
+                entry_service.update_entry(
+                    entry.id, user.id, amount=Decimal("0.00"),
+                )
+
+    def test_a_refund_round_trips_through_the_service_door(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """A negative purchase is created and STORED as a negative.
+
+        The act plan step ``bank_import:X-gj-2b`` exists to make possible,
+        asserted at the tier the bank-import door actually uses -- it calls
+        ``create_entry`` directly and never passes through a Marshmallow schema.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+
+            entry = entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("-28.29"),
+                    description="Amazon refund",
+                    purchased_on=date(2026, 1, 5),
+                ),
+            )
+            db.session.commit()
+
+            assert entry.amount == Decimal("-28.29")
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).amount == Decimal("-28.29")
+
+
 class TestEntryUpdateSchema:
     """Tests for EntryUpdateSchema validation."""
 
@@ -1642,7 +1758,15 @@ class TestEntryUpdateSchema:
             assert data == {}
 
     def test_update_rejects_zero_amount(self, app):
-        """Amount of 0 is rejected in update schema too."""
+        """Amount of 0 is rejected in update schema too.
+
+        The half of the old bound that SURVIVED ruling **bank_import:R-II**: a
+        purchase worth nothing is not a purchase, and that is the row's own
+        invariant (``amount <> 0``) rather than a statement about the sign.
+        Kept on the schema so it answers 422 -- the service gate under it
+        (``_reject_zero_amount``) answers 400, which is the right code for a
+        caller that reached the service without a form.
+        """
         with app.app_context():
             schema = EntryUpdateSchema()
             from marshmallow import ValidationError as MarshmallowError
@@ -1650,14 +1774,23 @@ class TestEntryUpdateSchema:
                 schema.load({"amount": "0"})
             assert "amount" in exc_info.value.messages
 
-    def test_update_rejects_negative_amount(self, app):
-        """Negative amount is rejected in update schema."""
+    def test_update_ACCEPTS_a_negative_amount(self, app):
+        """A negative amount is accepted in the update schema -- it is a REFUND.
+
+        **This asserted refusal until 2026-08-31** (ruling **bank_import:R-II**,
+        developer's fork ruling on the same date).  Positivity binds the CREATE
+        door, where a typed negative is a typo; this door edits a purchase whose
+        sign may be one the BANK stated, and a merchant credit files as a
+        negative purchase.
+
+        Zero is still refused here -- see
+        :meth:`test_update_rejects_zero_amount` beside it, which is the half of
+        the old rule that survived.
+        """
         with app.app_context():
             schema = EntryUpdateSchema()
-            from marshmallow import ValidationError as MarshmallowError
-            with pytest.raises(MarshmallowError) as exc_info:
-                schema.load({"amount": "-5.00"})
-            assert "amount" in exc_info.value.messages
+            data = schema.load({"amount": "-5.00"})
+            assert data["amount"] == Decimal("-5.00")
 
     def test_update_unknown_fields_excluded(self, app):
         """Unknown fields are excluded by BaseSchema (Meta.unknown = EXCLUDE)."""

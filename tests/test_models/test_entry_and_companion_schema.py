@@ -95,13 +95,23 @@ class TestTransactionEntryCascadeDelete:
 
 
 class TestTransactionEntryAmountCheck:
-    """Verify the CHECK(amount > 0) constraint on transaction_entries."""
+    """Verify the CHECK(amount <> 0) constraint on transaction_entries.
+
+    **It was ``amount > 0`` until ruling bank_import:R-II** (migration
+    ``b8e4c1f7a903``, developer 2026-08-31).  A merchant credit files as a
+    NEGATIVE purchase against the envelope its merchant rule names, so the
+    negative case below asserts ACCEPTANCE where it used to assert refusal.
+    The zero case is unchanged and is the surviving half: a purchase worth
+    nothing is not a purchase.
+    """
 
     def test_transaction_entry_amount_zero_rejected(self, app, db, seed_user, seed_periods):
         """Creating an entry with amount=0 raises IntegrityError.
 
         The ck_transaction_entries_positive_amount constraint requires
-        amount > 0, so zero is invalid.
+        amount <> 0, so zero is invalid.  **This half of the rule SURVIVED
+        R-II** -- what a purchase may not be is nothing, and the widening to
+        ``<> 0`` did not touch it.
         """
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods)
@@ -116,24 +126,34 @@ class TestTransactionEntryAmountCheck:
                 db.session.flush()
             db.session.rollback()
 
-    def test_transaction_entry_amount_negative_rejected(self, app, db, seed_user, seed_periods):
-        """Creating an entry with a negative amount raises IntegrityError.
+    def test_transaction_entry_amount_negative_accepted(self, app, db, seed_user, seed_periods):
+        """A NEGATIVE purchase is a refund, and the table accepts it.
 
-        The ck_transaction_entries_positive_amount constraint requires
-        amount > 0, so negative values are invalid.
+        Ruling **bank_import:R-II**: a merchant credit files as a negative
+        purchase against the envelope its merchant rule names, rather than as
+        income under a spending category.  **This test asserted the opposite
+        until 2026-08-31**, and inverting it is the developer's confirmed
+        change of behaviour rather than a test bent to fit code.
+
+        Asserts the stored value round-trips, not merely that the flush
+        survived: a constraint relaxed to ``<> 0`` that silently coerced the
+        sign would pass a bare "no IntegrityError" assertion.
         """
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods)
             entry = TransactionEntry(
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("-5.00"),
-                description="Negative amount",
+                amount=Decimal("-28.29"),
+                description="Amazon refund",
             )
             db.session.add(entry)
-            with pytest.raises(sqlalchemy.exc.IntegrityError):
-                db.session.flush()
-            db.session.rollback()
+            db.session.flush()
+            db.session.commit()
+
+            assert entry.id is not None
+            stored = db.session.get(TransactionEntry, entry.id)
+            assert stored.amount == Decimal("-28.29")
 
     def test_transaction_entry_amount_positive_accepted(self, app, db, seed_user, seed_periods):
         """Creating an entry with a small positive amount succeeds.

@@ -48,7 +48,13 @@ class TransactionEntry(
                            merely unlikely.  See the column comment for why the
                            app stores what it could join for.
         user_id         -- The user who created the entry (owner or companion).
-        amount          -- Positive purchase amount (CHECK > 0).
+        amount          -- What the purchase cost, as a signed figure
+                           (CHECK ``<> 0``).  POSITIVE for a purchase and
+                           NEGATIVE for a REFUND, which is a merchant credit
+                           filed back against this envelope rather than booked
+                           as income (ruling **bank_import:R-II**).  See the
+                           constraint below for why the bound is non-zero
+                           rather than positive, and where positivity went.
         description     -- Short description of the purchase (e.g. "Kroger").
         purchased_on    -- The day the purchase was MADE (defaults to today).
                            Never after the user's today -- ruling R-M, refused
@@ -104,8 +110,32 @@ class TransactionEntry(
             "idx_transaction_entries_txn_credit",
             "transaction_id", "is_credit",
         ),
+        # **A purchase worth nothing is not a purchase, and that is the WHOLE
+        # of what this table has to say about the amount** (ruling
+        # **bank_import:R-II**, migration ``b8e4c1f7a903``).  It was
+        # ``amount > 0`` until 2026-08-31, and the name is kept because the
+        # subject did not change -- only the answer.
+        #
+        # A NEGATIVE purchase is a REFUND: a merchant credit filed as a contra
+        # against the envelope its merchant rule names, rather than as income
+        # under a spending category.  The arithmetic was already sign-general
+        # and was measured so before the constraint moved --
+        # ``_posting_purchases._purchase_target`` at ``-28.29`` emits
+        # ``{cash: +28.29, category: -28.29}`` with no branch, and
+        # ``cash_ledger.settled_cash_leg``'s three terms are sums that net --
+        # which is what made the old bound a FENCE rather than an invariant.
+        #
+        # **Positivity did not disappear, it moved to the door that owns it.**
+        # "A typed negative is a typo" is a statement about a hand-entry form
+        # composing a NEW purchase, so it lives on that form
+        # (``EntryCreateSchema``, the add-purchase input) and NOT on the update
+        # door, where the figure being edited may be a sign the BANK stated
+        # (developer ruling 2026-08-31).  The non-zero rule is stated at the
+        # service tier too (``entry_service._refusals._reject_zero_amount``),
+        # so a caller meets a ``ValidationError`` rather than this
+        # constraint's ``IntegrityError``; this is the backstop under both.
         db.CheckConstraint(
-            "amount > 0",
+            "amount <> 0",
             name="ck_transaction_entries_positive_amount",
         ),
         db.CheckConstraint(
