@@ -66,6 +66,7 @@ from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.routes.accounts.history import balance_history_context
+from app.routes.accounts.outstanding import outstanding_context
 from app.routes.accounts.reconcile import (
     panel_id,
     reconcile_context,
@@ -536,6 +537,14 @@ def cash_detail(account_id):
         # in would walk the account's whole event stream again for a card the
         # response does not carry.
         history=balance_history_context(account, ctx),
+        # The same nesting, for the same reason, and off the same pass (plan
+        # step balance:X-f3c-3).  Both builders read the fold ``ctx`` already
+        # memoizes, so the outstanding difference costs this page no second
+        # walk -- only the bank comparison its verdict rests on.  It is out of
+        # ``_cash_detail_context`` for the reason ``history`` is: that builder
+        # also serves the BAND fragment, which re-renders on every
+        # ``balanceChanged`` and carries neither card.
+        books_difference=outstanding_context(account, ctx),
         **_cash_detail_context(account, ctx),
     )
 

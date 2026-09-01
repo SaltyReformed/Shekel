@@ -120,9 +120,19 @@ class CashPeriodFigures:
             row is conditional on screen.
         book_vs_bank: What the user's balance ASSERTIONS booked inside the
             period -- the difference between what the app had recorded and what
-            the bank actually showed, each time they looked.  Excludes the
-            OPENING assertion (see :func:`_assertion_sums`).  ``$0.00`` for a
-            period with no true-up, which is every future period.
+            the bank actually showed, each time they looked.  **EVERY
+            assertion, the account's FIRST included** (see
+            :func:`_assertion_sums`).  ``$0.00`` for a period with no true-up,
+            which is every future period.
+
+            *This said "Excludes the OPENING assertion" until plan step
+            X-f3c-3, and the exclusion had been gone since X-f3c-2a: the fold
+            stopped swallowing the first correction into its own seed when the
+            opening equity became a stored fact, and ``_assertion_sums``
+            stopped taking ``corrections[1:]`` in the same commit.  The
+            function this sentence CITED said so; the sentence citing it did
+            not, so one docstring contradicted the other about which
+            assertions a money figure counts.*
     """
 
     balance: Decimal
