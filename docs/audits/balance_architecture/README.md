@@ -17,12 +17,12 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-f3c-2b-2a -- an owner can say when the books opened.** The DOOR findings **N-275**, **N-379** and **N-382** each name: an append-only restatement of an account's opening equity, carrying the day, the figure and a `user_declared` provenance, through the table's ONE writer (`opening_service.stage_account_opening`, which the origination reaches too -- ruling **R-ES** applied one table over). Bounded by the movements the account records and by today, and NOT by `earliest_recordable_day`. **One door, two entrances** (**R-IE**): the shared account edit page, which every kind reaches, and a link from the balance-history card's opening row. Driven end to end on a production clone: the opening's journal entry re-keys to the new day, the old key reverses to zero, the trial balance closes at `$0.00`, and a repeat submission writes nothing. Five planted defects were run against the new cases; four fired exactly the cases named and the fifth did not, because the planted second writer had forgotten its import and was a `NameError` rather than a writer | Section 5, X-f3c-2b-2a |
-| **in flight** | **X-f3c-2b-2b** (the withheld bank line, **N-383**) and **X-f3c-2b-2c** (the account-10 repair), the two leaves **R-ID** cut away from the door. The second is an OPERATOR act and cannot run until the door has DEPLOYED. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 |
-| **what changed the plan** | **`X-f3c-2b-2` DECOMPOSED into three** (developer, 2026-08-31, **R-ID**): the door, the bank line an import may not offer against it, and the repair. The cut is not tidiness -- the withheld line renders on the reconcile cards `bank_import:X-gj-1b` is rebuilding right now, and the repair is an owner act against a production that has no `budget.account_openings` table yet. **R-IE** then placed the door: the opening is displayed on ONE card serving three of the nine accounts, while four of the other six carry a `migration_derived` figure the fold READS, so the form went where every kind can reach it. Standing since 2026-08-28: **R-HJ**, a data repair goes through the app's own DOORS and never through a migration writing money rows, with **R-HK**..**R-HN** settling the repair's figures | Section 4, balance:R-ID / R-HJ |
+| **just landed** | **X-f3c-3 -- the app says what it cannot explain.** An account's OUTSTANDING DIFFERENCE: its latest asserted balance less its opening equity plus the postings through that day, which is ONE figure and not the per-assertion plug ruling **R-FN** refuses to book (the plugs telescope, so their net is a function of the LAST assertion alone). `_outstanding._books_balance_at` IS X-f3c-5's own balance function, evaluated early, so THE FLIP becomes a re-pointing rather than a rewrite. Beside it, whether an imported statement's LINES account for the span the figure accumulated over -- **R-GY**'s offer gate, reported and never enforced here. Checking reads `$2,370.02` on the dev clone at 2026-09-01, confirmed against the posted ledger's own `account_trueup` net on that account's linked ledger, a producer sharing no code with the seam. **The card says the evidence is NOT there**: 146 days, all imported and all compared, **40 disagreeing**. Two adversarial reviews found a required field breaking six shipped tests, a page about to publish two different money figures under one vocabulary, an unbounded day list off a user-supplied date, and a page assertion that measured nothing | Section 5, X-f3c-3 |
+| **in flight** | **X-f3c-2b-2c** (the account-10 repair), whose act 4b is OPEN -- the developer rejected booking a `$500.00` expense that never happened and neither alternative offered survives the same principle. **X-f3c-2b-3** was MINTED by X-f3c-3 and sequenced behind THE FLIP: nothing bounds an assertion at its account's `opened_on` (**N-400**), and after X-f3c-5 an assertion stops resetting a PLAIN account, so what the bound should refuse is decided against what an assertion then IS. It legalises nothing -- zero rows sit below their books on either database. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 / X-f3c-2b-3 |
+| **what changed the plan** | **The acceptance act's evidence is weaker than it reads, and X-f3c-3 measured why.** Ruling **R-GY** gates X-f3c-4 on "a span an imported statement reconciles", and the app cannot say which days a statement READ: `statement_imports.period_start` / `period_end` are written as `min`/`max` of the FILE'S LINE DAYS, and no adapter records the period a file declares (**N-434**). So the count is CONSERVATIVE -- it refuses spans the bank has in fact accounted for, never the reverse, which is the safe direction for a money-moving gate -- and every surface says "the LINES of every statement" rather than "every statement". Standing since 2026-08-28: **R-HJ**, a data repair goes through the app's own DOORS and never through a migration writing money rows | Section 4, balance:R-GY / R-HJ |
 | **blocked on you** | **One OPERATOR act gates the money-moving leaves: import the account's own statement history.** Production holds 0 statement imports, 0 bank lines and 0 matches, while the SECU exports the shipped adapter reads sit on disk covering 2026-01-02 to 2026-07-19 -- and X-f3c's correctness is measurable only against them (**N-368**). Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md, N-368 |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it: the recurrence redesign (block 9) and the pay calendar (block 10). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, so whoever builds it must satisfy all three specifications | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md` |
-| **the live lesson** | **A comparison against an outside record can be confounded by the very mechanism under test, and the pooled number reads as the strongest evidence.** X-f3c's order was measured against the developer's own bank file, and the headline -- today's code equals the bank on 17 of 75 days where the cutover-as-specified equals it on 0 -- is dominated by the 46 days carrying an assertion, which is exactly where the RESET forces the answer. This arc had already ruled that metric misleading one screen over (`bank_agreement` scores the RESIDUE for this reason, **N-337**, 11 of 35 real disagreements reading as exact agreement). Splitting it is what makes it evidence: on the 29 days no assertion touches, `$529.48` against `$1,956.64`. The conclusion survived; the pooled figure was not what established it | Section 4, R-GW |
+| **the live lesson** | **A test that passes for the wrong reason is indistinguishable from one that works, and only a mutation separates them.** X-f3c-3's `unchecked` control asserted the right verdict for the wrong term -- its one compared day had no row against its bank line, so `disagreeing` was 1 and the mutation deleting `unchecked` SURVIVED. The same pass caught a page assertion that measured nothing (every money string it looked for was published independently by the balance-history card on that same page, so it passed with the new card's whole figure block deleted) and a query that manufactured its own confirmation (summing BOTH legs of the posted ledger and printing `$0.00`, because both ledger accounts carry the same `account_id`). Three instruments, three green answers, none of them measuring its subject | Section 5, X-f3c-3 |
 | **resuming cold** | Branch from `dev`; whether it leads `main` is a MEASUREMENT (`git log --oneline origin/main..dev`). Read the repo's migration head from `alembic_version` rather than from prose, and rebuild the test template only if you add a migration. **Pass `TEST_DB_PREFIX=<name>` when another checkout may be running the suite**, put the venv on `PATH` (`scripts/test.sh` execs bare `pytest`) and keep it ACTIVE for `git commit` (pre-commit hooks are `language: system`). The registries have their own gate: `pytest tools/plan_gate -c /dev/null -q`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x) | `../../plans/verification.md` |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
@@ -277,22 +277,39 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
           **ACT 4b IS OPEN AND BLOCKS THE PROCEDURE**: the developer rejected booking a `$500.00` expense that never happened (2026-09-01, "I don't like faking or hiding money"), and neither alternative offered survives the same principle -- recording nothing hides the outflow in an equity correction, and **R-HK** rejected the earlier opening on its own grounds. The movement is Checking into another account's OPENING EQUITY, a shape the app cannot record; the from-scratch design is owed before this step can run.
           **Acceptance is `$0.00` on the opening day the measurement prints SEPARATELY -- the figure act 3 exists to set -- plus ZERO mismatches on every SCORED day for the cash-fold and cutover arms**, rehearsed 14 of 14 on each. The RENDERED arm is excused at 13 of 14: its `$0.32` is **R-HM**'s one-day accrual, a standing `$20.49` over five accounts this step does not own.
           Those 14 are ELEVEN bank days above the books plus THREE the owner asserted on that the bank never names. NOT the export's 17 stated days: five fall below the books and **R-HG** puts them inside the opening equity, and the opening day is scored by no arm because nothing asserts on it -- so a predicate naming 17 is one no run can meet.
+      * [ ] **X-f3c-2b-3** `feat(cash): a balance is not declared for a day the books
+        did not exist on` -- the ASSERTION side of the books boundary, which is
+        the one door **X-f3c-2b-1** left unbounded: `resolve_observation_day`
+        floors `observed_on` at `earliest_recordable_day` and at today, never
+        at `opened_on`, so a true-up can be back-dated below the books it
+        belongs to (**N-400**). Refused at both write doors and by a deferrable
+        constraint trigger, the shape X-f3c-2b-1 already gave the movement
+        side. **It legalises NOTHING and the bound is why**: STRICTLY before
+        `opened_on`, because `account_service.create_account` writes the
+        opening and the origination assertion on ONE day from ONE figure -- so
+        four production accounts sit exactly ON their opening day and zero sit
+        below it (measured 2026-09-01 at X-f3c-3). **Sequenced behind the FLIP**
+        (conventions rule 8): after X-f3c-5 an assertion stops resetting a
+        PLAIN account, so one dated below the books moves no money there and
+        the remedy is decided against what an assertion then IS. Closes
+        **N-400**.
     * [x] **X-f3c-2c** `930f06fc` -- an assertion is append-only at the DATABASE tier (**R-HY**, **R-HZ**); closed **N-287**, opened **N-392** and **N-393**. Both leaves and what a later step must obey: `archive/x_f3c_2c_as_built_2026-08-30.md`.
       * [x] **X-f3c-2c-1** `930f06fc` -- a fixture PLACES an assertion and never edits one. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
       * [x] **X-f3c-2c-2** `930f06fc` -- `budget.refuse_append_only_change` on all three tables, `passive_deletes="all"` beside it. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
     * [x] **X-f3c-2d** `249f66a7` -- the append-only refusal gets the THREE arms its questions need (**balance:R-IC**). Record in `archive/two_shipped_steps_2026-08-30.md`.
-    * [ ] **X-f3c-3** `feat(cash): the app says what it cannot explain` -- the account's
-      OUTSTANDING DIFFERENCE (`latest asserted - (opening equity + SUM(postings))`, ONE figure per
-      account and not a per-assertion correction) derived off the fold and displayed beside whether
-      an imported statement reconciles the span. Money-neutral; the instrument the next leaf needs.
+    * [x] **X-f3c-3** `a7dbfdca` -- the account's OUTSTANDING DIFFERENCE (`latest asserted - (opening equity + SUM(postings <= that day))`, ONE figure and not the per-assertion plug), on its own cash-detail card beside whether an imported statement's LINES account for the span it accumulated over. `_outstanding._books_balance_at` IS X-f3c-5's balance function, evaluated early, so the flip becomes a re-pointing. Checking reads `$2,370.02`, confirmed against the posted ledger's own `account_trueup` net. Opened **N-433**, **N-434**; re-pointed **N-400** to X-f3c-2b-3.
     * [ ] **X-f3c-4** `feat(cash): an unexplained difference is a transaction you accept` --
       **MOVES MONEY.** The explicit act **R-FN** requires, under **R-GY**'s three bounds: dated on
       the latest assertion's own day so that assertion clears it and the balance line does not move
       (R-DH (a)); amount DERIVED from the postings OTHER than itself until the owner categorises
-      it; offered only where a `statement_imports` row covers the span at a zero residue. The
+      it; offered only where a `statement_imports` row covers the span at a zero residue -- which
+      X-f3c-3 now answers as `outstanding_difference.SpanAgreement`, whose `imported` count is
+      bounded by an import's LINE DAYS rather than the period its file declares (**N-434**). The
       posted ledger, the Book-vs-bank row and the income statement all move. Closes **N-171** --
-      Checking's `$1,776.88` leaves `Checking -- Opening` equity -- and flips **PLAIN's arm of
-      X-f3d's dispatch** (R-FO).
+      a figure this step must RE-DERIVE rather than quote, because the plug is the net of every
+      correction and moves with each one: `$1,776.88` when this entry was written and `$2,370.02`
+      on the dev clone at 2026-09-01, which `balance_at.cash_outstanding_difference` answers --
+      and flips **PLAIN's arm of X-f3d's dispatch** (R-FO).
     * [ ] **X-f3c-5** `feat(cash): an assertion is a check, not a reset` -- **THE FLIP. MOVES MONEY.
       OWN PR, NO BACKLOG.** `balance(T)` becomes `opening equity + SUM(postings <= T)`, PLAIN stops
       booking `account_trueup`, the reconcile reverses the 162 entries that stand, and what a
@@ -407,28 +424,38 @@ hides.
     `cash_ledger._loan_installment` / `._loan_pricing`, so the arrow runs one way.
     **A LATER step must obey:** the loan READING tier may now import the amount model, which
     is what `X-au-g-2c` needs.  Byte-identical, AST-verified; opened **N-416**.
-  * [ ] **X-au-g-2b** `refactor(loans): a loan payment resolves on its own due date` -- ruling
-    **R-IJ** applied at all THREE sites that resolve a loan's contractual terms on a read date:
-    amount rule 4's P&I (`LoanPricing` pins `date.today()`, **N-40**), the escrow-subtraction
-    threshold (**N-409**), and the amortization schedule's escrow column (**N-410**). After it
-    `LoanPricing` takes no `as_of` at all, so the amount model reads no clock and N-40 closes
-    structurally rather than by threading a different one. **MOVES MONEY on an ARM and takes its own
-    PR**: `$0.00` on production, where both Mortgage recasts are past and the Van Loan is
-    fixed-rate, but `$216.37`/month from a recast recorded effective 2027-12-01 and `$425.36`/month
-    on a seeded 5/1 ARM. The consequence accepted with the ruling is that `contractual_pi` is the
-    loan CARD's figure today, so card and threshold correctly differ for a historic payment.
-  * [ ] **X-au-g-2c** `refactor(loans): a loan payment's shadow is derived` -- the CUTOVER itself,
-    closing **N-266**(a). **Its first move is routing `get_payment_history` through the resolver**,
-    which X-au-g-2a makes legal; two obstacles are named rather than left to be discovered -- it
-    takes no `AmountBasis`, so the signature change reaches `load_loan_context` and its three
-    callers, and it must route to `contributions_by_id` rather than `amounts_by_id`, since it feeds
-    SETTLED rows to the amortization engine and the wrong one replaces recorded cash with forecast
-    cash. Declaring both legs derived is what DELETES the loan half of the read-time repair
-    (`LoanPricing.live_cash`, `_manual_shadow_amount`) rather than leaving it maintained. Dormant on
-    production (`budget.loan_payment_settings` is EMPTY), so it moves `$0.00` there and is graded on
-    a seeded loan. **It also owes a fence decision**: routing through `cash_ledger` puts that whole
-    package on the resolver reference's transitive path, and `_LEDGER_IMPORT_TOKENS` matches nothing
-    in it.
+  * [x] **X-au-g-2b** `6cd0ad44` -- a loan payment resolves on its own DUE date (**R-IJ**) at
+    three sites plus a fourth nobody had filed, so `LoanPricing` takes no `as_of` and
+    **`cash_ledger` makes no clock call at all** (AST census, thirteen modules, pinned by
+    `test_amount_source.TestTheAmountModelReadsNoClock`). Closed **N-40** and **N-410**.
+    **A LATER step must obey:** the escrow-threshold site was BUILT, measured a REGRESSION and
+    reverted -- **N-409** stands with its remedy withdrawn, re-owned to `X-au-g-2c`.
+  * [ ] **X-au-g-2c** the DECOMPOSED parent of the CUTOVER, split 2026-09-01 into the readers,
+    the declaration, and the escrow rule. It ticks with the last of its three leaves.
+    * [x] **X-au-g-2c-1** `cdc2c7d9` -- BOTH readers of a projected loan-side shadow take the
+      amount model. **N-266 said ONE unrouted reader; the census says TWO of NINE, seven
+      settled-only.** The second is `_plan._planned_from_shadows`, and `loan_payment_settings` is
+      EMPTY on production, so 47 of 58 projected shadows take its fallback -- `2c-2` would have
+      shipped an `AmountUnresolvable` on `/savings`. Closed **N-266**; opened **N-432**. The ledger
+      fence is a VALUE control now, with a static check reading W9908's own allowlist.
+    * [ ] **X-au-g-2c-2** `refactor(loans): a loan payment's shadow is derived` -- the DECLARATION.
+      Stamp `amount_source_id` on BOTH legs and empty their figure, which DELETES the loan half of
+      the read-time repair (`LoanPricing.live_cash`, `_manual_shadow_amount`) rather than leaving
+      it maintained. Dormant on production (`budget.loan_payment_settings` is EMPTY), so it moves
+      `$0.00` there and is graded on a seeded loan. **Two obligations it must not discover
+      mid-build:** `query_shadow_income` still eager-loads only `status` and `pay_period`, and a
+      DERIVED row's rule reads `transfer` -> `template` -> `settings` per row, so the eager load
+      belongs in that loader with the stamp; and X-au-f NULLs these same rows, so
+      `_manual_shadow_amount` must be gone before it lands.
+    * [ ] **X-au-g-2c-3** `fix(loans): escrow is charged once per installment` -- **N-409**, and
+      the developer ruled its remedy on 2026-09-01. `prepare_payments_for_engine` floors the escrow
+      subtraction at `amount - contractual_pi` while the fold's `apply_payment_cash` subtracts the
+      full escrow and lets principal go negative (plan D5): TWO allocation rules for one question.
+      The floor is the defect -- on a `$1,700.00` payment against a `$1,910.95` installment it
+      reports `$1,293.96`, exactly the contractual P&I, so a short payment reads as on schedule and
+      the shortfall vanishes in the OPTIMISTIC direction. Escrow becomes a charge against the
+      INSTALLMENT, once, in both producers. **MOVES MONEY**; `$0.00` on production, where every
+      mortgage payment is exactly PITI and one per due month.
 * [ ] **X-au-f** `refactor(transfers): a shadow's amount is its parent's` -- the TRANSFER cutover.
   `transfers.amount` resolves from the template series for a generated transfer, a shadow resolves
   from its parent, and the copy at `transfer_service.py:534` with the drift corrector at `:814` both

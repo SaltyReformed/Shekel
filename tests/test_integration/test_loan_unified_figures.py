@@ -39,6 +39,7 @@ from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
+    amount_basis_for_scenario,
     create_loan_account,
     freeze_today,
     loan_params_for,
@@ -676,7 +677,7 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         today = date.today()
 
         ctx = loan_payment_service.load_loan_context(
-            account.id, scenario_id, loan_params,
+            account.id, amount_basis_for_scenario(scenario_id), loan_params,
         )
         anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
         # The committed (plan-aware) reference: the loan detail page's producer,
@@ -817,7 +818,7 @@ def test_standing_extra_folds_past_the_shadow_horizon(
         scenario_id = seed_user["scenario"].id
 
         ctx_loan = loan_payment_service.load_loan_context(
-            account.id, scenario_id, loan_params,
+            account.id, amount_basis_for_scenario(scenario_id), loan_params,
         )
         anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
         # One composer call yields BOTH references: the committed forward (extra

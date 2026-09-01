@@ -756,6 +756,14 @@ _FENCED_MODULE_RULINGS = {
         # that the seam and its caller cannot end up pricing one render's rows
         # two ways.
         "amounts",
+        # Its NULLABLE sibling (plan step X-au-g-2c), classified on identical
+        # ground and named separately because that is what this fence is for:
+        # a method added beside a classified one inherits nothing.  It answers
+        # the same ``AmountBasis`` or ``None`` -- ruling **R-BX**'s spelling for
+        # the no-baseline pass, matching ``scenario_id_or_none`` beside it -- so
+        # it carries no balance-at-T either, and ``None`` is the ABSENCE of a
+        # derivation rather than a figure.
+        "amounts_or_none",
     })),
     # The loan-payment LOADER module (:data:`_LOAN_PAYMENT_SEAM_MODULES`).  It
     # was "the one reader-allowlisted module outside the defining package" until

@@ -7,10 +7,15 @@ and shared by every consumer of an amortization schedule
 the engine's :class:`PaymentRecord` feed (:func:`get_payment_history`).
 
 Sits above :mod:`._engine_prep`, whose two corrections it applies to the feed
-before returning it.
+before returning it, and BELOW the amount model: since plan step X-au-g-2c both
+functions here take the read pass's
+:class:`~app.services.cash_ledger.AmountBasis` and
+:func:`get_payment_history` prices its rows through it.  That import direction
+is what plan step X-au-g-2a bought by moving amount rule 4's producer down into
+``cash_ledger``; the argument is written once, in
+:mod:`app.services.cash_ledger._loan_installment`.
 """
 
-import logging
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -20,6 +25,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
+from app.services.cash_ledger import AmountBasis, contributions_by_id
 from app.services.loan_ledger import payment_visible_on
 from app.services.loan_loaders import (
     _rate_change_records_from,
@@ -28,12 +34,7 @@ from app.services.loan_loaders import (
     loan_payment_due_date,
     query_shadow_income,
 )
-from app.services.row_valuation import owned_contribution
 from ._engine_prep import compute_contractual_pi, prepare_payments_for_engine
-
-logger = logging.getLogger(__name__)
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -66,10 +67,14 @@ class LoanContext:
             fence rather than a figure** -- see
             :func:`._engine_prep.prepare_payments_for_engine`, whose floor
             cannot tell a payment carrying no escrow from an underpaying PITI
-            payment.  Finding **N-409** is re-pointed to plan step
-            ``balance:X-au-g-2c``, which makes the floor a provable no-op and
-            deletes it; re-keying this to the installment was tried at
-            X-au-g-2b and MEASURED as a regression.
+            payment.  Finding **N-409** is owned by plan step
+            ``balance:X-au-g-2c-3``, whose ruling deletes the floor by charging
+            escrow ONCE PER INSTALLMENT in both producers (developer,
+            2026-09-01).  Two earlier remedies were measured wrong first:
+            re-keying this to the installment (tried at X-au-g-2b, a
+            REGRESSION) and expecting the routing to make the subtraction an
+            identity (X-au-g-2c-1 showed the feed carries settled, manual and
+            non-payment rows over which no identity holds).
         rate_history: RateHistory ORM objects for rate display.  Carries
             the origination row for every loan plus any ARM adjustments;
             the loan dashboard shows the table only for ARM loans.
@@ -92,7 +97,7 @@ class LoanContext:
 
 def load_loan_context(
     account_id: int,
-    scenario_id: int | None,
+    basis: AmountBasis | None,
     loan_params: LoanParams,
 ) -> LoanContext:
     """Load and prepare all context data for a loan account.
@@ -104,12 +109,28 @@ def load_loan_context(
     for ARM loans.
 
     This is a pure data-loading function -- no Flask request/session
-    imports.  Callers pass the scenario_id explicitly.
+    imports.  Callers pass the read pass explicitly.
+
+    **It takes the read pass's AMOUNT BASIS where it took a scenario id, and
+    that is one parameter rather than two** (plan step X-au-g-2c).  The basis
+    STATES its scenario (:attr:`~app.services.cash_ledger.AmountBasis.scenario_id`),
+    so the payment query is scoped from the same object that prices the rows it
+    returns and the two cannot name different scenarios -- which is the mistake
+    :func:`~app.services.cash_ledger.resolve_transaction_amount` refuses a row
+    for, and which two arguments here could have stated.
+
+    ``None`` is the DEGRADED state and keeps its meaning exactly: an owner with
+    no baseline scenario loads no payments, and the loan's CONTRACT terms still
+    resolve, which is what keeps escrow and rate editing working for them (plan
+    step C8e, ruling **R-BX**).  A read pass spells it
+    :meth:`~app.services.balance_at.BalanceContext.amounts_or_none`.
 
     Args:
         account_id: The loan account ID.
-        scenario_id: Baseline scenario ID for payment history lookup.
-            None means no payments are loaded (empty list).
+        basis: The read pass's :class:`~app.services.cash_ledger.AmountBasis`,
+            which both scopes the payment history to its scenario and prices the
+            rows it returns.  ``None`` means no payments are loaded (empty
+            list) -- the no-baseline state, never a caller declining to price.
         loan_params: LoanParams model instance for the account.
 
     Returns:
@@ -146,8 +167,8 @@ def load_loan_context(
 
     # Payment history from shadow income transactions.
     raw_payments = (
-        get_payment_history(account_id, scenario_id, loan_params.payment_day)
-        if scenario_id else []
+        get_payment_history(account_id, basis, loan_params.payment_day)
+        if basis is not None else []
     )
 
     # Prepare: subtract escrow and fix biweekly month overlaps.  The
@@ -169,10 +190,27 @@ def load_loan_context(
     # ``$216.37`` a month of escrow booked as PRINCIPAL and ``$10,162.94`` of
     # lifetime interest understated -- the optimistic direction.  The floor is
     # the defect, not its date: it cannot tell a payment carrying NO escrow
-    # from an underpaying PITI payment, and no choice of date can.  N-409 is
-    # re-pointed to ``balance:X-au-g-2c``, which routes this feed through the
-    # amount resolver so ``amount - escrow == period_pi(due)`` is an identity
-    # and the floor can be DELETED rather than re-dated.
+    # from an underpaying PITI payment, and no choice of date can.
+    #
+    # **N-409's remedy was RULED on 2026-09-01 and it is not the one this
+    # comment first named.**  It said routing the feed through the amount
+    # resolver would make ``amount - escrow == period_pi(due)`` an IDENTITY,
+    # after which the floor is a provable no-op.  That was measured FALSE at
+    # plan step X-au-g-2c-1, which did the routing: the feed also carries
+    # SETTLED payments (worth what the bank took), MANUAL-mode payments, a
+    # standing extra, and plain transfers into the loan that are not loan
+    # payments at all.  No identity holds over that set.
+    #
+    # What the floor actually is: a SECOND allocation rule for a question
+    # ``loan_ledger._split.apply_payment_cash`` already answers, and the two
+    # DISAGREE -- that one subtracts the full escrow and lets principal go
+    # negative (plan D5, "surfaced, never clamped").  On a ``$1,700.00``
+    # payment against this loan's ``$1,910.95`` installment the floor reports
+    # ``$1,293.96``, exactly the contractual P&I, so a short payment reads as
+    # on schedule and the ``$210.95`` shortfall vanishes in the OPTIMISTIC
+    # direction.  The developer's ruling: escrow is charged ONCE PER
+    # INSTALLMENT rather than once per payment, in BOTH producers, which
+    # deletes this floor.  Plan step ``balance:X-au-g-2c-3`` owns it.
     contractual_pi = compute_contractual_pi(
         loan_params, rate_changes, date.today(),
     )
@@ -192,22 +230,14 @@ def load_loan_context(
     )
 
 
-
-
-
-
-
-
-
-
 def get_payment_history(
-    account_id: int, scenario_id: int, payment_day: int,
+    account_id: int, basis: AmountBasis, payment_day: int,
 ) -> list[PaymentRecord]:
     """Query shadow income transactions on a debt account.
 
     Returns PaymentRecord instances for all non-deleted, non-excluded
-    shadow income transactions linked to the given account and scenario.
-    Shadow income transactions represent payments received by a debt
+    shadow income transactions linked to the given account and the basis's
+    scenario.  Shadow income transactions represent payments received by a debt
     account via transfers.
 
     Filtering logic:
@@ -217,46 +247,64 @@ def get_payment_history(
       - status.excludes_from_balance = False (excludes Cancelled and
         Credit statuses, which do not represent actual payments)
 
-    Prices each row through
-    :func:`~app.services.cash_ledger.owned_contribution` -- the accessor whose
-    NAME asserts the row owns its figure -- rather than through the amount
-    model's resolver.  This query is NOT settled-only: ``query_shadow_income``
-    filters Credit and Cancelled but ADMITS Projected, and a Projected
-    loan-side income shadow is exactly the kind plan step **X-au-g** declares
-    derived.
+    **It prices its rows through the AMOUNT MODEL, and routing this ONE reader
+    is what finding N-266(a) was** (plan step X-au-g-2c).  Every other reader of
+    a loan payment already went through the resolver; this one read
+    :func:`~app.services.row_valuation.owned_contribution`, the accessor whose
+    NAME asserts the row owns its figure, and that accessor REFUSES a row whose
+    plan is DERIVED.  So the loan-side INCOME leg could not be declared derived
+    while this call stood -- not because anything was circular, but because one
+    reader had never been routed.  The bound is deleted rather than worked
+    around: this asks
+    :func:`~app.services.cash_ledger.contributions_by_id`, which answers a
+    derived row from its producer and an OWN row from the very column
+    ``owned_contribution`` reads.
 
-    **This docstring used to blame a CYCLE, and the restriction outlived it.**
-    The path it named -- the LOAN_PAYMENT rule ->
-    :meth:`~app.services.cash_ledger.LoanPricing.derive_cash` ->
-    ``_resolve_loan_basis`` -> :func:`load_loan_context` -> this function -- is
-    deleted; see :func:`app.services.cash_ledger._resolve_loan_basis` (a module
-    of the amount model since plan step X-au-g-2a, which moved rule 4's
-    producer down a tier).  What still stops the loan-side INCOME leg
-    being declared derived is this function's own pricing: it reads each row
-    through :func:`~app.services.row_valuation.owned_contribution`, which
-    REFUSES a row whose plan is derived.  So finding **N-266** (a) is
-    MISDIAGNOSED rather than closed -- one unrouted reader, not an irreducible
-    cycle -- the rule-4 controls
-    (``test_amount_source._declare_loan_payment_derived``) still declare only
-    the checking-side EXPENSE leg, and X-au-g routes THIS reader first and
-    declares both legs after.  The full argument is written once, at
-    :func:`app.services.balance_at._plan._planned_from_shadows`.
+    **It is BYTE-IDENTICAL on every row that exists today, and that is a
+    measurement rather than an expectation.**  Both accessors gate on
+    :func:`~app.services.row_valuation.fixed_contribution` first -- ``0`` for a
+    row that does not contribute, the SETTLEMENT for a row whose money has moved
+    -- so they can differ only on an unsettled row, where one reads
+    ``owned_amount`` and the other dispatches.  A row carrying no
+    ``amount_source_id`` dispatches to ``AmountRule.OWN``, whose answer IS
+    ``owned_amount``.  Measured against production 2026-09-01 (stamp
+    ``a4c6f1d92b73``): **all 58 loan-side income shadows** -- 29 Mortgage, 29
+    Van Loan -- and all 175 transfers carry ``amount_source_id IS NULL``, so
+    every row in this feed takes that arm.  What changes is only what a row the
+    NEXT leaf declares derived does here: it resolves, where it used to raise.
 
-    **That is not finding N-259**, which was a WRITE-BACK cycle one layer up
-    and is CLOSED: a settle used to refresh the amount, so a settle / revert /
+    **One ORDERING is different and it is stated rather than left to be met.**
+    The old loop priced and dated each row in turn; this prices the whole feed
+    and then dates it.  On a feed carrying BOTH an early row with a broken
+    settle day and a later row the amount model refuses, the exception a caller
+    sees flips from ``UndatedSettleError`` to ``AmountUnresolvable``.  Both are
+    loud, both are named below, and neither is recoverable -- but "byte
+    identical" is a claim about VALUES, and this is the one place it is not
+    also a claim about which refusal arrives first.
+
+    **It asks the BATCH, and the reason is consistency rather than cost.**
+    ``contributions_by_id`` is a comprehension over ``contribution_of``, so it
+    is per row underneath; what stops 29 rows resolving the same loan 29 times
+    is the memo on the BASIS (``LoanPricing._loan``), which a per-row loop over
+    the same basis would get too.  *A first draft of this paragraph credited
+    the batch for that saving, which is wrong and worth correcting rather than
+    quietly deleting: the batch is taken because every other reader of a row
+    set takes it, so a figure cannot differ by which caller asked.*
+
+    **There is no Decimal coercion below, and its removal is part of the
+    route.**  The line here read *"Defensive: ensure Decimal even if the stored
+    column somehow yields a non-Decimal"* -- padding around a raw column read.
+    The amount model is TOTAL in its answer: every rule returns a ``Decimal`` or
+    raises, and :func:`~app.services.row_valuation.own_figure` refuses a missing
+    figure rather than substituting one.  A coercion after it would convert a
+    state the model refuses into a silent number.
+
+    **That is not finding N-259**, which was a WRITE-BACK cycle one layer up and
+    is CLOSED: a settle used to refresh the amount, so a settle / revert /
     settle compounded the standing extra.  Plan step ``balance:X-au-c3``
-    (`3d1379d1`) made a settle RECORD what moved instead, so that compounding
-    is no longer reproducible.  It is named only because conflating the two
-    cycles is what kept the bound above alive.
-
-    The accessor's refusal still earns its place: a cutover that declares this
-    leg derived fails LOUDLY here instead of feeding a ``None`` into the
-    amortization engine, so X-au-g routes this reader deliberately rather than
-    discovering it.
-
-    The valuation runs through ``row_valuation.owned_contribution``: ``0`` for a
-    row contributing nothing, what a SETTLED row RECORDED as moved, else the
-    row's own amount (``actual_amount`` before plan step X-au-c3's record).
+    (`3d1379d1`) made a settle RECORD what moved instead, so that compounding is
+    no longer reproducible.  It is named only because conflating the two is what
+    kept N-266(a)'s bound alive as a "cycle" long after the path was deleted.
 
     Each record carries all three of a loan payment's dates (see
     :class:`~app.services.amortization_engine.PaymentRecord`): ``payment_date``
@@ -289,7 +337,11 @@ def get_payment_history(
 
     Args:
         account_id: The debt account receiving payments.
-        scenario_id: The active budget scenario.
+        basis: The read pass's :class:`~app.services.cash_ledger.AmountBasis`.
+            It SCOPES the query (``basis.scenario_id``) as well as pricing the
+            rows, so the feed and its figures cannot come from two scenarios --
+            the pairing ``resolve_transaction_amount`` refuses a row for, made
+            unconstructible here rather than checked.
         payment_day: The loan's contractual day-of-month due day
             (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
             to reconstruct the due date of a shadow that stores none.
@@ -299,19 +351,22 @@ def get_payment_history(
         (ascending).  Empty list if no qualifying transactions exist.
 
     Raises:
+        AmountUnresolvable: From the resolver, for a row whose rule cannot
+            answer -- a DERIVE-mode payment whose loan will not resolve, or a
+            row whose ownership CHECK is broken.  A refusal is never a fallback
+            (see :mod:`app.services.cash_ledger._amount_source`).
         UndatedSettleError: When a shadow in a settled status carries no
             ``settled_on`` -- the settled-iff-dated invariant is broken on that
             row, and dating it by a fallback would put real money on a day
             nothing recorded (see :func:`app.utils.balance_predicates.settled_day`).
             **The mark-paid door no longer reaches this, and that is a
-            refusal this step DELETED rather than an edge it kept.**  The
-            paragraph here used to record the door arriving through
+            refusal plan step X-au-g-1 DELETED rather than an edge it kept.**
+            The paragraph here used to record the door arriving through
             :meth:`~app.services.cash_ledger.LoanPricing.live_cash` ->
-            :func:`load_loan_context`; that
-            edge is gone with the pricing cycle, so a settle now reaches
-            pricing via ``transfer_service._settle`` -> ``amount_basis`` ->
-            ``live_cash`` and never loads a payment history.  The three
-            remaining callers of :func:`load_loan_context` are
+            :func:`load_loan_context`; that edge is gone with the pricing cycle,
+            so a settle now reaches pricing via ``transfer_service._settle`` ->
+            ``amount_basis`` -> ``live_cash`` and never loads a payment history.
+            The three remaining callers of :func:`load_loan_context` are
             ``routes/loan/_helpers.py`` (twice) and
             ``balance_at/_resolution.py``.
 
@@ -330,21 +385,19 @@ def get_payment_history(
     # PayPeriod alias into scope for the ``order_by`` (the builder's
     # ``joinedload`` is the separate N+1-avoiding eager-load).
     txns = (
-        query_shadow_income(account_id, scenario_id)
+        query_shadow_income(account_id, basis.scenario_id)
         .join(Transaction.pay_period)
         .order_by(PayPeriod.start_date)
         .all()
     )
 
-    payments = []
-    for txn in txns:
-        amount = owned_contribution(txn)
-        # Defensive: ensure Decimal even if the stored column somehow
-        # yields a non-Decimal.
-        if not isinstance(amount, Decimal):
-            amount = Decimal(str(amount))
+    # One valuation pass over the whole feed.  Indexed with ``[]`` because the
+    # batch covers every id it was given, so a row it forgot to price raises
+    # where it is read rather than defaulting to a fabricated figure.
+    priced = contributions_by_id(txns, basis)
 
-        payments.append(PaymentRecord(
+    return [
+        PaymentRecord(
             payment_date=txn.pay_period.start_date,
             due_date=loan_payment_due_date(txn, payment_day),
             # The day the cash moved, read through the SAME accessor the fold
@@ -356,7 +409,7 @@ def get_payment_history(
             settled_on=(
                 payment_visible_on(txn) if txn.status.is_settled else None
             ),
-            amount=amount,
-        ))
-
-    return payments
+            amount=priced[txn.id],
+        )
+        for txn in txns
+    ]

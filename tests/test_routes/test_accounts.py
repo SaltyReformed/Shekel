@@ -9116,7 +9116,7 @@ class TestAnchorDifference:
     ):
         """Negative, zero and positive each get their own caption.
 
-        The sign's MEANING is decided in the route (``_difference_verdict``) and
+        The sign's MEANING is decided in the route (``difference_verdict``) and
         the partial only maps it to copy -- but nothing asserted the mapping, so
         a wrong caption was invisible to the suite.  All three branches, one
         case, because the value of this control is that it covers the set.

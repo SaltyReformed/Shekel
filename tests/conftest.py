@@ -732,6 +732,7 @@ from app.services import (
 )
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
+    amount_basis_for_scenario,
     bind_db_clock_rewriter,
     create_loan_account,
     insert_trueup_event,
@@ -2618,7 +2619,9 @@ def _unseeded_replay_balance(loan_id, scenario_id, as_of):
     from app.utils.money import round_money
 
     params = loan_loaders.load_loan_params(loan_id)
-    ctx = loan_payment_service.load_loan_context(loan_id, scenario_id, params)
+    ctx = loan_payment_service.load_loan_context(
+        loan_id, amount_basis_for_scenario(scenario_id), params,
+    )
     inputs = loan_resolver.LoanInputs(
         params, loan_loaders.load_loan_anchor_facts(params),
         ctx.payments, ctx.rate_changes,

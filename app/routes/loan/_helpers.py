@@ -315,7 +315,7 @@ def _load_route_context(account, params) -> _RouteLoanContext:
         The :class:`_RouteLoanContext` for this read pass.
     """
     balance_ctx = BalanceContext.build(current_user.id)
-    loan = load_loan_context(account.id, balance_ctx.scenario_id, params)
+    loan = load_loan_context(account.id, balance_ctx.amounts(), params)
     return _RouteLoanContext(
         account=account,
         balance_ctx=balance_ctx,
@@ -657,7 +657,7 @@ def load_baseline_scenarios(account, params):
         ``(LoanContext, PayoffScenarios)`` for this read.
     """
     balance_ctx = BalanceContext.build(current_user.id)
-    loan = load_loan_context(account.id, balance_ctx.scenario_id, params)
+    loan = load_loan_context(account.id, balance_ctx.amounts(), params)
     scenarios = build_baseline_scenarios(
         _loan_inputs(params, loan), account, balance_ctx,
         loan_standing_extra(account.id, current_user.id),
