@@ -407,16 +407,12 @@ hides.
     `cash_ledger._loan_installment` / `._loan_pricing`, so the arrow runs one way.
     **A LATER step must obey:** the loan READING tier may now import the amount model, which
     is what `X-au-g-2c` needs.  Byte-identical, AST-verified; opened **N-416**.
-  * [ ] **X-au-g-2b** `refactor(loans): a loan payment resolves on its own due date` -- ruling
-    **R-IJ** applied at all THREE sites that resolve a loan's contractual terms on a read date:
-    amount rule 4's P&I (`LoanPricing` pins `date.today()`, **N-40**), the escrow-subtraction
-    threshold (**N-409**), and the amortization schedule's escrow column (**N-410**). After it
-    `LoanPricing` takes no `as_of` at all, so the amount model reads no clock and N-40 closes
-    structurally rather than by threading a different one. **MOVES MONEY on an ARM and takes its own
-    PR**: `$0.00` on production, where both Mortgage recasts are past and the Van Loan is
-    fixed-rate, but `$216.37`/month from a recast recorded effective 2027-12-01 and `$425.36`/month
-    on a seeded 5/1 ARM. The consequence accepted with the ruling is that `contractual_pi` is the
-    loan CARD's figure today, so card and threshold correctly differ for a historic payment.
+  * [x] **X-au-g-2b** `6cd0ad44` -- a loan payment resolves on its own DUE date (**R-IJ**) at
+    three sites plus a fourth nobody had filed, so `LoanPricing` takes no `as_of` and
+    **`cash_ledger` makes no clock call at all** (AST census, thirteen modules, pinned by
+    `test_amount_source.TestTheAmountModelReadsNoClock`). Closed **N-40** and **N-410**.
+    **A LATER step must obey:** the escrow-threshold site was BUILT, measured a REGRESSION and
+    reverted -- **N-409** stands with its remedy withdrawn, re-owned to `X-au-g-2c`.
   * [ ] **X-au-g-2c** `refactor(loans): a loan payment's shadow is derived` -- the CUTOVER itself,
     closing **N-266**(a). **Its first move is routing `get_payment_history` through the resolver**,
     which X-au-g-2a makes legal; two obstacles are named rather than left to be discovered -- it
