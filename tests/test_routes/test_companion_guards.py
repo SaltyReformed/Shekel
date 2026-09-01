@@ -16,7 +16,6 @@ from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.ref import TransactionType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -428,19 +427,12 @@ class TestMarkDoneCompanionAccess:
         db.session.flush()
 
 
-        # Bootstrap pay period (E-19, Commit 3): the
-        # account_service factory requires the user to have at
-        # least one pay period to anchor against.
-        from datetime import date as _date, timedelta as _td
-        from app.models.pay_period import PayPeriod as _PayPeriod
-        _bootstrap = _PayPeriod(
-            user_id=second_user.id,
-            start_date=_date(2024, 1, 5),
-            end_date=_date(2024, 1, 5) + _td(days=13),
-            period_index=0,
-        )
-        db.session.add(_bootstrap)
-        db.session.flush()
+        # The account_service factory requires the user to have at least one
+        # pay period to anchor against.
+        # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+        from datetime import date as _date
+        from tests._test_helpers import open_owner_calendar as _open_calendar
+        _bootstrap = _open_calendar(second_user.id, _date(2024, 1, 5))[0]
         settings = UserSettings(user_id=second_user.id)
         db.session.add(settings)
 
@@ -473,19 +465,15 @@ class TestMarkDoneCompanionAccess:
         db.session.add(category)
         db.session.flush()
 
-        # Create a period for the second owner at index 1 -- offset past
-        # the bootstrap period (index 0) so the uq_pay_periods_user_index
-        # constraint holds.  The transaction below lives in this period;
-        # its index is irrelevant to the companion-access assertion.
+        # A second period for the second owner, appended past their opening
+        # one through the writer, so it lands at index 1 because the writer
+        # DERIVED it rather than because this line typed it.  The transaction
+        # below lives in this period; its index is irrelevant to the
+        # companion-access assertion.
+        # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
         from datetime import date  # pylint: disable=import-outside-toplevel
-        period = PayPeriod(
-            user_id=second_user.id,
-            start_date=date(2026, 1, 2),
-            end_date=date(2026, 1, 15),
-            period_index=1,
-        )
-        db.session.add(period)
-        db.session.flush()
+        from tests._test_helpers import open_owner_calendar as _open_calendar
+        period = _open_calendar(second_user.id, date(2026, 1, 2))[0]
 
         expense_type = (
             db.session.query(TransactionType)

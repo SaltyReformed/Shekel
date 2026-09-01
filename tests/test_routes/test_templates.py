@@ -163,19 +163,12 @@ def _create_other_user_with_template():
     db.session.flush()
 
 
-    # Bootstrap pay period (E-19, Commit 3): the
-    # account_service factory requires the user to have at
-    # least one pay period to anchor against.
-    from datetime import date as _date, timedelta as _td
-    from app.models.pay_period import PayPeriod as _PayPeriod
-    _bootstrap = _PayPeriod(
-        user_id=other_user.id,
-        start_date=_date(2024, 1, 5),
-        end_date=_date(2024, 1, 5) + _td(days=13),
-        period_index=0,
-    )
-    db.session.add(_bootstrap)
-    db.session.flush()
+    # The account_service factory requires the user to have at least one pay
+    # period to anchor against.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    from datetime import date as _date
+    from tests._test_helpers import open_owner_calendar as _open_calendar
+    _bootstrap = _open_calendar(other_user.id, _date(2024, 1, 5))[0]
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 

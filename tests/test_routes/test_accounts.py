@@ -35,6 +35,7 @@ from tests._test_helpers import (
     create_transfer,
     current_pay_period,
     open_books_before_the_first_assertion,
+    open_owner_calendar,
     settle_day_columns,
     settle_instant_on,
     settlement_basis_id,
@@ -95,18 +96,11 @@ def _create_other_user_account():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3): the factory needs at
-    # least one period to anchor against.  Dated far before any
-    # test's typical 2026 range so it does not collide with periods
+    # The factory needs at least one period to anchor against.  Dated far
+    # before any test's typical 2026 range so it does not collide with periods
     # generated later by the test body.
-    bootstrap = PayPeriod(
-        user_id=other_user.id,
-        start_date=date(2024, 1, 5),
-        end_date=date(2024, 1, 18),
-        period_index=0,
-    )
-    db.session.add(bootstrap)
-    db.session.flush()
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    bootstrap = open_owner_calendar(other_user.id, date(2024, 1, 5))[0]
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = account_service.create_account(
@@ -6369,13 +6363,19 @@ class TestCashDetailContext:
         """
         with app.app_context():
             uid = seed_user["user"].id
-            assert db.session.query(PaySchedule).filter_by(
-                user_id=uid,
-            ).count() == 0, (
-                "this case needs an owner with no stored cadence; the fixture "
-                "now writes one, so the refusal it exercises has moved"
-            )
+            # **The owner must hold no stored cadence, and since plan step
+            # ``pay_calendar:C4-b-1`` the fixture writes one** -- the seeded
+            # opening payday comes from ``pay_period_write.record_paydays``,
+            # which upserts the ``budget.pay_schedule`` row in the same call.
+            # So this state is CONSTRUCTED here rather than inherited from a
+            # fixture that happened to supply it, which is the stronger form:
+            # the assertion that used to stand here could only report that the
+            # fixture had changed.  It is still a real owner -- somebody who
+            # has never generated a schedule holds neither row -- and the
+            # periods go FIRST, which is the order the foreign key plan step
+            # ``pay_calendar:C4-b-2`` adds makes the only non-cascading one.
             db.session.query(PayPeriod).filter_by(user_id=uid).delete()
+            db.session.query(PaySchedule).filter_by(user_id=uid).delete()
             db.session.commit()
 
             context = _capture_cash_detail_context(

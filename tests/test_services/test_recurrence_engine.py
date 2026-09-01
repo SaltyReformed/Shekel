@@ -73,6 +73,7 @@ from tests._test_helpers import (
     make_cadence_rule,
     make_every_period_rule,
     open_calendar_hole,
+    rebuild_calendar_from_spans,
     settlement_basis_id,
     settlement_if_settling,
 )
@@ -4199,36 +4200,61 @@ class TestDueDateGeneration:
         db.session.refresh(template)
         return template
 
-    def _make_custom_period(self, seed_user, start, end, index=0):
-        """Create a single PayPeriod with the given date range.
+    def _make_custom_periods(self, seed_user, *spans):
+        """Rebuild the owner's calendar so its periods OPEN on these spans.
+
+        **These built ``PayPeriod(...)`` rows by hand until plan step
+        ``pay_calendar:C4-b-1``, and every case in this class passed BECAUSE
+        of that.**  A hand-built row sets ``end_date`` itself, and the owner
+        had no ``budget.pay_schedule`` row, so
+        ``pay_schedule_service.resolve_schedule`` inferred the cadence from
+        that same typed end -- the derivation then handed back the span the
+        author had written, and the case was measuring its own input.  Give
+        the owner the stored cadence a real one has and a typed 28-day
+        February derives 14 days and generates nothing.
+
+        ``rebuild_calendar_from_spans`` builds them through the reset door and
+        the writer instead.  What that changes for a caller: an INTERIOR
+        span's end runs to the day before the next span opens, so a gapped
+        request gets wider interior periods than it asked for (a gap is not
+        expressible in a derived calendar).  Every case here asserts on the
+        occurrence's own DAY, which lands in the same period either way, and
+        the LAST span -- the one end the derivation projects from the cadence
+        -- is exact.
+
+        **What this does NOT remove, and an adversarial review of the step is
+        why it is written down**: the owner's cadence is still the last span's
+        length, so the date a case types still decides it.  What is gone is the
+        CIRCULARITY -- the cadence is now a stored fact the writer persisted,
+        not a value inferred back out of the ``end_date`` the same case typed,
+        and a 28-day payer is an owner production can have.  The coupling
+        survives one level up and is a caller's choice rather than a loop.
 
         Args:
             seed_user: The seed_user fixture dict.
-            start:     Period start_date.
-            end:       Period end_date.
-            index:     Relative period index among this test's custom
-                       periods (default 0).  Stored as ``index + 1`` to
-                       clear ``seed_user``'s bootstrap period (which
-                       occupies ``period_index`` 0), satisfying the
-                       ``uq_pay_periods_user_index`` constraint.  These
-                       tests assert on ``due_date`` (date-derived), never
-                       on the absolute index, so the offset is invisible
-                       to every assertion.
+            *spans: ``(start, end)`` pairs, ascending, at least one.
 
         Returns:
-            The created PayPeriod, flushed with an assigned ID.
+            The owner's periods, payday ascending -- one per span.
         """
-        from app.models.pay_period import PayPeriod
+        return rebuild_calendar_from_spans(seed_user["user"].id, list(spans))
 
-        period = PayPeriod(
-            user_id=seed_user["user"].id,
-            start_date=start,
-            end_date=end,
-            period_index=index + 1,
-        )
-        db.session.add(period)
-        db.session.flush()
-        return period
+    def _make_custom_period(self, seed_user, start, end):
+        """Rebuild the owner's calendar as the ONE period *start*..*end*.
+
+        :meth:`_make_custom_periods` for the single-span cases, where the
+        stated end is exact: it is the last span, so the owner's cadence is
+        its length and the derivation projects precisely it.
+
+        Args:
+            seed_user: The seed_user fixture dict.
+            start: The period's start_date, which is the owner's only payday.
+            end: The period's end_date.
+
+        Returns:
+            The created PayPeriod.
+        """
+        return self._make_custom_periods(seed_user, (start, end))[0]
 
     # -- Basic pattern tests ---------------------------------------------------
 
@@ -4538,10 +4564,7 @@ class TestDueDateGeneration:
                 (date(2026, 7, 1), date(2026, 7, 31)),   # Jul
                 (date(2026, 10, 1), date(2026, 10, 31)), # Oct
             ]
-            periods = [
-                self._make_custom_period(seed_user, s, e, idx)
-                for idx, (s, e) in enumerate(quarters)
-            ]
+            periods = self._make_custom_periods(seed_user, *quarters)
 
             template = self._make_template_with_rule(
                 seed_user, QUARTERLY,
@@ -4592,14 +4615,11 @@ class TestDueDateGeneration:
         Two custom periods cover Jan and Jul. fires_on_day=15.
         """
         with app.app_context():
-            periods = [
-                self._make_custom_period(
-                    seed_user, date(2026, 1, 1), date(2026, 1, 31), 0,
-                ),
-                self._make_custom_period(
-                    seed_user, date(2026, 7, 1), date(2026, 7, 31), 1,
-                ),
-            ]
+            periods = self._make_custom_periods(
+                seed_user,
+                (date(2026, 1, 1), date(2026, 1, 31)),
+                (date(2026, 7, 1), date(2026, 7, 31)),
+            )
             template = self._make_template_with_rule(
                 seed_user, SEMI_ANNUAL,
                 fires_in_month=1, fires_on_day=15,

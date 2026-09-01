@@ -12,9 +12,12 @@ replayed it outside the window entirely.  Nothing noticed while the shipping
 producers read the LATEST anchor row and ignored its date; the fold made the
 instant load-bearing.
 
-The per-fixture mitigations (``override_anchor``'s period-start default,
-``conftest._drop_seed_user_bootstrap``'s books restatement, an explicit settle
-day) stay and are unaffected
+The per-fixture mitigations (``override_anchor``'s period-start default, an
+explicit settle day) stay and are unaffected.  *A third was listed here --
+``conftest._drop_seed_user_bootstrap``'s books restatement -- and plan step
+``pay_calendar:C4-b-1`` deleted that function for the production door it was
+re-implementing; the restatement went with it, measured to move no day in any
+world this suite builds*
 -- this pins the STRUCTURAL half that stops a fourth instance:
 ``_test_helpers._freeze_db_clock``.  Read its docstring for the design and its
 one stated boundary.

@@ -31,6 +31,7 @@ from app.models.user import User, UserSettings
 from app.services import companion_service
 from app.services.auth_service import hash_password
 from app.services.pay_calendar import calendar_for
+from tests._test_helpers import open_owner_calendar
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -384,13 +385,8 @@ class TestPeriodIsolation:
         settings = UserSettings(user_id=second_user.id)
         db.session.add(settings)
 
-        other_period = PayPeriod(
-            user_id=second_user.id,
-            start_date=date(2026, 1, 2),
-            end_date=date(2026, 1, 15),
-            period_index=0,
-        )
-        db.session.add(other_period)
+        # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+        other_period = open_owner_calendar(second_user.id, date(2026, 1, 2))[0]
         db.session.commit()
 
         companion = seed_companion["user"]
