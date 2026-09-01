@@ -403,14 +403,26 @@ hides.
   figure, so the collision the chooser mediates cannot occur (developer, 2026-08-11). **This is where
   the measured `$502.45` defect class dies** -- `_get_transaction_amount` priced a third paycheck from
   a truncated period list, and a generator that prices nothing cannot mis-price.
-* [ ] **X-au-g** `refactor(loans): a loan payment resolves on its own due date` -- the LOAN-PAYMENT
-  cutover, closing **N-40**. **It must RULE first**, and the ruling is forced rather than optional: a
-  resolver may not read the wall clock, and `live_loan_transfer_amounts` resolves its basis through
-  `_resolve_loan_basis(..., date.today())`. The rule ruling D5 already applied to escrow -- a shadow's
-  figure resolves on the shadow's own DUE date -- is what makes the loan half resolvable. Dormant on
-  production (`budget.loan_payment_settings` is EMPTY, both payments predating migration
-  `c2a2c508e103`, which deliberately did not backfill), so it moves `$0.00` there and is graded on a
-  seeded loan.
+* [ ] **X-au-g** the DECOMPOSED parent of the LOAN-PAYMENT cutover, split 2026-08-31: the cutover
+  was blocked by a cycle that turned out not to exist, so deleting that cycle is its own leaf.
+  * [x] **X-au-g-1** `af61263d` -- `_resolve_loan_basis` loaded the loan's whole payment history to
+    recover ONE field that is character for character `compute_monthly_payment_baseline`'s body, a
+    producer taking NO payments and NO anchors. Finding **N-266** (a) is MISDIAGNOSED rather than
+    falsified: its PATH is dead, its CONCLUSION stands, because `get_payment_history` prices through
+    `owned_contribution`, which refuses a derived row -- one unrouted reader, not an irreducible
+    cycle, which is why X-au-g-2 routes that reader before declaring either leg.
+  * [ ] **X-au-g-2** `refactor(loans): a loan payment resolves on its own due date` -- the
+    LOAN-PAYMENT cutover, closing **N-40**. **It must RULE first**, and the ruling is forced rather
+    than optional: a resolver may not read the wall clock, and `LoanPricing` pins `date.today()` when
+    the basis is built. The rule ruling D5 already applied to escrow -- a shadow's figure resolves on
+    its own DUE date -- is what makes the loan half resolvable. **Its first move is routing
+    `get_payment_history` through the resolver**, which X-au-g-1 made possible; two obstacles are
+    named rather than left to be discovered -- it takes no `AmountBasis`, so the signature change
+    reaches `load_loan_context` and its three callers, and it must route to `contributions_by_id`
+    rather than `amounts_by_id`, since it feeds SETTLED rows to the amortization engine and the wrong
+    one replaces recorded cash with forecast cash. Dormant on production
+    (`budget.loan_payment_settings` is EMPTY), so it moves `$0.00` there and is graded on a seeded
+    loan.
 * [ ] **X-au-f** `refactor(transfers): a shadow's amount is its parent's` -- the TRANSFER cutover.
   `transfers.amount` resolves from the template series for a generated transfer, a shadow resolves
   from its parent, and the copy at `transfer_service.py:534` with the drift corrector at `:814` both

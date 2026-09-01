@@ -338,17 +338,25 @@ def _declare_loan_payment_derived(xfer):
     step X-au-g) performs.
 
     **The other is that the LOAN-side income leg cannot be declared at all
-    today, and that is a finding rather than a fixture convenience.**  The
-    resolver's LOAN_PAYMENT rule asks the loan
-    (``loan_payment_service.live_loan_transfer_amounts``); the loan resolves
-    through ``load_loan_context``, which calls ``get_payment_history``, which
-    reads the amount of every shadow income row ON THE LOAN ACCOUNT.  Emptying
-    that column therefore breaks the producer that prices the row -- a cycle the
-    amount model does not yet cut, recorded against X-au-g.  The checking-side
-    expense leg is invisible to ``query_shadow_income`` (it filters to the
-    destination account and the income type), so declaring it exercises rule 4
-    end to end without entering the cycle, and it is the leg every CASH reader
-    prices.
+    today, and that is a finding rather than a fixture convenience.**
+    ``loan_payment_service.get_payment_history`` reads every shadow income row
+    ON THE LOAN ACCOUNT and prices each one through
+    ``row_valuation.owned_contribution``, which REFUSES a row whose plan is
+    derived.  Emptying that column therefore breaks the producer.  The
+    checking-side expense leg is invisible to ``query_shadow_income`` (it
+    filters to the destination account and the income type), so declaring it
+    exercises rule 4 end to end without reaching that reader, and it is the leg
+    every CASH reader prices.
+
+    **This docstring used to call that a CYCLE, and it is not one.**  It read:
+    the loan resolves through ``load_loan_context`` -> ``get_payment_history``,
+    so the rule that prices the row routes back to the row.  That path is
+    deleted -- ``_resolve_loan_basis`` reads the loan's terms alone and loads no
+    payment history -- which is why finding **N-266** (a) is MISDIAGNOSED rather
+    than closed: the restriction this helper honours is real and still holds,
+    but it is ONE UNROUTED READER, and plan step **X-au-g** routes it and then
+    declares both legs.  Whoever does that widens this helper; until then the
+    scoping below is correct and not merely convenient.
     """
     _declare_derived(_shadow_of(xfer), AmountSourceEnum.PARENT_TRANSFER)
     return _declare_transfer_derived(xfer)
