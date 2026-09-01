@@ -826,6 +826,41 @@ class TestPulseStillDue:
             )
             assert result["still_due"]["current_period"] == Decimal("0.00")
 
+    def test_a_REFUNDED_envelope_contributes_MORE_than_its_budget(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The floor is BELOW, and there is deliberately none above.
+
+        Developer ruling 2026-09-01, ruling **bank_import:R-II**, plan step
+        ``bank_import:X-gj-2b-3``.  Envelope `$100.00`, one `-$50.00` refund:
+
+            remaining = 100.00 - (-50.00) = 150.00, not floored.
+
+        Still-due reads `$150.00` against a `$100.00` plan, and that is the
+        ruled NET basis: the plan is `$100.00` of net spending and `-$50.00` of
+        it has happened, so `$150.00` may still be recorded.  Capping it at the
+        budget was refused with these numbers, because the dashboard would then
+        disagree with the reservation ``cash_ledger`` holds for the same row.
+
+        Asserted BESIDE the over-budget case above, which is the one that
+        makes the floor real: a producer with no floor at all would fail that
+        one and a producer clamped to `[0, budget]` would fail this one.
+        """
+        with app.app_context():
+            txn = _add_tracked_expense(
+                db.session, seed_user, seed_periods[_CURRENT_IDX],
+                "Groceries", "100.00",
+            )
+            _add_entry(
+                db.session, seed_user, txn, "-50.00", date(2026, 3, 18),
+            )
+            db.session.commit()
+
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
+            )
+            assert result["still_due"]["current_period"] == Decimal("150.00")
+
     def test_tracked_no_entries_contributes_full_estimate(
         self, app, seed_user, seed_periods, db,
     ):

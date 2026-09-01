@@ -66,15 +66,15 @@ from app.services.statement_match import _create  # pylint: disable=protected-ac
 
 from tests._test_helpers import open_books_before_the_first_assertion
 from ._builders import (
-    accepted_acts,
     a_bank_line,
-    a_bars,
     a_later_period,
     a_purchase,
     a_scope,
-    a_transaction,
-    an_import,
     a_submission,
+    a_transaction,
+    accepted_acts,
+    an_answers,
+    an_import,
 )
 
 
@@ -569,7 +569,7 @@ class TestKeptRowsCountsWhatSURVIVES:
             ),
             a_scope(seed_user),
             _create.MintedEnvelopes.none_yet(),
-            a_bars(seed_user),
+            an_answers(seed_user),
             applied_by_rule=False,
         )
         db.session.flush()
@@ -706,7 +706,7 @@ class TestReleasingAnActDoesNotWithdrawTwice:
             ),
             a_scope(seed_user),
             _create.MintedEnvelopes.none_yet(),
-            a_bars(seed_user),
+            an_answers(seed_user),
             applied_by_rule=False,
         )
         db.session.flush()

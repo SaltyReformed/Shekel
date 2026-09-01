@@ -12,11 +12,23 @@ module being one module makes visible, and a first draft of this header claimed
 the three were total and was measured FALSE by this step's own adversarial
 review:
 
-* an outflow becomes a PURCHASE against a budget line the owner picks
-  (:class:`CreatableLine`, ruling **R-FX**);
-* an outflow whose merchant is barred becomes nothing, and is PARKED with the
-  reason (:class:`~._bars.ParkedLine`, ruling **R-GJ**);
-* an inflow becomes an uncategorized INCOME row
+* a line becomes a PURCHASE against a budget line the owner picks
+  (:class:`CreatableLine`, ruling **R-FX**).  **Every outflow, and the INFLOWS
+  whose merchant carries a spending answer** -- such a credit is a REFUND, a
+  negative purchase back into that container (ruling **R-HT(a)**, plan step
+  ``bank_import:X-gj-2b-2``);
+* a line whose merchant is barred becomes nothing, and is PARKED with the
+  reason (:class:`~._bars.ParkedLine`, ruling **R-GJ**).  **In BOTH
+  directions**, and this paragraph said *an inflow is never barred: both arms
+  of the bar are claims about money leaving* until plan step
+  ``bank_import:X-gj-2b-3``.  That is true of *never a purchase* and FALSE of
+  *your bank files this merchant as a payment to an account you hold*, which
+  is a claim about the MERCHANT -- so a credit from a card-payment merchant is
+  barred exactly as its debits are.  The retraction was written into
+  :func:`_creatable_lines` one commit later and this paragraph, which a reader
+  reaches FIRST, was left asserting the argument that had just been measured
+  false;
+* every OTHER inflow becomes an uncategorized INCOME row
   (:class:`RecordableInflow`, ruling **bank_import:R-GW**);
 * **an outflow the bank dates MADE after it POSTED reaches none of the three.**
   :func:`_creatable_lines` drops it before the split, on finding **N-325**'s
@@ -34,7 +46,15 @@ review:
 three lived apart.**  ``_creatable_lines`` took ``amount < 0`` and nothing took
 the other side, so eight of the developer's own deposits -- `$58.87`, five
 dividends and three card refunds -- had no act on the review screen at all,
-while the two refusals that should have caught it pointed at each other.  A
+while the two refusals that should have caught it pointed at each other.
+
+**AND THE SIGN WAS THE WRONG DISCRIMINANT ALL ALONG**, which plan step
+``bank_import:X-gj-2b-2`` corrects.  Those two sign tests decided what a line
+BECAME before the owner's rule was consulted -- exact only while a purchase had
+to be positive.  A merchant credit is money arriving that must become a
+purchase, so :func:`~._rules.pipeline_for` is the partition now and the sign is
+one of its inputs.  The three card refunds in the paragraph above are the
+lines that were on the wrong side of it.  A
 module whose whole subject is *what may this line become* is where a missing
 direction is one function short rather than nowhere -- and the fourth class
 above is the proof that it works: it was invisible while these lived apart and
@@ -58,7 +78,7 @@ from typing import TYPE_CHECKING
 
 from app.services.status_seam import day_is_in_the_future
 
-from ._bars import CreationBars, ParkedLine
+from ._bars import CreationBars, MerchantAnswers, ParkedLine
 from ._creations import PurchaseDestination, envelope_answer_key
 from ._offers import BankLine
 from ._placement import (
@@ -67,7 +87,7 @@ from ._placement import (
     inflow_placement_for,
     placements_for,
 )
-from ._rules import RuleView
+from ._rules import LinePipeline, RuleView, pipeline_for
 from ._scope import ReviewScope, no_period_refusal
 from ._section import MerchantSection, merchant_section
 
@@ -80,7 +100,7 @@ if TYPE_CHECKING:  # pragma: no cover -- the edge back would be a cycle
 
 @dataclass(frozen=True)
 class CreatableLine:
-    """One bank OUTFLOW the app has no row for, and where it could go.
+    """One bank line the app has no row for, in EITHER direction, and where it could go.
 
     Plan step ``bank_import:X-f6a-3b``, ruling **R-FS**'s third shape.  These
     are the lines the matcher can never explain, because the app records a
@@ -216,7 +236,13 @@ def _creatable_lines(
     view: RuleView,
     bars: CreationBars,
 ) -> "tuple[tuple[CreatableLine, ...], tuple[ParkedLine, ...], int]":
-    """Split the unmatched OUTFLOWS into what may be recorded and what may not.
+    """Split the unmatched lines it is GIVEN into what may be recorded and what may not.
+
+    *It said OUTFLOWS until plan step ``bank_import:X-gj-2b-3``*, which its own
+    ``Returns`` section 45 lines below already contradicted (*"All three counts
+    reach the INFLOW direction"*): since ruling **bank_import:R-II** the caller
+    hands it every line ``pipeline_for`` routes to PURCHASE, and that includes
+    a container-answered credit.
 
     **A line the bank dates MADE after it POSTED is not one of them** (finding
     **N-325**, developer ruling 2026-08-19).  ``entry_service.create_entry``
@@ -253,17 +279,28 @@ def _creatable_lines(
 
     Returns:
         ``(creatable, parked, impossible_day_count)`` -- one
-        :class:`CreatableLine` per offerable outflow a create control may be
-        rendered for, one :class:`~._bars.ParkedLine` per outflow ruling
+        :class:`CreatableLine` per offerable LINE a create control may be
+        rendered for, one :class:`~._bars.ParkedLine` per line ruling
         **R-GJ** bars, both in the order the lines were given, and how many
         were declined for dating their own purchase after their own posting.
+
+        **All three counts reach the INFLOW direction since plan step
+        ``bank_import:X-gj-2b-2``**, and the third is the one worth stating: a
+        refund whose source dates it MADE after it POSTED is declined here, so
+        it is counted into ``impossible_day_count`` where before this step it
+        was offered as a recordable INFLOW.  That is the same treatment its
+        outflow twin already got (finding **N-325**) rather than a class going
+        missing -- the line stays in :attr:`~._reads.ReviewSet.unmatched`, so
+        the hand-build form still reaches it, and the bound reports it.
         The per-period destination tuple is SHARED by every line in that
         period, so a statement with 91 outflows over 11 periods builds 11
         tuples rather than 91.
     """
-    outflows = [line for line in unmatched if line.amount < 0]
-    impossible = [line for line in outflows if line.states_impossible_days]
-    offerable = [line for line in outflows if not line.states_impossible_days]
+    # **No sign test**: :func:`_by_pipeline` already chose these, and since
+    # plan step ``bank_import:X-gj-2b-2`` they include the INFLOWS whose
+    # merchant carries a container answer -- a refund is a purchase.
+    impossible = [line for line in unmatched if line.states_impossible_days]
+    offerable = [line for line in unmatched if not line.states_impossible_days]
     if not offerable:
         return (), (), len(impossible)
     # ONE pass over the destinations, and ONE placement per line.  Both were
@@ -282,6 +319,16 @@ def _creatable_lines(
         # ONE ask of the bar per line, and its answer is what routes the line:
         # a second ask -- once to partition and once to word the sentence -- is
         # the redundant producer call this module already refuses above.
+        # **Asked of EVERY line, in both directions**, and a bound that
+        # exempted inflows is what this step's own review measured as a hole
+        # (plan step ``bank_import:X-gj-2b``).  The argument for it -- neither
+        # arm of ruling **R-GJ**'s bar can be true of money arriving -- holds
+        # for *never a purchase* and NOT for *your bank files this merchant as
+        # a payment to an account you hold*, which is a claim about the
+        # MERCHANT rather than about one line's direction.  See
+        # :func:`~._bars.reject_barred_line`, whose docstring carries the whole
+        # argument and the class it reached; this is the SCREEN's half of the
+        # same refusal, so the two are graded separately and must agree.
         barred_by = bars.bar_for(line.merchant_id)
         if barred_by is not None:
             # **BOTH facts, because both bars can hold** (plan step
@@ -308,17 +355,21 @@ def _recordable_inflows(
 ) -> "tuple[RecordableInflow, ...]":
     """Return the unmatched lines of money COMING IN, each placed by its day.
 
-    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  :func:`_creatable_lines`
-    takes the outflows and this takes the other side, which is what closed a
-    whole DIRECTION of movement having no act.
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  It takes the
+    lines :func:`~._rules.pipeline_for` routes to
+    :attr:`~._rules.LinePipeline.INCOME`, which is what closed a whole
+    DIRECTION of movement having no act.  **The partition was the SIGN until
+    plan step ``bank_import:X-gj-2b-2``** -- this took ``amount > 0`` and
+    :func:`_creatable_lines` took ``amount < 0`` -- and the correction is that
+    an inflow a container answer claims is a REFUND the other half owns.
 
-    **The two SIGNS are total and the two LISTS are not**, and the difference
-    is the module header's fourth bullet.  ``ck_bank_statement_lines_amount_
-    real_nonzero`` declares ``amount <> 0``, so ``amount < 0`` and
-    ``amount > 0`` name every line the database can hold; but
-    :func:`_creatable_lines` then drops the outflows whose bank dates the
-    purchase after the posting (finding **N-325**), and those reach no list at
-    all.  Stating the sign half alone is what this step's own adversarial
+    **The two PIPELINES are total and the two LISTS are not**, and the
+    difference is the module header's fourth bullet.  :func:`~._rules.
+    pipeline_for` names one pipeline for every (direction, answer) the schema
+    allows, so no line is unrouted; but :func:`_creatable_lines` then drops the
+    lines whose bank dates the purchase after the posting (finding **N-325**),
+    and those reach no list at all.  Stating the routing half alone is what
+    this step's own adversarial
     review measured FALSE in a first draft of this docstring.
 
     **No bar is asked** (ruling **R-GJ**).  A bar says this merchant's money
@@ -353,7 +404,7 @@ def _recordable_inflows(
             line, _period_id_for(calendar, line.posted_on),
             inflow_placement_for(line.merchant_id, view),
         )
-        for line in unmatched if line.amount > 0
+        for line in unmatched
     )
 
 
@@ -522,10 +573,15 @@ class Leftovers:
     assembles it into a :class:`~._reads.ReviewSet`.
 
     Attributes:
-        creatable: The offerable unexplained outflows a create control may be
-            rendered for, each with its placement.
-        parked: The offerable unexplained outflows ruling **R-GJ** bars, each
-            with the reason (:class:`~._bars.ParkedLine`).
+        creatable: The offerable unexplained lines a create control may be
+            rendered for, each with its placement.  **Outflows and the inflows
+            a container answer claims as REFUNDS** (ruling
+            **bank_import:R-II**), which is :func:`~._rules.pipeline_for`'s
+            partition rather than the sign's.
+        parked: The offerable unexplained lines ruling **R-GJ** bars, each
+            with the reason (:class:`~._bars.ParkedLine`).  Both directions:
+            the card-payment arm is a claim about the MERCHANT, so a credit
+            from one is barred exactly as its debits are.
         recordable_inflows: The unexplained INFLOWS, each with the period
             that would hold it (ruling **bank_import:R-GW**).
         merchants: The rule control's rows and option list.
@@ -538,6 +594,42 @@ class Leftovers:
     recordable_inflows: "tuple[RecordableInflow, ...]"
     merchants: MerchantSection
     impossible_day_count: int
+
+
+def _by_pipeline(
+    unmatched: "list[BankLine]", view: RuleView,
+) -> "dict[LinePipeline, list[BankLine]]":
+    """Split the unexplained lines by which ACT each is a candidate for.
+
+    Plan step ``bank_import:X-gj-2b-2``.  The whole of the routing, in one
+    place, so the two halves below can each be about their own act rather than
+    about which lines are theirs.
+
+    **Every pipeline gets a key even when empty**, so a caller indexes rather
+    than ``.get``-with-a-default: a missing key would be a silently empty half,
+    which is exactly how a whole DIRECTION of movement had no act at all until
+    ruling **bank_import:R-GW** (see the module header).
+
+    Args:
+        unmatched: The bank lines inside the calendar no proposal explains.
+        view: What the owner has said, read ONCE by :func:`leftovers` and
+            shared, so the two halves cannot resolve against answers read at
+            two different instants.
+
+    Returns:
+        ``{LinePipeline: [BankLine]}`` covering every member, each list in the
+        order the lines were given.
+    """
+    buckets: "dict[LinePipeline, list[BankLine]]" = {
+        pipeline: [] for pipeline in LinePipeline
+    }
+    for line in unmatched:
+        rule = view.rules.get(line.merchant_id)
+        buckets[pipeline_for(
+            amount=line.amount,
+            answer=rule.answer if rule is not None else None,
+        )].append(line)
+    return buckets
 
 
 def leftovers(
@@ -564,18 +656,25 @@ def leftovers(
     Returns:
         The :class:`Leftovers`.
     """
-    view = RuleView.build(scope.owner_id, scope.account_id)
-    bars = CreationBars.build(
-        scope.owner_id, scope.account_id, rules=view.rules,
-    )
+    answers = MerchantAnswers.build(scope.owner_id, scope.account_id)
+    view, bars = answers.view, answers.bars
+    # **ONE partition, on what each line is a candidate to BECOME** (plan step
+    # ``bank_import:X-gj-2b-2``).  The two halves each took their own SIGN test
+    # until this step -- ``amount < 0`` here and ``amount > 0`` there -- which
+    # decided what a line became before the owner's rule was consulted.  A
+    # merchant credit is money ARRIVING that must become a PURCHASE, so the
+    # sign cannot decide it; :func:`~._rules.pipeline_for` is the discriminant
+    # and the direction is one of its inputs.
+    by_pipeline = _by_pipeline(unmatched, view)
     creatable, parked, impossible_days = _creatable_lines(
-        scope.calendar, unmatched, destinations, view, bars,
+        scope.calendar, by_pipeline[LinePipeline.PURCHASE], destinations,
+        view, bars,
     )
     return Leftovers(
         creatable=creatable,
         parked=parked,
         recordable_inflows=_recordable_inflows(
-            scope.calendar, unmatched, view,
+            scope.calendar, by_pipeline[LinePipeline.INCOME], view,
         ),
         # **Both halves**, because a merchant is parked for want of an answer
         # and this control is the only place one is given: counting only the

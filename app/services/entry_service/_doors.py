@@ -37,6 +37,7 @@ from app.services.settle_day import (
 from app.services.entry_service._refusals import (
     _reject_future_posting_day,
     _reject_future_purchase_date,
+    _reject_zero_amount,
     _reject_settled_addition,
     _reject_settled_before_purchase,
     _reject_settled_parent,
@@ -192,7 +193,16 @@ class EntryDetails:
     routing/ownership context (the parent transaction and the acting user).
 
     Fields:
-        amount:      Positive Decimal for the purchase amount.
+        amount:      What the purchase cost, as a SIGNED ``Decimal`` --
+            POSITIVE for a charge and NEGATIVE for a REFUND (ruling
+            **bank_import:R-II**).  **It said *Positive* until plan step
+            ``bank_import:X-gj-2b-3``, and its own caller contradicted it**:
+            ``statement_match._create._born_purchase`` builds one of these with
+            ``amount=-Decimal(str(line.amount))``, which for a merchant credit
+            is negative.  What refuses a negative is the hand-entry FORM
+            (``EntryCreateSchema``'s ``Range(min=0.01)``), where a typed
+            negative is a typo -- not this value, and not the table, whose only
+            rule is ``<> 0`` (:func:`~._refusals._reject_zero_amount`).
         description: Store name or brief note (1--200 chars).
         purchased_on: Date the purchase HAPPENED.  Backdating is ordinary; a
             date after the user's today is refused (ruling R-M, see
@@ -333,6 +343,7 @@ def create_entry(
     # non-owner still gets the 404 rather than a validation message that
     # confirms the row exists (ruling R-M; see
     # _reject_future_purchase_date).
+    _reject_zero_amount(details.amount)
     _reject_future_purchase_date(details.purchased_on)
     # The posting day's two bounds, the SAME pair :func:`update_entry` applies
     # and for the same reasons -- a day the bank has not reached yet (ruling
@@ -485,6 +496,10 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     # The same boundary the create door applies, and only when the caller is
     # actually moving the date -- a partial update that leaves ``purchased_on``
     # alone must not be refused for a value it is not setting (ruling R-M).
+    # Narrowed to a submission that actually SETS the amount, for the reason
+    # the date rule below is: a partial update leaving ``amount`` alone must
+    # not be refused for a value it is not writing.
+    _reject_zero_amount(valid_updates.get("amount"))
     if "purchased_on" in valid_updates:
         _reject_future_purchase_date(valid_updates["purchased_on"])
     # Both date rules are checked on the RESULT, not the submission: a

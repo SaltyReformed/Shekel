@@ -463,10 +463,19 @@ def _filing_sentence(filing) -> str:
         # alone -- reported "0" for a pass that filed only deposits.  The net
         # figure is stated as a net rather than as spending, because a pass
         # carrying both can come to any sign.
+        # **A THIRD direction since plan step ``bank_import:X-gj-2b-3``**
+        # (ruling **bank_import:R-II**): a rule also files a merchant CREDIT,
+        # which this sentence would have called a purchase.  Named separately
+        # for the reason the paragraph above names the second: the flat
+        # sentence describes an act half its members did not perform.
         classes = []
         if filing.outcome.recorded_count:
             classes.append(
                 f"{filing.outcome.recorded_count} as purchases"
+            )
+        if filing.outcome.refunded_count:
+            classes.append(
+                f"{filing.outcome.refunded_count} as refunds"
             )
         if filing.outcome.deposited_count:
             classes.append(

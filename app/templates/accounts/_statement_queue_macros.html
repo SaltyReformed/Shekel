@@ -1,6 +1,38 @@
-{# The acts a queue row offers that are not its own control.
+{% from "_money_macros.html" import money %}
+
+{# The acts a queue row offers that are not its own control, and the ONE
+   sentence two surfaces both owe a line whose period already holds its money.
 
    Plan step bank_import:X-gf-3b, ruling bank_import:R-HC. #}
+
+{% macro books_already_hold(held) %}
+{# WHAT THE BOOKS ALREADY HOLD as ARRIVING for one line's own pay period.
+
+   ONE SPELLING, for the reason `_filing` states in as many words about its
+   own twin: the sentence the receipt reports and the sentence a screen prints
+   beside the same line are the same value rather than two spellings of one
+   rule.  This one was spelled TWICE -- once in `_statement_review_body.html`
+   and once in `_statement_reconcile_macros.html` -- and both said "N income
+   row(s)" about a set that holds a stored REFUND, whose cash is positive
+   (ruling bank_import:R-II).  The SERVICE-composed twin
+   (`ArrivalsAlreadyHeld.why_it_could_double_count`) had already been corrected
+   at plan step bank_import:X-gj-2b and these two had not, which is exactly the
+   drift one composer prevents.
+
+   IT IS A TEMPLATE MACRO AND NOT A SERVICE STRING, and that is the same
+   distinction the value's own docstring draws: this NAMES ROWS and states
+   figures, and money is formatted by the `money` macro rather than by a
+   service.
+
+   ONE LINE in the source on purpose, the rule the receipt's own sentences
+   follow: Jinja keeps the newlines and indentation it is given, so a sentence
+   wrapped here is a sentence no test can assert as a sentence.
+
+   Server-derived and NAMED, so the owner can find the rows on the workbench
+   rather than being told to go looking.  It is not a suggestion that this line
+   IS them. #}
+This pay period already holds {{ held.rows | length }} row(s) totalling {{ money(held.total) }} your records say arrived and no bank line explains{% for row in held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ row.label }} {{ money(row.cash_amount) }}{% endfor %}. If this line is those, match it against them instead of recording it here.
+{%- endmacro %}
 
 {% macro match_by_hand(account_id, line_id) %}
 {# THE LINK EVERY EXCEPTION CARRIES, and it carries its own line.
@@ -22,7 +54,7 @@
    THE SENTENCE NAMES THE ACT, NOT A POSITION.  EIGHT owner-visible sentences
    pointed at the form's position until this step and all eight went false in
    the commit that moved it -- THREE of them derived in the SERVICE, which
-   cannot see a layout at all (`_verdict._LOOK_FIRST`, `_verdict._look_first`,
+   cannot see a layout at all (`_verdict._LOOK_FIRST`, `_verdict.look_first`,
    `ParkedLine.reason`).  A first version of this comment said FIVE and two,
    which is the count of the literal string "the match form below" rather than
    the count of the COUPLING; a short census recorded as a completed sweep is

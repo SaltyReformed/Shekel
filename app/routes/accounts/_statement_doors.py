@@ -487,7 +487,8 @@ def outcome_counts(outcome) -> dict:
 
     **Every count, including the ones a given door cannot produce.**  A
     hand-built match carries no creation and no income, so ``recorded_count``,
-    ``envelopes_created`` and ``deposited_count`` are structurally zero there
+    ``refunded_count``, ``envelopes_created`` and ``deposited_count`` are
+    structurally zero there
     -- and they are still emitted, because an audit trail whose FIELDS depend
     on which door wrote the row cannot be queried across the two.
 
@@ -510,6 +511,12 @@ def outcome_counts(outcome) -> dict:
         # a float of it -- the discipline every money field in this log keeps.
         "residual_total": str(outcome.residual_total),
         "recorded_count": outcome.recorded_count,
+        # Added at plan step ``bank_import:X-gj-2b-3``, when
+        # ``recorded_count`` split by direction -- for this function's own
+        # stated reason: an audit trail whose fields depend on which door or
+        # which release wrote the row cannot be queried across them, and two
+        # counts have been forgotten from this list once already.
+        "refunded_count": outcome.refunded_count,
         "envelopes_created": outcome.envelopes_created,
         "deposited_count": outcome.deposited_count,
     }

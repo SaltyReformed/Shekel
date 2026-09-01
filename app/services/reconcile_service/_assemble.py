@@ -236,11 +236,21 @@ def _tally(
     anything carrying an ``amount``, which is both offer types, because the
     reduction is about a list of money and not about which arm produced it.
 
+    **The sum is SIGNED and it nets** (ruling **bank_import:R-II**, plan step
+    ``bank_import:X-gj-2b-3``).  A refund is a negative purchase, so the
+    purchase tally over `$120.00` and `-$45.00` is ``(2, 75.00)`` -- two rows to
+    tick, and `$75.00` of net movement the envelope is still holding back.  The
+    alternative -- summing magnitudes, or splitting the tally by direction --
+    would make the figure disagree with the reservation the panel's own
+    sentence is about, which is the defect that sentence was already corrected
+    for once by `$488.16`.
+
     Args:
         offers: The offers of one kind, each carrying an ``amount``.
 
     Returns:
-        How many, and what they are worth.
+        How many, and what they are worth -- the count of ROWS and the SIGNED
+        sum of their amounts.
     """
     return (
         len(offers),

@@ -10,7 +10,7 @@ receipt's.  This composes the sentence.
 money out of the service.**  The sentence mixes plain words, emphasised names
 and FIGURES, and a service that formatted ``$0.05`` into a string would be the
 second money formatter beside ``_money_macros.money`` -- which is the rule
-:class:`~._reads.IncomeAlreadyRecorded` already states by carrying rows and a
+:class:`~._reads.ArrivalsAlreadyHeld` already states by carrying rows and a
 Decimal instead of a sentence.  A span carries either words or a figure, never
 both, and the template renders each by its :class:`Ink`.
 

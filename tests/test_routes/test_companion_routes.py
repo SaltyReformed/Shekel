@@ -451,7 +451,14 @@ class TestEntryIntegration:
         comp = _login_companion(app)
         resp = comp.patch(
             f"/transactions/{txn.id}/entries/{entry.id}",
-            data={"amount": "45.00", "description": "Kroger Updated"},
+            data={
+                "amount": "45.00",
+                # The edit form emits the direction beside the amount since
+                # plan step ``bank_import:X-gj-2b-3``, and the route refuses
+                # one without the other rather than guessing a sign.
+                "direction": "charge",
+                "description": "Kroger Updated",
+            },
         )
         assert resp.status_code == 200
 

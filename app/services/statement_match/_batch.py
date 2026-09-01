@@ -79,8 +79,7 @@ from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 
 from ._accept import accept_match
-from ._bars import CreationBars
-from ._rules import RuleView
+from ._bars import MerchantAnswers
 from ._create import MintedEnvelopes, create_purchase_from_line
 from ._creations import IncomeCreation, PurchaseCreation
 from ._income import record_income_from_line
@@ -287,9 +286,15 @@ class RefusedItem:
 class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     """What a whole reviewed pass did.
 
-    Pylint: too-many-instance-attributes (11/7) -- **eleven because a pass
-    receipt has eleven things to say.**  ``deposited_count`` is the newest
-    (ruling **bank_import:R-GW**) and it is here for ``repriced_count``'s reason: without
+    Pylint: too-many-instance-attributes (12/7) -- **twelve because a pass
+    receipt has twelve things to say.**  ``refunded_count`` is the newest
+    (ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``) and it
+    is here for exactly ``deposited_count``'s reason one sentence down: a
+    merchant credit a rule files as a NEGATIVE purchase reported through
+    ``recorded_count``, whose caption says *as a purchase your records did not
+    have, dated the day your bank took it* -- which the bank did not do.
+    ``deposited_count`` (ruling **bank_import:R-GW**) is here for
+    ``repriced_count``'s reason: without
     it a pass that recorded a deposit reports through ``recorded_count``,
     whose caption says *as a purchase*, or through nothing at all.
     ``repriced_count`` is what stopped this
@@ -321,15 +326,36 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             design review 2026-08-22.
         redated_count: How many purchases had their PURCHASE day corrected
             (ruling **R-FW**).
-        recorded_count: How many bank lines became a purchase the app did not
-            have.
-        envelopes_created: How many budget lines the pass created to hold one.
+        recorded_count: How many bank lines became a CHARGE the app did not
+            have -- a purchase the bank took money for.  **Charges only since
+            plan step ``bank_import:X-gj-2b-3``**; see :attr:`refunded_count`.
+        refunded_count: How many bank lines became a REFUND against a budget
+            line, lowering what that line has cost (ruling
+            **bank_import:R-II**).  Its own count for the reason
+            :attr:`deposited_count` is its own: both arms go through the same
+            door as a charge does, and one caption cannot be true of all
+            three.
+        envelopes_created: How many budget lines the pass created to hold one,
+            across BOTH directions.  **It has its own receipt line rather than
+            a clause on the charge one** (plan step ``bank_import:X-gj-2b-3``):
+            a refund can mint an envelope too -- a rule naming *a new envelope*
+            for the merchant does it, budgeting `$0.00` and recording the
+            refund -- so hanging the number off the charge sentence would
+            report an envelope this pass created under a count that does not
+            contain the line it holds.
         deposited_count: How many bank lines of money COMING IN became an
             uncategorized income row (ruling **bank_import:R-GW**).  **Its own count and
             not folded into** :attr:`recorded_count`, whose sentence on the
             receipt is *recorded as a purchase your records did not have* --
-            false of a deposit, and a count whose caption is false of half its
-            members is what this arc has now corrected three times.  **No
+            false of a deposit.  **A count whose caption is false of half its
+            members** is this arc's recurring defect, and the instances are
+            NAMED rather than counted (plan step ``bank_import:X-gj-2b-3``):
+            ``repriced_count`` split out 2026-08-22, ``deposited_count`` at
+            ruling **R-GW**, ``residual_count`` at **R-FN**, and
+            :attr:`refunded_count` at **R-II**.  Three separate docstrings
+            carried a running tally of these, all reading *three times* or
+            *twice*, and none was incremented when the fourth landed -- which
+            is what a counter written as prose does.  **No
             TOTAL beside it, unlike the residual pair**, and the asymmetry is
             the netting: a residual is signed either way, so seven at
             `+$0.05` against one at `-$0.35` net to a figure that says
@@ -355,6 +381,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     redated_count: int
     repriced_count: int
     recorded_count: int
+    refunded_count: int
     envelopes_created: int
     deposited_count: int
     residual_count: int
@@ -374,7 +401,8 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
         return cls(
             applied=(), refused=(),
             settled_count=0, corrected_count=0, redated_count=0,
-            repriced_count=0, recorded_count=0, envelopes_created=0,
+            repriced_count=0, recorded_count=0, refunded_count=0,
+            envelopes_created=0,
             deposited_count=0,
             residual_count=0, residual_total=Decimal("0.00"),
         )
@@ -406,6 +434,14 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             or self.repriced_count
             or self.residual_count
             or self.recorded_count
+            # **Recording a REFUND moves money too** (ruling
+            # **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``), and
+            # it is named here for the reason the sentence below names
+            # ``deposited_count``: this test has to name EVERY effect, and a
+            # pass whose only act was recording a merchant credit would
+            # otherwise render *"Nothing moved."* over a purchase it had just
+            # created and an envelope it may have minted to hold it.
+            or self.refunded_count
             # **Recording a deposit MOVES MONEY** (ruling **bank_import:R-GW**), so it
             # belongs here for the reason ``repriced_count`` was added: a pass
             # whose only act was one would otherwise render *"Nothing moved."*
@@ -488,6 +524,19 @@ def _created_summary(recorded) -> str:
     swipe day on half of every statement, which is the exact substitution R-FW
     rejected.
 
+    **The FIGURE is negated once; the VERB reads the field the door stated**
+    (ruling **R-II**).  ``CreatedPurchase.amount`` is the purchase's own signed
+    figure, so a refund is negative and the statement states the same movement
+    the other way round -- one negation, so this sentence and the
+    ``AppliedItem.amount`` beside it cannot disagree about which way the money
+    went.  **The verb asks** :attr:`~._creations.CreatedPurchase.records_a_refund`
+    **rather than the sign of that figure** (plan step
+    ``bank_import:X-gj-2b-3``): that field exists so nothing downstream
+    re-derives a direction, and this function was the first consumer written
+    after it and re-derived one anyway.  The two agree by construction today --
+    ``_born_purchase`` sets both from one line -- which is exactly why a second
+    spelling here would be invisible until it was not.
+
     Args:
         recorded: The :class:`~._create.CreatedPurchase`.
 
@@ -503,8 +552,21 @@ def _created_summary(recorded) -> str:
         f", made {recorded.made_on}" if recorded.made_on != recorded.posts_on
         else ""
     )
+    # **The BANK's convention** (plan step ``bank_import:X-gj-2b``, ruling
+    # **R-II**).  A refund is a NEGATIVE purchase, and this sentence printed
+    # ``$-42.00 your bank took`` -- the wrong sign AND the wrong direction, in
+    # the one notice the owner gets for money a rule moved without a press
+    # (**R-GH**).  It also contradicted ``AppliedItem.amount`` on the same
+    # item, which negates onto the bank's convention; the negation is done
+    # ONCE here so the two cannot disagree.
+    on_the_statement = -recorded.amount
+    # **The VERB is the DOOR's answer, not this figure's sign** (plan step
+    # ``bank_import:X-gj-2b-3``): ``records_a_refund`` is set by
+    # ``_born_purchase`` from ``_rules.is_inflow``, which is this package's one
+    # statement of the bank's sign convention.
+    took_or_gave = "gave back" if recorded.records_a_refund else "took"
     return (
-        f"Recorded ${recorded.amount:,.2f} your bank took on "
+        f"Recorded ${abs(on_the_statement):,.2f} your bank {took_or_gave} on "
         f"{recorded.posts_on}{made} as a purchase in {where}."
     )
 
@@ -539,7 +601,7 @@ def _income_summary(recorded) -> str:
 class _Tally:  # pylint: disable=too-many-instance-attributes
     """The running receipt one pass builds.
 
-    Pylint: too-many-instance-attributes (11/7) -- it accumulates exactly
+    Pylint: too-many-instance-attributes (12/7) -- it accumulates exactly
     the counters :class:`BatchOutcome` publishes, so it carries that
     class's disable for that class's reason.
 
@@ -554,6 +616,7 @@ class _Tally:  # pylint: disable=too-many-instance-attributes
     redated: int = 0
     repriced: int = 0
     recorded: int = 0
+    refunded: int = 0
     envelopes: int = 0
     deposited: int = 0
     residuals: int = 0
@@ -681,10 +744,8 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
     # builds both from one read; doing the same here means this door still
     # asks ``merchant_rules`` exactly ONCE, as the paragraph above claims,
     # while the income arm below gains the answer it needs.
-    view = RuleView.build(scope.owner_id, scope.account_id)
-    bars = CreationBars.build(
-        scope.owner_id, scope.account_id, rules=view.rules,
-    )
+    answers = MerchantAnswers.build(scope.owner_id, scope.account_id)
+    view = answers.view
 
     for submission in batch.matches:
         line_ids = tuple(sorted(submission.line_ids))
@@ -712,7 +773,7 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         recorded = _run(
             tally, line_ids,
             lambda c=creation: create_purchase_from_line(
-                c, scope, minted, bars,
+                c, scope, minted, answers,
                 # **The PASS's consent, not the item's** (ruling **R-GT**,
                 # plan step ``bank_import:X-ge``).  Which rule fired is
                 # derivable from the matched line; that a rule fired at all is
@@ -730,16 +791,31 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         # ``NoneType`` -- which is why the remembering lives out here.
         if recorded.envelope_created:
             minted.remember(creation.new_envelope, recorded)
-        tally.recorded += 1
+        # **Counted by DIRECTION, off the field the door stated** (ruling
+        # **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``).  One
+        # count reported both, and the receipt's caption for it -- *recorded as
+        # a purchase your records did not have, dated the day your bank took
+        # it* -- is false of a refund in both halves.  The direction is
+        # ``CreatedPurchase.records_a_refund``, which the create door resolved
+        # through ``_rules.is_inflow`` while it held the line, so nothing here
+        # tests a sign.
+        if recorded.records_a_refund:
+            tally.refunded += 1
+        else:
+            tally.recorded += 1
         tally.envelopes += 1 if recorded.envelope_created else 0
         tally.applied.append(AppliedItem(
             line_ids=line_ids, summary=_created_summary(recorded),
             # **NEGATED, onto the bank's convention.**
-            # ``CreatedPurchase.amount`` is the purchase's own figure and a
-            # purchase is an expense, so it is POSITIVE
-            # (``ck_transaction_entries_positive_amount``) -- and this door
-            # only ever creates one from a line whose own amount was negative
-            # (``_create._load_line`` refuses an inflow by name).
+            # ``CreatedPurchase.amount`` is the purchase's own figure and the
+            # bank states the same movement with the opposite sign, so the
+            # receipt negates it back.  **Sign-general by construction**: the
+            # negation is what the bank's convention is, not an assumption that
+            # the purchase is positive, so a refund recorded at ``-28.29``
+            # reports the ``+28.29`` the statement shows (ruling
+            # **bank_import:R-II**).  Refunds DO reach this door since plan
+            # step ``bank_import:X-gj-2b-2``, so the general case is the
+            # ordinary one rather than a future one.
             amount=-recorded.amount,
         ))
 
@@ -777,6 +853,7 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         redated_count=tally.redated,
         repriced_count=tally.repriced,
         recorded_count=tally.recorded,
+        refunded_count=tally.refunded,
         envelopes_created=tally.envelopes,
         deposited_count=tally.deposited,
         residual_count=tally.residuals,

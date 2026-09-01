@@ -733,6 +733,207 @@ class TestAFutureEntryDateIsRefusedAtTheRoute:
 
 # ---- Update entry (PATCH) -----------------------------------------------
 
+class TestASignIsPICKEDAndNeverTyped:
+    """A typed minus cannot book a refund, on EITHER purchase form.
+
+    Developer ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``, after an
+    adversarial design review measured what the previous shape cost.
+
+    Ruling **bank_import:R-II** moved positivity off the table onto the
+    hand-entry door, and the branch that did it then deleted the bound from the
+    EDIT door as well -- because the inline form resubmits its amount box even
+    when the owner only changed a date, so a stored refund could not be
+    re-described while the box refused a negative.  That defect was real; the
+    remedy was aimed at the wrong tier.
+
+    **What it cost.**  ``EntryUpdateSchema`` is reached ONLY by the human PATCH
+    route, so both doors carrying this rule are doors a person types at -- and
+    one of them had no bound at all.  A typed ``-45.00`` where ``45.00`` was
+    meant booked a REFUND in silence and moved the projection by twice the
+    figure, while the identical keystroke on the ADD form was a 422.
+
+    Both forms take a MAGNITUDE now and state the direction beside it, so a
+    minus is not refused -- it is unrepresentable.  Every case here posts what
+    the template actually emits.
+    """
+
+    def test_a_typed_MINUS_is_refused_on_the_EDIT_form(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The keystroke that silently booked a refund.
+
+        Asserts the STORED figure as well as the status: a 422 that had already
+        written the row would be the worse failure, and only the second
+        assertion can see it.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"amount": "-45.00", "direction": "charge"},
+            )
+
+            assert resp.status_code == 422
+            db.session.refresh(entry)
+            assert entry.amount == Decimal("50.00"), (
+                "the refused edit must not have written anything"
+            )
+
+    def test_a_typed_MINUS_is_refused_on_the_ADD_form(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The control the edit form was measured against, unchanged."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries",
+                data={
+                    "amount": "-45.00", "direction": "charge",
+                    "description": "Kroger", "purchased_on": "2026-01-05",
+                },
+            )
+
+            assert resp.status_code == 422
+            assert db.session.query(TransactionEntry).count() == 0
+
+    def test_PICKING_refund_is_what_stores_a_negative(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The deliberate act, which must still work -- on the ADD form.
+
+        Without this the two refusals above are satisfied by a door that
+        cannot record a refund at all, which is the state ruling **R-II**
+        exists to end.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries",
+                data={
+                    "amount": "45.00", "direction": "refund",
+                    "description": "Amazon refund",
+                    "purchased_on": "2026-01-05",
+                },
+            )
+
+            assert resp.status_code == 200
+            [entry] = db.session.query(TransactionEntry).all()
+            assert entry.amount == Decimal("-45.00")
+
+    def test_FLIPPING_the_control_flips_a_stored_purchase(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """*This was actually a refund* is a real edit, and it is the control.
+
+        The magnitude is unchanged and only the direction moves, which is what
+        the form posts when the owner changes the select and nothing else.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"amount": "50.00", "direction": "refund"},
+            )
+
+            assert resp.status_code == 200
+            db.session.refresh(entry)
+            assert entry.amount == Decimal("-50.00")
+
+    def test_an_AMOUNT_without_its_DIRECTION_is_refused(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The pair travels together, and a half-submission is not guessed.
+
+        No browser can produce this -- the form renders both controls and
+        submits every control it holds -- so it is a stale or hand-made
+        payload.  Guessing a sign either way writes money the owner did not
+        state, which is the same choice ``_reject_incomplete_new_envelope``
+        makes about a new envelope stated by halves.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"amount": "75.00"},
+            )
+
+            assert resp.status_code == 422
+            db.session.refresh(entry)
+            assert entry.amount == Decimal("50.00")
+
+    def test_an_edit_touching_NEITHER_still_works(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The other half of "both or neither", and the case that keeps the
+        refusal from being a blanket one.
+
+        A settled parent renders no amount box and no direction control, so a
+        date-only save sends neither -- and must still be accepted.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"description": "Kroger Market"},
+            )
+
+            assert resp.status_code == 200
+            db.session.refresh(entry)
+            assert entry.description == "Kroger Market"
+            assert entry.amount == Decimal("50.00")
+
+    def test_BOTH_forms_render_the_direction_control(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The control has to EXIST, or every case above grades a payload
+        no screen can produce.
+
+        Reads the rendered entry list rather than asserting on the template
+        source: what a browser is handed is the subject.  The EDIT form renders
+        only for the entry being edited (``?editing=<id>``), so the list is
+        asked for in both states rather than once.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            listing = auth_client.get(
+                f"/transactions/{txn.id}/entries",
+            ).data.decode()
+            editing = auth_client.get(
+                f"/transactions/{txn.id}/entries?editing={entry.id}",
+            ).data.decode()
+
+            assert listing.count('name="direction"') == 1, (
+                "the ADD form states the direction"
+            )
+            assert editing.count('name="direction"') == 2, (
+                "the EDIT form states it too, beside the add form"
+            )
+            assert '<option value="refund"' in editing
+            # The stored sign PRESELECTS the control, and the box shows the
+            # magnitude -- so opening a refund and saving it unchanged writes
+            # the same figure back rather than flipping it.
+            assert 'value="50.00"' in editing
+
+
 class TestUpdateEntry:
     """Tests for PATCH /transactions/<txn_id>/entries/<entry_id>."""
 
@@ -747,7 +948,7 @@ class TestUpdateEntry:
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 200
 
@@ -820,16 +1021,25 @@ class TestUpdateEntry:
         self, app, auth_client, seed_user, seed_periods,
         seed_entry_template,
     ):
-        """PATCH with amount=0 returns 422 validation error."""
+        """PATCH with amount=0 returns 422 validation error.
+
+        **It posts the DIRECTION too, and without it this case stopped
+        grading zero** (plan step ``bank_import:X-gj-2b-3``).  The amount and
+        the direction are one answer, so an amount alone is refused by the
+        PAIRING rule before the magnitude bound is ever reached -- the 422
+        would still arrive and would say nothing about zero.
+        """
         with app.app_context():
             txn = seed_entry_template["transaction"]
             entry = _add_entry(txn, seed_user, "50.00", "Kroger")
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"amount": "0"},
+                data={"amount": "0", "direction": "charge"},
             )
             assert resp.status_code == 422
+            db.session.refresh(entry)
+            assert entry.amount == Decimal("50.00")
 
     def test_hx_trigger_balance_changed(
         self, app, auth_client, seed_user, seed_periods,
@@ -842,7 +1052,7 @@ class TestUpdateEntry:
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 200
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
@@ -856,7 +1066,7 @@ class TestUpdateEntry:
             txn = seed_entry_template["transaction"]
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/999999",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 404
 
@@ -1413,7 +1623,16 @@ class TestEntryMutationSurfaces:
 
         The envelope budget is $500 (seed_entry_template) and the new
         entry is $50, so the re-rendered cell's progress display must
-        read ``50 / 500`` (entry total / estimated, ``{:,.0f}``).
+        read ``$50 / $500`` (entry total / estimated).
+
+        **It read ``50 / 500`` until plan step ``bank_import:X-gj-2b-3``**
+        (developer ruling 2026-09-01).  The cell formatted these two figures
+        with a raw ``"{:,.0f}".format`` rather than the ``money`` macro gate
+        B7 makes the one currency formatter; the raw spelling could not show a
+        sign while every purchase was positive, and ruling
+        **bank_import:R-II** made a refund a NEGATIVE purchase.  The macro is
+        what the mobile card beside it has always used for the same two
+        numbers.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -1432,7 +1651,7 @@ class TestEntryMutationSurfaces:
             # OOB fragment: the grid cell wrapper rides along...
             assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
             # ...carrying the refreshed spent/budget progress display.
-            assert "50 / 500" in html
+            assert "$50 / $500" in html
 
     def test_update_carries_oob_cell(
         self, app, auth_client, seed_user, seed_periods,
@@ -1441,7 +1660,9 @@ class TestEntryMutationSurfaces:
         """A popover-surface amount update returns the OOB cell.
 
         $50 entry updated to $75 against the $500 budget -> the cell
-        progress must read ``75 / 500``.
+        progress must read ``$75 / $500`` -- through the ``money`` macro since
+        plan step ``bank_import:X-gj-2b-3``, for the reason
+        :meth:`test_create_carries_oob_cell_with_updated_progress` states.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -1449,12 +1670,12 @@ class TestEntryMutationSurfaces:
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 200
             html = resp.data.decode()
             assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
-            assert "75 / 500" in html
+            assert "$75 / $500" in html
 
     def test_delete_carries_oob_cell(
         self, app, auth_client, seed_user, seed_periods,
@@ -1688,7 +1909,7 @@ class TestEntryTransactionMismatch:
             # Try to PATCH via txn1's URL.
             resp = auth_client.patch(
                 f"/transactions/{txn1.id}/entries/{entry.id}",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 404
 
@@ -1771,7 +1992,7 @@ class TestEntryTransactionMismatch:
             comp = _login_companion(app)
             resp = comp.patch(
                 f"/transactions/{txn_visible.id}/entries/{entry.id}",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 404
 
@@ -1834,7 +2055,7 @@ class TestCompanionAccess:
             comp = _login_companion(app)
             resp = comp.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"amount": "60.00"},
+                data={"amount": "60.00", "direction": "charge"},
             )
             assert resp.status_code == 200
 

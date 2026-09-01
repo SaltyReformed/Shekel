@@ -457,7 +457,12 @@
           <div class="progress progress-h-4">
             <div class="progress-bar{% if over_budget %} bg-danger{% endif %}"
                  role="progressbar"
-                 data-progress-pct="{{ [es.pct, 100]|min }}"
+                 {# NO CLAMP HERE (plan step ``bank_import:X-gj-2b-3``).  It
+                    read ``[es.pct, 100]|min`` over a value
+                    ``money.percent_complete`` already clamps to ``[0, 100]``
+                    -- a guard no input can reach, over money, in a template,
+                    which is the shape this package deletes on sight. #}
+                 data-progress-pct="{{ es.pct }}"
                  aria-valuenow="{{ es.pct|int }}"
                  aria-valuemin="0"
                  aria-valuemax="100"></div>

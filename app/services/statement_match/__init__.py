@@ -59,12 +59,21 @@ The public surface, and what each piece is for:
   ``bank_import:X-gf-1``): a bank line of money COMING IN that no app row
   explains BECOMES an uncategorized income row, matched to itself.  **It MOVES
   MONEY**, and it is the mirror of the door above on the direction that had
-  none: a purchase is an expense, so that one refuses an inflow, and a match
-  refuses an empty side -- between them they left eight of the developer's own
-  deposits, `$58.87`, with no act on the review screen at all.  The row it
+  none: a purchase had to be an expense, so that one refused EVERY inflow, and
+  a match refuses an empty side -- between them they left eight of the
+  developer's own deposits, `$58.87`, with no act on the review screen at all.
+  (The purchase door refuses only the inflows no container answer claims since
+  ruling **bank_import:R-II**, which took part of this door's own case with it:
+  measured 2026-09-01, all 5 of the developer's card refunds under `$39.54`
+  carry a container answer and are the purchase door's, leaving this one the 8
+  dividends no rule claims.  :mod:`._income` carries the figures.)  The row it
   writes is the one a matched group's residual already used
   (``_uncategorized.mint_uncategorized``), so there is one writer of *the row
   bank evidence requires and the books do not hold*.
+* :class:`MerchantAnswers` -- what the owner has SAID about this account's
+  merchants, read once: the stated rules and the bars together, because one is
+  built from the other and every write door wants both (plan step
+  ``bank_import:X-gj-2b-2``).
 * :class:`CreationBars` -- which of an account's merchants may NOT become
   purchases at all, and why (ruling **R-GJ**, plan step ``bank_import:X-ga``).
   Two bars: the owner answered *never a purchase*, or a SOURCE files the
@@ -144,7 +153,12 @@ owner has not accepted, and :mod:`._propose` cannot write at all.
 """
 
 from ._accept import AcceptedMatch, accept_match
-from ._bars import CreationBar, CreationBars, ParkedLine
+from ._bars import (
+    CreationBar,
+    CreationBars,
+    MerchantAnswers,
+    ParkedLine,
+)
 from ._release import (
     PlannedRemoval,
     PlannedRemovals,
@@ -217,10 +231,13 @@ from ._accepted_view import (
 from ._placement import Placement, PlacementKind
 from ._preview import HandTotals, preview_hand_build
 from ._rules import (
+    CONTAINER_ANSWERS,
+    LinePipeline,
     StandingRule,
     RuleAnswer,
     RuleView,
     account_merchants,
+    pipeline_for,
 )
 from ._stating import (
     RuleSubmission,
@@ -288,6 +305,7 @@ __all__ = [
     "IncomeCreation",
     "CreationBar",
     "CreationBars",
+    "MerchantAnswers",
     "Consent",
     "HandTotals",
     "DAY_WINDOW",
@@ -307,7 +325,10 @@ __all__ = [
     "PlacementKind",
     "PlannedRemoval",
     "PlannedRemovals",
+    "CONTAINER_ANSWERS",
+    "LinePipeline",
     "RuleAnswer",
+    "pipeline_for",
     "RuleFiling",
     "RuleVerdict",
     "RuleSubmission",

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
+from decimal import Decimal
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -82,16 +83,20 @@ class RuleAnswer(enum.Enum):
     which makes it the only answer whose effect on money is exactly the effect
     of having said nothing.
 
-    **The three that suggest are told apart by DIRECTION as well as by
-    container, and no answer resolves in both directions.**  An outflow under
-    :attr:`INCOME_CATEGORY` names no container, and an inflow under
-    :attr:`TEMPLATE` or :attr:`NEW_ENVELOPE` is a merchant CREDIT -- a refund,
-    which ruling **R-HT(a)** files as a NEGATIVE purchase back into that same
-    container.  **That second arm is `bank_import:X-gj-2b`'s and is not built
-    here**, because a negative purchase is unwritable today
-    (``ck_transaction_entries_positive_amount`` declares ``amount > 0``), so
-    until it ships such a line is reported as unresolved rather than filed
-    somewhere the owner did not name.
+    **A CONTAINER ANSWER RESOLVES IN BOTH DIRECTIONS, and that is plan step
+    ``bank_import:X-gj-2b-2``'s correction to this paragraph.**  It used to read
+    *the three that suggest are told apart by DIRECTION as well as by
+    container, and no answer resolves in both directions* -- true only while
+    ``ck_transaction_entries_positive_amount`` forbade a negative purchase.
+    :attr:`TEMPLATE` and :attr:`NEW_ENVELOPE` name a container for that
+    merchant's money in EITHER direction: money leaving is a purchase, and money
+    arriving is a REFUND -- a negative purchase back into the same container
+    (ruling **R-HT(a)**).  Only :attr:`INCOME_CATEGORY` is one-directional, and
+    it is so because an outflow under it names no container to spend from.
+
+    **Which act an answer implies is therefore :func:`pipeline_for`'s
+    question and no longer the line's SIGN**; see that function for the whole
+    table.
     """
 
     TEMPLATE = "template"
@@ -132,6 +137,195 @@ class RuleAnswer(enum.Enum):
         if row.income_category_id is not None:
             return cls.INCOME_CATEGORY
         return cls.NEVER if row.never_a_purchase else cls.ALWAYS_ASK
+
+
+class LinePipeline(enum.Enum):
+    """Which ACT an unexplained bank line is a candidate for.
+
+    Plan step ``bank_import:X-gj-2b-2``.  The app has exactly two, and they are
+    separate the whole way down -- separate placement, separate card, separate
+    collection on :class:`~._batch.ReviewBatch`, separate apply loop, separate
+    door, separate receipt:
+
+    * :attr:`PURCHASE` -- filed into a budget container that reserves for it
+      (``CreatableLine`` -> ``batch.creations`` -> ``_create.create_purchase_from_line``);
+    * :attr:`INCOME` -- recorded under a category, reserving nothing
+      (``RecordableInflow`` -> ``batch.incomes`` -> ``_income.record_income_from_line``).
+
+    **They are deliberately NOT unified behind a common type.**  Nothing
+    consumes them polymorphically -- every consumer immediately needs to know
+    which it has, because it renders a different control and calls a different
+    door -- so a base class over them would be an abstraction with no
+    polymorphic caller, which is CLAUDE.md rule 13's speculative shape.  What
+    IS shared is the DECISION, and that is what this enum plus
+    :func:`pipeline_for` make one statement of.
+    """
+
+    PURCHASE = "purchase"
+    INCOME = "income"
+
+
+#: The answers that name a SPENDING CONTAINER, which is what makes a line a
+#: purchase in either direction.  A frozenset rather than a tuple so the
+#: membership test below states set membership, and named once so
+#: :func:`pipeline_for` and its exhaustiveness test cannot drift.
+CONTAINER_ANSWERS = frozenset({RuleAnswer.TEMPLATE, RuleAnswer.NEW_ENVELOPE})
+
+
+def is_inflow(amount: Decimal) -> bool:
+    """Return whether a bank line's *amount* is money ARRIVING.
+
+    **THE ONE STATEMENT OF THE BANK'S SIGN CONVENTION** (plan step
+    ``bank_import:X-gj-2b``).  ``bank_statement_lines.amount`` and
+    :attr:`~._offers.BankLine.amount` are both signed POSITIVE INTO the
+    account, and until this step every reader that needed the direction spelled
+    the comparison itself.  **The count went UP, not down**, which is why this
+    exists: re-measured over both trees, ``app/services/statement_match/`` held
+    **4** such comparisons at ``04980186`` (the two door refusals and the two
+    list partitions) and **6** at ``1bfeff07``, because ``pipeline_for``'s first
+    signature took a BOOL and three call sites spelled
+    ``is_inflow=line.amount > 0`` to feed it -- under a commit titled *the SIGN
+    stops routing*.  :class:`~._panel.AddAct` already carried the standing rule
+    against exactly that, and says the two spellings *would not even agree*.
+    Six spellings of one convention are six places to write it backwards, and
+    what it decides is which way real money moved.
+
+    **The partition is TOTAL, and the schema is why.**
+    ``ck_bank_statement_lines_amount_real_nonzero`` declares ``amount <> 0``,
+    so ``not is_inflow(amount)`` IS *money leaving* rather than *money leaving
+    or nothing at all*. That is what lets every caller take two arms instead of
+    three, and it is a fact about the table rather than about any reader here
+    -- which is why there is no branch for zero and no case asserting one: a
+    guard no mutation can reach, graded by a test that grades nothing, is what
+    :meth:`~._bars.CreationBars.bar_for` records having had to delete.  The
+    CONSTRAINT is what carries the guarantee and it is graded directly, by
+    ``test_statement_import_schema.TestALineMustMoveMoney`` and by
+    ``test_income.TestWhichLinesGetAnActAndWhichSTILLDoNot.
+    test_a_ZERO_line_cannot_EXIST``.
+
+    (An earlier draft of this paragraph named a class
+    ``TestTheSchemaIsWhatMakesTheTwoDoorsTotal``, which **has never existed** in
+    this repository -- it was carried over from
+    :func:`~._income._load_line`'s own docstring, where plan step
+    ``bank_import:X-gf-1`` wrote it and nothing checked it.  A citation nobody
+    opens is what this project files findings about.)
+
+    Args:
+        amount: The line's own figure, on the bank's convention. A
+            :class:`~decimal.Decimal`, never a float -- the comparison is
+            exact and the caller's column is ``NUMERIC(12, 2)``.
+
+    Returns:
+        Whether the bank moved money INTO the account on this line.
+    """
+    return amount > 0
+
+
+def pipeline_for(
+    *, amount: Decimal, answer: "RuleAnswer | None",
+) -> LinePipeline:
+    """Return which act an unexplained line is a candidate for.
+
+    **THE ONE PLACE THE TWO PIPELINES ARE TOLD APART** (plan step
+    ``bank_import:X-gj-2b-2``), asked by the SCREEN
+    (:func:`~._leftovers.leftovers`) and by the WRITE DOOR
+    (:func:`~._create._load_line`) so the screen cannot render a control the
+    door would refuse -- the invariant this package states at every other door
+    it has.
+
+    **The discriminant is the ANSWER and the direction only bounds it, which is
+    the correction this step makes.**  The partition used to be the line's
+    SIGN: ``_creatable_lines`` took ``amount < 0`` and ``_recordable_inflows``
+    took ``amount > 0``, so what a line BECAME was decided before the owner's
+    rule was consulted at all.  That was exact only while a purchase had to be
+    positive.  A merchant credit is money ARRIVING that must become a PURCHASE
+    -- a negative one, back in the container the owner named -- so the sign
+    cannot decide it and never could have; it was standing in for the answer.
+
+    **Total over the whole domain, which is (2 directions x 5 answers + no
+    rule) = 12 cells:**
+
+    ==================  ===================  ==========================
+    answer              money OUT            money IN
+    ==================  ===================  ==========================
+    ``TEMPLATE``        PURCHASE             PURCHASE (a refund)
+    ``NEW_ENVELOPE``    PURCHASE             PURCHASE (a refund)
+    ``INCOME_CATEGORY`` PURCHASE, no rule    INCOME
+    ``NEVER``           PURCHASE, then bar   INCOME, no rule
+    ``ALWAYS_ASK``      PURCHASE, no rule    INCOME, no rule
+    ``None``            PURCHASE, no rule    INCOME, no rule
+    ==================  ===================  ==========================
+
+    **TEN of those twelve cells RESTATE what the code already did, and TWO
+    change** -- the money-IN row of ``TEMPLATE`` and of ``NEW_ENVELOPE``, both
+    of which routed to INCOME at ``04980186`` and route to PURCHASE here.
+    *This paragraph said ELEVEN and ONE until plan step
+    ``bank_import:X-gj-2b-3``*, which collapsed a two-answer class to one cell:
+    at ``04980186`` ``_creatable_lines`` selected on ``line.amount < 0``, so
+    EVERY inflow reached ``_recordable_inflows`` whatever its answer, and both
+    container answers changed together.  It is the third generation of one
+    counting error -- the first draft claimed two cells "had never been
+    decided", and adversarial review measured THAT false: at
+    ``04980186`` ``_creatable_lines`` took EVERY outflow and ``placements_for``
+    fell through to ``None`` for ``INCOME_CATEGORY``, and ``_recordable_inflows``
+    took EVERY inflow including ``NEVER`` with ``inflow_placement_for``
+    answering ``None``. Both behaviours were determinate and both are unchanged
+    here.  They were never STATED in one place, which is what this table fixes;
+    that is a clarification and not a decision, and the claim carried a
+    developer attribution it did not deserve.
+
+    **The one real change is (container answer, inflow)**: from an income
+    candidate carrying an unresolved reason, to a PURCHASE -- the refund.
+
+    Two cells are worth reading twice even though neither moved, because the
+    table is where their reasons now live:
+
+    * **money OUT under ``INCOME_CATEGORY``** enters the purchase pipeline with
+      NO suggestion.  Naming a container the owner never gave would be the
+      guess ruling **R-HX** refused, so the owner picks by hand.  **A reviewer
+      argues this should be the mirror of the refund** -- a withdrawal from an
+      income merchant is a clawback or a fee, a contra-INCOME -- and that is an
+      open question for the developer rather than a settled cell.
+    * **money IN under ``NEVER``** enters the income pipeline with NO
+      suggestion, and is not barred HERE.  Whether ruling **R-GJ**'s bar should
+      reach an inflow at all is a separate open question, argued at
+      :func:`~._bars.reject_barred_line`; this cell only records that routing
+      does not decide it.
+
+    **An outflow is always a PURCHASE candidate**, whatever the answer -- the
+    rule only decides whether anything is SUGGESTED inside that pipeline, and
+    ``NEVER`` is then answered by :class:`~._bars.CreationBars` further down,
+    which is where ruling **R-GJ** put it.
+
+    Args:
+        amount: The line's own figure, on the bank's convention (positive INTO
+            the account).  **The AMOUNT rather than a caller-computed bool**,
+            which is this step's own adversarial review's correction: the bool
+            made every caller spell ``line.amount > 0`` for itself, so a change
+            whose commit title read *the SIGN stops routing* had in fact taken
+            the executable sign tests in this package UP rather than down; the
+            re-measured counts are in :func:`is_inflow`, which is the one place
+            that census is stated.  The
+            direction is asked HERE, through :func:`is_inflow`, so the
+            convention is written once.  Not the LINE, because the two callers
+            hold different types -- the screen a :class:`~._offers.BankLine`
+            and the write doors a ``BankStatementLine`` -- and neither should
+            have to build the other's view model to ask.
+        answer: What the owner has said about this line's merchant, or ``None``
+            where they have said nothing or the source names no merchant.
+            ``None`` and :attr:`RuleAnswer.ALWAYS_ASK` answer the same here and
+            deliberately: they differ in what the SCREEN says (*you have not
+            said* against *you said to ask*), never in which act the line is a
+            candidate for.
+
+    Returns:
+        The :class:`LinePipeline` this line belongs to.
+    """
+    if not is_inflow(amount):
+        return LinePipeline.PURCHASE
+    if answer in CONTAINER_ANSWERS:
+        return LinePipeline.PURCHASE
+    return LinePipeline.INCOME
 
 
 @dataclass(frozen=True)

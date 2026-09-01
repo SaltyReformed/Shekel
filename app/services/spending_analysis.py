@@ -398,11 +398,24 @@ def category_names(txn: Transaction) -> tuple[str, str]:
 def signed_pct(numerator: Decimal, base: Decimal) -> Decimal | None:
     """Return ``numerator / base`` as a signed 2-dp percent, or ``None``.
 
-    Guards division by zero: a zero base has no meaningful percentage (the
-    variance-figures and the Spending hero's vs-prior / vs-average chips
-    all read ``None`` in that case rather than a fabricated value).  The
-    percentage is rounded to two decimal places with ``ROUND_HALF_UP`` (the
-    project's money-rounding convention).
+    **The base must be POSITIVE, and that is one rule stated HERE** (plan step
+    ``bank_import:X-gj-2b-3``).  A zero base has no meaningful percentage, and
+    a NEGATIVE one reports the wrong DIRECTION: spend rising from ``-50.00`` to
+    ``100.00`` is a rise of ``150.00``, and ``150 / -50`` is ``-300%`` -- a
+    fall of three hundred percent printed over a rise, on a chip an owner
+    reads.  That is a fact about this OPERATION rather than about any caller,
+    so it lives here.
+
+    **It was ``base == ZERO`` here and ``baseline > ZERO`` at the caller**
+    (``spending_report_service._types.Comparison.of``), added when ruling
+    **bank_import:R-II** made a negative baseline reachable.  Two guards whose
+    fail sets NEST -- the caller's strictly subsumed this one -- is the shape
+    ``_income._load_line`` deleted eight files away in this same branch, and
+    ``CreationBars.bar_for`` before it.  One guard now, and the caller has
+    none.
+
+    The percentage is rounded to two decimal places with ``ROUND_HALF_UP``
+    (the project's money-rounding convention).
 
     Args:
         numerator: The signed quantity (a variance, or a vs-prior delta).
@@ -410,9 +423,9 @@ def signed_pct(numerator: Decimal, base: Decimal) -> Decimal | None:
 
     Returns:
         ``(numerator / base) * 100`` quantized to 0.01, or ``None`` when
-        ``base`` is zero.
+        ``base`` is not positive.
     """
-    if base == ZERO:
+    if base <= ZERO:
         return None
     return (numerator / base * HUNDRED).quantize(CENTS, rounding=ROUND_HALF_UP)
 

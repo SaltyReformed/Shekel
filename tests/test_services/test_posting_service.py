@@ -1075,17 +1075,28 @@ class TestTransactionAllCreditNoop:
 class TestEnvelopeCreditDominatesKeepsExpenseSign:
     """L10: a credit-dominated expense envelope stays an OUTFLOW -- no sign flip.
 
-    The confirmed cash effect is ``effective - Sigma(credit entries)``.  Were
-    the credit entries able to exceed ``effective`` the effect would flip sign,
-    posting an expense as a net cash INFLOW.  Two structural invariants forbid
-    it: ``TransactionEntry.amount`` is ``CHECK (amount > 0)`` and a settled
-    envelope's ``actual_amount`` is ``purchases_total`` = the sum of
-    ALL entries, so ``effective - Sigma(credit) = Sigma(debit) >= 0`` always
-    (zero only for an all-credit envelope, covered by
-    :class:`TestTransactionAllCreditNoop`).  This pins that even when the credit
-    portion dwarfs the debit, the tiny debit still books as a proper outflow and
-    never as income -- a regression that let ``actual_amount`` drift below the
-    credit sum, or relaxed the positive-amount CHECK, would fail here.
+    The confirmed cash effect is ``effective - Sigma(credit entries)``.  This
+    pins that even when the credit portion dwarfs the debit, the tiny debit
+    still books as a proper outflow and never as income.
+
+    **What guarantees it is that the DEBIT total is positive, and that is a
+    narrower claim than this test used to make** (ruling **bank_import:R-II**,
+    developer 2026-08-31).  It read: *two structural invariants forbid a flip --
+    ``TransactionEntry.amount`` is ``CHECK (amount > 0)`` and a settled
+    envelope's figure is the sum of ALL entries, so ``effective -
+    Sigma(credit) = Sigma(debit) >= 0`` always* -- and named its own dependency,
+    that a change which *relaxed the positive-amount CHECK would fail here*.
+    That CHECK is now ``amount <> 0``, so ``Sigma(debit) >= 0`` is no longer
+    given and the old guarantee is genuinely gone.
+
+    **It was not merely weakened, it stopped being desirable.**  An envelope
+    whose refunds exceed its purchases really did net RECEIVE money, and
+    booking that as a cash inflow is correct rather than a regression --
+    :class:`TestEnvelopeRefundDominatesBooksAnInflow` is that case, asserted
+    beside this one so the pair states the whole rule.  What survives here is
+    the case this class was always about: a positive debit remainder, however
+    small, books as an outflow, because the sign follows the transaction TYPE
+    and never the relative size of the credit portion.
     """
 
     def test_credit_dominated_expense_still_posts_a_debit_outflow(
@@ -1130,6 +1141,73 @@ class TestEnvelopeCreditDominatesKeepsExpenseSign:
             assert legs[cash_ledger] == Decimal("-1.00")
             assert legs[cash_ledger] < Decimal("0.00")
             assert legs[groceries_ledger] == Decimal("1.00")
+            assert sum(legs.values()) == Decimal("0.00")
+
+
+class TestEnvelopeRefundDominatesBooksAnInflow:
+    """An envelope whose REFUNDS exceed its purchases books a cash INFLOW.
+
+    Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``.  The twin of
+    :class:`TestEnvelopeCreditDominatesKeepsExpenseSign`, and the case that
+    class's premise used to make unrepresentable.  A merchant credit files as a
+    NEGATIVE purchase against the envelope its merchant rule names, so an
+    envelope can genuinely net receive money -- and the ledger must say so.
+
+    **It also pins WHY the figure can be negative at all**, which is the part a
+    reader would otherwise have to rediscover: ``ck_transactions_settled_amount``
+    is ``settled_amount IS NULL OR settled_amount >= 0``, so the column could
+    not hold ``-49.00``.  An envelope settling from its purchases stores NO
+    figure (``SettlementBasisEnum.PURCHASES``, ``amount=None``) and derives it
+    from the entries at read time, which is exactly what lets a refund-dominated
+    row be priced at all.  A future change that made such a row store its figure
+    would fail here rather than at a constraint with no test behind it.
+    """
+
+    def test_refund_dominated_envelope_books_a_positive_cash_leg(
+        self, app, db, seed_user
+    ):
+        """debit $1.00 and a -$50.00 refund -> cash leg +49.00, category -49.00.
+
+        Arithmetic: the row settles from its purchases, so its figure is
+        ``sum(entries) = 1.00 + (-50.00) = -49.00``.  No credit entries and no
+        separately-posted purchases, so ``settled_cash_leg = effective = -49.00``
+        and the EXPENSE sign negates it to ``+49.00``: money came back into
+        checking.  The Groceries leg is ``-49.00``, a contra-expense, which is
+        what a refund is.  The two still sum to zero.
+        """
+        with app.app_context():
+            period = seed_user["bootstrap_period"]
+            txn = create_envelope_txn(
+                seed_user, _db.session, period, "Refund-Heavy Env",
+                Decimal("200.00"),
+            )
+            _add_txn_entry(seed_user, txn, "1.00", is_credit=False)
+            _add_txn_entry(seed_user, txn, "-50.00", is_credit=False)
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(
+                    txn, ref_cache.status_id(StatusEnum.DONE),
+                ),
+            )
+            _db.session.commit()
+
+            # The figure is DERIVED, never stored -- see the class docstring.
+            assert txn.settled_amount is None
+
+            cash_ledger = _ledger_id(seed_user["account"])
+            groceries_ledger = _resolve_category_ledger(
+                seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
+            ).id
+
+            [entry] = posting_service.sync_transaction_postings(
+                txn, settled=True,
+            )
+            _db.session.commit()
+
+            legs = _legs_by_ledger(entry.id)
+            assert legs[cash_ledger] == Decimal("49.00")
+            assert legs[cash_ledger] > Decimal("0.00")
+            assert legs[groceries_ledger] == Decimal("-49.00")
             assert sum(legs.values()) == Decimal("0.00")
 
 

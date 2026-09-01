@@ -1,5 +1,6 @@
 {% from "_money_macros.html" import money %}
 {% from "accounts/_statement_undo_macros.html" import undo_form, undo_removals %}
+{% from "accounts/_statement_queue_macros.html" import books_already_hold %}
 
 {# THE TWO CARDS THIS PAGE IS MADE OF, and the panel one click behind one of
    them.
@@ -130,10 +131,23 @@
   </div>
 
   {% elif offer.is_add and card.panel.add.records_a_purchase %}
+  {# TWO sentences, one per DIRECTION, and no ``else`` -- the predicates
+     partition the arm (``records_a_charge`` / ``records_a_refund``) and are
+     stated by the builder, so this never asks the line's sign itself.  The
+     single sentence that stood here called a REFUND "spending your budget did
+     not have", directly above the OK that files it. #}
+  {% if card.panel.add.records_a_refund %}
+  <p class="small mb-2">
+    Add records this as a refund back into a budget line, lowering what it has
+    cost, dated <span class="font-mono">{{ card.line.happened_on }}</span>.
+  </p>
+  {% endif %}
+  {% if card.panel.add.records_a_charge %}
   <p class="small mb-2">
     Add records this as spending your budget did not have, dated
     <span class="font-mono">{{ card.line.happened_on }}</span>.
   </p>
+  {% endif %}
   <div class="rec-add" data-rec-add>
     <label class="form-label small mb-1" for="destination-{{ card.line.line_id }}">
       Where does it go?
@@ -208,10 +222,10 @@
      rather than left to be inferred from a missing destination, which is the
      defect plan step X-f6a-3c-2 corrected on the purchase side. #}
   <input type="hidden" name="destination-{{ card.line.line_id }}" value="income">
-  {% if card.income_already_held %}
+  {% if card.arrivals_already_held %}
   <div class="alert rec-risk d-flex gap-2 align-items-start py-2 mb-2" role="alert">
     <i class="bi bi-exclamation-triangle mt-1"></i>
-    <div class="small">This pay period already holds {{ card.income_already_held.rows | length }} income row(s) totalling {{ money(card.income_already_held.total) }} that no line explains{% for held in card.income_already_held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ held.label }} {{ money(held.cash_amount) }}{% endfor %}. If this deposit is those, match it against them instead of recording it here.</div>
+    <div class="small">{{ books_already_hold(card.arrivals_already_held) }}</div>
   </div>
   {% endif %}
   {% endif %}
@@ -259,9 +273,9 @@
     </div>
     <div class="rec-sentence">
       {{ sentence(card.sentence) }}
-      {% if card.income_already_held %}
+      {% if card.arrivals_already_held %}
       <i class="bi bi-exclamation-triangle rec-risk-glyph"
-         title="This pay period already holds income no line explains."></i>
+         title="This pay period already holds money arriving that no bank line explains."></i>
       {% endif %}
       {# THE CARET, on every card, showing that it opens.  It is the whole
          affordance on a card with no suggestion, whose sentence already

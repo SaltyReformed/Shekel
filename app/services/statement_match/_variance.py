@@ -521,7 +521,18 @@ def corrected_figure(
 
     **A PURCHASE stores its figure directly** -- its cash is the negated stored
     amount (:func:`~._candidates.purchase_candidate`) -- so its correction is
-    the bare magnitude.
+    that negation INVERTED, ``-bank_cash``.
+
+    **It was ``abs(bank_cash)`` until plan step ``bank_import:X-gj-2b``, and
+    the two agree only for an OUTFLOW.**  While every purchase was positive its
+    cash was negative, so the magnitude and the negation were the same number
+    and the simpler spelling was true.  Ruling **R-II** made a merchant refund a
+    NEGATIVE purchase, whose cash is POSITIVE -- and there ``abs()`` returns
+    ``+X`` where the stored figure must be ``-X``, flipping a refund into a
+    charge of the same size.  The negation is the exact inverse of
+    ``purchase_candidate``'s own ``cash_amount=-Decimal(str(entry.amount))``,
+    and it reduces to the old expression for every outflow, so no
+    already-correct case moves.
 
     Args:
         row: The member the bank's figure is about.
@@ -536,7 +547,12 @@ def corrected_figure(
     if bank_cash is None or bank_cash == row.cash_amount:
         return None
     if row.kind is RowKind.PURCHASE:
-        return round_money(abs(bank_cash))
+        return round_money(-bank_cash)
+    # **The TRANSACTION arm keeps ``abs()`` and that is not an oversight.**  A
+    # transaction stores a GROSS, non-negative figure (``estimated_amount >= 0``,
+    # ``settled_amount IS NULL OR >= 0``) whose direction comes from the
+    # transaction TYPE rather than from the figure, so the magnitude really is
+    # what it should book.  Only a PURCHASE stores a signed amount.
     txn = db.session.get(Transaction, row.row_id)
     return round_money(abs(bank_cash) + off_statement_sum(txn))
 

@@ -149,8 +149,11 @@ class GridColumn:  # pylint: disable=too-many-instance-attributes
         income: The period's income subtotal, cent-quantized -- every row
             ATTRIBUTED to the period, settled at its confirmed cash leg and
             still-projected at its live or entries-aware amount (ruling R-K).
-        expense: The same, for expense rows (a magnitude), so the column reads
-            ``income`` minus ``expense``.
+        expense: The same, for expense rows, so the column reads ``income``
+            minus ``expense``.  A magnitude in the ordinary case and not a
+            bound -- see
+            :attr:`~app.services.balance_at._cash_periods.CashPeriodFigures.expense`,
+            which this reads unchanged, for the two shapes that invert one.
         net: ``round_money(income - expense)`` -- rounded ONCE at the boundary
             rather than as the difference of two separately-rounded legs,
             because it is the figure the balance roll-forward has to reconcile

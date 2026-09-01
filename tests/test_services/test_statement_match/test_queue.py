@@ -170,6 +170,118 @@ class TestWhichGroupALineLandsIn:
         assert review.search_gap_for(review.parked[0].line) is not None
         assert list(groups) == [Evidence.ALREADY_HELD]
 
+    def test_a_MERCHANT_CREDIT_a_rule_places_records_a_REFUND(
+        self, app, db, seed_user,
+    ):
+        """The direction split the press-level paragraph renders on.
+
+        Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``.  A
+        credit from a merchant whose rule names a SPENDING container reaches
+        the PURCHASE pipeline, so ``records_a_purchase`` is true of it -- and
+        the screen's *what Apply will create* paragraph said every such line
+        becomes *a purchase your records did not have, dated the day your bank
+        took it*, which the bank did not do.
+
+        Asserts BOTH halves of the partition on the SAME row, because a
+        predicate hard-coded either way satisfies one of them.
+        """
+        envelope = an_envelope(seed_user)
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        an_unexplained_outflow(
+            seed_user, merchant="Amazon", amount="42.00",
+        )
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+        rows = [row for group in review.queue.groups for row in group.rows]
+
+        assert len(rows) == 1
+        assert rows[0].records_a_purchase is True
+        assert rows[0].records_a_refund is True
+        assert rows[0].records_a_charge is False
+        # The QUEUE's own answer, which is what the paragraph asks: it is
+        # rendered once for the whole press, not per row.
+        assert review.queue.records_a_refund is True
+        assert review.queue.records_a_charge is False
+
+    def test_an_ORDINARY_swipe_records_a_CHARGE(
+        self, app, db, seed_user,
+    ):
+        """The control, and the half that must keep working.
+
+        Without it the case above is satisfied by a predicate that calls every
+        purchase a refund -- which would put the refund sentence over an
+        ordinary swipe and delete the charge sentence from the page.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+        rows = [row for group in review.queue.groups for row in group.rows]
+
+        assert len(rows) == 1
+        assert rows[0].records_a_charge is True
+        assert rows[0].records_a_refund is False
+        assert review.queue.records_a_charge is True
+        assert review.queue.records_a_refund is False
+
+    def test_a_BARRED_line_records_NEITHER_direction(
+        self, app, db, seed_user,
+    ):
+        """Both predicates sit INSIDE the purchase arm.
+
+        A line ruling **R-GJ** bars renders no write control at all, so the
+        press creates nothing for it and the paragraph owes it no sentence.
+        Reading the sign without the act would call this one a charge and
+        promise the owner a purchase the door refuses.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+        rows = [row for group in review.queue.groups for row in group.rows]
+
+        assert rows[0].records_a_charge is False
+        assert rows[0].records_a_refund is False
+        assert review.queue.records_a_charge is False
+        assert review.queue.records_a_refund is False
+
+    def test_an_unclaimed_DEPOSIT_records_neither_direction(
+        self, app, db, seed_user,
+    ):
+        """A deposit is not a refund, and the ACT is what says so.
+
+        **This is the case that grades the ``records_a_purchase and`` half.**
+        The barred case above cannot: its line is an OUTFLOW, so a predicate
+        reading the sign alone still answers *not a refund* for it.  An
+        unclaimed deposit is an INFLOW that files against no container at all
+        -- ruling **R-HX** refused guessing one -- so the sign says refund and
+        the act says income, and only the act is right.  Reading the sign alone
+        would print *a refund against the budget line you name* over a tick
+        that names no budget line.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(
+            seed_user, merchant="Some Employer", amount="1200.00",
+        )
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+        rows = [row for group in review.queue.groups for row in group.rows]
+
+        assert len(rows) == 1
+        assert rows[0].records_income is True
+        assert rows[0].records_a_purchase is False
+        assert rows[0].records_a_refund is False
+        assert rows[0].records_a_charge is False
+        assert review.queue.records_a_refund is False
+        assert review.queue.records_a_charge is False
+
 
 class TestEveryLineIsGroupedExactlyOnce:
     """Conservation, which is the case that catches a whole class."""
@@ -349,12 +461,20 @@ class TestNoSweptRowCarriesASentence:
     correct, no input reaches it.  A branch nothing can falsify is a fence, so
     it was deleted and this took its place.
 
-    **What this fires on**: a THIRD withholding arm added to
+    **What this fires on**: a withholding arm added to
     :func:`~._verdict.ruled` without :func:`~._queue._positive_for` learning
     about it.  Such a line would carry a sentence, group as
     ``NOTHING_FOUND``, and be ticked by the one-click -- which is precisely
     how the ``_ALREADY_EXPLAINED`` arm was missed, and what two adversarial
     reviews had to find by hand because nothing here could.
+
+    **A third arm DID arrive, and this class did not stage it until plan step
+    ``bank_import:X-gj-2b``'s own review said so.**  That step gave a REFUND
+    the double-count withholding a deposit already had, and the fixture below
+    staged only the two older arms -- so the claim in the paragraph above was
+    true of a third arm in general and untested against the one that existed.
+    All three are staged now, which is what makes this a net rather than a
+    sentence about one.
     """
 
     @staticmethod
@@ -375,7 +495,24 @@ class TestNoSweptRowCarriesASentence:
     def test_a_line_the_rules_withheld_is_never_in_a_swept_group(
         self, app, db, seed_user,
     ):
-        """Both withholding arms at once, so neither can pass by absence."""
+        """The two withholding arms this pass can stage, ASSERTED BY NAME.
+
+        **The docstring said "both arms at once" and the assertion was
+        ``assert warned``**, which is true of one arm, of two, and of a fixture
+        that staged the wrong one twice.  Naming them is what makes the claim
+        gradeable, and doing it measured that only ONE was ever here: the
+        ``_ALREADY_EXPLAINED`` arm.  The double-count arm plan step
+        ``bank_import:X-gj-2b`` added is staged below and is the second.
+
+        **The GAP arm is deliberately not staged here**, and that is the honest
+        thing to say rather than to force: ``search_gap`` fires only where some
+        TIER admitted a candidate and declined it, which is a property of the
+        pass's own bounds rather than of a row a fixture can place.
+        ``TestTheSentenceTheScreenPrintsIsComposedHERE`` in ``test_verdict``
+        drives that arm directly, and ``_positive_for`` reads *any* withholding
+        that is not the gap, so the arm this class cannot stage is the one arm
+        it does not need to.
+        """
         day = seed_user["bootstrap_period"].start_date
         envelope = a_transaction(
             seed_user, name="Groceries", amount="500.00", is_envelope=True,
@@ -387,6 +524,22 @@ class TestNoSweptRowCarriesASentence:
         )
         an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
         a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        # **The third arm** (plan step ``bank_import:X-gj-2b``): a REFUND whose
+        # pay period already holds an arriving row no bank line explains.  A
+        # container answer routes the credit to the PURCHASE pipeline, so it is
+        # a CREATABLE line -- which is the class this net is about.
+        refunded = a_transaction(
+            seed_user, name="Kobo", amount="80.00", is_envelope=True,
+        )
+        a_rule(seed_user, "Kobo", template_id=refunded.template_id)
+        a_transaction(
+            seed_user, name="Phone Allowance", amount="39.54", income=True,
+        )
+        a_bank_line(
+            seed_user, an_import(seed_user), amount="60.00", posted_on=day,
+            merchant="Kobo", description="POINT OF SALE CREDIT L340 (Kobo)",
+            sequence_in_group=11,
+        )
         db.session.commit()
 
         review = review_set(a_scope(seed_user))
@@ -395,7 +548,14 @@ class TestNoSweptRowCarriesASentence:
             row for group in review.queue.groups for row in group.rows
             if row.notes
         ]
-        assert warned, "the fixture must produce a warned row to grade"
+        sentences = [note for row in warned for note in row.notes]
+        assert any(
+            "makes that match impossible to accept" in note
+            for note in sentences
+        ), f"the ALREADY-EXPLAINED arm is not staged: {sentences}"
+        assert any(
+            "count the same money twice" in note for note in sentences
+        ), f"the DOUBLE-COUNT arm is not staged: {sentences}"
         assert [row for row in self._swept_rows(review) if row.notes] == []
 
     def test_it_holds_when_a_swept_group_actually_EXISTS(

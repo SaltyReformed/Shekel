@@ -80,6 +80,18 @@
     <div class="nw-hero">
       <div class="pulse-hero__label">Spent</div>
       <div class="nw-hero__num font-mono">{{ money(report.hero.spent_total) }}</div>
+      {# BOTH BASES, and only where they DIFFER (developer ruling **bank_import:R-IL**, 2026-09-01,
+         plan step bank_import:X-gj-2b-3).  The hero is the NET and every
+         breakdown row's percent is a slice of what MOVED, so a window holding
+         a refund showed two undisclosed bases on one card -- Groceries $600
+         reading 55% under a hero of $100.  They are the same figure whenever
+         no category went negative, and printing one number twice would be
+         noise, so the second line renders only when a refund has separated
+         them.  The SERVICE decides they differ; this compares two figures it
+         was handed, which is a display test and not money arithmetic. #}
+      {% if report.hero.moved_total != report.hero.spent_total %}
+      <div class="nw-hero__cap">{{ money(report.hero.moved_total) }} moved &middot; net of refunds above</div>
+      {% endif %}
       <div class="nw-hero__cap">{{ report.scope.window_label }} &middot; measured (settled)</div>
     </div>
     <div class="pulse-statrow nw-statrow">

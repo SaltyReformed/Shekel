@@ -111,7 +111,7 @@ from app.exceptions import ValidationError
 from app.models.statement_import import BankStatementLine
 
 from ._offers import BankLine
-from ._rules import StandingRule, rules_for
+from ._rules import RuleView, StandingRule, rules_for
 from ._vocabulary import account_payment_merchants
 
 class CreationBar(enum.Enum):
@@ -362,7 +362,12 @@ class CreationBars:
 
 @dataclass(frozen=True)
 class ParkedLine:
-    """One unexplained OUTFLOW that may not become a purchase.
+    """One unexplained line that may not become a purchase, EITHER DIRECTION.
+
+    *It said OUTFLOW until plan step ``bank_import:X-gj-2b-3``.*
+    :func:`bar_for` is sign-blind and :func:`~._leftovers._creatable_lines`
+    asks it of every line, so a credit from a merchant a source files as a
+    payment to an account the owner holds is parked exactly as its debits are.
 
     Ruling **R-GJ**'s other arm: a line the create door is closed for is not
     hidden, it is PARKED -- listed with the reason, and still tickable on the
@@ -465,10 +470,89 @@ class ParkedLine:
         return f"Change what you have said about {self.line.merchant}"
 
 
+@dataclass(frozen=True)
+class MerchantAnswers:
+    """What the owner has said about this account's merchants, read ONCE.
+
+    Plan step ``bank_import:X-gj-2b-2``.  The two derivations are ONE value
+    because one is built FROM the other -- :class:`CreationBars` takes
+    ``view.rules`` rather than re-reading ``merchant_rules`` -- and because
+    every consumer that wants either wants both: what the owner ANSWERED and
+    which merchants that answer BARS are two readings of one table at one
+    instant, and a consumer holding them from two instants could park a line
+    under an answer the same pass had just replaced.
+
+    **It exists because the two-step build was written four times** --
+    :func:`~._batch.apply_reviewed`, :func:`~._leftovers.leftovers`,
+    :func:`~._directory.merchant_directory` and
+    :func:`~._register.register_view` each did ``RuleView.build(...)`` then
+    ``CreationBars.build(..., view.rules)``.  Four copies of a two-line
+    derivation is the shape ``duplicate-code`` exists to catch and did not,
+    because two lines is under its threshold.
+
+    **It lives HERE rather than in :mod:`._rules`, and the reason is the import
+    direction rather than the subject.**  Conceptually this is *what the owner
+    said*, which is that module's; but :class:`CreationBars` is here and this
+    module already imports ``_rules``, so putting it there would close a cycle.
+
+    Attributes:
+        view: The stated answers (:class:`~._rules.RuleView`).
+        bars: Which merchants may not become purchases, and why
+            (:class:`CreationBars`, ruling **R-GJ**).
+    """
+
+    view: RuleView
+    bars: CreationBars
+
+    @classmethod
+    def build(cls, owner_id: int, account_id: int) -> "MerchantAnswers":
+        """Read both from ONE pass over this account's merchant rules.
+
+        Args:
+            owner_id: The owning user.
+            account_id: The account whose merchants are answered for.
+
+        Returns:
+            The :class:`MerchantAnswers`.
+        """
+        view = RuleView.build(owner_id, account_id)
+        return cls(
+            view=view,
+            bars=CreationBars.build(owner_id, account_id, view.rules),
+        )
+
+
 def reject_barred_line(
     line: BankStatementLine, bars: CreationBars,
 ) -> None:
     """Refuse a line ruling **R-GJ** says may never become a purchase.
+
+    **EVERY line is asked, in both directions, and a bound that exempted
+    inflows is what this step's own review measured as a hole** (plan step
+    ``bank_import:X-gj-2b``).  That bound read *a bar is a claim about money
+    LEAVING, so an inflow is never barred*, on the ground that neither arm can
+    be true of money arriving.  It is true of the ``NEVER`` arm and FALSE of
+    the other: :attr:`CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD` is a claim about
+    the MERCHANT -- *your bank files this one as a payment to an account you
+    hold, so its money is already counted in another shape* -- and a merchant
+    does not stop being that one because a line runs the other way.
+
+    **What the bound actually reached was exactly one class, and it is the
+    dangerous one.**  An inflow reaches this door only where
+    :func:`~._rules.pipeline_for` routed it to ``PURCHASE``, which for an
+    inflow requires a CONTAINER answer -- and a merchant carrying one is by
+    construction absent from :attr:`CreationBars.never`.  So the only bar the
+    exemption could lift was ``PAYS_AN_ACCOUNT_YOU_HOLD``, on a merchant whose
+    stored spending answer predates its bank filing it as a card payment.
+    :func:`~._stating._reject_spending_answer` refuses a NEW such answer and
+    retracts no STORED one, and :mod:`._stating` records that the developer's
+    own ``Capital One Credit Card -> a new envelope`` WAS one.  Under ruling
+    **R-GH** that line files with no press.
+
+    The ``NEVER`` arm loses nothing by being asked: an inflow under it routes
+    to the INCOME pipeline and never arrives here at all.  The screen makes the
+    same call at :func:`~._leftovers._creatable_lines`, and it is stated in
+    both places because the screen and the door are graded separately.
 
     **The door's half of a structural refusal**, plan step
     ``bank_import:X-ga``.  The screen does not render a create control for such

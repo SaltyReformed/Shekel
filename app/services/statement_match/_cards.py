@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ._panel import AddAct, AddTab, VerbPanel
+from ._rules import is_inflow
 from ._sentence import NAMED_ROW_LIMIT, Span, choose, for_accepted
 from ._sentence import for_income_placement
 from ._sentence import for_parked_never
@@ -48,7 +49,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._bars import ParkedLine
     from ._leftovers import CreatableLine, RecordableInflow
     from ._offers import BankLine, MatchProposal
-    from ._reads import IncomeAlreadyRecorded, ReviewSet
+    from ._reads import ArrivalsAlreadyHeld, ReviewSet
 
 
 class Section(enum.Enum):
@@ -107,12 +108,15 @@ class LineCard:
         sentence: The ONE sentence the card carries, as spans
             (:mod:`._sentence`).  **The whole of what the card says**: ruling
             **R-HR** put every reason one click away.
-        income_already_held: What the books already record as unexplained
-            income for this line's own pay period
-            (:class:`~._reads.IncomeAlreadyRecorded`), or ``None``.  **The one
+        arrivals_already_held: Every ARRIVING row this line's own pay period
+            already holds that no bank line explains
+            (:class:`~._reads.ArrivalsAlreadyHeld`), or ``None``.  **The one
             money-at-risk signal this build has**, and the only thing on a card
             that may be drawn in amber: recording a deposit whose period
-            already holds income is how a paycheck gets counted twice.
+            already holds the same money arriving is how a paycheck gets
+            counted twice.  **ARRIVING and not income** -- a stored refund is
+            one of them since ruling **bank_import:R-II** -- and the field said
+            ``income`` until plan step ``bank_import:X-gj-2b-3``.
         risk_class: Which of :data:`~._reconcile.SWEEP_LABELS` this card's act
             falls under, or ``None`` where it falls under none.  It is what a
             sweep would reach IF the card were clean; :attr:`sweep_class` is
@@ -126,7 +130,7 @@ class LineCard:
     section: "Section | None"
     suggested: "Verb | None"
     sentence: "tuple[Span, ...]"
-    income_already_held: "IncomeAlreadyRecorded | None"
+    arrivals_already_held: "ArrivalsAlreadyHeld | None"
     risk_class: "str | None"
     panel: VerbPanel
 
@@ -245,7 +249,7 @@ class LineCard:
         """
         if not self.offers_ok:
             return None
-        if self.panel.notes or self.income_already_held is not None:
+        if self.panel.notes or self.arrivals_already_held is not None:
             return None
         return self.risk_class
 
@@ -389,7 +393,7 @@ def _proposal_card(
         section=Section.PROPOSED,
         suggested=Verb.MATCH,
         sentence=for_proposal(proposal),
-        income_already_held=None,
+        arrivals_already_held=None,
         risk_class=proposal.review_class,
         panel=VerbPanel(
             offers=_offers(review, ADD_SHUT_BY_A_PROPOSAL, proposal),
@@ -436,7 +440,7 @@ def _creatable_card(
         section=Section.BY_RULE if names_a_home else Section.NOTHING,
         suggested=Verb.ADD if names_a_home else None,
         sentence=for_placement(placement) if names_a_home else choose(),
-        income_already_held=None,
+        arrivals_already_held=None,
         risk_class=placement.sweep_class if names_a_home else None,
         panel=VerbPanel(
             offers=_offers(review, creatable.withheld, None),
@@ -450,6 +454,12 @@ def _creatable_card(
                 act=AddAct.PURCHASE,
                 destinations=creatable.destinations,
                 placement=placement,
+                # Money ARRIVING that a rule files as a purchase is a REFUND
+                # (ruling **R-II**).  Stated here, where the line is in hand,
+                # so no template restates the partition -- and asked through
+                # :func:`~._rules.is_inflow`, which is the ONE statement of the
+                # bank's sign convention this package has.
+                records_a_refund=is_inflow(creatable.line.amount),
             ),
             proposal=None,
         ),
@@ -508,7 +518,7 @@ def _inflow_card(
             for_income_placement(placement)
             if files_here else choose()
         ),
-        income_already_held=review.income_already_recorded_in(inflow.line),
+        arrivals_already_held=review.arrivals_already_held_in(inflow.line),
         risk_class=None,
         panel=VerbPanel(
             offers=_offers(review, inflow.withheld, None),
@@ -522,7 +532,14 @@ def _inflow_card(
             # **R-GW** states that emptiness as the whole difference between
             # the two ADD doors, and :class:`~._panel.AddAct` is what says
             # which one this is instead of a template reading the sign.
-            add=AddTab(act=AddAct.INCOME, destinations=(), placement=None),
+            # ``records_a_refund=False`` is STATED rather than defaulted
+            # (plan step ``bank_import:X-gj-2b-3``): an income row is filed
+            # against no container, so it is not a refund -- and a default
+            # would have meant that silently for every future builder too.
+            add=AddTab(
+                act=AddAct.INCOME, destinations=(), placement=None,
+                records_a_refund=False,
+            ),
             proposal=None,
         ),
     )
@@ -558,7 +575,7 @@ def parked_card(
             for_parked_transfer(parked) if pays_an_account
             else for_parked_never(parked)
         ),
-        income_already_held=None,
+        arrivals_already_held=None,
         risk_class=None,
         panel=VerbPanel(
             offers=_offers(review, parked.reason, None),
