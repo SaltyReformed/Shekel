@@ -20,6 +20,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.scenario import Scenario
 from app.models.user import User, UserSettings
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
@@ -984,6 +985,13 @@ class TestTransactionCRUD:
         The ``aria-label`` was always right, which is why the defect was
         visual-only and why asserting on it would have proved nothing -- the
         assertion is on the SPAN'S CONTENT.
+
+        **It read ``0`` and reads ``$0`` since plan step
+        ``bank_import:X-gj-2b-3``** (developer ruling 2026-09-01): the four
+        figures in this cell go through the ``money`` macro that gate B7 makes
+        the one currency formatter, rather than through a second spelling of
+        it that could not show a sign while every purchase was positive.  What
+        this case grades is unchanged -- that the span has CONTENT.
         """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
@@ -1000,8 +1008,48 @@ class TestTransactionCRUD:
             assert visible != "", (
                 "a row with nothing inside .txn-open cannot be clicked"
             )
-            assert visible == "0", (
+            assert visible == "$0", (
                 f"the chip should read the row's own figure, got {visible!r}"
+            )
+
+    def test_a_refunded_envelope_draws_a_signed_figure_not_a_bare_minus(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The cell's progress display through the ``money`` macro (gate B7).
+
+        Plan step ``bank_import:X-gj-2b-3``, developer ruling 2026-09-01.
+        Ruling **bank_import:R-II** made a merchant credit a NEGATIVE purchase,
+        so an envelope's entry total can be negative -- and this cell formatted
+        it with a raw ``"{:,.0f}".format`` while the mobile card beside it
+        (``grid/_grid_row_macros.html``) rendered the SAME two figures through
+        ``money``.  The raw spelling could not show a sign at all while every
+        purchase was positive, so the two agreed until this step and then
+        stopped: it printed ``-87 / 100`` under ``-$87 / $100``.
+
+        Asserts the FULL pair, so restoring either spelling fails: the raw one
+        drops both currency marks.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            txn.estimated_amount = Decimal("100.00")
+            txn.is_envelope = True
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id,
+                account_id=txn.account_id,
+                user_id=seed_user["user"].id,
+                # A refund larger than the envelope holds, which is the shape
+                # a cross-period merchant credit files (ruling R-II).
+                amount=Decimal("-86.67"),
+                description="Amazon refund",
+                purchased_on=seed_periods_today[0].start_date,
+                is_credit=False,
+            ))
+            db.session.commit()
+
+            html = auth_client.get(f"/transactions/{txn.id}/cell").data.decode()
+
+            assert "-$87 / $100" in html, (
+                "the cell's two progress figures go through the money macro"
             )
 
     def test_the_delete_response_reloads_the_grid(
@@ -4893,8 +4941,6 @@ class TestGridPeriodSubtotalCanonical:
         to tell them apart.  Overspending separates all three: $562 correct,
         $500 the raw-estimate defect, $0 the reservation-only answer.
         """
-        from app.models.transaction_entry import TransactionEntry
-
         with app.app_context():
             projected = db.session.query(Status).filter_by(
                 name="Projected",

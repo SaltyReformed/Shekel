@@ -355,9 +355,12 @@ def _spent_total(txns: list[Transaction]) -> Decimal:
     truth on a window where the account received the money.
 
     The total can therefore be negative, for a window whose refunds exceeded
-    its purchases.  That is the honest figure and every consumer already
-    handles it -- :func:`~._breakdown._share` returns zero for a non-positive
-    denominator rather than dividing.
+    its purchases.  That is the honest figure, and it is deliberately NOT the
+    breakdown's share denominator: dividing by a net that refunds have pulled
+    toward zero is what printed **600%** on a `$600.00` category, so
+    :func:`~._breakdown._share_base` divides by what the window MOVED
+    (developer ruling 2026-09-01).  The two are the same figure wherever no
+    category went negative.
 
     Args:
         txns: Settled expense transactions.

@@ -51,8 +51,11 @@ from app.services.spending_report_service._surprises import (
     _MAX_SURPRISES, _build_surprises,
 )
 from app.services.spending_report_service._breakdown import (
+    _build_breakdown,
+    _build_changes,
     _totals_by_category,
 )
+from app.services.spending_report_service._types import _CategoryTotal
 from app.services.spending_report_service._types import _ScopeIds
 from app.services.spending_report_service._window import (
     _CHART_WINDOW_COUNT,
@@ -1534,3 +1537,208 @@ class TestARefundReducesSpendRatherThanAddingToIt:
             totals = _totals_by_category([dominated])
 
             assert totals[dominated.category_id].amount == Decimal("-86.67")
+
+
+class TestTheShareIsASliceOfWhatMoved:
+    """The "Where It Went" percent divides by MAGNITUDES, not by the net.
+
+    Developer ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``.  Ruling
+    **bank_import:R-II** let a category's refunds carry its window total below
+    zero, and ``_share``'s denominator was the window's NET -- which refunds
+    pull toward zero while a numerator does not.  Measured before the fix on
+    ``Groceries 600.00`` beside ``Electronics -500.00``: a net of ``100.00``,
+    so ``analytics/_spending.html`` printed **600%** and **-500%** beside
+    figures of ``$600.00`` and ``-$500.00``.  The bars did not show it -- they
+    scale to the largest row and floor at zero -- so the picture read correctly
+    over numbers that did not.
+
+    ``_share_base`` sums the categories' MAGNITUDES, which bounds every share
+    in ``[-1, 1]`` outright.  These cases are built from ``_CategoryTotal``
+    maps rather than from rows, because the defect is in the REDUCTION: a
+    database-backed case would grade the query beside it and could pass on a
+    window the query happened not to produce.
+    """
+
+    def _totals(self, *triples):
+        """Return a ``{category_id: _CategoryTotal}`` map from label triples.
+
+        Ids start at 1 so none of them is ``0``, which is the Uncategorized
+        bucket and carries its own labelling rule.
+        """
+        return {
+            index: _CategoryTotal(
+                group_name=group, item_name=item, amount=Decimal(amount),
+            )
+            for index, (group, item, amount) in enumerate(triples, start=1)
+        }
+
+    def test_a_refunded_category_cannot_push_a_share_past_one(self):
+        """600.00 beside -500.00: 55% and -45%, never 600% and -500%.
+
+        The denominator is ``600 + 500 = 1100``, so the shares are
+        ``600/1100 = 0.5455`` and ``-500/1100 = -0.4545`` (hand-computed, and
+        quantized here so the assertion does not restate the producer's own
+        division).  Restoring the net denominator makes them ``6`` and ``-5``
+        and fails all four assertions.
+        """
+        rows = _build_breakdown(
+            self._totals(
+                ("Food", "Groceries", "600.00"),
+                ("Tech", "Electronics", "-500.00"),
+            ),
+            {},
+        )
+        by_group = {row.group_name: row for row in rows}
+        cents = Decimal("0.0001")
+
+        assert by_group["Food"].share.quantize(cents) == Decimal("0.5455")
+        assert by_group["Tech"].share.quantize(cents) == Decimal("-0.4545")
+        # The item shares divide by the same base, so the drill-down agrees
+        # with the group line above it.
+        assert by_group["Food"].items[0].share.quantize(cents) == Decimal(
+            "0.5455",
+        )
+        assert by_group["Tech"].items[0].share.quantize(cents) == Decimal(
+            "-0.4545",
+        )
+
+    def test_a_window_with_no_refunds_is_unchanged(self):
+        """The control the ruling turned on: magnitudes ARE the net there.
+
+        ``Groceries 600.00`` and ``Dining 400.00`` sum to ``1000.00`` either
+        way, so an ordinary month renders exactly what it always did.  Without
+        this case the class above would pass on an implementation that divided
+        by anything at all, including a constant.
+        """
+        rows = _build_breakdown(
+            self._totals(
+                ("Food", "Groceries", "600.00"),
+                ("Fun", "Dining", "400.00"),
+            ),
+            {},
+        )
+        by_group = {row.group_name: row for row in rows}
+
+        assert by_group["Food"].share == Decimal("0.6")
+        assert by_group["Fun"].share == Decimal("0.4")
+
+    def test_a_window_that_nets_to_zero_still_states_its_shares(self):
+        """``600.00`` against ``-600.00``: a net of ZERO, and real shares.
+
+        The old guard returned ``0`` for every share of a non-positive total,
+        so this whole window rendered ``0%`` on both rows.  The magnitude base
+        is ``1200.00`` and neither row is zero, which is the honest reading:
+        half of what moved went out and half came back.
+        """
+        rows = _build_breakdown(
+            self._totals(
+                ("Food", "Groceries", "600.00"),
+                ("Tech", "Electronics", "-600.00"),
+            ),
+            {},
+        )
+        by_group = {row.group_name: row for row in rows}
+
+        assert by_group["Food"].share == Decimal("0.5")
+        assert by_group["Tech"].share == Decimal("-0.5")
+
+    def test_a_window_that_moved_nothing_has_no_shares(self):
+        """The only base a sum of magnitudes can take that has no shares.
+
+        A category present and worth exactly ``0.00`` -- an envelope settled
+        with no purchases -- is the reachable shape, and the division is
+        skipped rather than raising.
+        """
+        rows = _build_breakdown(
+            self._totals(("Food", "Groceries", "0.00")), {},
+        )
+
+        assert rows[0].share == Decimal("0")
+        assert rows[0].items[0].share == Decimal("0")
+
+
+class TestNewMeansTheCategoryWasNotThereBefore:
+    """The "new" badge asks PRESENCE, and a zero total is not absence.
+
+    Plan step ``bank_import:X-gj-2b-3``.  All three ``is_new`` fields read
+    ``prior_amount == ZERO``, which is a different question from *the prior
+    window held no row for this*.  Two reachable shapes total zero while being
+    present: an envelope settled with NO purchases contributes ``0`` and is in
+    the window's map, and since ruling **bank_import:R-II** so does one whose
+    refunds exactly cancelled its purchases.  Both rendered the badge on a
+    category that had been there all along.
+
+    The maps' KEYS are what record which categories a window held, so absence
+    is read off them.
+    """
+
+    def _one(self, amount):
+        """Return a one-category map worth *amount*, under a stable label."""
+        return {
+            7: _CategoryTotal(
+                group_name="Food", item_name="Groceries",
+                amount=Decimal(amount),
+            ),
+        }
+
+    def test_a_category_that_broke_even_before_is_not_new(self):
+        """Prior window HELD it at ``0.00``; the badge must not render.
+
+        Asserts the delta beside it, because the two read the same prior
+        figure and only one of them changed: the delta is still ``100.00``.
+        """
+        rows = _build_breakdown(self._one("100.00"), self._one("0.00"))
+
+        assert rows[0].is_new is False
+        assert rows[0].items[0].is_new is False
+        assert rows[0].items[0].delta == Decimal("100.00")
+
+    def test_a_category_absent_before_is_new(self):
+        """The control: a category the prior window did not hold at all."""
+        rows = _build_breakdown(self._one("100.00"), {})
+
+        assert rows[0].is_new is True
+        assert rows[0].items[0].is_new is True
+
+    def test_a_group_whose_only_category_broke_even_before_is_not_new(self):
+        """The GROUP arm has its own map and its own defect.
+
+        Its prior side was a ``defaultdict`` summed per group, so an absent
+        group and a group that summed to zero were the same value.  A category
+        that changed groups is the shape that separates them: the prior window
+        held ``Food: Groceries`` at ``0.00``, so the group is not new even
+        though this window's category id is different.
+        """
+        rows = _build_breakdown(
+            {8: _CategoryTotal("Food", "Takeout", Decimal("40.00"))},
+            self._one("0.00"),
+        )
+
+        assert rows[0].group_name == "Food"
+        assert rows[0].is_new is False
+        # The ITEM is new -- category 8 was not in the prior window -- which is
+        # what makes this case grade the group arm rather than the item one.
+        assert rows[0].items[0].is_new is True
+
+    def test_a_change_row_for_a_category_that_broke_even_before_is_not_new(
+        self,
+    ):
+        """The By-change lens's own arm, over the same two maps."""
+        changes = _build_changes(self._one("100.00"), self._one("0.00"))
+
+        assert len(changes) == 1
+        assert changes[0].is_new is False
+
+    def test_a_change_row_that_breaks_even_NOW_is_still_new(self):
+        """The half the old spelling got wrong in the other direction.
+
+        ``prior_amount == ZERO and current_amount > ZERO`` withheld the badge
+        from a category that appeared this window and netted to zero -- a
+        purchase and its refund in one window, which is exactly what ruling
+        **bank_import:R-II** files.  The row exists only because one of the two
+        windows held it, so the prior window's absence is the whole test.
+        """
+        changes = _build_changes(self._one("0.00"), {})
+
+        assert len(changes) == 1
+        assert changes[0].is_new is True

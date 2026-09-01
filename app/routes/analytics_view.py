@@ -422,10 +422,19 @@ def serialize_spending_chart(report):
 def _history_note(series):
     """Return the chart's settled-history note, or ``None``.
 
-    The note explains a leading run of empty bars: when the first point
-    with settled spend is not the first bar, every earlier bar is empty
-    (totals are non-negative), so the chart states where history begins
-    rather than reading as missing data.
+    The note explains a leading run of EMPTY bars: when the first point that
+    moved any money is not the first bar, every earlier bar is empty, so the
+    chart states where history begins rather than reading as missing data.
+
+    **The test is "moved money", not "spent a positive amount"** (plan step
+    ``bank_import:X-gj-2b-3``).  It read ``total > 0`` on the stated premise
+    that totals are non-negative, which ruling **bank_import:R-II** ended: a
+    month whose refunds exceeded its purchases has a negative total and DRAWS
+    A BAR, so a leading negative month got the caption *settled history begins*
+    a month later than the chart's own first bar -- the note contradicting the
+    picture beside it.  A window with periods but no settled spend is
+    ``Decimal("0")`` and is genuinely an empty bar, which is why zero is still
+    not history and ``None`` (a window before the user's periods) still is not.
 
     Args:
         series: The report's
@@ -433,10 +442,10 @@ def _history_note(series):
 
     Returns:
         ``"settled history begins Mar 2026"`` styled text, or ``None`` when
-        the first bar already has spend or no bar has any.
+        the first bar already moved money or no bar moved any.
     """
     for index, point in enumerate(series):
-        if point.total is not None and point.total > 0:
+        if point.total is not None and point.total != 0:
             if index == 0 or point.window is None:
                 return None
             window = point.window

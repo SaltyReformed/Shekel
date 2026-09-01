@@ -171,20 +171,27 @@ class SpendingItemRow:
         amount: Settled spend for this category in the window.  **SIGNED, and
             negative for a category its refunds carried below zero** (ruling
             **bank_import:R-II**).
-        share: ``amount`` as a fraction of the window total (a full-precision
-            ``Decimal``; templates render, never compute).  **It was stated as
-            being in ``[0, 1]`` and that bound is gone** (ruling
-            **bank_import:R-II**, plan step ``bank_import:X-gj-2b``): a
-            category whose refunds exceeded its purchases has a NEGATIVE
-            amount, so its share of a positive window total is negative too --
-            which is the honest reading, *this category took the total DOWN by
-            this much of it*.  Zero for any window whose own total is not
-            positive (:func:`~._breakdown._share`).
+        share: ``amount`` as a fraction of what the window MOVED -- the sum
+            of the categories' MAGNITUDES (:func:`~._breakdown._share_base`),
+            a full-precision ``Decimal``; templates render, never compute.
+            **In ``[-1, 1]``, and the denominator is what makes that a bound
+            rather than a hope** (developer ruling 2026-09-01, plan step
+            ``bank_import:X-gj-2b-3``).  A category whose refunds exceeded its
+            purchases has a NEGATIVE amount and so a negative share, which is
+            the honest reading -- *this category took the window DOWN by this
+            much of what moved*.  Dividing by the NET window total instead
+            rendered **600%** beside **-500%** on ``Groceries 600.00`` and
+            ``Electronics -500.00``; the two denominators are the SAME figure
+            for a window holding no refunds, so nothing moved on a window
+            without one.  Zero only where nothing moved at all.
         delta: ``amount`` minus the category's prior-window spend (signed;
             the D7 window-over-window change basis).
-        is_new: ``True`` when the category had no prior-window spend, so the
-            whole amount is new spending (rendered as a "new" badge instead
-            of a percent of zero).
+        is_new: ``True`` when the prior window held NO row for this category.
+            **Absence, never a zero total** (plan step
+            ``bank_import:X-gj-2b-3``): an envelope settled with no purchases
+            contributes ``0`` and a category whose refunds cancelled its
+            purchases now does too, so a zero prior total is not an absent one.
+            Rendered as a "new" badge instead of a percent of zero.
     """
 
     category_id: int
@@ -204,13 +211,15 @@ class SpendingGroupRow:
         amount: Settled spend for the whole group in the window.  SIGNED --
             negative for a group its refunds carried below zero, exactly as
             :attr:`SpendingItemRow.amount` is.
-        share: ``amount`` as a fraction of the window total, on the same terms
-            as :attr:`SpendingItemRow.share`.
+        share: ``amount`` as a fraction of what the window MOVED, on the same
+            terms as :attr:`SpendingItemRow.share`.
         delta: ``amount`` minus the group's prior-window spend (signed).
             The prior side sums EVERY prior-window category in the group,
             including categories with no spend in the chosen window, so a
             group whose big bill stopped shows the drop.
-        is_new: ``True`` when the group had no prior-window spend at all.
+        is_new: ``True`` when the prior window held NO category in this group
+            -- absence and not a zero total, for the reason
+            :attr:`SpendingItemRow.is_new` states.
         items: The group's :class:`SpendingItemRow` items, amount-descending.
     """
 
@@ -237,7 +246,11 @@ class ChangeRow:
         current: The chosen window's settled spend (``0`` when none).
         prior: The prior window's settled spend (``0`` when none).
         delta: ``current - prior`` (signed).
-        is_new: ``True`` when ``prior`` is zero and ``current`` is not.
+        is_new: ``True`` when the prior window held NO row for this category
+            -- absence and not a zero total, for the reason
+            :attr:`SpendingItemRow.is_new` states.  A row exists here only
+            because one of the two windows held the category, so the prior
+            window's absence is the whole test.
     """
 
     category_id: int

@@ -35,11 +35,14 @@ from tests._test_helpers import (
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
 from app.routes.analytics_view import (  # pylint: disable=protected-access
     _bar_pct,
+    _history_note,
     _size_lens_rows,
 )
 from app.services.spending_report_service import (
+    SeriesPoint,
     SpendingGroupRow,
     SpendingItemRow,
+    SpendingWindow,
 )
 
 
@@ -2365,3 +2368,78 @@ class TestARefundedCategoryDrawsNoBar:
     def test_an_ordinary_positive_row_still_scales(self):
         """The control: the floor is on the sign, not on every row."""
         assert _bar_pct(Decimal("50.00"), Decimal("200.00")) == 25.0
+
+
+class TestTheHistoryNoteAgreesWithTheBarsBesideIt:
+    """The chart's *settled history begins* caption asks *did money MOVE*.
+
+    Plan step ``bank_import:X-gj-2b-3``.  The note exists to explain a LEADING
+    RUN OF EMPTY BARS, and it found the first bar by ``point.total > 0`` on the
+    stated premise that a window's total is non-negative.  Ruling
+    **bank_import:R-II** ended that premise: a month whose refunds exceeded its
+    purchases has a negative total and DRAWS A BAR, so a leading negative month
+    got a caption saying history began a month after the chart's own first bar
+    -- the sentence contradicting the picture it sits under.
+
+    A window with pay periods but no settled spend is ``Decimal("0")`` and is
+    genuinely an empty bar; one before the owner's periods is ``None``.  Both
+    still count as no history, which is what the cases below pin.
+    """
+
+    @staticmethod
+    def _point(year, month, total):
+        """One series bar for *month*, worth *total* (``None`` = pre-history)."""
+        return SeriesPoint(
+            window=SpendingWindow(
+                window_type="month", month=month, year=year,
+            ),
+            total=None if total is None else Decimal(total),
+        )
+
+    def test_a_leading_REFUNDED_month_is_where_history_begins(self):
+        """A negative first bar is history, so there is no note to make.
+
+        Under ``total > 0`` this returned *settled history begins Feb 2026*
+        while January's bar was drawn at ``-50.00`` right beside it.
+        """
+        assert _history_note([
+            self._point(2026, 1, "-50.00"),
+            self._point(2026, 2, "100.00"),
+        ]) is None
+
+    def test_a_leading_EMPTY_month_still_makes_the_note(self):
+        """The control: a zero month really is an empty bar.
+
+        Without this case the class above would pass on a function that never
+        returned a note at all.
+        """
+        assert _history_note([
+            self._point(2026, 1, "0.00"),
+            self._point(2026, 2, "100.00"),
+        ]) == "settled history begins Feb 2026"
+
+    def test_a_leading_PRE_HISTORY_month_still_makes_the_note(self):
+        """``None`` is a window before the owner's pay periods, not a zero."""
+        assert _history_note([
+            self._point(2025, 12, None),
+            self._point(2026, 2, "100.00"),
+        ]) == "settled history begins Feb 2026"
+
+    def test_a_series_that_moved_nothing_makes_no_note(self):
+        """Nothing to date, so nothing is said."""
+        assert _history_note([
+            self._point(2026, 1, "0.00"),
+            self._point(2026, 2, None),
+        ]) is None
+
+    def test_a_REFUNDED_month_after_a_zero_one_dates_the_note_to_itself(self):
+        """The two halves together: zero is not history and negative is.
+
+        January ``0.00`` then February ``-50.00`` -- the note must name
+        February, which is the first bar the chart draws.  Under ``total > 0``
+        this returned ``None`` and the leading empty bar went unexplained.
+        """
+        assert _history_note([
+            self._point(2026, 1, "0.00"),
+            self._point(2026, 2, "-50.00"),
+        ]) == "settled history begins Feb 2026"

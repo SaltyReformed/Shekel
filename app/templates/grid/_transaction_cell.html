@@ -115,17 +115,32 @@
        aria-label="Edit conflict"></i>
     {% endif %}
 
-    {# Entry progress display for tracked transactions #}
+    {# Entry progress display for tracked transactions.
+
+       **Every figure below goes through ``money``** (gate B7, plan step
+       ``bank_import:X-gj-2b-3``).  Four of them were raw ``"{:,.0f}".format``
+       calls -- the one formatter this project has, spelled a second time in
+       the one file whose own ``detail`` tooltip six lines up already used the
+       macro.  It could not show a sign while every purchase was positive:
+       ``es.total`` is the sum of a row's purchases and ``recorded`` is what a
+       settled envelope booked, and ruling **bank_import:R-II** made a merchant
+       refund a NEGATIVE purchase, so both can now be negative and the raw
+       spelling printed ``-0 / 100`` where the mobile card beside it prints
+       ``-$0 / $100`` (``grid/_grid_row_macros.html``, the same two figures).
+       ``cents=false`` keeps the compact grid figure; what it gains is the
+       currency mark the rest of the app carries, which is the same agreement
+       with its mobile twin the final arm below already records making over
+       zeros. #}
     {% if show_progress %}
       <span class="font-mono{% if over_budget %} text-danger fw-semibold{% endif %}">
-        {{ "{:,.0f}".format(es.total) }} / {{ "{:,.0f}".format(es.budget) }}
+        {{ money(es.total, cents=false) }} / {{ money(es.budget, cents=false) }}
       </span>
     {# Show crossed-out estimate + actual when they differ #}
     {% elif recorded is not none and recorded != est_display %}
       <span class="text-decoration-line-through small text-muted-shekel">
-        {{ "{:,.0f}".format(est_display) }}
+        {{ money(est_display, cents=false) }}
       </span>
-      <span class="fw-semibold font-mono">{{ "{:,.0f}".format(recorded) }}</span>
+      <span class="fw-semibold font-mono">{{ money(recorded, cents=false) }}</span>
     {% else %}
       {# **A ZERO renders, and until plan step ``bank_import:X-gb`` it did
          not** -- finding **N-344**'s second limb.  The suppression came from a
@@ -144,7 +159,7 @@
          has always printed ``money(display_amount)`` unconditionally -- so
          this is the desktop cell agreeing with its own mobile twin rather than
          a new decision about zeros. #}
-      <span class="font-mono">{{ "{:,.0f}".format(est_display) }}</span>
+      <span class="font-mono">{{ money(est_display, cents=false) }}</span>
     {% endif %}
     {{ retained_badge(will_book) }}
 

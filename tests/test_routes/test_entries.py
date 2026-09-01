@@ -1420,7 +1420,16 @@ class TestEntryMutationSurfaces:
 
         The envelope budget is $500 (seed_entry_template) and the new
         entry is $50, so the re-rendered cell's progress display must
-        read ``50 / 500`` (entry total / estimated, ``{:,.0f}``).
+        read ``$50 / $500`` (entry total / estimated).
+
+        **It read ``50 / 500`` until plan step ``bank_import:X-gj-2b-3``**
+        (developer ruling 2026-09-01).  The cell formatted these two figures
+        with a raw ``"{:,.0f}".format`` rather than the ``money`` macro gate
+        B7 makes the one currency formatter; the raw spelling could not show a
+        sign while every purchase was positive, and ruling
+        **bank_import:R-II** made a refund a NEGATIVE purchase.  The macro is
+        what the mobile card beside it has always used for the same two
+        numbers.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -1439,7 +1448,7 @@ class TestEntryMutationSurfaces:
             # OOB fragment: the grid cell wrapper rides along...
             assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
             # ...carrying the refreshed spent/budget progress display.
-            assert "50 / 500" in html
+            assert "$50 / $500" in html
 
     def test_update_carries_oob_cell(
         self, app, auth_client, seed_user, seed_periods,
@@ -1448,7 +1457,9 @@ class TestEntryMutationSurfaces:
         """A popover-surface amount update returns the OOB cell.
 
         $50 entry updated to $75 against the $500 budget -> the cell
-        progress must read ``75 / 500``.
+        progress must read ``$75 / $500`` -- through the ``money`` macro since
+        plan step ``bank_import:X-gj-2b-3``, for the reason
+        :meth:`test_create_carries_oob_cell_with_updated_progress` states.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -1461,7 +1472,7 @@ class TestEntryMutationSurfaces:
             assert resp.status_code == 200
             html = resp.data.decode()
             assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
-            assert "75 / 500" in html
+            assert "$75 / $500" in html
 
     def test_delete_carries_oob_cell(
         self, app, auth_client, seed_user, seed_periods,
