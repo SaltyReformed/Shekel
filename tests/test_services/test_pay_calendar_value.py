@@ -38,13 +38,16 @@ written at the edges rather than in the middle:
 has no clock; a test that gave it one would be testing the fixture.
 """
 
+from dataclasses import FrozenInstanceError
 from datetime import date, timedelta
 from itertools import islice
+from types import SimpleNamespace
 
 import pytest
 
 from app.services.pay_calendar import (
     DerivedPeriod,
+    FiledRow,
     PayCalendar,
     PayCalendarError,
     PeriodWindow,
@@ -148,6 +151,15 @@ def calendar(paydays=None, cadence=14, user_id=1):
         BIWEEKLY if paydays is None else paydays, cadence, user_id,
         history_opens_on=None,
     )
+
+
+def _filed(*, table="budget.transactions", row_id=77, period_id):
+    """Build the :class:`FiledRow` a ``require_period`` test places.
+
+    Keyword-only for the value's own reason: these tests would otherwise be
+    the first place two bare ids get written in a fixed order again.
+    """
+    return FiledRow(table=table, row_id=row_id, period_id=period_id)
 
 
 class TestThePeriodsAreDerivedAndCannotBeSuppliedOrChanged:
@@ -2147,6 +2159,55 @@ class TestTheAttributionClamp:
         assert cal.periods[2].attribution_day(stray) == date(2026, 1, 30)
 
 
+class TestTheLabelIsTheDERIVEDSpan:
+    """``DerivedPeriod.label`` names the span this value derives, not a column.
+
+    Pay-calendar plan step **C4-a-5**, and the reason it is graded on an
+    OFF-CADENCE shape: on a contiguous biweekly schedule ``lead(start) - 1``
+    and ``start + cadence - 1`` agree, so a label asserted there passes against
+    the stored-column reader this step deletes.  ``OFF_CADENCE``'s second
+    period is the shape that tells them apart.
+
+    The FORMAT itself is ``utils.dates.pay_period_label``'s and is graded in
+    ``tests/test_utils/test_dates.py``; what is graded here is which two dates
+    reach it.
+    """
+
+    def test_the_end_is_the_next_paydays_eve_not_the_cadence_projection(self):
+        """The middle period of ``OFF_CADENCE``, where the two rules differ.
+
+        Paydays 01-02, 01-16, 01-20 at a 14-day cadence.  The second period
+        ends 01-19 -- the day before the NEXT payday -- where a cadence
+        projection off its own start would say 01-29.  The label carries the
+        first.
+        """
+        cal = calendar(paydays=OFF_CADENCE)
+
+        assert cal.periods[1].label == "01/16 - 01/19"
+        assert cal.periods[1].label != "01/16 - 01/29"
+
+    def test_the_LAST_periods_label_follows_its_projection(self):
+        """The one end that IS the cadence projection, so the label moves with it.
+
+        The last period has no next payday, so its end is
+        ``start + cadence - 1`` and :attr:`end_is_projected` says so.  Asserted
+        because it is the end the STORED column disagrees with most often --
+        plan findings **P12** and **P28** both move this one and only this one.
+        """
+        cal = calendar(paydays=OFF_CADENCE)
+
+        assert cal.periods[-1].end_is_projected is True
+        assert cal.periods[-1].label == "01/20 - 02/02"
+
+    def test_a_period_straddling_a_year_carries_the_year(self):
+        """The shared rule reaches this type too, not just the format string."""
+        cal = calendar(
+            paydays=((1, date(2026, 12, 26)), (2, date(2027, 1, 9))),
+        )
+
+        assert cal.periods[0].label == "12/26/26 - 01/08/27"
+
+
 class TestTheRaisingTwinOfTheIdentityLookup:
     """``require_period`` REFUSES where ``period_by_id`` answers ``None``.
 
@@ -2170,7 +2231,9 @@ class TestTheRaisingTwinOfTheIdentityLookup:
         cal = calendar()
         held = cal.periods[1].period_id
 
-        assert cal.require_period(held, 77) == cal.period_by_id(held)
+        assert cal.require_period(
+            _filed(period_id=held),
+        ) == cal.period_by_id(held)
 
     def test_a_period_this_calendar_does_not_hold_RAISES(self):
         """The twin answers ``None`` for the same id; this refuses.
@@ -2183,25 +2246,47 @@ class TestTheRaisingTwinOfTheIdentityLookup:
 
         assert cal.period_by_id(foreign) is None
         with pytest.raises(RuntimeError):
-            cal.require_period(foreign, 77)
+            cal.require_period(_filed(period_id=foreign))
 
     def test_the_message_names_the_ROW_the_PERIOD_and_the_OWNER(self):
-        """All three, because the triple is what identifies the broken pairing.
+        """All four, because they are what identifies the broken pairing.
 
         A refusal naming only the period cannot tell an investigator WHICH row
         is filed against it, and one naming neither owner cannot distinguish
         the two states the method documents -- a cross-owner filing from two
-        reads taken at different moments.
+        reads taken at different moments.  **The TABLE joined them at plan step
+        C4-a-5**: ``budget.transactions``, ``budget.transfers`` and
+        ``budget.journal_entries`` all carry a ``pay_period_id`` and their id
+        spaces overlap, so "id=77" alone sends a reader to whichever row of
+        that number they happen to look at.
         """
         cal = calendar(user_id=42)
 
         with pytest.raises(RuntimeError) as raised:
-            cal.require_period(9_999, 77)
+            cal.require_period(_filed(period_id=9_999))
 
         message = str(raised.value)
-        assert "transaction id=77 " in message
+        assert "budget.transactions id=77 " in message
         assert "pay period id=9999," in message
         assert "user 42's pay calendar" in message
+
+    def test_the_message_names_the_TABLE_the_row_came_from(self):
+        """A TRANSFER's refusal says transfer, which is C4-a-5's own reason.
+
+        The message was ``f"transaction id={...}"`` outright until that step
+        gave the recurrence conflict chooser -- which builds rows for
+        transactions AND transfers -- its first non-transaction caller.  A
+        transfer described as a transaction sends an investigator to
+        ``budget.transactions`` id=77, a DIFFERENT row that very likely exists.
+        """
+        cal = calendar(user_id=42)
+
+        with pytest.raises(RuntimeError) as raised:
+            cal.require_period(
+                _filed(table="budget.transfers", period_id=9_999),
+            )
+
+        assert "budget.transfers id=77 " in str(raised.value)
 
     def test_it_refuses_ANOTHER_owners_period_by_the_same_rule(self):
         """The second documented state, which had no direct exercise.
@@ -2218,9 +2303,65 @@ class TestTheRaisingTwinOfTheIdentityLookup:
             user_id=2,
         )
 
-        assert mine.require_period(1, 77).period_id == 1
-        assert theirs.require_period(81, 78).period_id == 81
+        assert mine.require_period(_filed(period_id=1)).period_id == 1
+        assert theirs.require_period(
+            _filed(row_id=78, period_id=81),
+        ).period_id == 81
         with pytest.raises(RuntimeError):
-            mine.require_period(81, 78)
+            mine.require_period(_filed(row_id=78, period_id=81))
         with pytest.raises(RuntimeError):
-            theirs.require_period(1, 77)
+            theirs.require_period(_filed(period_id=1))
+
+
+class TestTheFiledRowCannotBeMispaired:
+    """``FiledRow`` is the pair ``require_period`` used to take loose.
+
+    Pay-calendar plan step **C4-a-5**.  The signature was
+    ``require_period(period_id, transaction_id)`` -- two ``int``s in a fixed
+    order, held to one row by nothing.  A crossed pair does not raise: it finds
+    a DIFFERENT period, and ``balance_at._cash_fold._cash_plan`` dates the
+    daily balance line with the answer.  These grade the two properties that
+    replace the old signature's inspection: it cannot be built positionally,
+    and the constructor every entity-holding caller uses reads both ids off ONE
+    object.
+    """
+
+    def test_two_bare_integers_do_not_construct_one(self):
+        """``FiledRow(1, 2)`` is a ``TypeError``, not a filed row.
+
+        The keyword-only fields ARE the guarantee.  Without them the value
+        would be a rename of the defect: a caller could still write the two
+        ids in the wrong order and get an object back.
+        """
+        with pytest.raises(TypeError):
+            FiledRow("budget.transactions", 1, 2)  # pylint: disable=too-many-function-args  # noqa: E501  # the refusal under test
+
+    def test_for_row_reads_both_ids_off_ONE_object(self):
+        """The constructor a caller holding a mapped row uses.
+
+        It takes the row, so there is no second object whose id could be
+        substituted -- which is the whole difference from the two-argument
+        call it replaces.  Driven with a stand-in carrying the three attributes
+        a mapped row has, because this value is in the model-free half of the
+        package and the property under test is that it reads rather than
+        imports.
+        """
+        class _Row:  # pylint: disable=too-few-public-methods  # a stand-in row
+            __table__ = SimpleNamespace(fullname="budget.transfers")
+            id = 501
+            pay_period_id = 88
+
+        filed = FiledRow.for_row(_Row())
+
+        assert filed == FiledRow(
+            table="budget.transfers", row_id=501, period_id=88,
+        )
+
+    def test_it_is_frozen_so_a_holder_cannot_re_point_it(self):
+        """One value, one row: rebinding a field would restore the crossing."""
+        filed = FiledRow(
+            table="budget.transactions", row_id=1, period_id=2,
+        )
+
+        with pytest.raises(FrozenInstanceError):
+            filed.period_id = 3

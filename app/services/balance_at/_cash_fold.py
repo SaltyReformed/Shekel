@@ -121,7 +121,7 @@ from app.services.cash_ledger import (
     sum_projected,
     walk_cash_ledger,
 )
-from app.services.pay_calendar import PayCalendar, PeriodWindow
+from app.services.pay_calendar import FiledRow, PayCalendar, PeriodWindow
 
 from ._assertions import CashAnchorCorrection, assertion_corrections
 from ._context import BalanceContext, _memoize_once
@@ -895,7 +895,7 @@ def _cash_plan(
     not_before = as_of + _ONE_DAY
     by_day: "dict[date, list[Transaction]]" = defaultdict(list)
     for txn in rows:
-        period = calendar.require_period(txn.pay_period_id, txn.id)
+        period = calendar.require_period(FiledRow.for_row(txn))
         nominal = period.attribution_day(txn.due_date)
         by_day[max(nominal, not_before)].append(txn)
     return _CashPlan(rows=rows, by_day=dict(by_day), basis=basis)

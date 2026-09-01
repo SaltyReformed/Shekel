@@ -25,6 +25,7 @@ from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
 from app.models.ref import AccountType, Status
 from app.services import balance_at, pay_period_write
+from app.services.pay_calendar import calendar_for
 from app.services.balance_at import BalanceContext
 from app.services import transfer_service
 from app.services.auth_service import hash_password
@@ -4371,10 +4372,16 @@ class TestTransferPeriodMove:
             assert 'name="pay_period_id"' in html
             start = html.index('name="pay_period_id"')
             period_select = html[start:html.index("</select>", start)]
-            assert own.label in period_select
+            # Labels off the CALENDAR since pay-calendar plan step C4-a-5,
+            # which deleted ``PayPeriod.label``: the ``<option>`` renders
+            # ``DerivedPeriod.label``.
+            calendar = calendar_for(seed_user["user"].id)
+            assert calendar.period_by_id(own.id).label in period_select
             assert f'value="{own.id}" selected' in period_select
-            assert future.label in period_select
-            assert excluded_past.label not in period_select
+            assert calendar.period_by_id(future.id).label in period_select
+            assert calendar.period_by_id(
+                excluded_past.id,
+            ).label not in period_select
 
     def test_move_relocates_transfer_and_both_shadows(
         self, app, auth_client, seed_user, seed_periods_today,

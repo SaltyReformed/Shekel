@@ -25,7 +25,7 @@ from app.routes._render_helpers import (
 )
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.services import entry_service
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.settle_day import (
     recorded_settle_day,
     submitted_settle_day,
@@ -191,7 +191,7 @@ def _render_entry_list(
     # canonical route-boundary door, and reordering that door is not this
     # leaf's to do.
     period = calendar_for(txn.pay_period.user_id).require_period(
-        txn.pay_period_id, txn.id,
+        FiledRow.for_row(txn),
     )
     view = entry_service.entry_list_view(entries, budgets[txn.id], period)
     return render_template(

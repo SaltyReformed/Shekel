@@ -24,7 +24,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.ref import Status, TransactionType
 from app.routes._render_helpers import fragment_amounts
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import FiledRow, calendar_for
 from app.services import transaction_service
 
 from tests._test_helpers import (
@@ -89,7 +89,7 @@ def _lists(rows):
     for row in rows:
         budgets.update(fragment_amounts(row).budgets)
         period = calendar_for(row.pay_period.user_id).require_period(
-            row.pay_period_id, row.id,
+            FiledRow.for_row(row),
         )
         periods[period.period_id] = period
     return build_entry_lists_dict(rows, budgets, periods)

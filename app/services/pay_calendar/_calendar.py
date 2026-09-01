@@ -155,6 +155,7 @@ from ._derive import (
     project_period_after,
 )
 from ._searches import (
+    FiledRow,
     containing_period,
     earliest_started_period,
     final_covered_day,
@@ -743,37 +744,38 @@ class PayCalendar:
         """
         return period_by_id(self.periods, period_id)
 
-    def require_period(
-        self, period_id: int, transaction_id: int,
-    ) -> DerivedPeriod:
-        """Return the SAVED period *period_id*, REFUSING one this calendar lacks.
+    def require_period(self, filed: FiledRow) -> DerivedPeriod:
+        """Return the SAVED period *filed* names, REFUSING one this calendar lacks.
 
         :meth:`period_by_id`'s RAISING twin, for a caller holding a row that is
         already FILED rather than an id someone supplied.  A stored
         ``budget.transactions.pay_period_id`` is NOT NULL under an
-        ``ON DELETE CASCADE`` key, so a ``None`` here is not "not found" -- it
-        is a contradiction, and answering it would hand a money surface a
-        decision it has no basis to make.
-        :func:`~._searches.require_period` holds the rule: which of the twins a
-        call site owes, the two states that reach the refusal, and the three
-        quieter answers that were weighed and refused.
+        ``ON DELETE CASCADE`` key -- as is ``budget.transfers``' -- so a
+        ``None`` here is not "not found" -- it is a contradiction, and
+        answering it would hand a money surface a decision it has no basis to
+        make.  :func:`~._searches.require_period` holds the rule: which of the
+        twins a call site owes, the two states that reach the refusal, and the
+        three quieter answers that were weighed and refused.
+
+        **It takes ONE value where it took two loose integers** (plan step
+        ``pay_calendar:C4-a-5``).  :class:`~._searches.FiledRow` states why:
+        the pair could be crossed, a crossed pair returns the WRONG period
+        rather than raising, and one of this method's callers dates the daily
+        balance line with the answer.
 
         Args:
-            period_id: A ``budget.pay_periods.id`` read off a stored row --
-                never a submitted or nullable one, which is
-                :meth:`period_by_id`'s question.
-            transaction_id: The ``budget.transactions.id`` being placed, for
-                the message.
+            filed: The stored row and the period it names
+                (:class:`~._searches.FiledRow`), normally built with
+                :meth:`~._searches.FiledRow.for_row` -- never a submitted or
+                nullable id, which is :meth:`period_by_id`'s question.
 
         Returns:
-            The :class:`~._derive.DerivedPeriod` carrying *period_id*.
+            The :class:`~._derive.DerivedPeriod` carrying ``filed.period_id``.
 
         Raises:
             RuntimeError: This calendar does not hold that period.
         """
-        return require_period(
-            self.periods, period_id, transaction_id, self.user_id,
-        )
+        return require_period(self.periods, filed, self.user_id)
 
     def saved_by_id(self) -> "Mapping[int, DerivedPeriod]":
         """Return every MATERIALISED period of this calendar, keyed by its id.

@@ -1930,9 +1930,13 @@ class TestARowFiledOutsideThePassesCalendarIsRefused:
             assembled_fold(account, ctx)
 
         # BOTH ids, each anchored: a bare ``id=11`` substring is satisfied by
-        # ``transaction id=115``, so the pair would not actually be graded.
+        # ``budget.transactions id=115``, so the pair would not actually be
+        # graded.  The TABLE is asserted with them since plan step C4-a-5 --
+        # three tables carry a ``pay_period_id`` and their id spaces overlap,
+        # so an unqualified ``id=115`` sends an investigator to whichever row
+        # of that number they open first.
         message = str(raised.value)
-        assert f"transaction id={repopulated.id} " in message
+        assert f"budget.transactions id={repopulated.id} " in message
         assert f"pay period id={appended[0].id}," in message
         assert "does not hold" in message
 
