@@ -39,13 +39,31 @@ def _totals_by_category(txns: list[Transaction]) -> dict[int, _CategoryTotal]:
         txns: One window's settled expenses -- every row owns its figure.
 
     Returns:
-        ``category_id -> _CategoryTotal`` (labels + summed spend).
+        ``category_id -> _CategoryTotal`` (labels + summed spend).  **A total
+        may be NEGATIVE**, for a category whose refunds exceeded its purchases
+        in this window (ruling **bank_import:R-II**); that is a real answer and
+        not a bound to clamp.
     """
     amounts: dict[int, Decimal] = defaultdict(lambda: ZERO)
     labels: dict[int, tuple[str, str]] = {}
     for txn in txns:
         cat_id = txn.category_id if txn.category_id is not None else 0
-        amounts[cat_id] += abs(owned_contribution(txn))
+        # **SIGNED, and the ``abs()`` that stood here was a MONEY defect**
+        # (ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``).
+        # It was a provable no-op while ``ck_transaction_entries_positive_amount``
+        # said ``amount > 0``: a settled envelope's figure is the sum of its
+        # purchases, so an expense's contribution could not be negative.  That
+        # step relaxed the CHECK to ``amount <> 0`` so a merchant refund files
+        # as a NEGATIVE purchase, and the no-op became a SIGN FLIP -- measured
+        # at ``-86.67 -> +86.67``, reporting `$86.67` of spending for a period
+        # in which the account RECEIVED `$86.67`.
+        #
+        # A refund REDUCES a category's cost, which is what "did I stay in
+        # budget" has to mean, so the signed contribution is the figure.  A
+        # non-negative DISPLAY, if one is ever wanted, belongs at the render:
+        # clamping here destroys the arithmetic the whole report is built on
+        # (:func:`_share`'s denominator, every ``delta``, both group totals).
+        amounts[cat_id] += owned_contribution(txn)
         if cat_id not in labels:
             labels[cat_id] = spending_analysis.category_names(txn)
     return {

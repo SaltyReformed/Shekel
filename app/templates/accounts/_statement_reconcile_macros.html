@@ -130,10 +130,23 @@
   </div>
 
   {% elif offer.is_add and card.panel.add.records_a_purchase %}
+  {# TWO sentences, one per DIRECTION, and no ``else`` -- the predicates
+     partition the arm (``records_a_charge`` / ``records_a_refund``) and are
+     stated by the builder, so this never asks the line's sign itself.  The
+     single sentence that stood here called a REFUND "spending your budget did
+     not have", directly above the OK that files it. #}
+  {% if card.panel.add.records_a_refund %}
+  <p class="small mb-2">
+    Add records this as a refund back into a budget line, lowering what it has
+    cost, dated <span class="font-mono">{{ card.line.happened_on }}</span>.
+  </p>
+  {% endif %}
+  {% if card.panel.add.records_a_charge %}
   <p class="small mb-2">
     Add records this as spending your budget did not have, dated
     <span class="font-mono">{{ card.line.happened_on }}</span>.
   </p>
+  {% endif %}
   <div class="rec-add" data-rec-add>
     <label class="form-label small mb-1" for="destination-{{ card.line.line_id }}">
       Where does it go?

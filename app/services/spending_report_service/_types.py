@@ -17,6 +17,7 @@ from decimal import Decimal
 
 from app.services import spending_analysis
 from app.services.pay_calendar import PayCalendar
+from app.utils.money import ZERO
 
 
 @dataclass(frozen=True)
@@ -67,7 +68,8 @@ class Comparison:
             average), or ``None`` when no baseline exists.
         delta: ``current - baseline`` (signed), or ``None``.
         pct: ``delta`` as a percent of ``baseline``, or ``None`` -- also
-            ``None`` when ``baseline`` is zero (an empty prior window).
+            ``None`` when ``baseline`` is not POSITIVE (an empty prior window,
+            or one whose refunds exceeded its purchases).
     """
 
     baseline: Decimal | None
@@ -84,9 +86,22 @@ class Comparison:
                 (all three fields then come back ``None``).
 
         Returns:
-            The :class:`Comparison`.  When ``baseline`` is zero the delta is
-            still real (``current``) but ``pct`` is ``None`` (no percent of
-            zero -- via :func:`spending_analysis.signed_pct`).
+            The :class:`Comparison`.  The ``delta`` is always real; ``pct`` is
+            ``None`` for any baseline that is not POSITIVE.
+
+            **Zero was the only such baseline until ruling
+            **bank_import:R-II**** (plan step ``bank_import:X-gj-2b``).  A
+            window's spend was ``sum(abs(...))`` and could not be negative;
+            with a merchant refund filing as a NEGATIVE purchase it can be, for
+            a window whose refunds exceeded its purchases -- and a percent
+            CHANGE against a negative base reports the wrong DIRECTION, which
+            is money the owner reads off a chip.  Worked: spend rises from
+            ``-50.00`` to ``100.00``, so ``delta`` is ``+150.00`` and the
+            ratio is ``150 / -50 = -300%`` -- a fall of three hundred percent
+            printed over a rise.  There is no percentage of a negative base
+            that means what this chip means, so the honest answer is the one an
+            empty prior window already gets: none.  The figures themselves are
+            still shown, so nothing is hidden.
         """
         if baseline is None:
             return cls(baseline=None, delta=None, pct=None)
@@ -94,7 +109,10 @@ class Comparison:
         return cls(
             baseline=baseline,
             delta=delta,
-            pct=spending_analysis.signed_pct(delta, baseline),
+            pct=(
+                spending_analysis.signed_pct(delta, baseline)
+                if baseline > ZERO else None
+            ),
         )
 
 
@@ -150,9 +168,18 @@ class SpendingItemRow:
     Attributes:
         category_id: The category's id (``0`` for the Uncategorized bucket).
         item_name: The category item label.
-        amount: Settled spend for this category in the window.
+        amount: Settled spend for this category in the window.  **SIGNED, and
+            negative for a category its refunds carried below zero** (ruling
+            **bank_import:R-II**).
         share: ``amount`` as a fraction of the window total (a full-precision
-            ``Decimal`` in ``[0, 1]``; templates render, never compute).
+            ``Decimal``; templates render, never compute).  **It was stated as
+            being in ``[0, 1]`` and that bound is gone** (ruling
+            **bank_import:R-II**, plan step ``bank_import:X-gj-2b``): a
+            category whose refunds exceeded its purchases has a NEGATIVE
+            amount, so its share of a positive window total is negative too --
+            which is the honest reading, *this category took the total DOWN by
+            this much of it*.  Zero for any window whose own total is not
+            positive (:func:`~._breakdown._share`).
         delta: ``amount`` minus the category's prior-window spend (signed;
             the D7 window-over-window change basis).
         is_new: ``True`` when the category had no prior-window spend, so the
@@ -174,8 +201,11 @@ class SpendingGroupRow:
 
     Attributes:
         group_name: The category group label.
-        amount: Settled spend for the whole group in the window.
-        share: ``amount`` as a fraction of the window total.
+        amount: Settled spend for the whole group in the window.  SIGNED --
+            negative for a group its refunds carried below zero, exactly as
+            :attr:`SpendingItemRow.amount` is.
+        share: ``amount`` as a fraction of the window total, on the same terms
+            as :attr:`SpendingItemRow.share`.
         delta: ``amount`` minus the group's prior-window spend (signed).
             The prior side sums EVERY prior-window category in the group,
             including categories with no spend in the chosen window, so a

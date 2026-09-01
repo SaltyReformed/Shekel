@@ -522,15 +522,32 @@ def reject_barred_line(
 ) -> None:
     """Refuse a line ruling **R-GJ** says may never become a purchase.
 
-    **A bar is a claim about money LEAVING, so an INFLOW is never barred**
-    (plan step ``bank_import:X-gj-2b-2``).  Both arms say this merchant's money
-    was SPENT somewhere the budget already holds -- an answer of *never a
-    purchase*, or a source that files it as a payment to a credit card -- and
-    neither can be true of money arriving.  A refund reaches this door since
-    that step, and barring one would withhold an act because a DIFFERENT line's
-    spending is already counted.  The screen makes the same narrowing at
-    :func:`~._leftovers._creatable_lines`, and it is stated in both places
-    because the screen and the door are graded separately.
+    **EVERY line is asked, in both directions, and a bound that exempted
+    inflows is what this step's own review measured as a hole** (plan step
+    ``bank_import:X-gj-2b``).  That bound read *a bar is a claim about money
+    LEAVING, so an inflow is never barred*, on the ground that neither arm can
+    be true of money arriving.  It is true of the ``NEVER`` arm and FALSE of
+    the other: :attr:`CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD` is a claim about
+    the MERCHANT -- *your bank files this one as a payment to an account you
+    hold, so its money is already counted in another shape* -- and a merchant
+    does not stop being that one because a line runs the other way.
+
+    **What the bound actually reached was exactly one class, and it is the
+    dangerous one.**  An inflow reaches this door only where
+    :func:`~._rules.pipeline_for` routed it to ``PURCHASE``, which for an
+    inflow requires a CONTAINER answer -- and a merchant carrying one is by
+    construction absent from :attr:`CreationBars.never`.  So the only bar the
+    exemption could lift was ``PAYS_AN_ACCOUNT_YOU_HOLD``, on a merchant whose
+    stored spending answer predates its bank filing it as a card payment.
+    :func:`~._stating._reject_spending_answer` refuses a NEW such answer and
+    retracts no STORED one, and :mod:`._stating` records that the developer's
+    own ``Capital One Credit Card -> a new envelope`` WAS one.  Under ruling
+    **R-GH** that line files with no press.
+
+    The ``NEVER`` arm loses nothing by being asked: an inflow under it routes
+    to the INCOME pipeline and never arrives here at all.  The screen makes the
+    same call at :func:`~._leftovers._creatable_lines`, and it is stated in
+    both places because the screen and the door are graded separately.
 
     **The door's half of a structural refusal**, plan step
     ``bank_import:X-ga``.  The screen does not render a create control for such
@@ -562,8 +579,6 @@ def reject_barred_line(
         ValidationError: When a bar applies.  A 400: an owner working from a
             page rendered before they answered for the merchant reaches it.
     """
-    if line.amount > 0:
-        return
     barred_by = bars.bar_for(line.merchant_id)
     if barred_by is not None:
         raise ValidationError(_refusal_for(

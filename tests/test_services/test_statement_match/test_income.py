@@ -8,8 +8,8 @@ developer's own dev database 2026-08-27, eight of the 27 lines
 smallest positive row the hand-build form offered -- five dividends of `$0.12`
 to `$0.22` and three card refunds of `$11.73` to `$28.29`, `$58.87` together.
 No single row and no SUM of positive rows could equal one, the create door
-refuses an inflow by name, and a match refuses an empty side: the two refusals
-pointed at each other and the badge could never reach zero.
+refused EVERY inflow by name then, and a match refuses an empty side: the two
+refusals pointed at each other and the badge could never reach zero.
 
 **What the step promises, and what each class below pins:**
 
@@ -899,13 +899,78 @@ class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
             a_scope(seed_user),
         ).income_already_recorded_in(line) is None
 
+    def test_a_REFUND_is_asked_the_SAME_question_by_the_screen(
+        self, app, db, seed_user,
+    ):
+        """The other pipeline, through ``review_set`` rather than a hand map.
+
+        Plan step ``bank_import:X-gj-2b``.  Ruling **R-II** routes a
+        container-answered merchant credit into the PURCHASE pipeline, which
+        asked ``search_gap`` and the proposed-destination test and NOT this
+        one -- so a hazard this package added a control for was live for the
+        class the very next change routed past it.
+
+        **It is asserted end to end deliberately.**  The unit cases in
+        ``test_verdict`` hand :func:`~._verdict.ruled` a map they built
+        themselves, so a :func:`~._reads._already_held_by_line` that answered
+        ``{}`` for every line would leave every one of them green.  What this
+        grades is that the SCREEN asks the question at all.
+        """
+        envelope = a_transaction(
+            seed_user, name="Amazon", amount="100.00", is_envelope=True,
+        )
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        # A row the bank has never shown, in the credit's own pay period and
+        # smaller than it -- so the credit could be it, which is the whole
+        # question.
+        a_transaction(
+            seed_user, name="Phone Allowance", amount="39.54", income=True,
+        )
+        line = _a_deposit(seed_user, amount="60.00", merchant="Amazon")
+
+        [item] = [
+            item for item in review_set(a_scope(seed_user)).creatable
+            if item.line.line_id == line.id
+        ]
+
+        assert item.verdict is not None
+        assert item.verdict.withheld is not None, (
+            "a refund whose period already holds unexplained income must not "
+            "file itself -- the screen has to ask the same question the "
+            "income door does"
+        )
+        assert "count the same money twice" in item.verdict.withheld
+        assert "39.54" in item.verdict.withheld
+
+    def test_a_REFUND_whose_period_holds_NOTHING_is_not_withheld(
+        self, app, db, seed_user,
+    ):
+        """The control, without which the case above grades a screen that
+        withheld every refund."""
+        envelope = a_transaction(
+            seed_user, name="Amazon", amount="100.00", is_envelope=True,
+        )
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        line = _a_deposit(seed_user, amount="60.00", merchant="Amazon")
+
+        [item] = [
+            item for item in review_set(a_scope(seed_user)).creatable
+            if item.line.line_id == line.id
+        ]
+
+        assert item.verdict is not None
+        assert item.verdict.withheld is None
+
 
 class TestWhichLinesGetAnActAndWhichSTILLDoNot:
     """The gap this step closed, and the one it does NOT -- both measured.
 
-    ``creatable`` takes ``amount < 0``, ``recordable_inflows`` takes
-    ``amount > 0``, and ``ck_bank_statement_lines_amount_real_nonzero``
-    declares ``amount <> 0`` -- so by SIGN the two are total.  They are not
+    ``ck_bank_statement_lines_amount_real_nonzero`` declares ``amount <> 0``,
+    and :func:`~._rules.pipeline_for` is total over both directions and every
+    answer -- so every line is a candidate for exactly one ACT.  (It was the
+    two lists reading the SIGN directly, ``amount < 0`` here and ``amount > 0``
+    there, until plan step ``bank_import:X-gj-2b-2`` made the dispatcher the
+    partition; the totality argument is the same one, moved.)  They are not
     total as LISTS, and a first draft of this class asserted that they were:
     ``_creatable_lines`` drops an outflow the bank dates MADE after it POSTED
     before the split (finding **N-325**), and that line reaches none of the
@@ -973,9 +1038,10 @@ class TestWhichLinesGetAnActAndWhichSTILLDoNot:
         """The constraint the two doors' totality rests on, graded directly.
 
         A FIRING control on a database guarantee rather than on app code: drop
-        ``amount <> 0`` and this fails, which is the warning that the
-        ``<= 0`` / ``>= 0`` comparisons in the two doors have become reachable
-        arms that no case covers.
+        ``amount <> 0`` and this fails, which is the warning that
+        :func:`~._rules.is_inflow` -- the one place the two doors' partition is
+        spelled since plan step ``bank_import:X-gj-2b`` -- has a third arm that
+        no case covers, because *not arriving* would stop meaning *leaving*.
         """
         with pytest.raises(IntegrityError, match="amount_real_nonzero"):
             _a_deposit(seed_user, amount="0.00")

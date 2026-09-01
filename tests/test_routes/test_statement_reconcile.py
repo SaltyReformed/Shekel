@@ -1866,3 +1866,68 @@ class TestTheBooksBoundIsRENDERED:
         assert day.strftime("%b %-d, %Y") in body
         assert f"/accounts/{account.id}/edit#books-opening" in body
         assert "Restate this account" in body
+
+
+class TestTheADDSentenceSaysWhichWayTheMoneyWENT:
+    """The words printed directly above the OK that files a purchase.
+
+    Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``.  A merchant
+    credit files as a NEGATIVE purchase back into the container the owner's
+    rule names, and until this class the card said *"Add records this as
+    spending your budget did not have"* over it -- describing a REFUND as
+    spending, on the control that moves the money.
+
+    **This is the shape ruling R-GJ measured `$7,412.94` going through**: a
+    paragraph that mis-describes a working control.  Nothing graded it,
+    because the two sentences live in ``_statement_reconcile_macros.html``
+    rather than in :mod:`~app.services.statement_match._sentence`, and this
+    package's prose cases all read that module.
+
+    **Both directions, and each asserts the ABSENCE of the other**, because
+    the template renders the pair with no ``else``: a builder that answered
+    ``records_a_refund`` for every purchase would print the refund sentence
+    over an ordinary swipe and a one-sided case would not see it.
+    """
+
+    _REFUND_WORDS = "refund back into a budget line"
+    _CHARGE_WORDS = "spending your budget did not have"
+
+    def _rendered(self, auth_client, seed_user, db, *, amount, merchant):
+        """Return the Reconcile page with one answered line of *amount* on it."""
+        envelope = an_envelope(seed_user, name="Home Improvement")
+        statement = an_import(seed_user)
+        a_bank_line(
+            seed_user, statement, amount=amount, merchant=merchant,
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description=f"POINT OF SALE L340 ({merchant})",
+        )
+        db.session.commit()
+        a_rule(seed_user, merchant, template_id=envelope.template_id)
+        db.session.commit()
+        return _page(auth_client, seed_user)
+
+    def test_a_REFUND_card_says_it_lowers_what_a_budget_line_has_cost(
+        self, app, db, auth_client, seed_user,
+    ):
+        """Money ARRIVING that the owner's own rule claims."""
+        with app.app_context():
+            page = self._rendered(
+                auth_client, seed_user, db,
+                amount="28.29", merchant="Amazon",
+            )
+
+            assert self._REFUND_WORDS in page
+            assert self._CHARGE_WORDS not in page
+
+    def test_an_ORDINARY_swipe_card_still_says_it_is_spending(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The control, so the sentence is chosen and not hard-coded."""
+        with app.app_context():
+            page = self._rendered(
+                auth_client, seed_user, db,
+                amount="-35.72", merchant="Lowe's",
+            )
+
+            assert self._CHARGE_WORDS in page
+            assert self._REFUND_WORDS not in page

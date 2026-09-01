@@ -518,17 +518,19 @@ class TestTheNewEnvelopeArm:
 class TestWhatTheCreateDoorRefuses:
     """Every refusal, each written to fail if the refusal were deleted."""
 
-    def test_an_INFLOW_line_is_refused(self, app, db, seed_user):
-        """This door builds no refund, so it refuses the lines that would be one.
+    def test_an_UNCLAIMED_INFLOW_line_is_refused(self, app, db, seed_user):
+        """A deposit no rule claims is not a refund, so this door refuses it.
 
         **The backstop is no longer the schema** (ruling **bank_import:R-II**,
         plan step ``bank_import:X-gj-2b-1``):
         ``ck_transaction_entries_positive_amount`` is ``amount <> 0``, so a
-        negative purchase is writable and this refusal is the DOOR's own. It
-        stands until ``bank_import:X-gj-2b-2`` builds the resolution that says
-        which container a refund belongs to -- filing one without that would be
-        the guess ruling **R-HX** refused. 16 of the developer's own unexplained
-        lines are inflows, three of them card refunds, so this is the ordinary
+        negative purchase is writable and this refusal is the DOOR's own.
+        **And it is no longer about the DIRECTION either** (plan step
+        ``bank_import:X-gj-2b-2``): what it refuses is an inflow the owner has
+        said NOTHING about, because filing one would name a container they
+        never gave, which is the guess ruling **R-HX** refused. The case below
+        holds the other arm. 16 of the developer's own unexplained lines are
+        inflows, three of them card refunds, so this is the ordinary
         shape rather than a crafted request.
         """
         with app.app_context():

@@ -416,12 +416,15 @@ class TestACardRefundNeverDestroysThePayback:
     def test_a_refund_exceeding_the_card_charges_is_REFUSED(
         self, app, db, seed_user, seed_periods, seed_entry_template,
     ):
-        """A card that would owe the OWNER is refused, and the payback survives.
+        """A card that would owe the OWNER is refused, and nothing is deleted.
 
-        Asserts the SURVIVAL and the amount, not merely the raise: the defect
-        was destruction, so a fix that raised after deleting would pass a bare
-        ``pytest.raises``.  This is the assertion that fails if the arm is ever
-        removed again.
+        **The survival check is taken BEFORE the rollback, and that ordering is
+        the whole assertion.**  An earlier version queried after
+        ``db.session.rollback()`` and claimed to grade survival; adversarial
+        review measured that FALSE -- the rollback undoes a flushed DELETE, so a
+        mutant that deleted the payback and THEN raised passed it.  Reading the
+        session's ``deleted`` set while the failed unit of work is still open is
+        what distinguishes *refused before acting* from *acted then refused*.
         """
         with app.app_context():
             txn = self._envelope_with_a_card_charge(
@@ -443,12 +446,31 @@ class TestACardRefundNeverDestroysThePayback:
                         is_credit=True,
                     ),
                 )
-            db.session.rollback()
 
-            survived = db.session.get(Transaction, payback_id)
-            assert survived is not None, (
-                "the payback was destroyed -- finding N-411 has regressed"
+            # **A RAW COUNT inside the still-open transaction**, and each word
+            # of that is load-bearing.  Taken BEFORE the rollback, because the
+            # rollback undoes a flushed DELETE and is what made the original
+            # version of this assertion vacuous.  Raw SQL rather than
+            # ``db.session.get``, because the identity map answers a deleted
+            # row from memory.  And a COUNT rather than ``db.session.deleted``,
+            # because that collection holds only deletes not yet FLUSHED -- a
+            # mutant that deletes AND flushes before raising empties it, which
+            # is the second vacuous assertion this case was written with.
+            # Verified by driving exactly that mutant.
+            assert db.session.execute(
+                db.text(
+                    "SELECT count(*) FROM budget.transactions "
+                    "WHERE id = :i AND NOT is_deleted"
+                ),
+                {"i": payback_id},
+            ).scalar() == 1, (
+                "the payback was deleted before the refusal -- N-411 has "
+                "regressed"
             )
+
+            db.session.rollback()
+            survived = db.session.get(Transaction, payback_id)
+            assert survived is not None
             assert survived.estimated_amount == Decimal("100.00")
             assert not survived.is_deleted
 

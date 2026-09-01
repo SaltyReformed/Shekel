@@ -60,6 +60,7 @@ from app.services.statement_match._bars import (  # pylint: disable=protected-ac
 from app.services.statement_match._rules import (  # pylint: disable=protected-access
     _named_templates,
     active_category_names,
+    is_inflow,
     offerable_templates,
     rules_for,
 )
@@ -2470,6 +2471,40 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
         assert section.merchants[0].unofferable.template is None
 
 
+class TestTheBanksSignConvention:
+    """:func:`is_inflow` -- the ONE statement of which sign means ARRIVING.
+
+    Plan step ``bank_import:X-gj-2b``.  Seven readers in this package need a
+    bank line's direction, and each spelled the comparison for itself until
+    that step's own adversarial review counted EIGHT such comparisons -- three
+    of them added by the very change whose commit title read *the SIGN stops
+    routing*.  A convention written eight times is eight places to write it
+    backwards, and it decides which way real money is reported to have moved.
+
+    **Graded on LITERALS, not on the constant it is derived from**, which is
+    the whole value of the case: an assertion phrased against the function's
+    own expression would pass with that expression inverted.
+    """
+
+    def test_a_CREDIT_is_money_arriving(self):
+        """The bank states money INTO the account as positive."""
+        assert is_inflow(Decimal("28.29")) is True
+
+    def test_a_DEBIT_is_not(self):
+        """And money out of it as negative."""
+        assert is_inflow(Decimal("-57.96")) is False
+
+    def test_the_smallest_representable_figures_take_the_same_arms(self):
+        """One cent either way, which is where an off-by-one boundary shows.
+
+        ``bank_statement_lines.amount`` is ``NUMERIC(12, 2)``, so a cent is the
+        smallest step the column can hold and these are the two rows nearest
+        the boundary that the table can actually store.
+        """
+        assert is_inflow(Decimal("0.01")) is True
+        assert is_inflow(Decimal("-0.01")) is False
+
+
 class TestWhichPipelineALineEnters:
     """:func:`pipeline_for` -- the ONE place the two acts are told apart.
 
@@ -2523,14 +2558,21 @@ class TestWhichPipelineALineEnters:
         )
         assert len(self.EXPECTED) == (len(RuleAnswer) + 1) * 2
 
-    @pytest.mark.parametrize("answer,is_inflow", sorted(
+    #: One real figure per direction, on the bank's own convention.  Stated as
+    #: DATA here rather than taken from :func:`~app.services.statement_match.
+    #: _rules.is_inflow`, so this table grades that convention instead of
+    #: inheriting it: a test that asked the production predicate which sign
+    #: means *arriving* would pass with the predicate inverted.
+    AMOUNTS = {True: Decimal("28.29"), False: Decimal("-57.96")}
+
+    @pytest.mark.parametrize("answer,arriving", sorted(
         EXPECTED, key=lambda k: (k[0].value if k[0] else "", k[1]),
     ))
-    def test_each_cell_routes_where_the_table_says(self, answer, is_inflow):
+    def test_each_cell_routes_where_the_table_says(self, answer, arriving):
         """Every cell, one case each."""
         assert pipeline_for(
-            is_inflow=is_inflow, answer=answer,
-        ) is self.EXPECTED[(answer, is_inflow)]
+            amount=self.AMOUNTS[arriving], answer=answer,
+        ) is self.EXPECTED[(answer, arriving)]
 
     def test_a_CONTAINER_answer_is_what_makes_an_inflow_a_purchase(self):
         """The whole content of the change, stated as one property.
@@ -2543,7 +2585,7 @@ class TestWhichPipelineALineEnters:
         """
         for answer in list(RuleAnswer) + [None]:
             files_a_purchase = pipeline_for(
-                is_inflow=True, answer=answer,
+                amount=self.AMOUNTS[True], answer=answer,
             ) is LinePipeline.PURCHASE
             assert files_a_purchase is (answer in CONTAINER_ANSWERS)
 
@@ -2557,5 +2599,5 @@ class TestWhichPipelineALineEnters:
         """
         for answer in list(RuleAnswer) + [None]:
             assert pipeline_for(
-                is_inflow=False, answer=answer,
+                amount=self.AMOUNTS[False], answer=answer,
             ) is LinePipeline.PURCHASE

@@ -334,15 +334,32 @@ def _bar_pct(amount, max_amount):
     value): the largest row renders a full-width bar and every other bar is
     proportional to it.
 
+    **A NEGATIVE amount draws no bar, and it is this function that says so**
+    (ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``).  A
+    category whose refunds exceeded its purchases has a negative total since
+    that step relaxed ``ck_transaction_entries_positive_amount`` to
+    ``amount <> 0``; before it, ``_totals_by_category`` took an ``abs()`` and
+    this argument was non-negative by construction, which is what this
+    docstring used to assert.  A bar answers *how much of the budget did this
+    consume*, and the answer for such a row is NONE -- it gave money back.
+
+    **Floored HERE rather than left to ``progress_bar.js``.**  That clamp is a
+    defence against a malformed server value and says so in as many words; a
+    figure this function can produce for an ordinary refunded category is not
+    malformed, and leaving it to the browser would put a money-shaped decision
+    in the one tier no test in this project drives.
+
     Args:
-        amount: The row's ``Decimal`` amount (non-negative).
+        amount: The row's ``Decimal`` amount, SIGNED.
         max_amount: The largest row's ``Decimal`` amount.
 
     Returns:
-        The width percentage as a float rounded to 2 decimals (0.0 when the
-        maximum is not positive -- an all-zero ledger has no bars to size).
+        The width percentage as a float rounded to 2 decimals.  ``0.0`` when
+        the maximum is not positive -- an all-zero ledger, or a window whose
+        every category was refund-dominated, has no bars to size -- and
+        ``0.0`` for any row that is not itself positive.
     """
-    if max_amount <= 0:
+    if max_amount <= 0 or amount <= 0:
         return 0.0
     return round(float(amount) / float(max_amount) * 100, 2)
 

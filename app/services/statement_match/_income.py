@@ -7,9 +7,22 @@ bank posted it.
 **It exists because the two refusals that bound the create arm point at each
 other, and an inflow sits between them.**  :func:`~._accept._reject_empty_side`
 refuses a match with no app row, saying *"a bank line with no app row is what
-X-f6a-3b turns into a purchase"*; :func:`~._create._load_line` refuses an
+X-f6a-3b turns into a purchase"*; :func:`~._create._load_line` refused EVERY
 inflow, saying -- until this step rewrote it to name this door too --
-*"Match it to the row it belongs to instead"*.  Each is right on its own.
+*"Match it to the row it belongs to instead"*.  (It refuses only the inflows
+no container answer claims since plan step ``bank_import:X-gj-2b-2``.)
+
+**THAT STEP TOOK PART OF THIS DOOR'S OWN CASE, and the honest thing is to say
+which part.**  Measured 2026-09-01 on a clone of the developer's data, over
+every recorded inflow smaller than `$39.54`: **13 lines, of which 5 are card
+refunds and every one of those 5 carries a container answer** -- Walmart
+`$11.73` and `$18.06`, Amazon `$20.58`, `$28.29` and `$37.80`.  They are the
+PURCHASE door's now.  What remains this door's is the other 8, the `$0.10` to
+`$0.22` dividends, which no rule claims.  The argument above is unchanged in
+its SHAPE -- a deposit no row explains and no rule claims still has no other
+act -- and narrower in its extension than the measurement beneath it, which was
+taken before a refund could be filed at all.  Each refusal is right on its
+own.
 Together they leave a whole DIRECTION of movement with no act at all, and the
 review screen counts every one of those lines as work forever.
 
@@ -90,7 +103,7 @@ from ._candidates import MatchedSubjects, matched_subjects
 from ._creations import CreatedSubject, IncomeCreation, RecordedIncome
 from ._offers import merchant_label
 from ._placement import inflow_placement_for
-from ._rules import LinePipeline, RuleView, pipeline_for
+from ._rules import LinePipeline, RuleView, is_inflow, pipeline_for
 from ._resolve import load_lines
 from ._scope import ReviewScope
 from ._uncategorized import MovementToRecord, mint_uncategorized
@@ -98,10 +111,28 @@ from ._uncategorized import MovementToRecord, mint_uncategorized
 _logger = logging.getLogger(__name__)
 
 
+#: Why an OUTFLOW is not this door's.  A constant beside its sibling because
+#: the two are one refusal worded two ways, and a reader comparing them has to
+#: be able to see both without leaving the arm that chooses between them.
+_NOT_ARRIVING = (
+    "Only money ARRIVING in the account can be recorded this way, and that "
+    "line is money going out.  Record it as a purchase, or match it to the "
+    "row it belongs to.  Nothing was changed."
+)
+
+#: Why a CLAIMED merchant credit is not this door's (ruling **R-II**).
+_IS_A_REFUND = (
+    "You have said where this merchant's spending goes, so money coming back "
+    "from them is a REFUND against that budget line rather than income. "
+    "Record it there instead. Nothing was changed."
+)
+
+
 def _load_line(
     creation: IncomeCreation,
     matched: MatchedSubjects,
     scope: ReviewScope,
+    view: RuleView,
 ) -> BankStatementLine:
     """Return the submitted line, refusing one this door may not record.
 
@@ -112,25 +143,38 @@ def _load_line(
     a refusal to stop firing.
 
     The second refusal IS this door's own, and it is the exact mirror of the
-    one :mod:`._create` applies: the line must be money ARRIVING.  A line of
-    money leaving is a purchase, and recording it as income would invert the
-    sign of a real movement.  **The two DOORS are total over the lines the
+    one :mod:`._create` applies: this door takes the lines
+    :func:`~._rules.pipeline_for` routes to :attr:`~._rules.LinePipeline.
+    INCOME` and no others.  **The two DOORS are total over the lines the
     schema allows** -- hand either one any line and exactly one accepts it --
     which is a narrower claim than the one about the two LISTS the screen
     builds from, where :func:`~._leftovers._creatable_lines` drops a class
     (finding **N-325**) that reaches neither.
 
-    **The comparison is ``<= 0`` and the zero is UNREPRESENTABLE, not merely
-    unreached.**  ``ck_bank_statement_lines_amount_real_nonzero`` declares
-    ``amount <> 0``, so no line the database can hold takes that arm -- it is
-    written this way because its sibling is (``>= 0``), because *this door
-    takes money arriving* is one comparison rather than two, and because a
-    schema is the right place for that guarantee.  There is deliberately no
-    BRANCH for it and no case asserting it: a guard no mutation can reach with
-    a test that grades nothing is exactly what
-    :meth:`~._bars.CreationBars.bar_for` records having had to delete.
-    ``TestTheSchemaIsWhatMakesTheTwoDoorsTotal`` grades the constraint itself,
-    which is where the fact actually lives.
+    **ONE refusal asking the dispatcher, worded two ways** (plan step
+    ``bank_import:X-gj-2b``, after that step's own adversarial review).  It was
+    TWO: a sign test here and a ``pipeline_for`` test further down
+    :func:`record_income_from_line`.  Their fail sets were nested rather than
+    disjoint -- an outflow routes to ``PURCHASE``, so the lower one refused
+    every line this one did -- and the lower one's sentence was FALSE about the
+    class only it would have seen, telling the owner of an ordinary debit that
+    they had *said where this merchant's spending goes*.  Two guards for one
+    fact is what :meth:`~._bars.CreationBars.bar_for` records having had to
+    delete; the surviving one is the dispatcher's, because that is where the
+    partition is decided.
+
+    **The direction is asked ONCE MORE, for the SENTENCE and not for the
+    decision.**  Which of the two arms refused is not recoverable from a
+    :class:`~._rules.LinePipeline` -- both come back ``PURCHASE`` -- and the
+    two sentences are not interchangeable: one says *this is money leaving*
+    and the other says *this is a refund*.  Asking :func:`~._rules.is_inflow`
+    to choose between them re-derives nothing, because that function is the
+    one statement the dispatcher itself routes by.
+
+    **Refusing HERE moves it above the day refusals, and that ordering is
+    deliberate.**  Whether this door owns the line at all precedes whether the
+    day it names is one the books can take, and it is the order
+    :func:`~._create._load_line` already keeps.
 
     Args:
         creation: What the owner submitted.
@@ -138,6 +182,9 @@ def _load_line(
             act.
         scope: The pass, which is the ONE statement of which account's lines
             may be reached.
+        view: What the owner has said about this account's merchants
+            (:class:`~._rules.RuleView`), which is what decides whether an
+            INFLOW is a refund the PURCHASE door owns -- see the refusal below.
 
     Returns:
         The line.
@@ -148,11 +195,13 @@ def _load_line(
     line = load_lines(
         scope.account_id, frozenset({creation.line_id}), matched,
     )[0]
-    if line.amount <= 0:
+    rule = view.rules.get(line.merchant_id)
+    if pipeline_for(
+        amount=line.amount,
+        answer=rule.answer if rule is not None else None,
+    ) is not LinePipeline.INCOME:
         raise ValidationError(
-            "Only money ARRIVING in the account can be recorded this way, and "
-            "that line is money going out.  Record it as a purchase, or match "
-            "it to the row it belongs to.  Nothing was changed."
+            _IS_A_REFUND if is_inflow(line.amount) else _NOT_ARRIVING
         )
     return line
 
@@ -260,7 +309,7 @@ def record_income_from_line(
     # line refusal and the double-count guard inside ``record_match`` both
     # narrow with it, so they cannot disagree.
     matched = matched_subjects(scope.account_id)
-    line = _load_line(creation, matched, scope)
+    line = _load_line(creation, matched, scope, view)
     amount = Decimal(str(line.amount))
     # **EVERY refusal this act owes fires BEFORE anything is written**, and
     # the second one is here because an adversarial review 2026-08-27 measured
@@ -292,27 +341,6 @@ def record_income_from_line(
     # because the paragraph above states the rule as *every refusal this act
     # owes fires before anything is written*, and a derivation that later grew
     # a write would inherit the wrong side of it.
-    # **The mirror of the purchase door's own refusal** (plan step
-    # ``bank_import:X-gj-2b-2``).  A merchant credit whose merchant carries a
-    # container answer is a REFUND, and the purchase door owns it -- so
-    # recording it here would file a refund as income, which is the misfiling
-    # ruling **R-II** measured and the reason that ruling exists.  The screen
-    # renders no income control for such a line
-    # (:func:`~._leftovers._by_pipeline` routes it to the other half), so this
-    # fires on a stale page or a crafted body -- which is exactly when a
-    # refusal has to exist, and it asks the SAME function the screen routed by
-    # so the two cannot disagree.
-    rule = view.rules.get(line.merchant_id)
-    if pipeline_for(
-        is_inflow=line.amount > 0,
-        answer=rule.answer if rule is not None else None,
-    ) is not LinePipeline.INCOME:
-        raise ValidationError(
-            "You have said where this merchant's spending goes, so money "
-            "coming back from them is a REFUND against that budget line "
-            "rather than income. Record it there instead. Nothing was "
-            "changed."
-        )
     placement = inflow_placement_for(line.merchant_id, view)
     # **ONE reading of what the owner said, used by the WRITE and by the LOG.**
     # Two expressions of the same rule are two things that can come to

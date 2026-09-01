@@ -1002,3 +1002,136 @@ class TestWhereAParkedLineSAnswerIsCHANGED:
 
         assert "which no answer lifts" in str(caught.value)
         assert "Nothing was changed" in str(caught.value)
+
+
+class TestACARDPAYMENTMerchantsCREDITIsBarredToo:
+    """The bar reaches BOTH directions, and one arm of it had to.
+
+    Plan step ``bank_import:X-gj-2b``, found by that step's own adversarial
+    review.  That step routed a container-answered CREDIT into the purchase
+    pipeline and bounded ruling **R-GJ**'s bar to outflows beside it, arguing
+    that neither arm of the bar can be true of money arriving.  **That is true
+    of ``NEVER`` and false of the other arm**:
+    :attr:`CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD` says *your bank files this
+    MERCHANT as a payment to an account you hold*, and a merchant does not stop
+    being that one because a line runs the other way.
+
+    **The exemption reached exactly one class and it is the dangerous one.**
+    An inflow reaches the bar only where ``pipeline_for`` routed it to
+    ``PURCHASE``, which for an inflow needs a CONTAINER answer -- and a
+    merchant carrying one is by construction absent from ``CreationBars.never``.
+    So the only bar it could lift was the card-payment one, on a merchant whose
+    stored spending answer predates the bank filing it that way.
+    ``_stating._reject_spending_answer`` refuses a NEW such answer and retracts
+    no STORED one, and ``_stating`` records that the developer's own
+    ``Capital One Credit Card -> a new envelope`` WAS one.
+
+    **The rule is staged through the ORM because ``state_rules`` refuses it**,
+    which is the point: this shape is HISTORICAL, not statable today.
+
+    **All three surfaces, because the bar is stated in three places and they
+    are graded separately** -- the derivation, the screen's parking, and the
+    door's refusal.  Deleting the exemption at only one of them is what the
+    step did in reverse.
+    """
+
+    def _a_claimed_card_merchant(self, db, seed_user):
+        """Stage a card-payment merchant carrying a stored container answer."""
+        envelope = a_transaction(
+            seed_user, name="Capital One", amount="0.00", is_envelope=True,
+        )
+        statement = an_import(seed_user)
+        # The OUTFLOW is what puts the merchant in ``account_payments``: that
+        # set is keyed on the merchant over the account's whole history, with
+        # no direction filter of its own.
+        _a_card_payment(seed_user, statement)
+        credit = _a_card_payment(seed_user, statement, amount="500.00",
+                                 sequence=1)
+        a_rule(seed_user, CARD_MERCHANT, template_id=envelope.template_id)
+        db.session.flush()
+        return credit
+
+    def test_the_merchant_is_in_the_bars_whatever_the_line_does(
+        self, app, db, seed_user,
+    ):
+        """The derivation, which never had a direction in it."""
+        self._a_claimed_card_merchant(db, seed_user)
+
+        bars = CreationBars.build(
+            seed_user["user"].id, seed_user["account"].id,
+        )
+
+        assert bars.bar_for(the_merchant_id(seed_user, CARD_MERCHANT)) is (
+            CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
+        )
+
+    def test_the_SCREEN_parks_the_credit_rather_than_offering_it(
+        self, app, db, seed_user,
+    ):
+        """The half that decides whether a RULE files it with no press.
+
+        A line in ``creatable`` carrying a resolvable placement is filed by
+        ``file_new_swipes`` under ruling **R-GH** with no owner action at all,
+        so the screen's list IS the money control here.
+        """
+        credit = self._a_claimed_card_merchant(db, seed_user)
+
+        offered = review_set(a_scope(seed_user))
+
+        assert credit.id not in [
+            item.line.line_id for item in offered.creatable
+        ], (
+            "a credit from a merchant the bank files as a card payment was "
+            "offered for filing -- this is the shape ruling R-GJ measured "
+            "$7,412.94 going through"
+        )
+        assert credit.id in [item.line.line_id for item in offered.parked]
+
+    def test_the_DOOR_refuses_the_credit_and_writes_NOTHING(
+        self, app, db, seed_user,
+    ):
+        """The stale-page half, because a refusal a browser walks around is not
+        one."""
+        credit = self._a_claimed_card_merchant(db, seed_user)
+        before = db.session.query(TransactionEntry).count()
+
+        with pytest.raises(ValidationError) as refusal:
+            statement_match.create_purchase_from_line(
+                PurchaseCreation(
+                    line_id=credit.id,
+                    new_envelope=NewEnvelope(
+                        name=CARD_MERCHANT,
+                        category_id=seed_user["categories"]["Groceries"].id,
+                    ),
+                ),
+                a_scope(seed_user), _create.MintedEnvelopes.none_yet(),
+                an_answers(seed_user), applied_by_rule=False,
+            )
+
+        assert "payment to an account you hold" in str(refusal.value)
+        assert db.session.query(TransactionEntry).count() == before
+
+    def test_an_ORDINARY_merchants_credit_is_STILL_offered(
+        self, app, db, seed_user,
+    ):
+        """The control: the bar is the merchant's, not the direction's.
+
+        Without this the three cases above would pass against a door that had
+        gone back to refusing every inflow, which would silently un-build the
+        refund act plan step ``bank_import:X-gj-2b-2`` exists for.
+        """
+        envelope = a_transaction(
+            seed_user, name="Amazon", amount="0.00", is_envelope=True,
+        )
+        statement = an_import(seed_user)
+        credit = a_bank_line(
+            seed_user, statement, amount="28.29", merchant="Amazon",
+            description="POINT OF SALE CREDIT L340 (Amazon)",
+        )
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        db.session.flush()
+
+        offered = review_set(a_scope(seed_user))
+
+        assert credit.id in [item.line.line_id for item in offered.creatable]
+        assert credit.id not in [item.line.line_id for item in offered.parked]

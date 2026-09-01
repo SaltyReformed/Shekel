@@ -32,6 +32,9 @@ from app.services.statement_match import (
     RowKind,
     RuleVerdict,
 )
+from app.services.statement_match._already_held import (  # pylint: disable=protected-access
+    IncomeAlreadyRecorded,
+)
 from app.services.statement_match._filing import (  # pylint: disable=protected-access
     _rule_filings,
 )
@@ -115,13 +118,34 @@ def _bounds(**pass_facts):
     )
 
 
+def _held(total):
+    """Return the double-count fact for a period holding *total* of income.
+
+    **The REAL value object, not a stub with a ``total`` on it.**  The sentence
+    the pass writes is composed by :meth:`IncomeAlreadyRecorded.
+    why_it_could_double_count` since plan step ``bank_import:X-gj-2b``, so a
+    ``SimpleNamespace`` here would be a second implementation of the one thing
+    both doors are supposed to share -- and it would pass while that method was
+    deleted.  ``rows`` is empty because nothing in this module reads it; what
+    the sentence states is the TOTAL.
+    """
+    return IncomeAlreadyRecorded(rows=(), total=Decimal(total))
+
+
 def _lines(creatable, **pass_facts):
-    """Return *creatable* ruled under the stated pass facts."""
+    """Return *creatable* ruled under the stated pass facts.
+
+    ``already_held`` defaults to EMPTY -- no line's period holds unexplained
+    income -- which is the state every case here was written under and is what
+    keeps them about the arm each states.  A case about the double-count
+    withholding passes its own map (plan step ``bank_import:X-gj-2b``).
+    """
     return ruled(
         creatable,
         pass_facts.get("proposals", ()),
         pass_facts.get("declined_lines", {}),
         _bounds(**pass_facts),
+        pass_facts.get("already_held", {}),
     )
 
 
@@ -563,3 +587,70 @@ class TestTheSentenceTheScreenPrintsIsComposedHERE:
 
         assert item.verdict.withheld is None
         assert item.warning is None
+
+
+class TestARefundIsWithheldWhenTheBooksMayAlreadyHoldIt:
+    """The double-count guard, asked of the PURCHASE pipeline too.
+
+    Plan step ``bank_import:X-gj-2b``.  ``income_already_recorded`` guards an
+    auto-filed DEPOSIT against recording money the books already hold.  Ruling
+    **R-II** routes a container-answered merchant credit into the PURCHASE
+    pipeline instead -- and this function, which rules that pipeline, asked
+    ``search_gap`` and the proposed-destination test and NOT this one.  A
+    hazard the package added a control for was live for the class the very next
+    change routed past it.
+
+    **The two guards' fail sets are not nested**, which is why neither
+    substitutes for the other: ``search_gap`` reaches ACROSS periods by
+    ``DAY_WINDOW`` and fires only where some tier admitted a candidate and
+    declined it, while this tests the row's OWN span. A line can pass either
+    and fail the other.
+    """
+
+    def test_a_refund_whose_period_HOLDS_unexplained_income_is_withheld(self):
+        """The money property: a rule does not file it by itself."""
+        [line] = _lines(
+            (_creatable(_records_in()),),
+            already_held={7: _held("2473.38")},
+        )
+
+        assert line.verdict is not None
+        assert line.verdict.withheld is not None
+        assert "count the same money twice" in line.verdict.withheld
+        # **The FIGURE as money**, not as a bare ``Decimal``: this sentence is
+        # composed in a SERVICE, so no template filter reaches it and
+        # ``2473.38`` beside a card reading ``$2,473.38`` is what shipped
+        # until plan step ``bank_import:X-gj-2b``'s own review.
+        assert "$2,473.38" in line.verdict.withheld
+        # The receipt and the screen read ONE sentence, so the advice is on it
+        # -- and it names an ACT rather than a SURFACE (ruling
+        # **bank_import:R-HC**): this warning is RENDERED on the reconcile
+        # screen, so "check it on the reconcile screen" sent the owner where
+        # they already were.
+        assert "Match it against those rows" in line.warning
+        assert "reconcile screen" not in line.warning
+
+    def test_a_refund_whose_period_holds_NOTHING_still_files(self):
+        """The control, without which the case above grades a door that
+        withheld everything."""
+        [line] = _lines((_creatable(_records_in()),), already_held={})
+
+        assert line.verdict is not None
+        assert line.verdict.withheld is None
+        assert line.warning is None
+
+    def test_the_GAP_is_reported_FIRST_when_both_hold(self):
+        """Ordering, which is the sentence the owner reads.
+
+        A line the pass never finished looking at has not been SHOWN to
+        collide, so naming the collision first would report a conclusion this
+        pass did not reach -- the same ordering the two existing withholdings
+        already keep.
+        """
+        [line] = _lines(
+            (_creatable(_records_in()),),
+            declined_lines={7: "a day too crowded to search"},
+            already_held={7: _held("2473.38")},
+        )
+
+        assert "count the same money twice" not in line.verdict.withheld

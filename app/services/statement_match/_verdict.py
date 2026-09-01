@@ -79,6 +79,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from ._already_held import IncomeAlreadyRecorded
 from ._creations import PurchaseCreation
 from ._gaps import search_gap
 from ._leftovers import CreatableLine
@@ -117,6 +118,27 @@ _LOOK_FIRST = (
     "Match it against rows you already hold before recording it as new "
     "spending."
 )
+#: What to do about a line whose period already holds money that arrived.
+#: Beside :data:`_LOOK_FIRST` and :data:`_ACCEPT_FIRST` because the three are
+#: one vocabulary: every withholding this pass reports ends with the ACT that
+#: resolves it.
+#:
+#: **It named a SURFACE until this step's own review, which is the coupling
+#: ruling bank_import:R-HC forbids** and which the note on :data:`_LOOK_FIRST`
+#: directly above records eight sentences breaking on.  It read *"Check it on
+#: the reconcile screen."* -- and :attr:`~._leftovers.CreatableLine.warning` is
+#: rendered ON the reconcile screen (:func:`~._cards._creatable_card`), so the
+#: owner was told to go where they already were.  It names the act now, and
+#: *those rows* rather than *rows you already hold* because the sentence it
+#: follows has just named them.
+#:
+#: **PUBLIC where its two siblings are private**, and the asymmetry is the
+#: point: this is the only one of the three whose withholding is reported by a
+#: SECOND door as well (:func:`~._filing._inflow_filings`, for the deposit the
+#: same guard withholds), and the receipt and the screen must give the owner
+#: the same act.  The other two are reached from this module alone.
+CHECK_FIRST = "Match it against those rows before recording it as something new."
+
 _ACCEPT_FIRST = "Accept that match first, or file this line somewhere else."
 
 
@@ -222,6 +244,7 @@ def ruled(
     proposals: "tuple[MatchProposal, ...]",
     declined_lines: "dict[int, str]",
     bounds,
+    already_held: "dict[int, IncomeAlreadyRecorded]",
 ) -> "tuple[CreatableLine, ...]":
     """Return this pass's creatable lines, each carrying what it is owed.
 
@@ -241,6 +264,12 @@ def ruled(
         bounds: What this pass did not look at
             (:class:`~._gaps.ReviewBounds`), read for the two limits that
             belong to the PASS rather than to any one line.
+        already_held: ``{line_id: IncomeAlreadyRecorded}`` for the INFLOW lines
+            whose period already holds income no bank line explains
+            (:func:`~._reads.income_already_recorded`), computed by the caller
+            because it holds the rows.  **Empty for every outflow**, which is
+            what makes the arm below a no-op on the outflow side rather than a
+            second rule about it.
 
     Returns:
         The same lines, with :attr:`~._leftovers.CreatableLine.verdict` set on
@@ -281,10 +310,23 @@ def ruled(
         # reads in: a line the pass never finished looking at has not been
         # shown to collide with anything, so naming the collision first would
         # report a conclusion this pass did not reach.
+        held = already_held.get(item.line.line_id)
         if gap is not None:
             withheld, advice = gap, _LOOK_FIRST
         elif creation.transaction_id in proposed:
             withheld, advice = _ALREADY_EXPLAINED, _ACCEPT_FIRST
+        elif held is not None:
+            # **The DOUBLE-COUNT guard, asked of a refund too** (plan step
+            # ``bank_import:X-gj-2b``).  A merchant credit filed as a negative
+            # purchase is money ARRIVING, so the period may already hold a row
+            # for the same money -- exactly the hazard
+            # :func:`~._reads.income_already_recorded` was added for on the
+            # income side.  That step routed these lines into THIS pipeline,
+            # which asked ``search_gap`` and the proposed-destination test and
+            # not this one; their fail sets are not nested (the gap reaches
+            # ACROSS periods by ``DAY_WINDOW``, this tests the row's OWN span),
+            # so neither substitutes for the other.
+            withheld, advice = held.why_it_could_double_count, CHECK_FIRST
         else:
             withheld, advice = None, None
         lines.append(replace(

@@ -33,6 +33,14 @@ from tests._test_helpers import (
     settlement_columns,
 )
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
+from app.routes.analytics_view import (  # pylint: disable=protected-access
+    _bar_pct,
+    _size_lens_rows,
+)
+from app.services.spending_report_service import (
+    SpendingGroupRow,
+    SpendingItemRow,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -2296,3 +2304,64 @@ class TestSpendingTab:
             html = resp.data.decode()
             assert "shekel-scroll-pills" in html
             assert _shell_autoload_target(html) == "/analytics/spending"
+
+
+class TestARefundedCategoryDrawsNoBar:
+    """The By-size lens's geometry when a category's total is NEGATIVE.
+
+    Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``.  A merchant
+    credit files as a NEGATIVE purchase, so a category whose refunds exceeded
+    its purchases comes to a negative total.  ``_totals_by_category`` took an
+    ``abs()`` until that step and this geometry could not see one.
+
+    **What a bar answers is *how much of the budget did this consume*, and the
+    answer for such a row is none.**  Asserted at the SERVER, because the
+    clamp in ``progress_bar.js`` is written as a defence against a malformed
+    value -- a refunded category is not malformed, and a money-shaped decision
+    left to the browser is one no test in this project drives.
+    """
+
+    @staticmethod
+    def _group(name, amount, share):
+        """One singleton group row worth *amount*."""
+        return SpendingGroupRow(
+            group_name=name, amount=Decimal(amount), share=Decimal(share),
+            delta=Decimal("0.00"), is_new=False,
+            items=[SpendingItemRow(
+                category_id=1, item_name=name, amount=Decimal(amount),
+                share=Decimal(share), delta=Decimal("0.00"), is_new=False,
+            )],
+        )
+
+    def test_a_negative_group_gets_a_zero_width_bar(self):
+        """The refunded row, beside an ordinary one that still scales."""
+        rows = _size_lens_rows([
+            self._group("Home", "1200.00", "0.93"),
+            self._group("Amazon", "-86.67", "-0.07"),
+        ])
+
+        assert rows[0]["bar_pct"] == 100.0
+        assert rows[1]["bar_pct"] == 0.0, (
+            "a category whose refunds exceeded its purchases consumed no "
+            "budget, so it draws no bar"
+        )
+        # The FIGURE is untouched: only the geometry is floored.
+        assert rows[1]["amount"] == Decimal("-86.67")
+        assert rows[1]["share"] == Decimal("-0.07")
+
+    def test_a_window_of_only_refunds_draws_no_bars_at_all(self):
+        """Every row negative, so the largest is too and nothing scales.
+
+        The arm ``max_amount <= 0`` covers, which was reachable before this
+        step only for an all-ZERO window.
+        """
+        rows = _size_lens_rows([
+            self._group("Amazon", "-86.67", "0"),
+            self._group("Walmart", "-29.79", "0"),
+        ])
+
+        assert [row["bar_pct"] for row in rows] == [0.0, 0.0]
+
+    def test_an_ordinary_positive_row_still_scales(self):
+        """The control: the floor is on the sign, not on every row."""
+        assert _bar_pct(Decimal("50.00"), Decimal("200.00")) == 25.0

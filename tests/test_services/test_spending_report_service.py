@@ -31,8 +31,10 @@ from app.services import (
     pay_period_write,
     spending_analysis,
     spending_report_service,
+    status_seam,
 )
 from app.services.pay_calendar import PayCalendar
+from app.services.row_valuation import owned_contribution
 from app.services.spending_report_service import (
     Comparison,
     SpendingWindow,
@@ -48,17 +50,24 @@ from app.services.spending_report_service._hero import (
 from app.services.spending_report_service._surprises import (
     _MAX_SURPRISES, _build_surprises,
 )
+from app.services.spending_report_service._breakdown import (
+    _totals_by_category,
+)
 from app.services.spending_report_service._types import _ScopeIds
 from app.services.spending_report_service._window import (
     _CHART_WINDOW_COUNT,
     _series_windows,
     _shift_month,
+    _spent_total,
 )
 from tests._test_helpers import (
+    add_entry,
+    create_envelope_txn,
     default_settle_day,
     pay_periods_hydrated,
     settle_day_columns,
     settlement_columns,
+    settlement_if_settling,
 )
 
 
@@ -1400,3 +1409,128 @@ class TestComparison:
         assert cmp.baseline == Decimal("0")
         assert cmp.delta == Decimal("100.00")
         assert cmp.pct is None
+
+    def test_of_NEGATIVE_baseline_reports_no_percent(self):
+        """A refund-dominated prior window has no percent CHANGE to state.
+
+        Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``.  A
+        window's spend could not be negative while ``_spent_total`` took an
+        ``abs()`` per row; a merchant credit files as a NEGATIVE purchase now,
+        so a window whose refunds exceeded its purchases comes to a negative
+        total and can be a baseline.
+
+        **The ratio against one reports the wrong DIRECTION.**  Spend rising
+        from ``-50.00`` to ``100.00`` is a rise of ``150.00``, and
+        ``150 / -50`` is ``-300%`` -- a fall of three hundred percent printed
+        over a rise, on the hero chip the owner reads.  Asserts the figures
+        SURVIVE beside the missing percent, because suppressing the delta too
+        would hide a real movement.
+        """
+        cmp = Comparison.of(Decimal("100.00"), Decimal("-50.00"))
+
+        assert cmp.baseline == Decimal("-50.00")
+        assert cmp.delta == Decimal("150.00")
+        assert cmp.pct is None
+
+    def test_of_POSITIVE_baseline_still_reports_its_percent(self):
+        """The control, without which the case above grades a chip that never
+        computes a percent at all."""
+        cmp = Comparison.of(Decimal("150.00"), Decimal("100.00"))
+
+        assert cmp.delta == Decimal("50.00")
+        assert cmp.pct == Decimal("50.00")
+
+
+class TestARefundReducesSpendRatherThanAddingToIt:
+    """A REFUND-dominated envelope must not report as SPENDING.
+
+    Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``.  A merchant
+    credit files as a NEGATIVE purchase against the envelope its merchant rule
+    names, so a settled envelope's own figure -- ``sum(entries)`` on the
+    ``purchases`` basis -- can be negative.
+
+    **This class exists because an ``abs()`` was hiding exactly that**, at
+    ``_breakdown._totals_by_category`` and ``_window._spent_total``.  Both were
+    a provable no-op while ``ck_transaction_entries_positive_amount`` said
+    ``amount > 0``, and both became a SIGN FLIP when that CHECK moved.
+    Measured before the fix: ``-86.67`` reported as ``+86.67``, a `$173.34`
+    error on a window in which the account RECEIVED the money.
+
+    **The three shapes are asserted together deliberately.**  Only the
+    refund-DOMINATED one inverts under ``abs()``; a partly-refunded envelope
+    nets correctly either way.  A case staging only the ordinary or the
+    partly-refunded shape would pass with the defect restored, which is why the
+    boundary is pinned rather than a single example.
+    """
+
+    def _settled_envelope(self, db, seed_user, period, name, amounts):
+        """Settle an envelope worth exactly the entries handed to it."""
+        txn = create_envelope_txn(
+            seed_user, db.session, period, name, Decimal("0.00"),
+        )
+        for amount in amounts:
+            add_entry(
+                db.session, seed_user, txn, Decimal(amount),
+                period.start_date,
+            )
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.DONE),
+            settlement=settlement_if_settling(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            ),
+        )
+        db.session.flush()
+        return txn
+
+    def test_the_three_shapes_carry_their_own_signs(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Ordinary, partly refunded, and refund dominated.
+
+        Asserts the WINDOW total as well as the per-row figures, because the
+        defect was in the summing and a per-row assertion alone would not have
+        seen it.
+        """
+        with app.app_context():
+            period = seed_periods[0]
+            ordinary = self._settled_envelope(
+                db, seed_user, period, "Ordinary", ["100.00"],
+            )
+            partly = self._settled_envelope(
+                db, seed_user, period, "Partly refunded",
+                ["100.00", "-30.00"],
+            )
+            dominated = self._settled_envelope(
+                db, seed_user, period, "Refund dominated", ["-86.67"],
+            )
+            db.session.commit()
+
+            assert owned_contribution(ordinary) == Decimal("100.00")
+            assert owned_contribution(partly) == Decimal("70.00")
+            # The one the ``abs()`` inverted.
+            assert owned_contribution(dominated) == Decimal("-86.67")
+
+            # 100.00 + 70.00 - 86.67.  Under the defect this read 256.67.
+            assert _spent_total(
+                [ordinary, partly, dominated],
+            ) == Decimal("83.33")
+
+    def test_a_refunded_category_total_is_NEGATIVE(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The per-category figure a refund-dominated window reports.
+
+        A refund REDUCES what a category cost, which is what *did I stay in
+        budget* has to mean.  Under the ``abs()`` this read ``+86.67`` and the
+        category appeared as the window's largest spend.
+        """
+        with app.app_context():
+            period = seed_periods[0]
+            dominated = self._settled_envelope(
+                db, seed_user, period, "Refund dominated", ["-86.67"],
+            )
+            db.session.commit()
+
+            totals = _totals_by_category([dominated])
+
+            assert totals[dominated.category_id].amount == Decimal("-86.67")

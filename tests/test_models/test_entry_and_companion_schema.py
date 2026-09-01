@@ -21,6 +21,11 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
+from tests._test_helpers import load_migration_module
+
+_REFUND_MIGRATION = load_migration_module(
+    "b8e4c1f7a903_a_refund_is_a_negative_purchase.py",
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -168,6 +173,70 @@ class TestTransactionEntryAmountCheck:
             db.session.commit()
             assert entry.id is not None
             assert entry.amount == Decimal("0.01")
+
+
+class TestTheDowngradeRefusesANegativePurchase:
+    """Migration ``b8e4c1f7a903``'s only non-DDL logic, driven directly.
+
+    ``refuse_negative_purchases`` is module-level so a test can drive it, which
+    is the pattern this chain's guarded revisions use (``e4b8a71c0f36``,
+    ``a9d3c15e7f42``) and the rule *a guard nothing exercises is a guard nobody
+    has seen work*.  Both precedents HAVE such a test; this one had none until
+    plan step ``bank_import:X-gj-2b``'s own adversarial review said so.
+
+    **What it protects is a REFUND.**  Restoring ``amount > 0`` makes a
+    negative purchase unrepresentable, so the downgrade is value-lossless only
+    where none exists.  Left to PostgreSQL the same state arrives as a bare
+    constraint violation naming no row; the guard names the rows and the
+    diagnostic SELECT, which is the whole difference for an operator running it
+    mid-deploy.
+
+    Definition of Done item 7 asks for both directions.  The DDL halves run on
+    every test-template rebuild -- ``scripts/build_test_template.py`` replays
+    the whole Alembic chain rather than calling ``create_all`` -- so what no
+    rebuild can reach is the REFUSAL, because a chain that has just widened the
+    CHECK has no negative row in it yet.
+    """
+
+    def test_it_passes_when_no_purchase_is_negative(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The state an ordinary revert is run in, so it is not refused.
+
+        Returns ``None`` rather than raising: the assertion is the ABSENCE of a
+        refusal, and the case below is what gives that meaning -- a guard that
+        refused everything would pass this one alone.
+        """
+        with app.app_context():
+            txn = _make_txn(seed_user, seed_periods)
+            _make_entry(
+                txn, seed_user["user"], Decimal("42.00"), "An ordinary swipe",
+            )
+
+            assert _REFUND_MIGRATION.refuse_negative_purchases(
+                db.session.connection(),
+            ) is None
+
+    def test_it_REFUSES_while_a_refund_is_stored_and_NAMES_it(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The arm that keeps *no such rows exist* measured rather than assumed.
+
+        Asserts the row's OWN id is in the message, not merely that something
+        raised: an operator hitting this has only the message to work from, and
+        a refusal that named no row would leave them exactly where
+        PostgreSQL's own violation would have.
+        """
+        with app.app_context():
+            txn = _make_txn(seed_user, seed_periods)
+            refund = _make_entry(
+                txn, seed_user["user"], Decimal("-28.29"), "Amazon refund",
+            )
+
+            with pytest.raises(RuntimeError, match=str(refund.id)):
+                _REFUND_MIGRATION.refuse_negative_purchases(
+                    db.session.connection(),
+                )
 
 
 # ── Template Flag Tests ────────────────────────────────────────────────

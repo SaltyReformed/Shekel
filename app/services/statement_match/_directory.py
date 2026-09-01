@@ -652,8 +652,15 @@ def merchant_directory(
     Returns:
         The :class:`MerchantDirectory`.
     """
-    view = RuleView.build(owner_id, account_id)
-    bars = MerchantAnswers.build(owner_id, account_id).bars
+    # BOTH off ONE read (:class:`~._bars.MerchantAnswers`).  This site read
+    # ``merchant_rules`` TWICE, at two instants, between plan step
+    # ``bank_import:X-gj-2b-2`` and its review: the conversion replaced the
+    # ``CreationBars.build`` line and left a ``RuleView.build`` above it, while
+    # ``MerchantAnswers.build`` calls ``RuleView.build`` itself -- so the value
+    # introduced to stop a consumer holding the two from different instants
+    # re-created that hazard at one of the four sites it was meant to fix.
+    answers = MerchantAnswers.build(owner_id, account_id)
+    view, bars = answers.view, answers.bars
     activity = merchant_activity(account_id)
     entries = tuple(
         MerchantEntry(

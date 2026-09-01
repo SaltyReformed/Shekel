@@ -87,6 +87,7 @@ from ._creations import IncomeCreation, PurchaseCreation
 from ._offers import BankLine
 from ._reads import ReviewSet, review_set
 from ._scope import ReviewScope
+from ._verdict import CHECK_FIRST
 
 
 @dataclass(frozen=True)
@@ -192,9 +193,10 @@ class RuleFiling:
         this door can file is money leaving --* :func:`~._create._load_line`
         *refuses an inflow*, which was true of a door that filed only
         purchases; it now also files deposits a standing INCOME rule answers
-        for, and those are positive.  ``_load_line`` still refuses an inflow --
-        it is the PURCHASE door's own refusal and unchanged -- so the sentence
-        was accurate about the wrong door once a second one existed.  A
+        for, and those are positive.  Plan step ``bank_import:X-gj-2b-2`` then
+        took the second half of it as well: ``_load_line`` refuses an inflow
+        only where NO container answer claims it, so the purchase arm files
+        refunds and they are positive on the bank's convention too.  A
         one-import pass can therefore come to any sign, including exactly zero
         on a pass whose filed swipes and filed deposits happen to cancel: a
         receipt reading the figure must say what it is rather than assume it is
@@ -533,12 +535,16 @@ def _inflow_filings(
         if held is not None:
             withheld.append(WithheldLine(
                 line=inflow.line,
+                # **The CLAUSE is the value's own** (plan step
+                # ``bank_import:X-gj-2b``): the refund half composes the same
+                # withholding, and a second spelling of it here drifted at
+                # once -- this printed a bare ``Decimal`` where the card beside
+                # it printed ``$2,473.38``.  The ADVICE is
+                # ``_verdict.CHECK_FIRST``, so the receipt and the screen
+                # send the owner to the same place.
                 reason=(
-                    f"Your rule says this is income, and the pay period it "
-                    f"falls in already holds {held.total} of income no bank "
-                    f"line explains -- so recording it automatically could "
-                    f"count the same money twice.  Check it on the reconcile "
-                    f"screen."
+                    f"Your rule says this is income, and "
+                    f"{held.why_it_could_double_count}.  {CHECK_FIRST}"
                 ),
             ))
             continue

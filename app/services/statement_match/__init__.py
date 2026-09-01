@@ -59,9 +59,14 @@ The public surface, and what each piece is for:
   ``bank_import:X-gf-1``): a bank line of money COMING IN that no app row
   explains BECOMES an uncategorized income row, matched to itself.  **It MOVES
   MONEY**, and it is the mirror of the door above on the direction that had
-  none: a purchase is an expense, so that one refuses an inflow, and a match
-  refuses an empty side -- between them they left eight of the developer's own
-  deposits, `$58.87`, with no act on the review screen at all.  The row it
+  none: a purchase had to be an expense, so that one refused EVERY inflow, and
+  a match refuses an empty side -- between them they left eight of the
+  developer's own deposits, `$58.87`, with no act on the review screen at all.
+  (The purchase door refuses only the inflows no container answer claims since
+  ruling **bank_import:R-II**, which took part of this door's own case with it:
+  measured 2026-09-01, all 5 of the developer's card refunds under `$39.54`
+  carry a container answer and are the purchase door's, leaving this one the 8
+  dividends no rule claims.  :mod:`._income` carries the figures.)  The row it
   writes is the one a matched group's residual already used
   (``_uncategorized.mint_uncategorized``), so there is one writer of *the row
   bank evidence requires and the books do not hold*.

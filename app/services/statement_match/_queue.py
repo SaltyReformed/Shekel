@@ -440,10 +440,16 @@ def _rows(review: "ReviewSet") -> "tuple[QueueRow, ...]":
 
     **A creatable line's positive signal is a WITHHOLDING that is not a gap.**
     :func:`~._verdict.ruled` sets
-    :attr:`~._leftovers.CreatableLine.warning` from TWO arms and only one of
-    them is the search gap: the other is
+    :attr:`~._leftovers.CreatableLine.warning` from THREE arms and only one of
+    them is the search gap.  The second is
     :data:`~._verdict._ALREADY_EXPLAINED`, which fires when the rule's own
-    destination is a row this statement explains AS A WHOLE.  That is a
+    destination is a row this statement explains AS A WHOLE; the third arrived
+    with plan step ``bank_import:X-gj-2b`` and fires when a REFUND's pay period
+    already holds money the records say arrived and no line explains.  **The
+    test below reads the arms as a class rather than by name**, which is why a
+    third one did not need this predicate changed -- but the sentence here said
+    TWO, and a sentence that undercounts the thing a safety net protects is how
+    the next arm gets added without one.  That is a
     counterpart the pass has already FOUND, so the line belongs with the money
     the books hold -- and reading only the gap put it in
     :attr:`Evidence.NOTHING_FOUND`, the one group that offers a sweep, under a
@@ -495,10 +501,13 @@ def _positive_for(
     Returns:
         Whether something of the owner's already points at this line.  For a
         PARKED line the bar itself is that signal; for an INFLOW it is the
-        income already recorded; for a CREATABLE line it is a withholding that
-        is NOT the gap, which is
-        :data:`~._verdict._ALREADY_EXPLAINED` and nothing else -- ``ruled``
-        sets ``warning`` from exactly those two arms.
+        money already recorded; for a CREATABLE line it is ANY withholding that
+        is not the gap -- :data:`~._verdict._ALREADY_EXPLAINED`, or the
+        double-count withholding plan step ``bank_import:X-gj-2b`` added for a
+        refund.  **Read as a class, not enumerated**, which is what let the
+        third arm arrive without a change here; the two are named because a
+        reader deserves to know what reaches this line, not because the test is
+        against a list.
     """
     if act is QueueAct.NONE_OPEN:
         return True

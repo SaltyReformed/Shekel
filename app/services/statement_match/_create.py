@@ -131,19 +131,28 @@ def _load_line(
     ordinary stale page.
 
     The third refusal IS this door's own, because it is about what THIS DOOR
-    builds rather than about matching: the line must be money LEAVING.
+    builds rather than about matching: the line must be one
+    :func:`~._rules.pipeline_for` routes to
+    :attr:`~._rules.LinePipeline.PURCHASE`.
 
-    **The reason is no longer the schema, and the difference matters** (ruling
-    **bank_import:R-II**, plan step ``bank_import:X-gj-2b``).  It read *a
-    purchase is an expense (``ck_transaction_entries_positive_amount``), so a
-    deposit or a refund cannot become one* -- and that CHECK is ``amount <> 0``
-    now, so a refund IS a purchase the table can hold: a negative one, against
-    the envelope its merchant rule names.  What has not been built is the act
-    that FILES one, which is plan step ``bank_import:X-gj-2b-2``; until it
-    ships this door would have to guess a destination, and guessing is what
-    ruling **R-HX** refused.  16 of the developer's own unexplained lines are
-    inflows, including three card refunds, so this is the ordinary shape rather
-    than a crafted request.
+    **It was *the line must be money LEAVING*, and neither half of that is the
+    rule any more** (ruling **bank_import:R-II**, plan step
+    ``bank_import:X-gj-2b``).  The REASON was the schema -- *a purchase is an
+    expense (``ck_transaction_entries_positive_amount``), so a deposit or a
+    refund cannot become one* -- and that CHECK is ``amount <> 0`` now, so a
+    refund IS a purchase the table can hold: a negative one, against the
+    envelope its merchant rule names.  The TEST was the sign, and plan step
+    ``bank_import:X-gj-2b-2`` built the act that files such a line, so the sign
+    no longer decides: an inflow whose merchant carries a container answer is a
+    refund this door owns, and every other inflow is
+    :func:`~._income.record_income_from_line`'s.  Asking the dispatcher is what
+    keeps this refusal and the screen's own partition one answer.
+
+    **What is still refused, and why it is not a guess** -- an inflow the
+    owner has said NOTHING about.  Filing one against a budget line would name
+    a container they never gave, which is what ruling **R-HX** refused.  16 of
+    the developer's own unexplained lines are inflows, so this is the ordinary
+    shape rather than a crafted request.
 
     **What it SENDS the owner to changed at ruling bank_import:R-GW**, and the sentence
     with it.  It used to say *match it to the row it belongs to instead*,
@@ -184,7 +193,7 @@ def _load_line(
     # cannot come to disagree.
     rule = answers.view.rules.get(line.merchant_id)
     pipeline = pipeline_for(
-        is_inflow=line.amount > 0,
+        amount=line.amount,
         answer=rule.answer if rule is not None else None,
     )
     if pipeline is not LinePipeline.PURCHASE:
@@ -318,9 +327,9 @@ def _born_purchase(
             # the whole conversion -- and it is TOTAL over both directions
             # without a branch, which is why ruling **bank_import:R-II** needed
             # no new arithmetic here: an inflow of ``+28.29`` becomes a refund
-            # of ``-28.29`` by the same expression.  Only outflows reach here
-            # today (:func:`_load_line`); plan step ``bank_import:X-gj-2b-2``
-            # is what lets a refund through, and this line already handles it.
+            # of ``-28.29`` by the same expression.  Plan step
+            # ``bank_import:X-gj-2b-2`` is what lets a refund reach this line,
+            # and it needed nothing added here to file one.
             amount=-Decimal(str(line.amount)),
             # What the BANK NAMES the merchant, not the whole line
             # (:func:`~._offers.merchant_label`).  The app's own purchases are

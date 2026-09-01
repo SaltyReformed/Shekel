@@ -487,6 +487,13 @@ def _created_summary(recorded) -> str:
     swipe day on half of every statement, which is the exact substitution R-FW
     rejected.
 
+    **It reads the SIGN for both the figure and the verb** (ruling **R-II**).
+    ``CreatedPurchase.amount`` is the purchase's own signed figure, so a refund
+    is negative; the statement states the same movement the other way round.
+    Negating once and choosing *took* or *gave back* off that one value is what
+    keeps this sentence and the ``AppliedItem.amount`` beside it from
+    disagreeing about which way the money went.
+
     Args:
         recorded: The :class:`~._create.CreatedPurchase`.
 
@@ -502,8 +509,17 @@ def _created_summary(recorded) -> str:
         f", made {recorded.made_on}" if recorded.made_on != recorded.posts_on
         else ""
     )
+    # **The BANK's convention and the bank's VERB, both derived from the sign**
+    # (plan step ``bank_import:X-gj-2b``, ruling **R-II**).  A refund is a
+    # NEGATIVE purchase, and this sentence printed ``$-42.00 your bank took`` --
+    # the wrong sign AND the wrong direction, in the one notice the owner gets
+    # for money a rule moved without a press (**R-GH**).  It also contradicted
+    # ``AppliedItem.amount`` on the same item, which negates onto the bank's
+    # convention; the negation is done ONCE here so the two cannot disagree.
+    on_the_statement = -recorded.amount
+    took_or_gave = "took" if on_the_statement < 0 else "gave back"
     return (
-        f"Recorded ${recorded.amount:,.2f} your bank took on "
+        f"Recorded ${abs(on_the_statement):,.2f} your bank {took_or_gave} on "
         f"{recorded.posts_on}{made} as a purchase in {where}."
     )
 
@@ -738,8 +754,9 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
             # negation is what the bank's convention is, not an assumption that
             # the purchase is positive, so a refund recorded at ``-28.29``
             # reports the ``+28.29`` the statement shows (ruling
-            # **bank_import:R-II**).  Only outflows reach this door today
-            # (``_create._load_line`` refuses an inflow by name).
+            # **bank_import:R-II**).  Refunds DO reach this door since plan
+            # step ``bank_import:X-gj-2b-2``, so the general case is the
+            # ordinary one rather than a future one.
             amount=-recorded.amount,
         ))
 

@@ -37,6 +37,7 @@ from app.services.statement_match import (
     ReviewedBatch,
     ReviewSet,
     file_new_swipes,
+    review_set,
     rule_filed_acts,
 )
 
@@ -1427,6 +1428,14 @@ class TestARuleWithholdsADepositTheBooksMayAlreadyHold:
             assert story["refused"] == []
             assert len(story["withheld"]) == 1
             assert "count the same money twice" in story["withheld"][0]
+            # **The FIGURE as money.**  This sentence is composed in a SERVICE,
+            # so no template filter reaches it: it read a bare ``100.00``
+            # beside a card reading ``$100.00`` until plan step
+            # ``bank_import:X-gj-2b`` gave the fact ONE composer
+            # (``IncomeAlreadyRecorded.why_it_could_double_count``), which the
+            # refund half reads too.
+            assert "$100.00" in story["withheld"][0]
+            assert "holds 100.00" not in story["withheld"][0]
             # THE MONEY: nothing moved.
             assert _balance_on(seed_user, day + timedelta(days=2)) == before
 
@@ -1779,13 +1788,24 @@ class TestAMerchantCreditIsFILEDWhicheverSpendingAnswerItHas:
         credit a refund is the owner's own SPENDING answer for that merchant;
         a deposit from a merchant they have said nothing about is not one, and
         filing it against a budget line would be the guess ruling **R-HX**
-        refused.  Without this case a dispatcher that routed EVERY inflow into
-        the purchase pipeline would pass the two above.
+        refused.
+
+        **It asserts which LIST the screen puts the line in, and a first
+        version asserting only that nothing was filed graded NOTHING** --
+        adversarial review 2026-09-01 drove a dispatcher mutated to route every
+        inflow into the purchase pipeline and all three cases in this class
+        survived it.  They had to: an unclaimed deposit resolves to no
+        container either way, so the auto-filing door writes nothing under the
+        mutant exactly as it does under the rule, and ``filed == 0`` is true of
+        both.  What the two states DISAGREE about is where the line is offered
+        -- :attr:`~._reads.ReviewSet.recordable_inflows` under the rule and
+        :attr:`~._reads.ReviewSet.creatable` under the mutant -- so that is
+        what this asks.
         """
         with app.app_context():
             _groceries(seed_user)
             statement = an_import(seed_user)
-            self._credit(seed_user, statement, "Some Employer")
+            line = self._credit(seed_user, statement, "Some Employer")
             db.session.flush()
 
             filing = _file(seed_user, statement)
@@ -1793,3 +1813,14 @@ class TestAMerchantCreditIsFILEDWhicheverSpendingAnswerItHas:
 
             assert _story(filing)["filed"] == 0
             assert db.session.query(TransactionEntry).count() == 0
+
+            offered = review_set(a_scope(seed_user))
+            assert [
+                item.line.line_id for item in offered.recordable_inflows
+            ] == [line.id], (
+                "an unclaimed deposit belongs to the INCOME door -- routing "
+                "it to the purchase pipeline is what R-HX refused"
+            )
+            assert line.id not in [
+                item.line.line_id for item in offered.creatable
+            ]

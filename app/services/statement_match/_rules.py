@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
+from decimal import Decimal
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -171,8 +172,57 @@ class LinePipeline(enum.Enum):
 CONTAINER_ANSWERS = frozenset({RuleAnswer.TEMPLATE, RuleAnswer.NEW_ENVELOPE})
 
 
+def is_inflow(amount: Decimal) -> bool:
+    """Return whether a bank line's *amount* is money ARRIVING.
+
+    **THE ONE STATEMENT OF THE BANK'S SIGN CONVENTION** (plan step
+    ``bank_import:X-gj-2b``).  ``bank_statement_lines.amount`` and
+    :attr:`~._offers.BankLine.amount` are both signed POSITIVE INTO the
+    account, and until this step every reader that needed the direction spelled
+    the comparison itself.  **The count went UP, not down**, which is why this
+    exists: re-measured over both trees, ``app/services/statement_match/`` held
+    **4** such comparisons at ``04980186`` (the two door refusals and the two
+    list partitions) and **6** at ``1bfeff07``, because ``pipeline_for``'s first
+    signature took a BOOL and three call sites spelled
+    ``is_inflow=line.amount > 0`` to feed it -- under a commit titled *the SIGN
+    stops routing*.  :class:`~._panel.AddAct` already carried the standing rule
+    against exactly that, and says the two spellings *would not even agree*.
+    Six spellings of one convention are six places to write it backwards, and
+    what it decides is which way real money moved.
+
+    **The partition is TOTAL, and the schema is why.**
+    ``ck_bank_statement_lines_amount_real_nonzero`` declares ``amount <> 0``,
+    so ``not is_inflow(amount)`` IS *money leaving* rather than *money leaving
+    or nothing at all*. That is what lets every caller take two arms instead of
+    three, and it is a fact about the table rather than about any reader here
+    -- which is why there is no branch for zero and no case asserting one: a
+    guard no mutation can reach, graded by a test that grades nothing, is what
+    :meth:`~._bars.CreationBars.bar_for` records having had to delete.  The
+    CONSTRAINT is what carries the guarantee and it is graded directly, by
+    ``test_statement_import_schema.TestALineMustMoveMoney`` and by
+    ``test_income.TestWhichLinesGetAnActAndWhichSTILLDoNot.
+    test_a_ZERO_line_cannot_EXIST``.
+
+    (An earlier draft of this paragraph named a class
+    ``TestTheSchemaIsWhatMakesTheTwoDoorsTotal``, which **has never existed** in
+    this repository -- it was carried over from
+    :func:`~._income._load_line`'s own docstring, where plan step
+    ``bank_import:X-gf-1`` wrote it and nothing checked it.  A citation nobody
+    opens is what this project files findings about.)
+
+    Args:
+        amount: The line's own figure, on the bank's convention. A
+            :class:`~decimal.Decimal`, never a float -- the comparison is
+            exact and the caller's column is ``NUMERIC(12, 2)``.
+
+    Returns:
+        Whether the bank moved money INTO the account on this line.
+    """
+    return amount > 0
+
+
 def pipeline_for(
-    *, is_inflow: bool, answer: "RuleAnswer | None",
+    *, amount: Decimal, answer: "RuleAnswer | None",
 ) -> LinePipeline:
     """Return which act an unexplained line is a candidate for.
 
@@ -206,18 +256,34 @@ def pipeline_for(
     ``None``            PURCHASE, no rule    INCOME, no rule
     ==================  ===================  ==========================
 
-    Two of those cells had never been decided -- they fell through a dispatcher
-    that was not asked about them -- and both are settled here on the
-    conservative arm (developer, 2026-08-31):
+    **ELEVEN of those twelve cells RESTATE what the code already did, and ONE
+    changes.**  An earlier draft of this docstring claimed two of them "had
+    never been decided", and adversarial review measured that FALSE: at
+    ``04980186`` ``_creatable_lines`` took EVERY outflow and ``placements_for``
+    fell through to ``None`` for ``INCOME_CATEGORY``, and ``_recordable_inflows``
+    took EVERY inflow including ``NEVER`` with ``inflow_placement_for``
+    answering ``None``. Both behaviours were determinate and both are unchanged
+    here.  They were never STATED in one place, which is what this table fixes;
+    that is a clarification and not a decision, and the claim carried a
+    developer attribution it did not deserve.
+
+    **The one real change is (container answer, inflow)**: from an income
+    candidate carrying an unresolved reason, to a PURCHASE -- the refund.
+
+    Two cells are worth reading twice even though neither moved, because the
+    table is where their reasons now live:
 
     * **money OUT under ``INCOME_CATEGORY``** enters the purchase pipeline with
-      NO suggestion.  A withdrawal from a merchant whose deposits are income is
-      not itself income, and naming a container the owner never gave would be
-      the guess ruling **R-HX** refused.  The owner still picks by hand.
+      NO suggestion.  Naming a container the owner never gave would be the
+      guess ruling **R-HX** refused, so the owner picks by hand.  **A reviewer
+      argues this should be the mirror of the refund** -- a withdrawal from an
+      income merchant is a clawback or a fee, a contra-INCOME -- and that is an
+      open question for the developer rather than a settled cell.
     * **money IN under ``NEVER``** enters the income pipeline with NO
-      suggestion, and is NOT barred.  Ruling **R-GJ**'s bar says this
-      merchant's money was SPENT somewhere the budget already holds, which is a
-      claim about an outflow; it has no arm that could be true of a deposit.
+      suggestion, and is not barred HERE.  Whether ruling **R-GJ**'s bar should
+      reach an inflow at all is a separate open question, argued at
+      :func:`~._bars.reject_barred_line`; this cell only records that routing
+      does not decide it.
 
     **An outflow is always a PURCHASE candidate**, whatever the answer -- the
     rule only decides whether anything is SUGGESTED inside that pipeline, and
@@ -225,10 +291,19 @@ def pipeline_for(
     which is where ruling **R-GJ** put it.
 
     Args:
-        is_inflow: Whether the line is money ARRIVING.  A bool rather than the
-            line, so the caller that already knows cannot pass a different
-            line than the one it classified, and so the write door can ask
-            without building a view model.
+        amount: The line's own figure, on the bank's convention (positive INTO
+            the account).  **The AMOUNT rather than a caller-computed bool**,
+            which is this step's own adversarial review's correction: the bool
+            made every caller spell ``line.amount > 0`` for itself, so a change
+            whose commit title read *the SIGN stops routing* had in fact taken
+            the executable sign tests in this package UP rather than down; the
+            re-measured counts are in :func:`is_inflow`, which is the one place
+            that census is stated.  The
+            direction is asked HERE, through :func:`is_inflow`, so the
+            convention is written once.  Not the LINE, because the two callers
+            hold different types -- the screen a :class:`~._offers.BankLine`
+            and the write doors a ``BankStatementLine`` -- and neither should
+            have to build the other's view model to ask.
         answer: What the owner has said about this line's merchant, or ``None``
             where they have said nothing or the source names no merchant.
             ``None`` and :attr:`RuleAnswer.ALWAYS_ASK` answer the same here and
@@ -239,7 +314,7 @@ def pipeline_for(
     Returns:
         The :class:`LinePipeline` this line belongs to.
     """
-    if not is_inflow:
+    if not is_inflow(amount):
         return LinePipeline.PURCHASE
     if answer in CONTAINER_ANSWERS:
         return LinePipeline.PURCHASE

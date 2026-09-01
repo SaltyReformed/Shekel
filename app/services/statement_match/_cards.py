@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ._panel import AddAct, AddTab, VerbPanel
+from ._rules import is_inflow
 from ._sentence import NAMED_ROW_LIMIT, Span, choose, for_accepted
 from ._sentence import for_income_placement
 from ._sentence import for_parked_never
@@ -450,6 +451,12 @@ def _creatable_card(
                 act=AddAct.PURCHASE,
                 destinations=creatable.destinations,
                 placement=placement,
+                # Money ARRIVING that a rule files as a purchase is a REFUND
+                # (ruling **R-II**).  Stated here, where the line is in hand,
+                # so no template restates the partition -- and asked through
+                # :func:`~._rules.is_inflow`, which is the ONE statement of the
+                # bank's sign convention this package has.
+                records_a_refund=is_inflow(creatable.line.amount),
             ),
             proposal=None,
         ),

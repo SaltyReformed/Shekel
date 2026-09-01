@@ -58,6 +58,7 @@ from ._builders import (
     a_bars,
     a_later_period,
     a_purchase,
+    a_rule,
     a_scope,
     a_submission,
     a_transaction,
@@ -1801,3 +1802,77 @@ class TestThePassHoldsONEAmountBasis:
                 f"{settled_rows} rows; the pass holds ONE for every row it "
                 "prices, and each settle resolves its own"
             )
+
+
+class TestTheReceiptSaysWhichWayTheMoneyWENT:
+    """A refund's receipt must not say the bank TOOK it.
+
+    Plan step ``bank_import:X-gj-2b``, ruling **R-II**.  Under ruling **R-GH**
+    the pass receipt is the ONLY notice the owner gets for money an act moved,
+    so a sentence that inverts the direction is the mis-describing-text-over-a-
+    real-movement shape this package has already paid for once.
+
+    **Measured wrong before the fix**: ``Recorded $-42.00 your bank took on
+    ...`` -- the wrong SIGN and the wrong VERB in one sentence, and it
+    contradicted ``AppliedItem.amount`` on the same item, which negates onto
+    the bank's convention. Nothing caught it because ``_story()`` in
+    ``test_filing.py`` captures counts and reasons and never the summary.
+
+    **Both directions, because the verb is derived from the sign** -- a fix
+    that hard-coded *gave back* would pass a refund-only case.
+    """
+
+    def _applied(self, seed_user, line, envelope):
+        """Apply one creation and return its single AppliedItem."""
+        outcome = _batch(seed_user, creations=[
+            _creation(seed_user, line, transaction_id=envelope.id),
+        ])
+        assert outcome.applied_count == 1, outcome.refused
+        return outcome.applied[0]
+
+    def test_a_REFUND_reads_as_money_the_bank_GAVE_BACK(
+        self, app, db, seed_user,
+    ):
+        """The line the merchant credit arrives on."""
+        with app.app_context():
+            envelope = a_transaction(
+                seed_user, name="Amazon", amount="0.00", is_envelope=True,
+            )
+            a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+            line = a_bank_line(
+                seed_user, an_import(seed_user), amount="42.00",
+                merchant="Amazon",
+                posted_on=seed_user["bootstrap_period"].start_date,
+            )
+            db.session.commit()
+
+            item = self._applied(seed_user, line, envelope)
+
+            assert "gave back" in item.summary
+            assert "took" not in item.summary
+            # The FIGURE agrees with the verb, and with the bank's own sign
+            # on the same item.
+            assert "$42.00" in item.summary
+            assert "$-42.00" not in item.summary
+            assert item.amount == Decimal("42.00")
+
+    def test_an_ORDINARY_swipe_still_reads_as_money_the_bank_TOOK(
+        self, app, db, seed_user,
+    ):
+        """The control, so the verb is derived and not hard-coded."""
+        with app.app_context():
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="60.00", is_envelope=True,
+            )
+            line = a_bank_line(
+                seed_user, an_import(seed_user), amount="-10.89",
+                posted_on=seed_user["bootstrap_period"].start_date,
+            )
+            db.session.commit()
+
+            item = self._applied(seed_user, line, envelope)
+
+            assert "took" in item.summary
+            assert "gave back" not in item.summary
+            assert "$10.89" in item.summary
+            assert item.amount == Decimal("-10.89")
