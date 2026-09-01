@@ -296,15 +296,16 @@ class CreatedSubject:
 class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
     """What recording one bank line as a purchase did.
 
-    Pylint: too-many-instance-attributes -- **nine because the act genuinely
-    produces nine facts**, with four separate consumers reading disjoint
+    Pylint: too-many-instance-attributes -- **ten because the act genuinely
+    produces ten facts**, with four separate consumers reading disjoint
     subsets: the structured log takes the three ids and both days, the flash
     takes the container's label and whether it was created plus the figure and
     the posting day, the tests take the ids, and
     :meth:`MintedEnvelopes.remember` takes the period.  ``CandidateRow`` beside
     it carries the same disable for the same reason.  Splitting the container's
     fields into a nested value would be the speculative shape rule 13 forbids
-    -- nothing asks for the container alone.
+    -- nothing asks for the container alone.  *(The tenth is
+    :attr:`records_a_refund`, added at plan step ``bank_import:X-gj-2b-3``.)*
 
     Attributes:
         entry_id: The ``budget.transaction_entries`` row now holding the
@@ -317,7 +318,23 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
         envelope_created: Whether that container was created by this act.  The
             receipt names it, because creating a budget line is a bigger thing
             to have done than filing a purchase under one that existed.
-        amount: The purchase's own figure, POSITIVE -- what the bank took.
+        amount: The purchase's own figure, SIGNED -- what the bank took, and
+            NEGATIVE for a refund, which is what the bank gave back.  **It
+            said POSITIVE until plan step ``bank_import:X-gj-2b-3``**, which
+            was true only while ``ck_transaction_entries_positive_amount``
+            said ``amount > 0``; ruling **bank_import:R-II** relaxed it and
+            :func:`~._create._born_purchase` negates the line unconditionally,
+            so an inflow of ``+28.29`` is stored as ``-28.29``.
+        records_a_refund: Whether this act filed money ARRIVING (ruling
+            **bank_import:R-II**).  **A FIELD the door states rather than a
+            sign a consumer tests**, which is the rule
+            :class:`~._panel.AddAct` states in as many words: the door holds
+            the bank line and asks :func:`~._rules.is_inflow`, this package's
+            one statement of the bank's sign convention, so nothing downstream
+            re-derives a direction from :attr:`amount`.  The receipt is what
+            needs it -- *recorded as a purchase your records did not have* is
+            false of a refund, and a count whose caption is false of half its
+            members is what this arc has now corrected three times.
         posts_on: The day the bank took it.
         made_on: The day the bank says it was made, which is the purchase's own
             budget clock and is the posting day where the source states none.
@@ -337,6 +354,7 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
     posts_on: date
     made_on: date
     pay_period_id: int
+    records_a_refund: bool
 
 
 @dataclass(frozen=True)

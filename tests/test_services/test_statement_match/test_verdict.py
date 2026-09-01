@@ -515,9 +515,12 @@ class TestTheSentenceTheScreenPrintsIsComposedHERE:
         # moved that form to a surface of its own (ruling
         # **bank_import:R-HC**), at which point a sentence composed in the
         # SERVICE was pointing at a place on a page the service cannot see.
+        # **And it names no DIRECTION either** -- it said *as new spending*
+        # until plan step ``bank_import:X-gj-2b-3``, at which point ruling
+        # **bank_import:R-II** had routed merchant credits into this very
+        # pipeline and the sentence was calling a refund spending.
         assert item.warning.endswith(
-            "Match it against rows you already hold before recording it as "
-            "new spending.",
+            "Match it against rows you already hold before recording it.",
         )
 
     def test_a_COLLISION_advises_the_match_rather_than_the_match_form(self):
@@ -572,8 +575,13 @@ class TestTheSentenceTheScreenPrintsIsComposedHERE:
         # where something sits on a page is coupled to a layout the service
         # cannot see; five on that screen carried the coupling and all five
         # went false in one commit.
+        # It named no DIRECTION either since plan step
+        # ``bank_import:X-gj-2b-3``, for the reason
+        # :meth:`test_a_gap_WITHHELD_from_a_rule_reads_as_the_rule_s` states --
+        # and this exact string is what ``_queue._notes_for`` composes for a
+        # parked line and an inflow, through the same function since that step.
         assert item.warning == (
-            f"Before recording this as new spending, match it against rows "
+            f"Before recording this, match it against rows "
             f"you already hold: {gap}."
         )
 

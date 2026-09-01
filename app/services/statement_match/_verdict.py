@@ -114,9 +114,17 @@ _ALREADY_EXPLAINED = (
 #: (adversarial design review 2026-08-28).  What the sentence
 #: states is the ACT; the row renders the link, which is the one fact a service
 #: may not build (:attr:`~._bars.ParkedLine.answer_door` sets the precedent).
+#:
+#: **It said *as new spending* until plan step ``bank_import:X-gj-2b-3``**, and
+#: ruling **bank_import:R-II** is what made that false: a merchant credit a
+#: rule files as a NEGATIVE purchase reaches this pipeline
+#: (:func:`~._verdict.ruled`), and calling a refund *new spending* to the owner
+#: is the mis-describing sentence over a working control that ruling **R-GJ**
+#: measured `$7,412.94` going through.  The verb is direction-neutral now,
+#: because the ACT is: matching a line against rows already held is the same
+#: remedy whichever way its money went.
 _LOOK_FIRST = (
-    "Match it against rows you already hold before recording it as new "
-    "spending."
+    "Match it against rows you already hold before recording it."
 )
 #: What to do about a line whose period already holds money that arrived.
 #: Beside :data:`_LOOK_FIRST` and :data:`_ACCEPT_FIRST` because the three are
@@ -219,13 +227,24 @@ def _proposed_destinations(
     )
 
 
-def _look_first(gap: str) -> str:
+def look_first(gap: str) -> str:
     """Return what the screen says about a line the pass did not finish.
 
     **The no-rule twin of** :data:`_LOOK_FIRST`, and it lost the same
     positional clause for the same reason (plan step ``bank_import:X-gf-3b``):
     it read *"check the match form BELOW"*, which the hand-build form's move to
     its own surface made false.
+
+    **It said *as new spending* until plan step ``bank_import:X-gj-2b-3``**,
+    for the reason :data:`_LOOK_FIRST` states: since ruling
+    **bank_import:R-II** a line this composes for may be a refund.
+
+    **PUBLIC since that step, and it is the SAME sentence** :mod:`._queue`
+    composed for a parked line and an inflow.  Its note there said in as many
+    words that an inflow's gap *carries the same framing verb an outflow's
+    does*, citing this module -- while spelling the sentence a second time,
+    which is how the two came to differ by the clause this step has just had to
+    delete from one of them.  One composer now, for all three mechanisms.
 
     Args:
         gap: The pass's own sentence (:func:`~._gaps.search_gap`).
@@ -234,7 +253,7 @@ def _look_first(gap: str) -> str:
         The sentence, for a line no rule reaches.
     """
     return (
-        f"Before recording this as new spending, match it against rows you "
+        f"Before recording this, match it against rows you "
         f"already hold: {gap}."
     )
 
@@ -303,7 +322,7 @@ def ruled(
             # still have failed to LOOK, which is the line's own fact and not
             # the rule's, and the screen owes it either way.
             lines.append(replace(
-                item, warning=None if gap is None else _look_first(gap),
+                item, warning=None if gap is None else look_first(gap),
             ))
             continue
         # **The gap is asked FIRST**, and the order is the one the receipt

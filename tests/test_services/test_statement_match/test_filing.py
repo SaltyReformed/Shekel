@@ -470,6 +470,93 @@ class TestAnActThatWouldTouchAHandMadeRowKeepsItsTick:
                 before + Decimal("42.00") - Decimal("10.89")
             )
 
+    def test_the_receipt_counts_the_two_directions_SEPARATELY(
+        self, app, db, seed_user,
+    ):
+        """One count said *recorded as a purchase your records did not have*.
+
+        Plan step ``bank_import:X-gj-2b-3``.  ``BatchOutcome.recorded_count``
+        carried both directions, and the receipt's caption for it names an act
+        the bank did not perform on a refund -- *dated the day your bank took
+        it*, over money it gave back.  That is exactly the defect
+        ``deposited_count`` was split out of the same field for, one direction
+        later.
+
+        The same two lines as the case above, so the pass is identical and only
+        the counting is under test.  **Asserts the SUM as well as the split**:
+        ``RuleFiling.filed_count`` names its members, so a split it was not
+        told about silently under-reports -- which is how the deposit half
+        arrived, and this is the second time.
+        """
+        with app.app_context():
+            envelope = _groceries(seed_user)
+            a_rule(seed_user, MERCHANT, template_id=envelope.template_id)
+            statement = an_import(seed_user)
+            start_day = seed_user["bootstrap_period"].start_date
+            _swipe(
+                seed_user, statement, amount="42.00",
+                posted_on=start_day + timedelta(days=1),
+            )
+            _swipe(
+                seed_user, statement, amount="-10.89",
+                posted_on=start_day + timedelta(days=2),
+            )
+            db.session.flush()
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            outcome = filing.outcome
+            assert (outcome.recorded_count, outcome.refunded_count) == (1, 1), (
+                "the swipe is a charge and the credit is a refund; one count "
+                "for both is a caption false of half its members"
+            )
+            assert outcome.deposited_count == 0, (
+                "a merchant credit a rule files into a container is a "
+                "PURCHASE, not income -- the control that keeps the split "
+                "above from being satisfied by routing everything to deposits"
+            )
+            # The sum every consumer of this receipt reads.
+            assert filing.filed_count == 2
+            assert outcome.moved_nothing is False
+
+    def test_a_pass_that_files_ONLY_a_refund_still_reports_it(
+        self, app, db, seed_user,
+    ):
+        """The firing control for the sum, and for *"Nothing moved."*
+
+        With ``filed_count`` and ``moved_nothing`` naming their members, a pass
+        whose ONLY act is a refund is the arrangement that catches a member
+        they were not told about -- and both would be wrong in the direction
+        that reports NOTHING over money that moved.  The case above cannot see
+        it: its charge keeps both properties true whatever the refund does.
+        """
+        with app.app_context():
+            envelope = _groceries(seed_user)
+            a_rule(seed_user, MERCHANT, template_id=envelope.template_id)
+            statement = an_import(seed_user)
+            start_day = seed_user["bootstrap_period"].start_date
+            _swipe(
+                seed_user, statement, amount="42.00",
+                posted_on=start_day + timedelta(days=1),
+            )
+            db.session.flush()
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            assert filing.outcome.recorded_count == 0
+            assert filing.outcome.refunded_count == 1
+            assert filing.filed_count == 1, (
+                "a pass that filed only refunds reported filing NOTHING"
+            )
+            assert filing.outcome.moved_nothing is False, (
+                "the receipt said 'Nothing moved.' over a purchase it created"
+            )
+            assert [p.amount for p in _purchases_in(envelope)] == [
+                Decimal("-42.00"),
+            ]
+
 
 class TestAnAnswerlessMerchantIsLeftForTheOwner:
     """The three answers that place nothing, and the bar beside them."""

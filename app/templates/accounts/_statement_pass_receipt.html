@@ -64,11 +64,29 @@
       {% if outcome.repriced_count %}
       <li>{{ outcome.repriced_count }} row(s) corrected to the bank's amount.</li>
       {% endif %}
+      {# ONE LINE PER DIRECTION, and the counts partition what the create
+         door recorded (``recorded_count`` / ``refunded_count``).  A single
+         count carried both until plan step ``bank_import:X-gj-2b-3``, and
+         this sentence -- *recorded as a purchase your records did not have* --
+         was false of every refund in it, which is the defect the comment
+         further down records the DEPOSIT line being split out for.  Ruling
+         **bank_import:R-II** is what put refunds through this door. #}
       {% if outcome.recorded_count %}
-      <li>
-        {{ outcome.recorded_count }} bank line(s) recorded as a purchase your
-        records did not have{% if outcome.envelopes_created %}, {{ outcome.envelopes_created }} of them in an envelope this created{% endif %}.
-      </li>
+      {# ONE LINE in the source, the rule its siblings follow: Jinja keeps the
+         newlines it is given, so a sentence wrapped here is one no test can
+         assert as a sentence -- and this is a MONEY receipt. #}
+      <li>{{ outcome.recorded_count }} bank line(s) recorded as a purchase your records did not have.</li>
+      {% endif %}
+      {% if outcome.refunded_count %}
+      <li>{{ outcome.refunded_count }} bank line(s) recorded as a refund against a budget line, lowering what it has cost.</li>
+      {% endif %}
+      {# THE ENVELOPES, on their own line rather than as a clause on the charge
+         one.  A refund can mint an envelope too -- a rule naming *a new
+         envelope* for the merchant does it -- so the clause reported an
+         envelope this pass created under a count that need not contain the
+         line it holds. #}
+      {% if outcome.envelopes_created %}
+      <li>{{ outcome.envelopes_created }} budget line(s) created to hold them.</li>
       {% endif %}
       {# The DIFFERENCE (plan step bank_import:X-f6d-4, ruling R-FN).  Every
          other line here says what happened to a row the owner already had;

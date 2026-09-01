@@ -754,6 +754,19 @@
       <div class="card-body small text-body-secondary">
         <div class="fw-semibold mb-1">What Apply will create</div>
         <ul class="mb-0">
+          {# ONE SENTENCE PER DIRECTION, and no ``else`` -- the two predicates
+             partition the purchase arm (``records_a_charge`` /
+             ``records_a_refund``) and are stated by the SERVICE over the whole
+             queue, so this never asks a line's sign and a queue holding no
+             creatable line at all prints neither.  The same no-else shape
+             ``_statement_reconcile_macros.html`` uses for the opened card.
+
+             The single sentence that stood here described every recorded line
+             as "a purchase your records did not have, dated the day your bank
+             took it" -- false of a merchant credit, which ruling
+             **bank_import:R-II** files as a NEGATIVE purchase and which the
+             bank did not take but gave back. #}
+          {% if review.queue.records_a_charge %}
           <li>
             A line you name a destination for becomes <strong>a purchase your
             records did not have</strong>, dated the day your bank took it.
@@ -762,6 +775,18 @@
             and one that had not does not. A <em>new</em> envelope budgets
             $0.00, because nothing budgeted this.
           </li>
+          {% endif %}
+          {% if review.queue.records_a_refund %}
+          <li>
+            A line where money came BACK becomes <strong>a refund against the
+            budget line you name</strong>, dated the day your bank paid it in,
+            <strong>lowering what that line has cost</strong>. It goes in the
+            pay period the refund itself falls in, which is not necessarily the
+            one that held what you bought. A <em>new</em> envelope budgets
+            $0.00 for the same reason, so it records the refund and nothing
+            else.
+          </li>
+          {% endif %}
           <li>
             A deposit you tick becomes <strong>income you did not have</strong>,
             dated the day your bank paid it in, with <strong>no category</strong>

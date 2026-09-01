@@ -165,17 +165,28 @@ class RuleFiling:
     def filed_count(self) -> int:
         """Return how many lines a rule filed, in EITHER direction.
 
-        **Both counts, since plan step ``bank_import:X-gj-2a``.**  It read
-        ``recorded_count`` alone, which is purchases only
+        **ALL THREE counts, and the third arrived the same way the second
+        did.**  It read ``recorded_count`` alone until plan step
+        ``bank_import:X-gj-2a``, which is purchases only
         (:attr:`~._batch.BatchOutcome.deposited_count` is deliberately not
         folded into it), so a pass that filed nothing but deposits under ruling
         **R-HT(a)** would have reported filing NOTHING -- with the acts landed,
         the money moved and the receipt silent about all of it.  That is the
         under-report a bound-with-no-denominator makes, on the door nobody
         watches.
+
+        Plan step ``bank_import:X-gj-2b-3`` split ``recorded_count`` again, by
+        DIRECTION, and this sum had to learn the new one for the identical
+        reason: a pass that filed nothing but merchant credits would have
+        reported ZERO.  **A count assembled by NAMING its members is one member
+        away from wrong every time a member is added** -- which is now twice on
+        this one property -- and what caught it both times was a case asserting
+        the whole outcome rather than the count alone.
         """
         return (
-            self.outcome.recorded_count + self.outcome.deposited_count
+            self.outcome.recorded_count
+            + self.outcome.refunded_count
+            + self.outcome.deposited_count
         )
 
     @property

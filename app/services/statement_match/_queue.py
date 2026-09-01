@@ -42,6 +42,9 @@ import enum
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ._rules import is_inflow
+from ._verdict import look_first
+
 if TYPE_CHECKING:  # pragma: no cover -- the edge back would be a cycle
     # The three mechanism values appear only in annotations, so they are
     # imported for the type checker rather than at runtime.
@@ -213,6 +216,44 @@ class QueueRow:
         return self.act is QueueAct.RECORD_PURCHASE
 
     @property
+    def records_a_refund(self) -> bool:
+        """Return whether the purchase this row would file is a REFUND.
+
+        Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``.
+        Money ARRIVING that a rule files into a container is a refund, and the
+        screen owes it a different sentence: the press-level paragraph said
+        every line it records becomes *a purchase your records did not have,
+        dated the day your bank took it*, which is false of money the bank gave
+        back.
+
+        **A PROPERTY here where :attr:`~._panel.AddTab.records_a_refund` is a
+        FIELD**, and the asymmetry is which value holds the line.  That one
+        does not, so its builder must state the answer; this one carries the
+        line under :attr:`line`, so deriving it is what makes the two unable to
+        disagree.  Both ask :func:`~._rules.is_inflow`, which is this package's
+        ONE statement of the bank's sign convention -- the sign is not tested
+        here, it is asked there.
+
+        Returns:
+            ``True`` for a row that files a purchase whose money arrives.
+        """
+        return self.records_a_purchase and is_inflow(self.line.amount)
+
+    @property
+    def records_a_charge(self) -> bool:
+        """Return whether the purchase this row would file is a CHARGE.
+
+        The complement of :attr:`records_a_refund` INSIDE the purchase arm, so
+        the screen renders one sentence each with no ``else`` -- the same
+        no-else partition :attr:`records_a_purchase` exists for, and the shape
+        ``_statement_reconcile_macros.html`` already uses for the card.
+
+        Returns:
+            ``True`` for a row that files a purchase the bank took money for.
+        """
+        return self.records_a_purchase and not self.records_a_refund
+
+    @property
     def records_income(self) -> bool:
         """Return whether this row renders the record-as-income tick.
 
@@ -341,6 +382,44 @@ class StatementQueue:
 
     groups: "tuple[QueueGroup, ...]"
 
+    @property
+    def records_a_charge(self) -> bool:
+        """Return whether any row here would file a purchase the bank TOOK.
+
+        The press-level paragraph *what Apply will create* describes the acts
+        this button performs, and it is rendered ONCE for the whole queue -- so
+        it asks the QUEUE and not a row.  Stated here rather than composed in
+        Jinja for the reason every other predicate on this page is: a template
+        reducing over ``groups`` would be a second spelling of
+        :attr:`QueueRow.records_a_charge`, and this file's own note on
+        ``notes`` records what three spellings of one sentence cost.
+
+        Returns:
+            Whether the press would record at least one charge.
+        """
+        return any(
+            row.records_a_charge
+            for group in self.groups for row in group.rows
+        )
+
+    @property
+    def records_a_refund(self) -> bool:
+        """Return whether any row here would file a REFUND.
+
+        :attr:`records_a_charge`'s twin, and the pair is what lets the
+        press-level paragraph print one sentence per DIRECTION with no ``else``
+        (plan step ``bank_import:X-gj-2b-3``).  A queue holding no creatable
+        line at all answers ``False`` to both, which is right: nothing on that
+        page is about to become a purchase in either direction.
+
+        Returns:
+            Whether the press would record at least one refund.
+        """
+        return any(
+            row.records_a_refund
+            for group in self.groups for row in group.rows
+        )
+
 
 def _evidence_for(gap: "str | None", positive: bool) -> Evidence:
     """Return which group one line belongs in.
@@ -393,12 +472,17 @@ def _notes_for(
     here would print the same words twice on the one mechanism whose value
     already carries them.
 
-    **An inflow's gap carries the same framing verb an outflow's does**
-    (:data:`~._verdict._LOOK_FIRST`).  The deleted deposit card wrapped it in
+    **An inflow's gap carries the same framing verb an outflow's does**, and
+    since plan step ``bank_import:X-gj-2b-3`` it carries the same SENTENCE:
+    :func:`~._verdict.look_first`.  The deleted deposit card wrapped it in
     *before recording this as new income, match it against rows you already
     hold*, and printing the bare sentence would state a FACT where the outflow
     path states an ACT -- which is the per-mechanism asymmetry this step exists
-    to end, reintroduced in the other direction.
+    to end, reintroduced in the other direction.  This module then spelled the
+    replacement out a SECOND time while its note claimed the two were one, and
+    the two duly drifted: the outflow's said *as new spending* and this one did
+    not, so ruling **bank_import:R-II** made one of them false about a refund
+    and left the other correct.
 
     Args:
         item: The mechanism's value.
@@ -414,10 +498,7 @@ def _notes_for(
     """
     if act is QueueAct.RECORD_PURCHASE:
         return () if item.warning is None else (item.warning,)
-    framed = None if gap is None else (
-        f"Before recording this, match it against rows you already hold: "
-        f"{gap}."
-    )
+    framed = None if gap is None else look_first(gap)
     first = item.reason if act is QueueAct.NONE_OPEN else item.withheld
     return tuple(
         sentence for sentence in (first, framed) if sentence is not None

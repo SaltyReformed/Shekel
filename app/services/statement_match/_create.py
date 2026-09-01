@@ -104,7 +104,7 @@ from ._creations import (
     PurchaseCreation,
 )
 from ._offers import CandidateRow, RowKind, merchant_label
-from ._rules import LinePipeline, pipeline_for
+from ._rules import LinePipeline, is_inflow, pipeline_for
 from ._scope import ReviewScope
 
 _logger = logging.getLogger(__name__)
@@ -562,6 +562,14 @@ def create_purchase_from_line(
         posts_on=line.posted_on,
         made_on=made_on,
         pay_period_id=pay_period_id,
+        # **The DIRECTION, stated where the line is in hand** (ruling
+        # **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``).  Asked
+        # through :func:`~._rules.is_inflow`, this package's one statement of
+        # the bank's sign convention, so the receipt reads a fact this door
+        # established rather than re-deriving a direction from the purchase's
+        # own sign -- the rule ``_panel.AddAct`` states for the card and
+        # ``_cards._creatable_card`` already follows.
+        records_a_refund=is_inflow(line.amount),
     )
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_LINE_RECORDED, BUSINESS,

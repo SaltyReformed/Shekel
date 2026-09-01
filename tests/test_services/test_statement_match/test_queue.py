@@ -170,6 +170,118 @@ class TestWhichGroupALineLandsIn:
         assert review.search_gap_for(review.parked[0].line) is not None
         assert list(groups) == [Evidence.ALREADY_HELD]
 
+    def test_a_MERCHANT_CREDIT_a_rule_places_records_a_REFUND(
+        self, app, db, seed_user,
+    ):
+        """The direction split the press-level paragraph renders on.
+
+        Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``.  A
+        credit from a merchant whose rule names a SPENDING container reaches
+        the PURCHASE pipeline, so ``records_a_purchase`` is true of it -- and
+        the screen's *what Apply will create* paragraph said every such line
+        becomes *a purchase your records did not have, dated the day your bank
+        took it*, which the bank did not do.
+
+        Asserts BOTH halves of the partition on the SAME row, because a
+        predicate hard-coded either way satisfies one of them.
+        """
+        envelope = an_envelope(seed_user)
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        an_unexplained_outflow(
+            seed_user, merchant="Amazon", amount="42.00",
+        )
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+        rows = [row for group in review.queue.groups for row in group.rows]
+
+        assert len(rows) == 1
+        assert rows[0].records_a_purchase is True
+        assert rows[0].records_a_refund is True
+        assert rows[0].records_a_charge is False
+        # The QUEUE's own answer, which is what the paragraph asks: it is
+        # rendered once for the whole press, not per row.
+        assert review.queue.records_a_refund is True
+        assert review.queue.records_a_charge is False
+
+    def test_an_ORDINARY_swipe_records_a_CHARGE(
+        self, app, db, seed_user,
+    ):
+        """The control, and the half that must keep working.
+
+        Without it the case above is satisfied by a predicate that calls every
+        purchase a refund -- which would put the refund sentence over an
+        ordinary swipe and delete the charge sentence from the page.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+        rows = [row for group in review.queue.groups for row in group.rows]
+
+        assert len(rows) == 1
+        assert rows[0].records_a_charge is True
+        assert rows[0].records_a_refund is False
+        assert review.queue.records_a_charge is True
+        assert review.queue.records_a_refund is False
+
+    def test_a_BARRED_line_records_NEITHER_direction(
+        self, app, db, seed_user,
+    ):
+        """Both predicates sit INSIDE the purchase arm.
+
+        A line ruling **R-GJ** bars renders no write control at all, so the
+        press creates nothing for it and the paragraph owes it no sentence.
+        Reading the sign without the act would call this one a charge and
+        promise the owner a purchase the door refuses.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+        rows = [row for group in review.queue.groups for row in group.rows]
+
+        assert rows[0].records_a_charge is False
+        assert rows[0].records_a_refund is False
+        assert review.queue.records_a_charge is False
+        assert review.queue.records_a_refund is False
+
+    def test_an_unclaimed_DEPOSIT_records_neither_direction(
+        self, app, db, seed_user,
+    ):
+        """A deposit is not a refund, and the ACT is what says so.
+
+        **This is the case that grades the ``records_a_purchase and`` half.**
+        The barred case above cannot: its line is an OUTFLOW, so a predicate
+        reading the sign alone still answers *not a refund* for it.  An
+        unclaimed deposit is an INFLOW that files against no container at all
+        -- ruling **R-HX** refused guessing one -- so the sign says refund and
+        the act says income, and only the act is right.  Reading the sign alone
+        would print *a refund against the budget line you name* over a tick
+        that names no budget line.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(
+            seed_user, merchant="Some Employer", amount="1200.00",
+        )
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+        rows = [row for group in review.queue.groups for row in group.rows]
+
+        assert len(rows) == 1
+        assert rows[0].records_income is True
+        assert rows[0].records_a_purchase is False
+        assert rows[0].records_a_refund is False
+        assert rows[0].records_a_charge is False
+        assert review.queue.records_a_refund is False
+        assert review.queue.records_a_charge is False
+
 
 class TestEveryLineIsGroupedExactlyOnce:
     """Conservation, which is the case that catches a whole class."""
