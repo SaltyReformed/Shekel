@@ -45,6 +45,10 @@ from ._offers import (
     CandidateRow,
     MatchProposal,
 )
+from ._already_held import (
+    ArrivalsAlreadyHeld,
+    arrivals_already_held,
+)
 from ._bars import ParkedLine
 from ._gaps import ReviewBounds, bounded_lines, search_gap
 from ._leftovers import CreatableLine, RecordableInflow, leftovers
@@ -53,62 +57,6 @@ from ._queue import StatementQueue, statement_queue
 from ._scope import ReviewScope
 from ._section import MerchantSection
 from ._verdict import ruled
-
-
-@dataclass(frozen=True)
-class IncomeAlreadyRecorded:
-    """The unexplained INCOME the books already hold for one deposit's period.
-
-    Ruling **bank_import:R-GW**, added after this step's own adversarial review measured
-    what the card was really protected by.  **Recording a deposit the books
-    already hold is the only way this door can double-count money**, and the
-    per-line safeguard the card was written around -- the pass's own near-miss
-    sentence (:meth:`ReviewSet.search_gap_for`) -- fires only where some TIER
-    admitted a candidate and declined it.  Measured on the developer's own
-    data 2026-08-27: it fires on **4 of 16** recordable inflows, and the three
-    it misses hardest are `$2,612.98`, `$2,612.97` and `$2,612.97` payroll
-    deposits -- **`$7,838.92`** -- each sitting in a pay period whose books
-    hold a `$2,473.38` salary row nothing explains.  Those rendered a bare
-    one-click tick, with only a card-level paragraph between the owner and a
-    duplicate; *a warning paragraph is not a door* is what ruling **R-GJ**
-    measured `$7,412.94` going through.
-
-    **It is a FACT and not a candidate**, which is the distinction ruling
-    **R-GD**'s third amendment turns on: that amendment withdrew the reviewed
-    line's candidate LIST because no bound made one anything but noise -- 0 of
-    18 inspected correct.  This names no candidate and scores nothing.  It
-    answers *does your budget already hold income in this pay period that no
-    bank line explains*, which is a question about the PERIOD, and it is the
-    question whose answer decides whether recording this is a duplicate.
-
-    **The one narrowing is a PROOF, not a threshold**, and it is the same
-    argument ruling **bank_import:R-GW** rests on: a deposit SMALLER than the smallest
-    unexplained income row in its period cannot be any subset of them, because
-    every one of them is positive and already exceeds it.  So the five
-    dividends of `$0.12`-`$0.22` and the three card refunds of `$11.73`-
-    `$28.29` -- the eight lines this whole step exists for -- say nothing,
-    while every payroll deposit does.  Measured on the developer's own data
-    2026-08-27: **8 of 16** recordable inflows warn, against 4 of 16 for
-    ``search_gap_for`` alone, and the three payroll deposits worth `$7,838.92`
-    that had NO per-line signal now have one.
-
-    **The obvious alternative tightening is refused**: warn only where the
-    rows could SUM to this line is measured false on the shape it exists for --
-    the 2026-03-26 payroll deposit is `$2,573.42` and its period's two rows
-    come to `$2,573.38`, **four cents short**, which is finding **N-239**
-    exactly.  A bound that misses the case it was built for is the tolerance
-    this arc refuses; a bound that only drops what provably cannot match is
-    not one.
-
-    Attributes:
-        rows: The unexplained income rows whose pay period covers the day the
-            bank credited this deposit, in the order the offer set holds them.
-        total: What they come to, POSITIVE, so the screen states the figure
-            without arithmetic in a template.
-    """
-
-    rows: "tuple[CandidateRow, ...]"
-    total: Decimal
 
 
 @dataclass(frozen=True)
@@ -189,7 +137,7 @@ class RowsNeverShown:
         Returns:
             The total as a POSITIVE figure, so the screen states it without
             arithmetic in a template -- the rule
-            :attr:`IncomeAlreadyRecorded.total` already sets.
+            :attr:`ArrivalsAlreadyHeld.total` already sets.
         """
         return -sum(
             (row.cash_amount for row in self.payments), Decimal("0.00"),
@@ -294,21 +242,31 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             own; a second record carrying the same five fields was reported by
             pylint's cross-file ``duplicate-code`` and was exactly rule 13's
             speculative shape.
-        creatable: The unmatched OUTFLOW lines, each with the budget lines it
-            could become a purchase against (:class:`CreatableLine`).  A SUBSET
+        creatable: The unmatched lines that may become a PURCHASE, each with
+            the budget lines it could become one against
+            (:class:`CreatableLine`).  A SUBSET
             of ``unmatched`` rather than a partition of it, and deliberately:
             the same line is offered to the hand-build form as something to
             GROUP and to the create door as something to RECORD, because those
             are different acts on the same fact and the owner is the one who
-            knows which it is.  Inflows are absent -- a purchase is an expense
-            (``ck_transaction_entries_positive_amount``), so a deposit or a
-            card refund is not one; since ruling **bank_import:R-GW** it has a door of its
-            own instead (:attr:`recordable_inflows`), and until then it had
-            none at all.  **A line that
-            ruling R-GJ bars is not here** -- it is in :attr:`parked` -- so this
+            knows which it is.  **INFLOWS ARE PRESENT, and which ones is
+            :func:`~._rules.pipeline_for`'s answer rather than the sign's**
+            (ruling **bank_import:R-II**, plan step
+            ``bank_import:X-gj-2b-2``).  This held only outflows while
+            ``ck_transaction_entries_positive_amount`` said ``amount > 0`` and
+            the create door refused every inflow by sign; that CHECK is
+            ``amount <> 0`` now, so a merchant credit IS a purchase the table
+            can hold -- a NEGATIVE one, against the container that merchant's
+            rule names -- and the inflows here are exactly the ones a container
+            answer claims.  Every other inflow is in
+            :attr:`recordable_inflows`.  **A line that ruling R-GJ bars is not
+            here** -- it is in :attr:`parked` -- so this
             list is exactly the lines a create control may be rendered for,
             and the screen cannot render one for a line the door would refuse.
-        parked: The unmatched OUTFLOW lines that may NOT become purchases, with
+        parked: The unmatched lines that may NOT become purchases, IN BOTH
+            DIRECTIONS (it said OUTFLOW until plan step
+            ``bank_import:X-gj-2b-3``; see :attr:`~._leftovers.Leftovers.parked`,
+            which this is assigned from verbatim), with
             the reason each may not (:class:`~._bars.ParkedLine`, ruling
             **R-GJ**).  Its two arms are a merchant the owner answered *never a
             purchase* and a merchant a source files as a payment to a credit
@@ -318,17 +276,30 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         recordable_inflows: The unmatched INFLOW lines, each with the period
             that would hold it (:class:`RecordableInflow`, ruling **bank_import:R-GW**).
             The mirror of ``creatable`` on the direction that had no door at
-            all until plan step ``bank_import:X-gf-1``: an inflow is not a
-            purchase, so the create arm refuses one, and a match needs an app
+            all until plan step ``bank_import:X-gf-1``: no inflow could be a
+            purchase then, and a match needs an app
             row on the other side -- which left `$58.87` of the developer's own
             deposits, in eight lines, with no act the screen could offer.
             Like ``creatable`` this is a SUBSET of ``unmatched`` and not a
             partition: the same deposit is offered here as something to RECORD
             and in the hand-build form as something to MATCH, because those are
-            different acts on one fact.  **Nothing is barred out of it**: ruling
-            **R-GJ**'s bars are about SPENDING the budget already holds in
-            another shape, and no answer a merchant control can hold says
-            anything about a deposit.
+            different acts on one fact.  **An inflow CAN be barred out of it, and
+            that is a behaviour change plan step ``bank_import:X-gj-2b-3``
+            states rather than leaves to be discovered.**  This read *nothing
+            is barred out of it: neither arm has anything that could be true of
+            money arriving* -- the argument ``bf500943`` measured FALSE for
+            ``PAYS_AN_ACCOUNT_YOU_HOLD``, which is a claim about the MERCHANT.
+            A credit from a card-payment merchant that ALSO carries a stored
+            spending answer routes to PURCHASE, meets
+            :func:`~._bars.reject_barred_line`, and is PARKED -- so it reaches
+            neither this list nor a create control, and the hand-build match is
+            its only act.  **That is the intended outcome** (recording it as
+            income is the double count against the card transfer ruling
+            **R-GJ** exists to stop), and the sentence *the owner has an act
+            for it either way* was false of exactly that line.  What leaves
+            this list WITHOUT being barred is a deposit a container answer
+            claims: it is a refund, it is in ``creatable``, and that is a
+            routing decision.
         merchants: The queue's rule control
             (:class:`~._section.MerchantSection`) -- the merchants this pass
             has an unexplained outflow for and the owner has NEVER answered
@@ -495,7 +466,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
 
         Finding **bank_import:N-380**, plan step ``bank_import:X-gf-3b-2``.
         **A property over** :attr:`unmatched_rows` **rather than a field**, for
-        the reason :meth:`income_already_recorded_in` is one: those rows are
+        the reason :meth:`arrivals_already_held_in` is one: those rows are
         derived after the leftovers are split, and a value built from a second
         read of them could disagree with the list the workbench renders --
         which is where this summary sends the owner.
@@ -515,13 +486,13 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             ),
         )
 
-    def income_already_recorded_in(
+    def arrivals_already_held_in(
         self, line: BankLine,
-    ) -> "IncomeAlreadyRecorded | None":
+    ) -> ArrivalsAlreadyHeld | None:
         """Return what the books already hold for *line*'s period, or ``None``.
 
         The per-line safeguard on an unexplained INFLOW
-        (:class:`IncomeAlreadyRecorded`).  **A method over
+        (:class:`ArrivalsAlreadyHeld`).  **A method over
         :attr:`unmatched_rows` rather than a field on
         :class:`~._leftovers.RecordableInflow`**, because those rows are
         derived AFTER the leftovers are split -- and a value built from a
@@ -537,28 +508,13 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             line: A recordable inflow's bank line.
 
         Returns:
-            The :class:`IncomeAlreadyRecorded`, or ``None`` when this period's
-            books hold no unexplained income at all -- which is the state that
+            The :class:`ArrivalsAlreadyHeld`, or ``None`` when this period's
+            books hold nothing arriving that no line explains -- which is the
+            state that
             makes recording safe, and the screen says nothing rather than
             saying it is fine.
         """
-        day = line.posted_on
-        rows = tuple(
-            row for row in self.unmatched_rows
-            if row.cash_amount > 0
-            and row.expected_on <= day <= row.expected_through
-        )
-        # **A deposit smaller than the SMALLEST of them cannot be any subset of
-        # them**, every one being positive -- so there is nothing for the owner
-        # to check and a sentence here would be the warning-on-every-row shape
-        # this package measures money going through.  A PROOF rather than a
-        # bound: it drops only what cannot match, at any tolerance.
-        if not rows or line.amount < min(row.cash_amount for row in rows):
-            return None
-        return IncomeAlreadyRecorded(
-            rows=rows,
-            total=sum((row.cash_amount for row in rows), Decimal("0.00")),
-        )
+        return arrivals_already_held(self.unmatched_rows, line)
 
     def search_gap_for(self, line: BankLine) -> "str | None":
         """Return why this pass cannot say *line* has no counterpart, or ``None``.
@@ -897,6 +853,49 @@ def _unexplained(
     return [line for line in bank_lines if line.line_id not in explained]
 
 
+def _already_held_by_line(
+    creatable, never_shown,
+) -> "dict[int, ArrivalsAlreadyHeld]":
+    """Return the double-count answer for every creatable INFLOW.
+
+    Plan step ``bank_import:X-gj-2b``.  **Asked of EVERY creatable line, with
+    no direction guard, because the predicate is already total.**  A first
+    version skipped outflows; adversarial review measured that skip an
+    EQUIVALENT MUTANT and it is -- an outflow's amount is negative, every row
+    :func:`~._already_held.arrivals_already_held` selects has positive cash,
+    so ``line.amount < min(...)`` holds and the answer is ``None`` for every
+    outflow the schema allows.  No mutation could reach the branch.  This
+    package has deleted exactly that shape three times by name
+    (:meth:`~._bars.CreationBars.bar_for`'s ``merchant is None`` arm,
+    ``_queue._sweeps_for``'s ``or row.notes``, and :mod:`._income`'s zero arm),
+    and the cost of not having it is one pass over ``never_shown`` per outflow
+    -- 91 lines against 49 rows on the developer's own statement, arithmetic
+    with no query in it.
+
+    It reads the SAME rows :attr:`ReviewSet.unmatched_rows` publishes and the
+    same predicate the income pipeline asks
+    (:func:`~._already_held.arrivals_already_held`), so a refund and a
+    deposit in one period cannot come to different answers about what the books
+    already hold.
+
+    Args:
+        creatable: This pass's creatable lines.
+        never_shown: The candidate rows no bank line explains, derived once by
+            the caller.
+
+    Returns:
+        ``{line_id: ArrivalsAlreadyHeld}``, holding only the lines that have
+        an answer -- absent means nothing to check, which is what
+        :func:`~._verdict.ruled` reads a missing key as.
+    """
+    held_by_line = {}
+    for item in creatable:
+        held = arrivals_already_held(never_shown, item.line)
+        if held is not None:
+            held_by_line[item.line.line_id] = held
+    return held_by_line
+
+
 def review_set(scope: ReviewScope) -> ReviewSet:
     """Return everything the review screen shows for one account.
 
@@ -959,18 +958,22 @@ def review_set(scope: ReviewScope) -> ReviewSet:
         impossible_day_count=parts.impossible_day_count,
         books=lines.books,
     )
+    # **ONE derivation, read twice below** -- by the set's own field and by the
+    # double-count map beside it.  Asking the producer once per line inside the
+    # comprehension is the redundant-producer-call shape this package treats as
+    # a DRY violation rather than a cost.
+    never_shown = _rows_the_bank_never_showed(offerable, proposals, account_id)
     return ReviewSet(
         proposals=proposals,
         unmatched=tuple(unmatched),
-        unmatched_rows=_rows_the_bank_never_showed(
-            offerable, proposals, account_id,
-        ),
+        unmatched_rows=never_shown,
         # **What the owner's own rules came to for this pass** (finding
         # **N-359**), attached to the LINES rather than derived inside ruling
         # **R-GH**'s door, so that the door and this screen read ONE verdict --
         # and one SENTENCE, composed where the decision is.
         creatable=ruled(
             parts.creatable, proposals, proposed.declined_lines, bounds,
+            _already_held_by_line(parts.creatable, never_shown),
         ),
         parked=parts.parked,
         recordable_inflows=parts.recordable_inflows,

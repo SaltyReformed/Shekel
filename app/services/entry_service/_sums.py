@@ -36,6 +36,54 @@ from app.utils.entry_partition import partition_entries
 from app.utils.money import percent_complete
 
 
+#: What the two HAND-ENTRY doors call the two directions a purchase can have.
+#: Values, not display text: the add and edit forms post one of these and
+#: :func:`purchase_amount` is what turns the pair into a stored figure.
+CHARGE = "charge"
+REFUND = "refund"
+
+
+def purchase_amount(magnitude: Decimal, *, records_a_refund: bool) -> Decimal:
+    """Return the figure a purchase STORES, from a magnitude and a direction.
+
+    **The one composition of a purchase's sign from what a human stated**
+    (developer ruling **bank_import:R-IK**, 2026-09-01, plan step
+    ``bank_import:X-gj-2b-3``).  Ruling
+    **bank_import:R-II** made a merchant credit a NEGATIVE purchase and moved
+    positivity off the table onto the hand-entry door -- and the branch that
+    did it then deleted the bound from the EDIT door too, because that form
+    resubmits its amount box even when the owner only changed a date, so a
+    stored refund could not be re-described while the box refused a negative.
+
+    That left a typed ``-45.00`` booking a refund in silence: the projection
+    moved by twice the figure, nothing on any screen said a refund had been
+    recorded, and the identical keystroke on the ADD form was a 422.  **The
+    remedy is that neither form can express a sign at all**: both bound the
+    amount at ``>= 0.01`` and both carry a Charge/Refund control, and this is
+    where the two become a figure.  A minus is not refused, it is
+    unrepresentable -- which is what makes the bound structural rather than a
+    fence somebody has to keep.
+
+    **The bank-import door does NOT come through here**, and that is not an
+    omission: a bank line arrives already signed, so
+    ``statement_match._create._born_purchase`` converts it with
+    ``-line.amount`` -- one expression, total over both directions.  Two
+    different inputs, two conversions, each stated once.
+
+    Args:
+        magnitude: What the purchase cost, as a POSITIVE figure.  The schemas
+            bound it at ``>= 0.01``; this asserts nothing and would happily
+            negate a negative, because the bound belongs on the door that has
+            an HTTP status to answer with.
+        records_a_refund: Whether the owner said this money came BACK.
+
+    Returns:
+        The stored figure: *magnitude* negated for a refund, unchanged for a
+        charge.
+    """
+    return -magnitude if records_a_refund else magnitude
+
+
 def compute_entry_sums(
     entries: list[TransactionEntry],
 ) -> tuple[Decimal, Decimal]:
@@ -325,6 +373,27 @@ def compute_remaining(
     credit) because the remaining balance represents budget consumption,
     not checking impact.  Negative values indicate overspending.
 
+    **THE BASE IS A NET CASH TARGET, SO THIS IS UNBOUNDED IN BOTH DIRECTIONS**
+    (developer ruling **bank_import:R-IK**, 2026-09-01, ruling **bank_import:R-II**, plan step
+    ``bank_import:X-gj-2b-3``).  A merchant credit files as a NEGATIVE
+    purchase, so ``sum(entries)`` can be negative and this can exceed the
+    budget: an envelope budgeting `$100.00` that holds one `-$50.00` refund and
+    nothing else answers `$150.00`, which is *`$150.00` of net spending may
+    still be recorded against a `$100.00` plan*.  The alternative -- clamping
+    at the budget -- was put to the developer with those numbers and refused,
+    because it breaks the identity every surface that renders this depends on
+    (``sum(entries) + remaining == budget``) and because
+    ``cash_ledger._amounts._entry_checking_impact`` already reads the plan the
+    same way: its own derivation says that treating a refund as spending
+    nothing further *is the opposite of what a reservation is for*.
+
+    **The COST is recorded rather than hidden.**  A refund of a purchase made
+    in an EARLIER pay period lands in the period the bank posted it (the same
+    developer's ruling of 2026-09-01, on the cash basis, because the
+    alternative moves a figure the balance projection depends on), so it
+    enlarges an envelope whose own purchases it did not reverse.  That is a
+    known and accepted consequence, not a defect to re-report.
+
     Per E-21 (audit MED-03 / F-028 / F-056) the budget base for an
     entry-tracked bill row is the row's own AMOUNT unconditionally --
     never ``actual_amount`` and never status-dependent.  This is why
@@ -376,7 +445,14 @@ def pct_complete(total: Decimal, target: Decimal) -> Decimal:
     notation in ``%`` values.
 
     Args:
-        total: Sum of entries against the budgeted line.
+        total: Sum of entries against the budgeted line.  **It can be
+            NEGATIVE since ruling bank_import:R-II** -- an envelope whose
+            refunds exceeded its purchases -- which makes
+            :func:`~app.utils.money.percent_complete`'s negative-ratio arm
+            reachable where it was not.  ``0`` is the right answer and the
+            arm was censused and kept at plan step ``bank_import:X-gj-2b-3``:
+            this drives a progress BAR's width, a bar cannot be negative, and
+            the figure it sits beside is rendered unclamped.
         target: Budgeted estimated amount.  If <= 0 the function
             returns ``Decimal("0")`` rather than dividing by zero or
             producing a misleading negative percentage.

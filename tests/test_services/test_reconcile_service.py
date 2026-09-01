@@ -18,7 +18,12 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    SettledDayBasisEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
@@ -47,6 +52,7 @@ from tests._test_helpers import (
     an_entered_day,
     open_books_before_the_first_assertion,
     count_amount_bases,
+    settle_day_columns,
     settlement_basis_id,
     settlement_if_settling,
 )
@@ -631,6 +637,95 @@ class TestTheOutstandingSet:
             assert self._listed(seed_user) == [
                 first.id, second.id, same_day_as_second.id,
             ]
+
+
+class TestARefundIsAnOutstandingPurchaseAndTheTallyNETS:
+    """A merchant credit the bank has not been seen to pay back.
+
+    Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``.  A refund
+    IS a negative purchase, so one with no recorded posting day satisfies every
+    clause of ``_outstanding_scope`` -- debit, unsettled, made on or before the
+    statement day, under a projected parent on this account -- and the panel
+    offers it.  ``OutstandingPurchase.amount`` claimed to be POSITIVE and was
+    not.
+
+    **The bank-import door's own refunds are NOT this set.**
+    ``statement_match._create._born_purchase`` gives a purchase the bank's
+    posting day at birth, so a refund it files is settled from the moment it
+    exists.  What reaches here is a negative the owner typed on the edit door,
+    or one whose posting day they cleared -- both of which
+    ``EntryUpdateSchema`` allows by design.
+
+    **The tally NETS, and that is the decision rather than an accident.**  The
+    panel's sentence is about what the envelope is *still holding back*, and a
+    refund it holds is money it expects to ARRIVE.  A magnitude sum would make
+    the figure disagree with the reservation the sentence names -- the defect
+    that sentence has already been corrected for once, by `$488.16`.
+    """
+
+    def test_a_negative_purchase_is_OFFERED_and_the_total_nets(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """`$120.00` out and `-$45.00` back: two rows, `$75.00` net."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            charge = _outstanding_debit(txn, seed_user, amount="120.00")
+            refund = _outstanding_debit(txn, seed_user, amount="-45.00")
+            db.session.commit()
+
+            offered = reconcile_service.outstanding_set(_reconciled(seed_user))
+
+            assert sorted(self._listed(seed_user)) == sorted(
+                [charge.id, refund.id],
+            ), "a refund with no posting day is outstanding like any purchase"
+            assert offered.purchase_count == 2, (
+                "the COUNT is a count of ticks the owner has to make"
+            )
+            assert offered.purchase_total == Decimal("75.00"), (
+                "120.00 out and 45.00 back is 75.00 of net movement still "
+                "held back -- a magnitude sum would read 165.00"
+            )
+
+    def test_a_refund_the_BANK_DOOR_filed_is_not_offered(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The control: a recorded posting day is what takes a row OUT.
+
+        Without it the case above passes on a scope that offers every purchase
+        whatever its posting day -- which would put the whole import's work
+        back on the panel.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(txn, seed_user, amount="-45.00")
+            # **BOTH columns, because they are ONE fact.**
+            # ``ck_transaction_entries_settle_day_basis_pairing`` is a
+            # biconditional, so naming only the day is an ``IntegrityError``
+            # rather than a row -- and ``observed`` is the basis the bank
+            # import writes (plan step **X-az**), which is the state this case
+            # is about.
+            for column, value in settle_day_columns(
+                _BEFORE_THE_STATEMENT, SettledDayBasisEnum.OBSERVED,
+            ).items():
+                setattr(entry, column, value)
+            db.session.commit()
+
+            offered = reconcile_service.outstanding_set(_reconciled(seed_user))
+
+            assert self._listed(seed_user) == []
+            assert offered.purchase_count == 0
+            assert offered.purchase_total == Decimal("0.00")
+
+    @staticmethod
+    def _listed(seed_user):
+        """Return the ids the reader offers -- the same read as the class above."""
+        return [
+            purchase.entry_id
+            for group in reconcile_service.outstanding_set(
+                _reconciled(seed_user),
+            ).groups
+            for purchase in group.purchases
+        ]
 
 
 class TestTheSetIsGroupedByItsParent:

@@ -1866,3 +1866,147 @@ class TestTheBooksBoundIsRENDERED:
         assert day.strftime("%b %-d, %Y") in body
         assert f"/accounts/{account.id}/edit#books-opening" in body
         assert "Restate this account" in body
+
+
+class TestTheADDSentenceSaysWhichWayTheMoneyWENT:
+    """The words printed directly above the OK that files a purchase.
+
+    Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``.  A merchant
+    credit files as a NEGATIVE purchase back into the container the owner's
+    rule names, and until this class the card said *"Add records this as
+    spending your budget did not have"* over it -- describing a REFUND as
+    spending, on the control that moves the money.
+
+    **This is the shape ruling R-GJ measured `$7,412.94` going through**: a
+    paragraph that mis-describes a working control.  Nothing graded it,
+    because the two sentences live in ``_statement_reconcile_macros.html``
+    rather than in :mod:`~app.services.statement_match._sentence`, and this
+    package's prose cases all read that module.
+
+    **Both directions, and each asserts the ABSENCE of the other**, because
+    the template renders the pair with no ``else``: a builder that answered
+    ``records_a_refund`` for every purchase would print the refund sentence
+    over an ordinary swipe and a one-sided case would not see it.
+    """
+
+    _REFUND_WORDS = "refund back into a budget line"
+    _CHARGE_WORDS = "spending your budget did not have"
+
+    def _rendered(self, auth_client, seed_user, db, *, amount, merchant):
+        """Return the Reconcile page with one answered line of *amount* on it."""
+        envelope = an_envelope(seed_user, name="Home Improvement")
+        statement = an_import(seed_user)
+        a_bank_line(
+            seed_user, statement, amount=amount, merchant=merchant,
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description=f"POINT OF SALE L340 ({merchant})",
+        )
+        db.session.commit()
+        a_rule(seed_user, merchant, template_id=envelope.template_id)
+        db.session.commit()
+        return _page(auth_client, seed_user)
+
+    def test_a_REFUND_card_says_it_lowers_what_a_budget_line_has_cost(
+        self, app, db, auth_client, seed_user,
+    ):
+        """Money ARRIVING that the owner's own rule claims."""
+        with app.app_context():
+            page = self._rendered(
+                auth_client, seed_user, db,
+                amount="28.29", merchant="Amazon",
+            )
+
+            assert self._REFUND_WORDS in page
+            assert self._CHARGE_WORDS not in page
+
+    def test_an_ORDINARY_swipe_card_still_says_it_is_spending(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The control, so the sentence is chosen and not hard-coded."""
+        with app.app_context():
+            page = self._rendered(
+                auth_client, seed_user, db,
+                amount="-35.72", merchant="Lowe's",
+            )
+
+            assert self._CHARGE_WORDS in page
+            assert self._REFUND_WORDS not in page
+
+
+class TestTheBooksAlreadyHoldSentenceIsONESpelling:
+    """The double-count warning, on the surface that had no case for it.
+
+    Plan step ``bank_import:X-gj-2b-3``.  This sentence was written TWICE --
+    once in ``_statement_review_body.html`` and once in
+    ``_statement_reconcile_macros.html`` -- and only the first was graded, by
+    one case in ``test_statement_matches.py``.  Both said *N income row(s)*
+    about a set filtered on ``cash_amount > 0`` over ``unmatched_rows``, which
+    holds PURCHASE rows: a stored REFUND is a positive-cash row there since
+    ruling **bank_import:R-II**.  The SERVICE-composed twin
+    (``ArrivalsAlreadyHeld.why_it_could_double_count``) was corrected at plan
+    step ``bank_import:X-gj-2b`` and these were not, which is the drift one
+    composer exists to prevent.
+
+    Both are now the shared ``books_already_hold`` macro, and this case is what
+    makes that claim checkable on the second surface.
+    """
+
+    _SAID = (
+        "This pay period already holds 1 row(s) totalling $2,473.38 your "
+        "records say arrived and no bank line explains"
+    )
+
+    def test_the_reconcile_card_prints_the_shared_sentence(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A deposit whose period already holds a salary row nothing explains.
+
+        The developer's own shape: three payroll deposits worth `$7,838.92`
+        each sat in a period holding a `$2,473.38` salary row, and this is the
+        only per-line signal any of them got.
+        """
+        with app.app_context():
+            a_transaction(
+                seed_user, name="Salary", amount="2473.38", income=True,
+            )
+            a_bank_line(
+                seed_user, an_import(seed_user), amount="2600.00",
+                posted_on=seed_user["bootstrap_period"].start_date,
+                description="ACH CREDIT PAYROLL", merchant="Some Employer",
+            )
+            db.session.commit()
+
+            page = " ".join(_page(auth_client, seed_user).split())
+
+            assert self._SAID in page
+            assert "Salary $2,473.38" in page, (
+                "the rows are NAMED, so the owner can find them"
+            )
+            assert "income row(s)" not in page, (
+                "the set holds a stored refund too, whose cash is positive"
+            )
+
+    def test_a_deposit_too_SMALL_to_be_them_gets_no_sentence(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The control: an alarm on every row teaches an owner to ignore them.
+
+        A `$0.15` dividend cannot be any subset of a `$2,473.38` row, every
+        member being positive -- so the macro is not reached, and without this
+        case the assertion above would pass on a page that printed the
+        sentence unconditionally.
+        """
+        with app.app_context():
+            a_transaction(
+                seed_user, name="Salary", amount="2473.38", income=True,
+            )
+            a_bank_line(
+                seed_user, an_import(seed_user), amount="0.15",
+                posted_on=seed_user["bootstrap_period"].start_date,
+                description="DIVIDEND EARNED", merchant="Dividend Earned",
+            )
+            db.session.commit()
+
+            page = " ".join(_page(auth_client, seed_user).split())
+
+            assert "This pay period already holds" not in page

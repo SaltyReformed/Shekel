@@ -33,6 +33,9 @@ from app.services.statement_match import (
     RowKind,
     RuleVerdict,
 )
+from app.services.statement_match._already_held import (  # pylint: disable=protected-access
+    ArrivalsAlreadyHeld,
+)
 from app.services.statement_match._filing import (  # pylint: disable=protected-access
     _rule_filings,
 )
@@ -121,13 +124,34 @@ def _bounds(**pass_facts):
     )
 
 
+def _held(total):
+    """Return the double-count fact for a period holding *total* of income.
+
+    **The REAL value object, not a stub with a ``total`` on it.**  The sentence
+    the pass writes is composed by :meth:`ArrivalsAlreadyHeld.
+    why_it_could_double_count` since plan step ``bank_import:X-gj-2b``, so a
+    ``SimpleNamespace`` here would be a second implementation of the one thing
+    both doors are supposed to share -- and it would pass while that method was
+    deleted.  ``rows`` is empty because nothing in this module reads it; what
+    the sentence states is the TOTAL.
+    """
+    return ArrivalsAlreadyHeld(rows=(), total=Decimal(total))
+
+
 def _lines(creatable, **pass_facts):
-    """Return *creatable* ruled under the stated pass facts."""
+    """Return *creatable* ruled under the stated pass facts.
+
+    ``already_held`` defaults to EMPTY -- no line's period holds unexplained
+    income -- which is the state every case here was written under and is what
+    keeps them about the arm each states.  A case about the double-count
+    withholding passes its own map (plan step ``bank_import:X-gj-2b``).
+    """
     return ruled(
         creatable,
         pass_facts.get("proposals", ()),
         pass_facts.get("declined_lines", {}),
         _bounds(**pass_facts),
+        pass_facts.get("already_held", {}),
     )
 
 
@@ -497,9 +521,12 @@ class TestTheSentenceTheScreenPrintsIsComposedHERE:
         # moved that form to a surface of its own (ruling
         # **bank_import:R-HC**), at which point a sentence composed in the
         # SERVICE was pointing at a place on a page the service cannot see.
+        # **And it names no DIRECTION either** -- it said *as new spending*
+        # until plan step ``bank_import:X-gj-2b-3``, at which point ruling
+        # **bank_import:R-II** had routed merchant credits into this very
+        # pipeline and the sentence was calling a refund spending.
         assert item.warning.endswith(
-            "Match it against rows you already hold before recording it as "
-            "new spending.",
+            "Match it against rows you already hold before recording it.",
         )
 
     def test_a_COLLISION_advises_the_match_rather_than_the_match_form(self):
@@ -554,8 +581,13 @@ class TestTheSentenceTheScreenPrintsIsComposedHERE:
         # where something sits on a page is coupled to a layout the service
         # cannot see; five on that screen carried the coupling and all five
         # went false in one commit.
+        # It named no DIRECTION either since plan step
+        # ``bank_import:X-gj-2b-3``, for the reason
+        # :meth:`test_a_gap_WITHHELD_from_a_rule_reads_as_the_rule_s` states --
+        # and this exact string is what ``_queue._notes_for`` composes for a
+        # parked line and an inflow, through the same function since that step.
         assert item.warning == (
-            f"Before recording this as new spending, match it against rows "
+            f"Before recording this, match it against rows "
             f"you already hold: {gap}."
         )
 
@@ -569,3 +601,128 @@ class TestTheSentenceTheScreenPrintsIsComposedHERE:
 
         assert item.verdict.withheld is None
         assert item.warning is None
+
+
+class TestARefundIsWithheldWhenTheBooksMayAlreadyHoldIt:
+    """The double-count guard, asked of the PURCHASE pipeline too.
+
+    Plan step ``bank_import:X-gj-2b``.  ``arrivals_already_held`` guards an
+    auto-filed DEPOSIT against recording money the books already hold.  Ruling
+    **R-II** routes a container-answered merchant credit into the PURCHASE
+    pipeline instead -- and this function, which rules that pipeline, asked
+    ``search_gap`` and the proposed-destination test and NOT this one.  A
+    hazard the package added a control for was live for the class the very next
+    change routed past it.
+
+    **The two guards' fail sets are not nested**, which is why neither
+    substitutes for the other: ``search_gap`` reaches ACROSS periods by
+    ``DAY_WINDOW`` and fires only where some tier admitted a candidate and
+    declined it, while this tests the row's OWN span. A line can pass either
+    and fail the other.
+    """
+
+    def test_a_refund_whose_period_HOLDS_unexplained_income_is_withheld(self):
+        """The money property: a rule does not file it by itself."""
+        [line] = _lines(
+            (_creatable(_records_in()),),
+            already_held={7: _held("2473.38")},
+        )
+
+        assert line.verdict is not None
+        assert line.verdict.withheld is not None
+        assert "count the same money twice" in line.verdict.withheld
+        # **The FIGURE as money**, not as a bare ``Decimal``: this sentence is
+        # composed in a SERVICE, so no template filter reaches it and
+        # ``2473.38`` beside a card reading ``$2,473.38`` is what shipped
+        # until plan step ``bank_import:X-gj-2b``'s own review.
+        assert "$2,473.38" in line.verdict.withheld
+        # The receipt and the screen read ONE sentence, so the advice is on it
+        # -- and it names an ACT rather than a SURFACE (ruling
+        # **bank_import:R-HC**): this warning is RENDERED on the reconcile
+        # screen, so "check it on the reconcile screen" sent the owner where
+        # they already were.
+        assert "Match it against those rows" in line.warning
+        assert "reconcile screen" not in line.warning
+
+    def test_a_refund_whose_period_holds_NOTHING_still_files(self):
+        """The control, without which the case above grades a door that
+        withheld everything."""
+        [line] = _lines((_creatable(_records_in()),), already_held={})
+
+        assert line.verdict is not None
+        assert line.verdict.withheld is None
+        assert line.warning is None
+
+    def test_the_GAP_is_reported_FIRST_when_both_hold(self):
+        """Ordering, which is the sentence the owner reads.
+
+        A line the pass never finished looking at has not been SHOWN to
+        collide, so naming the collision first would report a conclusion this
+        pass did not reach -- the same ordering the two existing withholdings
+        already keep.
+        """
+        [line] = _lines(
+            (_creatable(_records_in()),),
+            declined_lines={7: "a day too crowded to search"},
+            already_held={7: _held("2473.38")},
+        )
+
+        # **BOTH halves** (plan step ``bank_import:X-gj-2b-3``).  This
+        # asserted only the ABSENCE of the losing sentence, which a producer
+        # that withheld NOTHING also satisfies; the gap is what must be
+        # chosen, so the gap is asserted too.
+        assert "a day too crowded to search" in line.verdict.withheld
+        assert "count the same money twice" not in line.verdict.withheld
+
+    def test_a_COLLISION_is_reported_before_the_double_count(self):
+        """The middle rung of the ladder, which NO case reached.
+
+        Plan step ``bank_import:X-gj-2b-3``.  :func:`ruled` chooses one
+        withholding from three in a fixed order -- the gap, then a destination
+        this statement already explains, then the double count -- and only the
+        FIRST boundary was graded.  No case staged a line that was BOTH
+        proposed-explained and already-held, so swapping those two ``elif``
+        arms changed nothing any test could see.
+
+        **The order is an argument, not an accident.**  A destination this
+        statement explains on its own makes the purchase impossible to accept
+        (:data:`~._verdict._ALREADY_EXPLAINED`) -- a conclusion this pass HAS
+        reached about this line -- while the double count says the money
+        *could* already be in the books.  The harder fact is named first, and
+        its advice resolves the softer one too: accepting the match, or filing
+        the line elsewhere, ends both.
+
+        Asserts the ABSENCE of the other sentence as well as the presence of
+        this one, because a producer that concatenated both would satisfy a
+        one-sided case while printing two reasons for one line -- the
+        two-sentences-per-line shape ruling **bank_import:R-HR** removed.
+        """
+        [line] = _lines(
+            (_creatable(_records_in()),),
+            proposals=(_proposal(_row(row_id=ENVELOPE_ID)),),
+            already_held={7: _held("2473.38")},
+        )
+
+        assert "makes that match impossible to accept" in line.verdict.withheld
+        assert "count the same money twice" not in line.verdict.withheld
+        assert line.warning.endswith(
+            "Accept that match first, or file this line somewhere else.",
+        )
+
+    def test_the_double_count_is_reported_when_NO_proposal_collides(self):
+        """The control for the case above, on the same two facts.
+
+        Identical staging with the proposal removed: the line is still
+        already-held, and now the double count is what it is told.  Without it
+        the case above passes on a producer that never reports the double count
+        at all -- which is the state this whole class was written to end.
+        """
+        [line] = _lines(
+            (_creatable(_records_in()),),
+            already_held={7: _held("2473.38")},
+        )
+
+        assert "count the same money twice" in line.verdict.withheld
+        assert "makes that match impossible to accept" not in (
+            line.verdict.withheld
+        )

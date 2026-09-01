@@ -18,7 +18,7 @@ than re-derived:
 
 * a POSITIVE counterpart signal -- ruling **R-GJ**'s bar on an outflow, or
   income the books already record for an inflow's own pay period
-  (:meth:`~._reads.ReviewSet.income_already_recorded_in`);
+  (:meth:`~._reads.ReviewSet.arrivals_already_held_in`);
 * an UNFINISHED search -- :func:`~._gaps.search_gap`, which says why this pass
   cannot conclude the line has no counterpart.
 
@@ -42,13 +42,16 @@ import enum
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ._rules import is_inflow
+from ._verdict import look_first
+
 if TYPE_CHECKING:  # pragma: no cover -- the edge back would be a cycle
     # The three mechanism values appear only in annotations, so they are
     # imported for the type checker rather than at runtime.
     from ._bars import ParkedLine
     from ._offers import BankLine
     from ._leftovers import CreatableLine, RecordableInflow
-    from ._reads import IncomeAlreadyRecorded, ReviewSet
+    from ._reads import ArrivalsAlreadyHeld, ReviewSet
     # :mod:`._reads` imports THIS module for :attr:`~._reads.ReviewSet.queue`,
     # so the annotation is a forward reference and the import is type-checking
     # only.  The direction is right: the queue is assembled from a pass that
@@ -67,7 +70,7 @@ class Evidence(enum.Enum):
     * ``ALREADY_HELD`` -- something of the owner's points at this line.  For an
       outflow that is ruling **R-GJ**'s bar, which says this merchant's money
       is a payment to an account they hold or is spending they have said is
-      never a purchase; for an inflow it is unexplained income the books
+      never a purchase; for an inflow it is unexplained money the books
       already record for the line's own pay period.  The indicated act is to
       MATCH, and recording is the duplicate this arc measures.
     * ``UNFINISHED`` -- no positive signal, but the pass cannot say there is no
@@ -174,9 +177,12 @@ class QueueRow:
             That is how a PARKED line came to be the one kind that never
             printed its search gap -- the asymmetry ruling **bank_import:R-HB**
             names, measured at 1 of the developer's 9 parked lines.
-        income_already_held: What the books already record as unexplained
-            income for this line's own pay period
-            (:class:`~._reads.IncomeAlreadyRecorded`), or ``None``.  **Carried
+        arrivals_already_held: Every ARRIVING row this line's own pay period
+            already holds that no bank line explains
+            (:class:`~._reads.ArrivalsAlreadyHeld`), or ``None``.  **ARRIVING
+            and not income**: a stored refund is one of them since ruling
+            **bank_import:R-II**, and the field said ``income`` until plan step
+            ``bank_import:X-gj-2b-3``.  **Carried
             rather than re-asked**: the builder reads it to decide this row's
             group, and a template asking again would be the redundant producer
             call inside one request that this package treats as a DRY
@@ -189,7 +195,7 @@ class QueueRow:
     item: "CreatableLine | ParkedLine | RecordableInflow"
     act: QueueAct
     notes: "tuple[str, ...]"
-    income_already_held: "IncomeAlreadyRecorded | None"
+    arrivals_already_held: "ArrivalsAlreadyHeld | None"
 
     @property
     def line(self) -> "BankLine":
@@ -211,6 +217,44 @@ class QueueRow:
             money into a container the owner picks between.
         """
         return self.act is QueueAct.RECORD_PURCHASE
+
+    @property
+    def records_a_refund(self) -> bool:
+        """Return whether the purchase this row would file is a REFUND.
+
+        Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``.
+        Money ARRIVING that a rule files into a container is a refund, and the
+        screen owes it a different sentence: the press-level paragraph said
+        every line it records becomes *a purchase your records did not have,
+        dated the day your bank took it*, which is false of money the bank gave
+        back.
+
+        **A PROPERTY here where :attr:`~._panel.AddTab.records_a_refund` is a
+        FIELD**, and the asymmetry is which value holds the line.  That one
+        does not, so its builder must state the answer; this one carries the
+        line under :attr:`line`, so deriving it is what makes the two unable to
+        disagree.  Both ask :func:`~._rules.is_inflow`, which is this package's
+        ONE statement of the bank's sign convention -- the sign is not tested
+        here, it is asked there.
+
+        Returns:
+            ``True`` for a row that files a purchase whose money arrives.
+        """
+        return self.records_a_purchase and is_inflow(self.line.amount)
+
+    @property
+    def records_a_charge(self) -> bool:
+        """Return whether the purchase this row would file is a CHARGE.
+
+        The complement of :attr:`records_a_refund` INSIDE the purchase arm, so
+        the screen renders one sentence each with no ``else`` -- the same
+        no-else partition :attr:`records_a_purchase` exists for, and the shape
+        ``_statement_reconcile_macros.html`` already uses for the card.
+
+        Returns:
+            ``True`` for a row that files a purchase the bank took money for.
+        """
+        return self.records_a_purchase and not self.records_a_refund
 
     @property
     def records_income(self) -> bool:
@@ -341,6 +385,63 @@ class StatementQueue:
 
     groups: "tuple[QueueGroup, ...]"
 
+    @property
+    def records_a_charge(self) -> bool:
+        """Return whether any row here would file a purchase the bank TOOK.
+
+        The press-level paragraph *what Apply will create* describes the acts
+        this button performs, and it is rendered ONCE for the whole queue -- so
+        it asks the QUEUE and not a row.  Stated here rather than composed in
+        Jinja for the reason every other predicate on this page is: a template
+        reducing over ``groups`` would be a second spelling of
+        :attr:`QueueRow.records_a_charge`, and this file's own note on
+        ``notes`` records what three spellings of one sentence cost.
+
+        Returns:
+            Whether the press would record at least one charge.
+        """
+        return any(
+            row.records_a_charge
+            for group in self.groups for row in group.rows
+        )
+
+    @property
+    def records_income(self) -> bool:
+        """Return whether any row here would record an INCOME row.
+
+        The third answer of the partition :attr:`records_a_charge` and
+        :attr:`records_a_refund` open, and it exists for the same reader: the
+        press-level paragraph owes one sentence per act this press can
+        perform, and the deposit sentence was printed unconditionally -- over
+        a queue holding no inflow, describing a tick no row on the page
+        renders.
+
+        Returns:
+            Whether the press would record at least one income row.
+        """
+        return any(
+            row.records_income
+            for group in self.groups for row in group.rows
+        )
+
+    @property
+    def records_a_refund(self) -> bool:
+        """Return whether any row here would file a REFUND.
+
+        :attr:`records_a_charge`'s twin, and the pair is what lets the
+        press-level paragraph print one sentence per DIRECTION with no ``else``
+        (plan step ``bank_import:X-gj-2b-3``).  A queue holding no creatable
+        line at all answers ``False`` to both, which is right: nothing on that
+        page is about to become a purchase in either direction.
+
+        Returns:
+            Whether the press would record at least one refund.
+        """
+        return any(
+            row.records_a_refund
+            for group in self.groups for row in group.rows
+        )
+
 
 def _evidence_for(gap: "str | None", positive: bool) -> Evidence:
     """Return which group one line belongs in.
@@ -393,12 +494,17 @@ def _notes_for(
     here would print the same words twice on the one mechanism whose value
     already carries them.
 
-    **An inflow's gap carries the same framing verb an outflow's does**
-    (:data:`~._verdict._LOOK_FIRST`).  The deleted deposit card wrapped it in
+    **An inflow's gap carries the same framing verb an outflow's does**, and
+    since plan step ``bank_import:X-gj-2b-3`` it carries the same SENTENCE:
+    :func:`~._verdict.look_first`.  The deleted deposit card wrapped it in
     *before recording this as new income, match it against rows you already
     hold*, and printing the bare sentence would state a FACT where the outflow
     path states an ACT -- which is the per-mechanism asymmetry this step exists
-    to end, reintroduced in the other direction.
+    to end, reintroduced in the other direction.  This module then spelled the
+    replacement out a SECOND time while its note claimed the two were one, and
+    the two duly drifted: the outflow's said *as new spending* and this one did
+    not, so ruling **bank_import:R-II** made one of them false about a refund
+    and left the other correct.
 
     Args:
         item: The mechanism's value.
@@ -414,10 +520,7 @@ def _notes_for(
     """
     if act is QueueAct.RECORD_PURCHASE:
         return () if item.warning is None else (item.warning,)
-    framed = None if gap is None else (
-        f"Before recording this, match it against rows you already hold: "
-        f"{gap}."
-    )
+    framed = None if gap is None else look_first(gap)
     first = item.reason if act is QueueAct.NONE_OPEN else item.withheld
     return tuple(
         sentence for sentence in (first, framed) if sentence is not None
@@ -440,10 +543,16 @@ def _rows(review: "ReviewSet") -> "tuple[QueueRow, ...]":
 
     **A creatable line's positive signal is a WITHHOLDING that is not a gap.**
     :func:`~._verdict.ruled` sets
-    :attr:`~._leftovers.CreatableLine.warning` from TWO arms and only one of
-    them is the search gap: the other is
+    :attr:`~._leftovers.CreatableLine.warning` from THREE arms and only one of
+    them is the search gap.  The second is
     :data:`~._verdict._ALREADY_EXPLAINED`, which fires when the rule's own
-    destination is a row this statement explains AS A WHOLE.  That is a
+    destination is a row this statement explains AS A WHOLE; the third arrived
+    with plan step ``bank_import:X-gj-2b`` and fires when a REFUND's pay period
+    already holds money the records say arrived and no line explains.  **The
+    test below reads the arms as a class rather than by name**, which is why a
+    third one did not need this predicate changed -- but the sentence here said
+    TWO, and a sentence that undercounts the thing a safety net protects is how
+    the next arm gets added without one.  That is a
     counterpart the pass has already FOUND, so the line belongs with the money
     the books hold -- and reading only the gap put it in
     :attr:`Evidence.NOTHING_FOUND`, the one group that offers a sweep, under a
@@ -474,14 +583,14 @@ def _rows(review: "ReviewSet") -> "tuple[QueueRow, ...]":
         # redundant producer call this package refuses.
         rows.append(_row(
             review, inflow, QueueAct.RECORD_INCOME,
-            review.income_already_recorded_in(inflow.line),
+            review.arrivals_already_held_in(inflow.line),
         ))
     return tuple(rows)
 
 
 def _positive_for(
     item: "CreatableLine | ParkedLine | RecordableInflow",
-    act: QueueAct, held: "IncomeAlreadyRecorded | None",
+    act: QueueAct, held: "ArrivalsAlreadyHeld | None",
     gap: "str | None",
 ) -> bool:
     """Return whether a POSITIVE counterpart signal holds for one line.
@@ -495,10 +604,13 @@ def _positive_for(
     Returns:
         Whether something of the owner's already points at this line.  For a
         PARKED line the bar itself is that signal; for an INFLOW it is the
-        income already recorded; for a CREATABLE line it is a withholding that
-        is NOT the gap, which is
-        :data:`~._verdict._ALREADY_EXPLAINED` and nothing else -- ``ruled``
-        sets ``warning`` from exactly those two arms.
+        money already recorded; for a CREATABLE line it is ANY withholding that
+        is not the gap -- :data:`~._verdict._ALREADY_EXPLAINED`, or the
+        double-count withholding plan step ``bank_import:X-gj-2b`` added for a
+        refund.  **Read as a class, not enumerated**, which is what let the
+        third arm arrive without a change here; the two are named because a
+        reader deserves to know what reaches this line, not because the test is
+        against a list.
     """
     if act is QueueAct.NONE_OPEN:
         return True
@@ -510,7 +622,7 @@ def _positive_for(
 def _row(
     review: "ReviewSet",
     item: "CreatableLine | ParkedLine | RecordableInflow",
-    act: QueueAct, held: "IncomeAlreadyRecorded | None",
+    act: QueueAct, held: "ArrivalsAlreadyHeld | None",
 ) -> QueueRow:
     """Return one assembled queue row.
 
@@ -518,7 +630,7 @@ def _row(
         review: The pass, which owns the search gap.
         item: The mechanism's value.
         act: Which control this row renders.
-        held: What the books already record as unexplained income for this
+        held: What the books already record as arriving and unexplained for this
             line's pay period, or ``None`` -- which for the two OUTFLOW
             mechanisms is always ``None``, since a bar and a deposit's books
             are different claims and no outflow has the second.
@@ -534,7 +646,7 @@ def _row(
         item=item,
         act=act,
         notes=_notes_for(item, act, gap),
-        income_already_held=held,
+        arrivals_already_held=held,
     )
 
 

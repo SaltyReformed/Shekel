@@ -79,6 +79,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from ._already_held import ArrivalsAlreadyHeld
 from ._creations import PurchaseCreation
 from ._gaps import search_gap
 from ._leftovers import CreatableLine
@@ -113,10 +114,39 @@ _ALREADY_EXPLAINED = (
 #: (adversarial design review 2026-08-28).  What the sentence
 #: states is the ACT; the row renders the link, which is the one fact a service
 #: may not build (:attr:`~._bars.ParkedLine.answer_door` sets the precedent).
+#:
+#: **It said *as new spending* until plan step ``bank_import:X-gj-2b-3``**, and
+#: ruling **bank_import:R-II** is what made that false: a merchant credit a
+#: rule files as a NEGATIVE purchase reaches this pipeline
+#: (:func:`~._verdict.ruled`), and calling a refund *new spending* to the owner
+#: is the mis-describing sentence over a working control that ruling **R-GJ**
+#: measured `$7,412.94` going through.  The verb is direction-neutral now,
+#: because the ACT is: matching a line against rows already held is the same
+#: remedy whichever way its money went.
 _LOOK_FIRST = (
-    "Match it against rows you already hold before recording it as new "
-    "spending."
+    "Match it against rows you already hold before recording it."
 )
+#: What to do about a line whose period already holds money that arrived.
+#: Beside :data:`_LOOK_FIRST` and :data:`_ACCEPT_FIRST` because the three are
+#: one vocabulary: every withholding this pass reports ends with the ACT that
+#: resolves it.
+#:
+#: **It named a SURFACE until this step's own review, which is the coupling
+#: ruling bank_import:R-HC forbids** and which the note on :data:`_LOOK_FIRST`
+#: directly above records eight sentences breaking on.  It read *"Check it on
+#: the reconcile screen."* -- and :attr:`~._leftovers.CreatableLine.warning` is
+#: rendered ON the reconcile screen (:func:`~._cards._creatable_card`), so the
+#: owner was told to go where they already were.  It names the act now, and
+#: *those rows* rather than *rows you already hold* because the sentence it
+#: follows has just named them.
+#:
+#: **PUBLIC where its two siblings are private**, and the asymmetry is the
+#: point: this is the only one of the three whose withholding is reported by a
+#: SECOND door as well (:func:`~._filing._inflow_filings`, for the deposit the
+#: same guard withholds), and the receipt and the screen must give the owner
+#: the same act.  The other two are reached from this module alone.
+CHECK_FIRST = "Match it against those rows before recording it as something new."
+
 _ACCEPT_FIRST = "Accept that match first, or file this line somewhere else."
 
 
@@ -197,13 +227,24 @@ def _proposed_destinations(
     )
 
 
-def _look_first(gap: str) -> str:
+def look_first(gap: str) -> str:
     """Return what the screen says about a line the pass did not finish.
 
     **The no-rule twin of** :data:`_LOOK_FIRST`, and it lost the same
     positional clause for the same reason (plan step ``bank_import:X-gf-3b``):
     it read *"check the match form BELOW"*, which the hand-build form's move to
     its own surface made false.
+
+    **It said *as new spending* until plan step ``bank_import:X-gj-2b-3``**,
+    for the reason :data:`_LOOK_FIRST` states: since ruling
+    **bank_import:R-II** a line this composes for may be a refund.
+
+    **PUBLIC since that step, and it is the SAME sentence** :mod:`._queue`
+    composed for a parked line and an inflow.  Its note there said in as many
+    words that an inflow's gap *carries the same framing verb an outflow's
+    does*, citing this module -- while spelling the sentence a second time,
+    which is how the two came to differ by the clause this step has just had to
+    delete from one of them.  One composer now, for all three mechanisms.
 
     Args:
         gap: The pass's own sentence (:func:`~._gaps.search_gap`).
@@ -212,7 +253,7 @@ def _look_first(gap: str) -> str:
         The sentence, for a line no rule reaches.
     """
     return (
-        f"Before recording this as new spending, match it against rows you "
+        f"Before recording this, match it against rows you "
         f"already hold: {gap}."
     )
 
@@ -222,6 +263,7 @@ def ruled(
     proposals: "tuple[MatchProposal, ...]",
     declined_lines: "dict[int, str]",
     bounds,
+    already_held: "dict[int, ArrivalsAlreadyHeld]",
 ) -> "tuple[CreatableLine, ...]":
     """Return this pass's creatable lines, each carrying what it is owed.
 
@@ -241,6 +283,13 @@ def ruled(
         bounds: What this pass did not look at
             (:class:`~._gaps.ReviewBounds`), read for the two limits that
             belong to the PASS rather than to any one line.
+        already_held: ``{line_id: ArrivalsAlreadyHeld}`` for the INFLOW lines
+            whose period already holds money ARRIVING that no bank line
+            explains
+            (:func:`~._reads.arrivals_already_held`), computed by the caller
+            because it holds the rows.  **Empty for every outflow**, which is
+            what makes the arm below a no-op on the outflow side rather than a
+            second rule about it.
 
     Returns:
         The same lines, with :attr:`~._leftovers.CreatableLine.verdict` set on
@@ -274,17 +323,30 @@ def ruled(
             # still have failed to LOOK, which is the line's own fact and not
             # the rule's, and the screen owes it either way.
             lines.append(replace(
-                item, warning=None if gap is None else _look_first(gap),
+                item, warning=None if gap is None else look_first(gap),
             ))
             continue
         # **The gap is asked FIRST**, and the order is the one the receipt
         # reads in: a line the pass never finished looking at has not been
         # shown to collide with anything, so naming the collision first would
         # report a conclusion this pass did not reach.
+        held = already_held.get(item.line.line_id)
         if gap is not None:
             withheld, advice = gap, _LOOK_FIRST
         elif creation.transaction_id in proposed:
             withheld, advice = _ALREADY_EXPLAINED, _ACCEPT_FIRST
+        elif held is not None:
+            # **The DOUBLE-COUNT guard, asked of a refund too** (plan step
+            # ``bank_import:X-gj-2b``).  A merchant credit filed as a negative
+            # purchase is money ARRIVING, so the period may already hold a row
+            # for the same money -- exactly the hazard
+            # :func:`~._reads.arrivals_already_held` was added for on the
+            # income side.  That step routed these lines into THIS pipeline,
+            # which asked ``search_gap`` and the proposed-destination test and
+            # not this one; their fail sets are not nested (the gap reaches
+            # ACROSS periods by ``DAY_WINDOW``, this tests the row's OWN span),
+            # so neither substitutes for the other.
+            withheld, advice = held.why_it_could_double_count, CHECK_FIRST
         else:
             withheld, advice = None, None
         lines.append(replace(

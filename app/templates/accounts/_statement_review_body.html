@@ -1,6 +1,6 @@
 {% from "_money_macros.html" import money %}
 {% from "accounts/_merchant_rule_macros.html" import merchant_answer_cell, merchant_name_cell %}
-{% from "accounts/_statement_queue_macros.html" import match_by_hand %}
+{% from "accounts/_statement_queue_macros.html" import books_already_hold, match_by_hand %}
 
 {# THE WHOLE REVIEWABLE SURFACE, and the batch POST's own answer.
 
@@ -43,8 +43,9 @@
       <strong>Applying what you ticked changes your records.</strong>
       Every row in a match takes the day your bank posted it. A row you had not
       marked as having happened becomes marked; a row dated wrongly moves onto
-      the bank's day; a line you name a place for becomes a purchase you did
-      not have. Nothing here happens until you press Apply.
+      the bank's day; a line you name a place for is recorded against it --
+      a purchase where your bank took the money, a refund where it gave money
+      back. Nothing here happens until you press Apply.
     </div>
   </div>
 
@@ -541,17 +542,16 @@
                 <span class="small text-body-secondary">(made {{ row.line.transaction_on }})</span>
                 {% endif %}
                 <div class="small text-body-secondary">{{ row.line.description }}</div>
-                {% if row.income_already_held %}
-                {# WHAT THE BOOKS ALREADY HOLD for this line's own pay period.
-                   Server-derived and NAMED, so the owner can find the rows on
-                   the workbench rather than being told to go looking.  It is
-                   not a suggestion that this deposit IS them.  Carried on the
-                   row rather than re-asked here: the service reads it to
-                   decide the group, and asking again would be the redundant
-                   producer call inside one request this package refuses. #}
+                {% if row.arrivals_already_held %}
+                {# Carried on the ROW rather than re-asked here: the service
+                   reads it to decide the group, and asking again would be the
+                   redundant producer call inside one request this package
+                   refuses.  The sentence itself is the shared macro's -- it is
+                   printed on this screen and on the reconcile card, and two
+                   spellings of it had already drifted. #}
                 <div class="small text-warning-emphasis mt-1">
                   <i class="bi bi-exclamation-triangle"></i>
-                  This pay period already holds {{ row.income_already_held.rows | length }} income row(s) totalling {{ money(row.income_already_held.total) }} that no line explains{% for held in row.income_already_held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ held.label }} {{ money(held.cash_amount) }}{% endfor %}. If this deposit is those, match it against them instead of recording it here.
+                  {{ books_already_hold(row.arrivals_already_held) }}
                 </div>
                 {% endif %}
                 {# EVERY sentence this row owes, composed in the service and
@@ -754,6 +754,19 @@
       <div class="card-body small text-body-secondary">
         <div class="fw-semibold mb-1">What Apply will create</div>
         <ul class="mb-0">
+          {# ONE SENTENCE PER DIRECTION, and no ``else`` -- the two predicates
+             partition the purchase arm (``records_a_charge`` /
+             ``records_a_refund``) and are stated by the SERVICE over the whole
+             queue, so this never asks a line's sign and a queue holding no
+             creatable line at all prints neither.  The same no-else shape
+             ``_statement_reconcile_macros.html`` uses for the opened card.
+
+             The single sentence that stood here described every recorded line
+             as "a purchase your records did not have, dated the day your bank
+             took it" -- false of a merchant credit, which ruling
+             **bank_import:R-II** files as a NEGATIVE purchase and which the
+             bank did not take but gave back. #}
+          {% if review.queue.records_a_charge %}
           <li>
             A line you name a destination for becomes <strong>a purchase your
             records did not have</strong>, dated the day your bank took it.
@@ -762,6 +775,25 @@
             and one that had not does not. A <em>new</em> envelope budgets
             $0.00, because nothing budgeted this.
           </li>
+          {% endif %}
+          {% if review.queue.records_a_refund %}
+          <li>
+            A line where money came BACK becomes <strong>a refund against the
+            budget line you name</strong>, dated the day your bank paid it in,
+            <strong>lowering what that line has cost</strong>. It goes in the
+            pay period the refund itself falls in, which is not necessarily the
+            one that held what you bought. A <em>new</em> envelope budgets
+            $0.00 for the same reason, so it records the refund and nothing
+            else.
+          </li>
+          {% endif %}
+          {# THE THIRD ARM OF THE SAME PARTITION, conditional for the reason
+             the two above are: it describes a control an all-outflow queue
+             does not render.  Made conditional at plan step
+             ``bank_import:X-gj-2b-3`` with its two siblings -- one unbranched
+             bullet left among two branched ones is a worse state than either
+             uniform one, and the queue states all three answers itself. #}
+          {% if review.queue.records_income %}
           <li>
             A deposit you tick becomes <strong>income you did not have</strong>,
             dated the day your bank paid it in, with <strong>no category</strong>
@@ -770,6 +802,7 @@
             case it is your record and the undo says so rather than deleting
             your work.
           </li>
+          {% endif %}
         </ul>
       </div>
     </div>

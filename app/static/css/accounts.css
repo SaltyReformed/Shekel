@@ -1043,8 +1043,11 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
    bank_import:X-gj-1b and THREE until X-gj-1c, each time a count nobody could
    check against the markup beside it -- which is the class this arc has now
    measured wrong several times, in this very comment, twice:
-     1. a deposit whose own pay period already holds income no line explains,
-        which is how a paycheck gets counted twice.  It renders TWICE for one
+     1. a deposit whose own pay period already holds money ARRIVING that no
+        bank line explains, which is how a paycheck gets counted twice.  Not
+        only INCOME rows -- a stored refund is one of them since ruling
+        bank_import:R-II, and the value said `income` in its own name until
+        plan step bank_import:X-gj-2b-3.  It renders TWICE for one
         signal -- `.rec-risk-glyph` on the card and `.rec-risk` in the panel --
         which is one fact disclosed at two grains, not two signals;
      2. the hero's OFF BY when it is non-zero (`.rec-off`), which is the whole

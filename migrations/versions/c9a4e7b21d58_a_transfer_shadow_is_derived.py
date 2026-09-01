@@ -1,15 +1,19 @@
 """a transfer shadow's amount is its parent's, and it stores none
 
 Revision ID: c9a4e7b21d58
-Revises: f1c8b3d5e920
+Revises: b8e4c1f7a903
 Create Date: 2026-09-01 22:10:00.000000
 
-**RE-PARENTED at merge time, from ``e2d7a94f61c3`` to ``f1c8b3d5e920``.**  This
-was authored when ``e2d7a94f61c3`` was the single head on ``dev``, and
-``pay_calendar``'s ``f1c8b3d5e920`` was authored on that same parent on a branch
-this tree could not see.  A ``down_revision`` may only name a revision present in
-the SAME tree, so the re-point happens as the last edit before the PR rather than
-at authoring time -- pointing early at a revision your own tree lacks breaks
+**RE-PARENTED at merge time, TWICE: from ``e2d7a94f61c3`` to
+``f1c8b3d5e920``, and then to ``b8e4c1f7a903``.**  This was authored when
+``e2d7a94f61c3`` was the single head on ``dev``; ``pay_calendar``'s
+``f1c8b3d5e920`` was authored on that same parent on a branch this tree could
+not see, and ``bank_import``'s ``b8e4c1f7a903`` (PR #189) then landed on
+``f1c8b3d5e920`` while this branch still pointed there -- two heads on one
+parent, which is the state the paragraph below describes.  It merged SECOND, so
+it re-points; the order was fixed by the coordinating session rather than raced.
+A ``down_revision`` may only name a revision present in the SAME tree, so each
+re-point happens as the last edit before the PR rather than at authoring time -- pointing early at a revision your own tree lacks breaks
 ``flask db upgrade``, ``build_test_template.py`` and CI while the other branch
 stays green.  ``c9f4b1e78d02`` records the identical situation between the
 identical two arcs, and the failure mode is worth restating: git merges two
@@ -88,7 +92,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "c9a4e7b21d58"
-down_revision = "f1c8b3d5e920"
+down_revision = "b8e4c1f7a903"
 branch_labels = None
 depends_on = None
 

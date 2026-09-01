@@ -25,8 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ._accepted_view import REGISTER_LIMIT, AcceptedRegister, accepted_register
-from ._bars import CreationBars
-from ._rules import RuleView
+from ._bars import MerchantAnswers
 from ._section import MerchantRegister, answered_merchants
 
 
@@ -95,12 +94,11 @@ def merchant_register(owner_id: int, account_id: int) -> MerchantRegister:
         The :class:`~._section.MerchantRegister` -- three small indexed reads,
         against the act fold beside it.
     """
-    view = RuleView.build(owner_id, account_id)
     # The bars are read even here, because this is where an answer is CHANGED:
     # a merchant a source files as a payment to an account the owner holds has
     # two of its four options refused by the door (ruling **R-GJ**), and a
     # control that did not say so would be the *chooser whose submission can
-    # never succeed* shape this package has closed four times.
-    return answered_merchants(
-        view, CreationBars.build(owner_id, account_id, view.rules),
-    )
+    # never succeed* shape this package has closed four times.  Both come off
+    # ONE read (:class:`~._bars.MerchantAnswers`).
+    answers = MerchantAnswers.build(owner_id, account_id)
+    return answered_merchants(answers.view, answers.bars)

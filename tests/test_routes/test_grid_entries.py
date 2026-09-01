@@ -596,7 +596,7 @@ class TestCellProgressDisplay:
             resp = auth_client.get(f"/transactions/{txn.id}/cell")
 
             assert resp.status_code == 200
-            assert b"230 / 500" in resp.data
+            assert b"$230 / $500" in resp.data
 
     def test_over_budget_has_danger_class(self, app, auth_client,
                                           seed_user, seed_periods_today):
@@ -613,7 +613,7 @@ class TestCellProgressDisplay:
             resp = auth_client.get(f"/transactions/{txn.id}/cell")
 
             assert resp.status_code == 200
-            assert b"530 / 500" in resp.data
+            assert b"$530 / $500" in resp.data
             assert b"text-danger" in resp.data
             assert b"fw-semibold" in resp.data
 
@@ -631,7 +631,7 @@ class TestCellProgressDisplay:
             resp = auth_client.get(f"/transactions/{txn.id}/cell")
 
             assert resp.status_code == 200
-            assert b"100 / 500" in resp.data
+            assert b"$100 / $500" in resp.data
             # The progress span should NOT have text-danger.
             # Check that the progress span uses font-mono without danger.
             assert b'class="font-mono"' in resp.data
@@ -651,9 +651,14 @@ class TestCellProgressDisplay:
             assert resp.status_code == 200
             html = resp.data.decode()
             # Standard display: just the estimated amount.
-            assert ">500</span>" in html
-            # Progress format must NOT appear.
-            assert "/ 500" not in html
+            assert ">$500</span>" in html
+            # Progress format must NOT appear.  **The needle carries the
+            # currency mark** (developer ruling 2026-09-01,
+            # ``bank_import:R-IM``): the cell renders through ``money`` now, so
+            # progress would read ``$X / $500`` -- and the old ``"/ 500"``
+            # needle would be absent from BOTH states, passing for the wrong
+            # reason.  Re-pointed rather than dropped.
+            assert "/ $500" not in html
 
     def test_done_shows_actual_not_progress(self, app, auth_client,
                                              seed_user, seed_periods_today):
@@ -699,8 +704,10 @@ class TestCellProgressDisplay:
 
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert ">200</span>" in html
-            assert "/ 200" not in html
+            assert ">$200</span>" in html
+            # Re-pointed with the currency mark, for the reason
+            # ``test_no_entries_shows_standard_estimated`` states.
+            assert "/ $200" not in html
 
 
 class TestCellProgressTooltip:
@@ -858,7 +865,7 @@ class TestGridPageEntrySums:
             assert resp.status_code == 200
             # The desktop grid cell should show progress format.
             # 180 + 70 = 250 spent on 500 budget.
-            assert b"250 / 500" in resp.data
+            assert b"$250 / $500" in resp.data
             # **And the out-of-period badge, which puts /grid's OWN span map
             # under measurement for the first time** (adversarial review of
             # plan step C4-a-3).  The two purchases are dated on the payday and

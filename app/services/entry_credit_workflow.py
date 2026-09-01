@@ -54,6 +54,16 @@ def sync_entry_payback(
       - total_credit > 0, payback exists: UPDATE payback amount.
       - total_credit == 0, payback exists: DELETE payback.
       - total_credit == 0, no payback:  no-op.
+      - total_credit < 0:  REFUSED (:func:`_reject_card_owing_the_owner`).
+
+    **The last arm is finding N-411 and it was MISSING rather than wrong.**  The
+    matrix was written when ``ck_transaction_entries_positive_amount`` made a
+    negative purchase unwritable, so ``> 0`` and ``== 0`` really were total over
+    the reachable states.  Ruling **bank_import:R-II** relaxed that CHECK to
+    ``amount <> 0``, at which point "everything that is not ``> 0``" silently
+    included a negative -- and the else-arm answers it by DELETING the payback.
+    What partitions the states is the LIABILITY the card is owed, and it has
+    three signs, not two.
 
     The payback is identified by credit_payback_for_id == transaction_id.
     All credit entries share the same credit_payback_id pointing to this
@@ -129,6 +139,8 @@ def sync_entry_payback(
     # resurrected and mutated -- a fresh one is created instead).
     existing_payback = get_active_payback(txn.id)
 
+    _reject_card_owing_the_owner(txn, total_credit)
+
     if total_credit > 0:
         if existing_payback is None:
             return _create_payback(txn, owner_id, credit_entries, total_credit)
@@ -199,7 +211,21 @@ def sync_entry_payback(
         )
         return existing_payback
 
-    # total_credit == 0
+    # ``total_credit == 0``: the card is owed NOTHING, so no payback should
+    # stand.  Reached either because no credit purchase remains or because the
+    # row's card refunds exactly cancel its card charges -- the second became
+    # possible at plan step ``bank_import:X-gj-2b`` and is the same answer, since
+    # what decides is the LIABILITY and not how many rows produced it.
+    #
+    # **This comment used to be the whole of the else-arm's guard, and it stated
+    # a condition the code did not implement** (finding **N-411**).  The branch
+    # above asks ``> 0`` and this one is everything else, so a NEGATIVE total
+    # arrived here and was answered by DELETE: measured on a production clone,
+    # an envelope carrying 4 card charges totalling ``$493.03`` lost its payback
+    # outright when a larger card refund was recorded, leaving the charges with
+    # nothing booking them.  It could not happen while the table forbade a
+    # negative purchase; ruling **R-II** is what made the shape writable, and
+    # :func:`_reject_card_owing_the_owner` is what now answers it.
     if existing_payback is not None:
         # **A SETTLED payback is not DELETED either, and this refusal is the
         # other half of the one above** (plan step X-au-c3, second pass).  That
@@ -257,6 +283,53 @@ def sync_entry_payback(
             payback_id=deleted_payback_id,
         )
     return None
+
+
+def _reject_card_owing_the_owner(
+    txn: Transaction, total_credit: Decimal,
+) -> None:
+    """Refuse an envelope whose card REFUNDS exceed its card purchases.
+
+    Finding **N-411**, opened by ruling **bank_import:R-II**.  A CC Payback is
+    an EXPENSE row recording what the owner owes the card, and
+    ``ck_transactions_estimated_amount`` (``estimated_amount >= 0``) says so in
+    the schema -- so a negative total has nowhere to go.  It is refused HERE,
+    before any branch acts on it, rather than left to the arm below: that arm
+    reads a non-positive total as "nothing is owed" and DELETES the payback,
+    which for a negative total destroys a liability the row's card charges
+    still carry.
+
+    **Refusing rather than substituting**, which is the choice this service
+    already makes for a settled payback two arms down: the app cannot represent
+    a card that owes the OWNER, and inventing a representation for it -- a zero
+    payback, a deleted one, an income row -- would each be filing money
+    somewhere the model does not mean.  The owner is told what state they have
+    described and what to do instead.
+
+    **The credit-card arc may make this representable and this refusal
+    removable** (a card with statements of its own is an account, and a credit
+    balance on it is an ordinary fact).  Until then a non-representable state is
+    refused where it is created, not stored in a shape that reads as something
+    else.
+
+    Args:
+        txn: The parent envelope, for the message's sake.
+        total_credit: The sum of its credit purchases, which this refuses when
+            negative.
+
+    Raises:
+        ValidationError: When the card refunds exceed the card purchases.
+    """
+    if total_credit >= 0:
+        return
+    raise ValidationError(
+        f"The card refunds on '{txn.name}' now exceed its card purchases by "
+        f"{-total_credit}, which would mean the card owes YOU rather than the "
+        "other way round. Shekel records a CC Payback as money you owe, so it "
+        "cannot hold that. Record the refund against the envelope it came from "
+        "as an ordinary (non-card) purchase, or split it across the card "
+        "purchases it actually reverses."
+    )
 
 
 def _create_payback(

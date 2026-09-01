@@ -402,7 +402,13 @@ class TestTheReviewPage:
         # R-GH's automatic door withholds on the SAME derivation, so a screen
         # composing its own wording would describe one limit two ways.
         # ON the line in the create card, where the WRONG act is cheapest...
-        assert "Before recording this as new spending" in said
+        # The needle lost its DIRECTION at plan step ``bank_import:X-gj-2b-3``
+        # (ruling **bank_import:R-II**): the same pipeline now files merchant
+        # credits, and *as new spending* was false of those.  Re-pointed rather
+        # than dropped, for the reason the negative assertion in
+        # ``test_a_SEARCH_GAP_is_reported_as_the_rule_s_and_printed_ONCE``
+        # states about a needle that no longer exists.
+        assert "Before recording this, match it against rows you already hold" in said
         assert "would not choose between the candidates for you" in said
         # ...and NOT as a bare number in the bounds panel any more.
         assert "line(s) have a row of yours" not in said
@@ -1349,7 +1355,18 @@ class TestTheDepositArmOnTheWire:
             _review_url(seed_user["account"].id),
         ).data.decode()
 
-        assert "This pay period already holds 1 income row(s)" in page
+        # **The word *income* left this sentence at plan step
+        # ``bank_import:X-gj-2b-3``**: the rows it counts are every ARRIVING
+        # row the books hold that no line explains, which since ruling
+        # **bank_import:R-II** includes a stored REFUND -- a negative purchase,
+        # whose cash is positive.  The service-composed twin of this sentence
+        # was corrected at ``bank_import:X-gj-2b`` and the two templates that
+        # spell it were not, which is what left the screen saying *income*
+        # about a set that holds purchases.
+        assert (
+            "This pay period already holds 1 row(s) totalling $2,473.38 "
+            "your records say arrived and no bank line explains" in page
+        )
         assert "Salary" in page
         assert f'name="record_income-{line.id}"' in page
 
@@ -1763,7 +1780,13 @@ class TestTheCreateArm:
         )
 
         assert response.status_code == 200
-        assert b"money LEAVING" in response.data
+        # The refusal's WORDING moved at plan step ``bank_import:X-gj-2b-2``:
+        # it used to say only money LEAVING may become a purchase, and an
+        # inflow whose merchant carries a spending answer now may (a refund).
+        # What is refused here is a deposit NO rule claims, which is the case
+        # this test stages -- so the subject is unchanged and only the sentence
+        # is.
+        assert b"not a refund" in response.data
         db.session.expire_all()
         assert db.session.query(Transaction).filter(
             Transaction.name == "Payroll",
@@ -2955,7 +2978,15 @@ class TestWhyARuleDidNotFileALineItReaches:
         # made false.  It is re-pointed rather than dropped: a negative
         # assertion whose needle no longer exists anywhere passes for the wrong
         # reason and discriminates nothing.
-        assert "Before recording this as new spending, match it" not in card
+        # Re-pointed AGAIN at plan step ``bank_import:X-gj-2b-3``, when
+        # ruling **bank_import:R-II** made *as new spending* false of a refund
+        # this same pipeline files.  The needle is still the NO-RULE opening
+        # and still absent from a rule-reached line, whose sentence ends with
+        # ``_LOOK_FIRST`` instead; this case stages one outflow and no inflow,
+        # so ``_queue._notes_for`` -- which composes the identical sentence for
+        # a parked line or a deposit through the same function since that step
+        # -- puts nothing in this card either.
+        assert "Before recording this, match it" not in card
         # ONE render on this page -- the create card's -- and the second is on
         # the hand-build surface, which is where the same fact is rendered
         # beside the act it prompts.  Still one derivation and two renders;
@@ -3459,3 +3490,204 @@ class TestTheBooksBoundIsRENDERED:
         assert day.strftime("%b %-d, %Y") in body
         assert f"/accounts/{account.id}/edit#books-opening" in body
         assert "Restate this account" in body
+
+
+class TestThePageAndTheReceiptSayWhichDIRECTIONApplyRecorded:
+    """Two owner-visible money sentences that no case graded.
+
+    Plan step ``bank_import:X-gj-2b-3``.  Ruling **bank_import:R-II** routes a
+    merchant credit into the PURCHASE pipeline, and both of the sentences that
+    describe what that pipeline does were written when only spending could
+    reach it:
+
+      * the press-level *what Apply will create* paragraph -- *a line you name
+        a destination for becomes a purchase your records did not have, dated
+        the day your bank took it* -- over money the bank GAVE BACK; and
+      * the receipt line ``recorded_count`` prints, whose caption says the
+        same thing about a count that had come to hold both directions.
+
+    Neither had a test at all, which is why both went false in silence.  Every
+    case here asserts the sentence that must appear AND the one that must not,
+    because a template rendering both unconditionally satisfies half of it.
+    """
+
+    @staticmethod
+    def _a_refund_line(seed_user, db, amount="42.00"):
+        """Stage a merchant credit a standing SPENDING answer files.
+
+        The rule names the envelope's own template, which is what makes the
+        credit that rule's inverse (ruling **R-HT(a)**) rather than a deposit.
+        """
+        envelope = an_envelope(seed_user)
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Amazon", amount=amount,
+        )
+        db.session.commit()
+        return envelope, line
+
+    def test_the_page_promises_a_REFUND_for_a_merchant_credit(
+        self, auth_client, db, seed_user,
+    ):
+        """The paragraph names the act this press would actually perform."""
+        self._a_refund_line(seed_user, db)
+
+        page = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "becomes <strong>a refund against the budget line you name" in page
+        assert "dated the day your bank paid it in" in page
+        assert "a purchase your records did not have" not in page, (
+            "the charge sentence describes an act this press cannot perform"
+        )
+
+    def test_the_page_promises_a_PURCHASE_for_an_ordinary_swipe(
+        self, auth_client, db, seed_user,
+    ):
+        """The control, and the half that must keep working.
+
+        Without it the case above passes on a page that had simply swapped one
+        unconditional sentence for another.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        db.session.commit()
+
+        page = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "becomes <strong>a purchase your records did not have" in page
+        assert "a refund against the budget line you name" not in page
+
+    def test_the_DEPOSIT_sentence_is_withheld_from_an_all_outflow_queue(
+        self, auth_client, db, seed_user,
+    ):
+        """The third arm of the same partition, and it was unbranched.
+
+        Plan step ``bank_import:X-gj-2b-3``.  *A deposit you tick becomes
+        income you did not have* printed on every queue, including one holding
+        no inflow at all -- describing a tick no row on the page renders.  It
+        predates ruling **bank_import:R-II** and is not that ruling's defect;
+        it is fixed here because leaving one bullet of three unconditional
+        beside two that are branched is a worse state than either uniform one,
+        in a block this step had already rewritten.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        db.session.commit()
+
+        page = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "becomes <strong>a purchase your records did not have" in page
+        assert "becomes <strong>income you did not have" not in page
+
+    def test_the_DEPOSIT_sentence_renders_where_a_tick_EXISTS(
+        self, auth_client, db, seed_user,
+    ):
+        """The control: an unclaimed deposit is the row that earns it."""
+        an_envelope(seed_user)
+        an_unexplained_outflow(
+            seed_user, merchant="Some Employer", amount="1200.00",
+        )
+        db.session.commit()
+
+        page = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "becomes <strong>income you did not have" in page
+        assert "becomes <strong>a purchase your records did not have" not in page
+
+    def test_a_queue_holding_BOTH_directions_prints_BOTH_sentences(
+        self, auth_client, db, seed_user,
+    ):
+        """The case every other one in this class cannot see.
+
+        Plan step ``bank_import:X-gj-2b-3``, found by adversarial test-quality
+        review.  The three bullets render with **no** ``else`` -- that is the
+        whole design -- but every case here and in
+        ``TestTheADDSentenceSaysWhichWayTheMoneyWENT`` held the queue to ONE
+        direction, so **converting the block to ``{% if %}{% elif %}{% elif %}``
+        left them all green** while a mixed statement silently lost a bullet.
+
+        A refund and a swipe in one pass is the ORDINARY shape, not a corner:
+        ``test_a_CREDIT_and_a_SWIPE_from_ONE_merchant_file_with_opposite_signs``
+        stages exactly it against one merchant's single rule.
+        """
+        envelope = an_envelope(seed_user)
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="42.00")
+        an_unexplained_outflow(
+            seed_user, merchant="Food Lion", amount="-10.89", sequence=1,
+        )
+        db.session.commit()
+
+        page = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "becomes <strong>a purchase your records did not have" in page
+        assert "becomes <strong>a refund against the budget line you name" in page
+
+    def test_the_RECEIPT_says_a_refund_was_recorded_as_a_refund(
+        self, auth_client, db, seed_user,
+    ):
+        """End to end, through the form the page itself rendered.
+
+        The payload is scraped from the page and the destination set on it, so
+        this posts what a browser would submit rather than what a reader thinks
+        the template emits.  Asserts the ENTRY as well as the sentence: a
+        receipt is only worth grading over an act that happened.
+        """
+        envelope, line = self._a_refund_line(seed_user, db)
+        payload = _apply_form_controls(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode())
+        payload[f"destination-{line.id}"] = str(envelope.id)
+
+        body = " ".join(auth_client.post(
+            _review_url(seed_user["account"].id), data=payload,
+        ).data.decode().split())
+
+        entries = db.session.query(TransactionEntry).all()
+        assert [entry.amount for entry in entries] == [Decimal("-42.00")], (
+            "the act itself must have landed, or the receipt grades nothing"
+        )
+        assert (
+            "1 bank line(s) recorded as a refund against a budget line, "
+            "lowering what it has cost." in body
+        )
+        assert "recorded as a purchase your records did not have" not in body, (
+            "one count carried both directions and its caption named the act "
+            "the bank did NOT perform on this line"
+        )
+
+    def test_the_RECEIPT_says_a_swipe_was_recorded_as_a_purchase(
+        self, auth_client, db, seed_user,
+    ):
+        """The receipt's control, on the same door and the same form."""
+        envelope = an_envelope(seed_user)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Amazon", amount="-57.96",
+        )
+        db.session.commit()
+        payload = _apply_form_controls(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode())
+        payload[f"destination-{line.id}"] = str(envelope.id)
+
+        body = " ".join(auth_client.post(
+            _review_url(seed_user["account"].id), data=payload,
+        ).data.decode().split())
+
+        entries = db.session.query(TransactionEntry).all()
+        assert [entry.amount for entry in entries] == [Decimal("57.96")]
+        assert (
+            "1 bank line(s) recorded as a purchase your records did not have."
+            in body
+        )
+        assert "recorded as a refund against a budget line" not in body

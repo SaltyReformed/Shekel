@@ -35,18 +35,21 @@ from app.models.transaction_template import TransactionTemplate
 from app.services.pay_calendar import calendar_for
 from app.services.statement_import import delete_import
 from app.services.statement_match import (
+    account_merchants,
+    answered_merchants,
+    CONTAINER_ANSWERS,
     Evidence,
-    StandingRule,
+    LinePipeline,
+    pipeline_for,
     Placement,
     PlacementKind,
+    PurchaseDestination,
+    register_set,
+    review_set,
     RuleAnswer,
     RuleSubmission,
     RuleView,
-    PurchaseDestination,
-    account_merchants,
-    answered_merchants,
-    register_set,
-    review_set,
+    StandingRule,
     state_rules,
 )
 from app.services.statement_match._placement import (  # pylint: disable=protected-access
@@ -58,6 +61,7 @@ from app.services.statement_match._bars import (  # pylint: disable=protected-ac
 from app.services.statement_match._rules import (  # pylint: disable=protected-access
     _named_templates,
     active_category_names,
+    is_inflow,
     offerable_templates,
     rules_for,
 )
@@ -2472,3 +2476,144 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
         )
 
         assert section.merchants[0].unofferable.template is None
+
+
+class TestTheBanksSignConvention:
+    """:func:`is_inflow` -- the ONE statement of which sign means ARRIVING.
+
+    Plan step ``bank_import:X-gj-2b``.  Seven readers in this package need a
+    bank line's direction, and each spelled the comparison for itself until
+    that step's own adversarial review counted EIGHT such comparisons -- three
+    of them added by the very change whose commit title read *the SIGN stops
+    routing*.  A convention written eight times is eight places to write it
+    backwards, and it decides which way real money is reported to have moved.
+
+    **Graded on LITERALS, not on the constant it is derived from**, which is
+    the whole value of the case: an assertion phrased against the function's
+    own expression would pass with that expression inverted.
+    """
+
+    def test_a_CREDIT_is_money_arriving(self):
+        """The bank states money INTO the account as positive."""
+        assert is_inflow(Decimal("28.29")) is True
+
+    def test_a_DEBIT_is_not(self):
+        """And money out of it as negative."""
+        assert is_inflow(Decimal("-57.96")) is False
+
+    def test_the_smallest_representable_figures_take_the_same_arms(self):
+        """One cent either way, which is where an off-by-one boundary shows.
+
+        ``bank_statement_lines.amount`` is ``NUMERIC(12, 2)``, so a cent is the
+        smallest step the column can hold and these are the two rows nearest
+        the boundary that the table can actually store.
+        """
+        assert is_inflow(Decimal("0.01")) is True
+        assert is_inflow(Decimal("-0.01")) is False
+
+
+class TestWhichPipelineALineEnters:
+    """:func:`pipeline_for` -- the ONE place the two acts are told apart.
+
+    Plan step ``bank_import:X-gj-2b-2``.  What an unexplained bank line BECOMES
+    was decided by its SIGN until this step, in two separate sign tests that
+    ran before the owner's rule was consulted at all.  A merchant credit is
+    money ARRIVING that must become a PURCHASE -- a refund back into the
+    container the owner named -- so the sign could not decide it and never
+    could have; it was standing in for the ANSWER.
+
+    **Graded as a whole TABLE rather than as cases**, because the failure this
+    shape invites is an uncovered cell rather than a wrong one: a sixth
+    ``RuleAnswer`` added without a decision here would silently take whatever
+    the fall-through does, and "no suggestion" is a plausible-looking answer
+    that nobody chose.  The round-trip assertion below is the same
+    ``set(...) == set(RuleAnswer)`` guard this module already uses for
+    :meth:`RuleAnswer.of`.
+    """
+
+    #: Every cell of (answer x direction), stated rather than derived, so a new
+    #: answer fails the coverage assertion below instead of inheriting a
+    #: default.  ``None`` is the sixth key: no rule at all.
+    EXPECTED = {
+        (RuleAnswer.TEMPLATE, False): LinePipeline.PURCHASE,
+        (RuleAnswer.TEMPLATE, True): LinePipeline.PURCHASE,
+        (RuleAnswer.NEW_ENVELOPE, False): LinePipeline.PURCHASE,
+        (RuleAnswer.NEW_ENVELOPE, True): LinePipeline.PURCHASE,
+        (RuleAnswer.INCOME_CATEGORY, False): LinePipeline.PURCHASE,
+        (RuleAnswer.INCOME_CATEGORY, True): LinePipeline.INCOME,
+        (RuleAnswer.NEVER, False): LinePipeline.PURCHASE,
+        (RuleAnswer.NEVER, True): LinePipeline.INCOME,
+        (RuleAnswer.ALWAYS_ASK, False): LinePipeline.PURCHASE,
+        (RuleAnswer.ALWAYS_ASK, True): LinePipeline.INCOME,
+        (None, False): LinePipeline.PURCHASE,
+        (None, True): LinePipeline.INCOME,
+    }
+
+    def test_the_table_covers_every_answer_in_both_directions(self):
+        """A new ``RuleAnswer`` fails HERE rather than falling through.
+
+        The guard, and the reason this class states a table at all: the
+        dispatcher's own shape is *name what routes and fall through*, which is
+        right for safety and silent for coverage.  This is what makes the
+        silence visible.
+        """
+        answered = {answer for answer, _ in self.EXPECTED}
+
+        assert answered == set(RuleAnswer) | {None}, (
+            "every RuleAnswer needs a decision in BOTH directions -- a new "
+            "answer must name its pipeline rather than inherit one"
+        )
+        assert len(self.EXPECTED) == (len(RuleAnswer) + 1) * 2
+
+    #: One real figure per direction, on the bank's own convention.  Stated as
+    #: DATA here rather than taken from :func:`~app.services.statement_match.
+    #: _rules.is_inflow`, so this table grades that convention instead of
+    #: inheriting it: a test that asked the production predicate which sign
+    #: means *arriving* would pass with the predicate inverted.
+    AMOUNTS = {True: Decimal("28.29"), False: Decimal("-57.96")}
+
+    @pytest.mark.parametrize("answer,arriving", sorted(
+        EXPECTED, key=lambda k: (k[0].value if k[0] else "", k[1]),
+    ))
+    def test_each_cell_routes_where_the_table_says(self, answer, arriving):
+        """Every cell, one case each."""
+        assert pipeline_for(
+            amount=self.AMOUNTS[arriving], answer=answer,
+        ) is self.EXPECTED[(answer, arriving)]
+
+    def test_a_CONTAINER_answer_is_what_makes_an_inflow_a_purchase(self):
+        """The whole content of the change, stated as one property.
+
+        An inflow is a purchase exactly when its merchant's answer names a
+        SPENDING CONTAINER.
+
+        **Asserted against a LITERAL pair, not against ``CONTAINER_ANSWERS``**
+        (plan step ``bank_import:X-gj-2b-3``, found by adversarial test-quality
+        review).  It read ``answer in CONTAINER_ANSWERS`` -- the same constant
+        ``pipeline_for`` branches on -- so both sides of the assertion came
+        from one place and adding ``INCOME_CATEGORY`` to that constant left the
+        case GREEN while every unclaimed deposit became a purchase.  Its own
+        docstring claimed the opposite: that the property and the constant
+        "cannot drift apart".  They cannot, because the case could not see
+        drift.
+        """
+        for answer in list(RuleAnswer) + [None]:
+            files_a_purchase = pipeline_for(
+                amount=self.AMOUNTS[True], answer=answer,
+            ) is LinePipeline.PURCHASE
+            assert files_a_purchase is (
+                answer in (RuleAnswer.TEMPLATE, RuleAnswer.NEW_ENVELOPE)
+            )
+
+    def test_an_OUTFLOW_is_always_a_purchase_candidate(self):
+        """Whatever the answer -- the rule only decides what is SUGGESTED.
+
+        ``NEVER`` is answered further down by
+        :class:`~app.services.statement_match.CreationBars`, which is where
+        ruling **R-GJ** put it; routing it away from the purchase pipeline here
+        would be a second statement of that refusal.
+        """
+        for answer in list(RuleAnswer) + [None]:
+            assert pipeline_for(
+                amount=self.AMOUNTS[False], answer=answer,
+            ) is LinePipeline.PURCHASE

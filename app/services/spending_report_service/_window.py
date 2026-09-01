@@ -342,12 +342,30 @@ def _shift_month(year: int, month: int, steps: int) -> tuple[int, int]:
 
 
 def _spent_total(txns: list[Transaction]) -> Decimal:
-    """Return total settled spend as a non-negative ``Decimal``.
+    """Return total settled spend, SIGNED.
+
+    **It was ``abs()`` per row until plan step ``bank_import:X-gj-2b``, and
+    that was a money defect once the CHECK moved.**  ``abs()`` could not change
+    an answer while ``ck_transaction_entries_positive_amount`` said
+    ``amount > 0`` -- a settled envelope is worth the sum of its purchases, so
+    its contribution was non-negative by construction.  Ruling **R-II** relaxed
+    the CHECK so a merchant refund files as a NEGATIVE purchase, and a
+    per-row ``abs()`` then reported a refunded envelope as SPENDING of the same
+    magnitude: measured ``-86.67 -> +86.67``, a `$173.34` error against the
+    truth on a window where the account received the money.
+
+    The total can therefore be negative, for a window whose refunds exceeded
+    its purchases.  That is the honest figure, and it is deliberately NOT the
+    breakdown's share denominator: dividing by a net that refunds have pulled
+    toward zero is what printed **600%** on a `$600.00` category, so
+    :func:`~._breakdown._share_base` divides by what the window MOVED
+    (developer ruling **bank_import:R-IL**, 2026-09-01).  The two are the same figure wherever no
+    category went negative.
 
     Args:
         txns: Settled expense transactions.
 
     Returns:
-        The sum of ``abs(owned_contribution(txn))`` over ``txns``.
+        The sum of ``owned_contribution(txn)`` over ``txns``.
     """
-    return sum((abs(owned_contribution(txn)) for txn in txns), ZERO)
+    return sum((owned_contribution(txn) for txn in txns), ZERO)

@@ -211,7 +211,7 @@ def compute_spending_report(
             settled_only=True,
             window_label=resolved.label,
         ),
-        hero=_build_hero(txns, series),
+        hero=_build_hero(txns, series, current_by_cat),
         series=series,
         breakdown=_build_breakdown(current_by_cat, prior_by_cat),
         changes=_build_changes(current_by_cat, prior_by_cat),

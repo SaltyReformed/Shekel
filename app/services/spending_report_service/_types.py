@@ -67,7 +67,8 @@ class Comparison:
             average), or ``None`` when no baseline exists.
         delta: ``current - baseline`` (signed), or ``None``.
         pct: ``delta`` as a percent of ``baseline``, or ``None`` -- also
-            ``None`` when ``baseline`` is zero (an empty prior window).
+            ``None`` when ``baseline`` is not POSITIVE (an empty prior window,
+            or one whose refunds exceeded its purchases).
     """
 
     baseline: Decimal | None
@@ -84,9 +85,22 @@ class Comparison:
                 (all three fields then come back ``None``).
 
         Returns:
-            The :class:`Comparison`.  When ``baseline`` is zero the delta is
-            still real (``current``) but ``pct`` is ``None`` (no percent of
-            zero -- via :func:`spending_analysis.signed_pct`).
+            The :class:`Comparison`.  The ``delta`` is always real; ``pct`` is
+            ``None`` for any baseline that is not POSITIVE.
+
+            **Zero was the only such baseline until ruling
+            **bank_import:R-II**** (plan step ``bank_import:X-gj-2b``).  A
+            window's spend was ``sum(abs(...))`` and could not be negative;
+            with a merchant refund filing as a NEGATIVE purchase it can be, for
+            a window whose refunds exceeded its purchases -- and a percent
+            CHANGE against a negative base reports the wrong DIRECTION, which
+            is money the owner reads off a chip.  Worked: spend rises from
+            ``-50.00`` to ``100.00``, so ``delta`` is ``+150.00`` and the
+            ratio is ``150 / -50 = -300%`` -- a fall of three hundred percent
+            printed over a rise.  There is no percentage of a negative base
+            that means what this chip means, so the honest answer is the one an
+            empty prior window already gets: none.  The figures themselves are
+            still shown, so nothing is hidden.
         """
         if baseline is None:
             return cls(baseline=None, delta=None, pct=None)
@@ -94,6 +108,11 @@ class Comparison:
         return cls(
             baseline=baseline,
             delta=delta,
+            # **The non-positive-base rule is `signed_pct`'s, not this
+            # value's** (plan step ``bank_import:X-gj-2b-3``).  A
+            # ``baseline > ZERO`` test stood here and strictly subsumed that
+            # function's own ``base == ZERO``, so one fact had two guards and
+            # the inner one was dead for its only caller.
             pct=spending_analysis.signed_pct(delta, baseline),
         )
 
@@ -103,7 +122,21 @@ class HeroFigures:
     """The Spending hero band.
 
     Attributes:
-        spent_total: Total settled spend in the chosen window.
+        spent_total: Total settled spend in the chosen window, NET -- refunds
+            reduce it (ruling **bank_import:R-II**).
+        moved_total: What the window MOVED through its categories, ignoring
+            direction (:func:`~._breakdown._share_base`).  **It is here because
+            the card would otherwise carry two undisclosed bases** (developer
+            ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``): every
+            breakdown row's ``share`` is a fraction of THIS figure while the
+            hero printed only the NET, so on ``Groceries 600.00`` beside
+            ``Electronics -500.00`` the card read a hero of `$100.00` over rows
+            of `$600.00 / 55%` and `-$500.00 / -45%` -- percentages summing to
+            about 9%, and a row six times its own hero.  Stating both is what
+            lets a reader multiply a row by a figure on the card again.  It is
+            EQUAL to :attr:`spent_total` for any window holding no refund, so
+            an ordinary month shows one number twice and the screen prints it
+            once.
         vs_prior: Comparison against the immediately preceding window of the
             same type.
         vs_average: Comparison against the trailing same-type window average.
@@ -114,6 +147,7 @@ class HeroFigures:
     """
 
     spent_total: Decimal
+    moved_total: Decimal
     vs_prior: Comparison
     vs_average: Comparison
     payment_timing: dict | None
@@ -150,14 +184,30 @@ class SpendingItemRow:
     Attributes:
         category_id: The category's id (``0`` for the Uncategorized bucket).
         item_name: The category item label.
-        amount: Settled spend for this category in the window.
-        share: ``amount`` as a fraction of the window total (a full-precision
-            ``Decimal`` in ``[0, 1]``; templates render, never compute).
+        amount: Settled spend for this category in the window.  **SIGNED, and
+            negative for a category its refunds carried below zero** (ruling
+            **bank_import:R-II**).
+        share: ``amount`` as a fraction of what the window MOVED -- the sum
+            of the categories' MAGNITUDES (:func:`~._breakdown._share_base`),
+            a full-precision ``Decimal``; templates render, never compute.
+            **In ``[-1, 1]``, and the denominator is what makes that a bound
+            rather than a hope** (developer ruling **bank_import:R-IL**, 2026-09-01, plan step
+            ``bank_import:X-gj-2b-3``).  A category whose refunds exceeded its
+            purchases has a NEGATIVE amount and so a negative share, which is
+            the honest reading -- *this category took the window DOWN by this
+            much of what moved*.  Dividing by the NET window total instead
+            rendered **600%** beside **-500%** on ``Groceries 600.00`` and
+            ``Electronics -500.00``; the two denominators are the SAME figure
+            for a window holding no refunds, so nothing moved on a window
+            without one.  Zero only where nothing moved at all.
         delta: ``amount`` minus the category's prior-window spend (signed;
             the D7 window-over-window change basis).
-        is_new: ``True`` when the category had no prior-window spend, so the
-            whole amount is new spending (rendered as a "new" badge instead
-            of a percent of zero).
+        is_new: ``True`` when the prior window held NO row for this category.
+            **Absence, never a zero total** (plan step
+            ``bank_import:X-gj-2b-3``): an envelope settled with no purchases
+            contributes ``0`` and a category whose refunds cancelled its
+            purchases now does too, so a zero prior total is not an absent one.
+            Rendered as a "new" badge instead of a percent of zero.
     """
 
     category_id: int
@@ -174,13 +224,18 @@ class SpendingGroupRow:
 
     Attributes:
         group_name: The category group label.
-        amount: Settled spend for the whole group in the window.
-        share: ``amount`` as a fraction of the window total.
+        amount: Settled spend for the whole group in the window.  SIGNED --
+            negative for a group its refunds carried below zero, exactly as
+            :attr:`SpendingItemRow.amount` is.
+        share: ``amount`` as a fraction of what the window MOVED, on the same
+            terms as :attr:`SpendingItemRow.share`.
         delta: ``amount`` minus the group's prior-window spend (signed).
             The prior side sums EVERY prior-window category in the group,
             including categories with no spend in the chosen window, so a
             group whose big bill stopped shows the drop.
-        is_new: ``True`` when the group had no prior-window spend at all.
+        is_new: ``True`` when the prior window held NO category in this group
+            -- absence and not a zero total, for the reason
+            :attr:`SpendingItemRow.is_new` states.
         items: The group's :class:`SpendingItemRow` items, amount-descending.
     """
 
@@ -207,7 +262,11 @@ class ChangeRow:
         current: The chosen window's settled spend (``0`` when none).
         prior: The prior window's settled spend (``0`` when none).
         delta: ``current - prior`` (signed).
-        is_new: ``True`` when ``prior`` is zero and ``current`` is not.
+        is_new: ``True`` when the prior window held NO row for this category
+            -- absence and not a zero total, for the reason
+            :attr:`SpendingItemRow.is_new` states.  A row exists here only
+            because one of the two windows held the category, so the prior
+            window's absence is the whole test.
     """
 
     category_id: int

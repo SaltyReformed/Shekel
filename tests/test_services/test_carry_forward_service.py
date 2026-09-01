@@ -1692,6 +1692,112 @@ class TestCarryForwardEnvelopeOverspend:
             assert target.is_override is False
 
 
+class TestCarryForwardEnvelopeRefundedBelowZero:
+    """A refund carries the source's entries NEGATIVE, so the leftover EXCEEDS.
+
+    Ruling **bank_import:R-II**, developer ruling 2026-09-01, plan step
+    ``bank_import:X-gj-2b-3``.  A merchant credit files as a NEGATIVE purchase,
+    so ``entries_sum`` can be below zero and ``max(0, budget - entries_sum)``
+    can exceed the budget.  The `max` clamps an OVERSPENT envelope and was
+    never a bound against a refunded one -- and it must not become one:
+    ``entry_service.compute_remaining`` answers the same figure for the same
+    row on screen, so a cap here would make the rollover disagree with the
+    number the owner reads beside it.
+
+    **What the pair conserves is the PLAN.**  A `$100.00` envelope holding one
+    `-$50.00` refund settles at `-$50.00` and rolls `$150.00` -- `$100.00`
+    across the two periods, which is the one budget the owner declared.  That
+    is the assertion below, and it is what makes the figure a decision rather
+    than an artefact of an unguarded subtraction.
+
+    **The COST is a known one** (same ruling): a refund of a purchase made in
+    an EARLIER period lands here on the cash basis, so it enlarges an envelope
+    whose own purchases it did not reverse.
+    """
+
+    def test_a_refunded_envelope_rolls_MORE_than_its_budget(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """`$100.00` budget, one `-$50.00` refund: `$150.00` rolls, source `-$50.00`."""
+        with app.app_context():
+            template = _create_envelope_template(
+                seed_user, default_amount="100.00",
+            )
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            target = _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+            )
+            _add_entry(
+                source, seed_user, "-50.00", description="Amazon refund",
+            )
+            db.session.commit()
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.refresh(source)
+            db.session.refresh(target)
+            assert settled_figure(source) == Decimal("-50.00"), (
+                "the source records what its entries came to, refunds and all"
+            )
+            assert target.estimated_amount == Decimal("250.00"), (
+                "100.00 of the target's own plan plus a 150.00 leftover"
+            )
+            assert target.is_override is True
+            # THE CONSERVED FIGURE: what the two periods plan between them is
+            # the two budgets the owner declared, unchanged by the refund
+            # passing through.  A cap at the source budget would read 200.00
+            # here and lose 50.00 of plan.
+            assert (
+                settled_figure(source) + target.estimated_amount
+            ) == Decimal("200.00")
+
+    def test_a_PARTLY_refunded_envelope_still_rolls_its_net_leftover(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The control between this class and the overspend one.
+
+        `$80.00` spent and `$30.00` refunded is `$50.00` of net spend against a
+        `$100.00` budget, so `$50.00` rolls -- a figure BELOW the budget, which
+        a cap could not be told apart from.  Without this case an
+        implementation that simply ignored negative entries would satisfy the
+        one above by arithmetic accident on a source holding only a refund.
+        """
+        with app.app_context():
+            template = _create_envelope_template(
+                seed_user, default_amount="100.00",
+            )
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            target = _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+            )
+            _add_entry(source, seed_user, "80.00")
+            _add_entry(
+                source, seed_user, "-30.00", description="Amazon refund",
+            )
+            db.session.commit()
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.refresh(source)
+            db.session.refresh(target)
+            assert settled_figure(source) == Decimal("50.00")
+            assert target.estimated_amount == Decimal("150.00")
+
+
 class TestCarryForwardEnvelopeMissingTarget:
     """Target canonical does not yet exist -- engine generates it."""
 

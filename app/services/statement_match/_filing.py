@@ -87,6 +87,7 @@ from ._creations import IncomeCreation, PurchaseCreation
 from ._offers import BankLine
 from ._reads import ReviewSet, review_set
 from ._scope import ReviewScope
+from ._verdict import CHECK_FIRST
 
 
 @dataclass(frozen=True)
@@ -164,17 +165,28 @@ class RuleFiling:
     def filed_count(self) -> int:
         """Return how many lines a rule filed, in EITHER direction.
 
-        **Both counts, since plan step ``bank_import:X-gj-2a``.**  It read
-        ``recorded_count`` alone, which is purchases only
+        **ALL THREE counts, and the third arrived the same way the second
+        did.**  It read ``recorded_count`` alone until plan step
+        ``bank_import:X-gj-2a``, which is purchases only
         (:attr:`~._batch.BatchOutcome.deposited_count` is deliberately not
         folded into it), so a pass that filed nothing but deposits under ruling
         **R-HT(a)** would have reported filing NOTHING -- with the acts landed,
         the money moved and the receipt silent about all of it.  That is the
         under-report a bound-with-no-denominator makes, on the door nobody
         watches.
+
+        Plan step ``bank_import:X-gj-2b-3`` split ``recorded_count`` again, by
+        DIRECTION, and this sum had to learn the new one for the identical
+        reason: a pass that filed nothing but merchant credits would have
+        reported ZERO.  **A count assembled by NAMING its members is one member
+        away from wrong every time a member is added** -- which is now twice on
+        this one property -- and what caught it both times was a case asserting
+        the whole outcome rather than the count alone.
         """
         return (
-            self.outcome.recorded_count + self.outcome.deposited_count
+            self.outcome.recorded_count
+            + self.outcome.refunded_count
+            + self.outcome.deposited_count
         )
 
     @property
@@ -192,9 +204,10 @@ class RuleFiling:
         this door can file is money leaving --* :func:`~._create._load_line`
         *refuses an inflow*, which was true of a door that filed only
         purchases; it now also files deposits a standing INCOME rule answers
-        for, and those are positive.  ``_load_line`` still refuses an inflow --
-        it is the PURCHASE door's own refusal and unchanged -- so the sentence
-        was accurate about the wrong door once a second one existed.  A
+        for, and those are positive.  Plan step ``bank_import:X-gj-2b-2`` then
+        took the second half of it as well: ``_load_line`` refuses an inflow
+        only where NO container answer claims it, so the purchase arm files
+        refunds and they are positive on the bank's convention too.  A
         one-import pass can therefore come to any sign, including exactly zero
         on a pass whose filed swipes and filed deposits happen to cancel: a
         receipt reading the figure must say what it is rather than assume it is
@@ -447,7 +460,7 @@ def _inflow_filings(
       has not been shown to collide with anything.
     * **The books may ALREADY HOLD this deposit**, which is the hazard the
       outflow side does not have.
-      :meth:`~._reads.ReviewSet.income_already_recorded_in` answers it -- does
+      :meth:`~._reads.ReviewSet.arrivals_already_held_in` answers it -- does
       this deposit's own pay period hold unexplained income that could contain
       it -- and under a human tick the card renders that warning and the person
       decides.  **There is no person here**, so a rule withholds wherever the
@@ -511,7 +524,7 @@ def _inflow_filings(
         #
         # **The double-count guard below cannot stand in for it**, which is
         # what made the omission a money defect rather than a tidiness one:
-        # :meth:`~._reads.ReviewSet.income_already_recorded_in` tests
+        # :meth:`~._reads.ReviewSet.arrivals_already_held_in` tests
         # ``row.expected_on <= day <= row.expected_through``, so it sees only
         # rows in the deposit's OWN pay period, while the near tier reaches
         # across periods by ``DAY_WINDOW``.  A candidate row one period over is
@@ -529,16 +542,20 @@ def _inflow_filings(
                 ),
             ))
             continue
-        held = review.income_already_recorded_in(inflow.line)
+        held = review.arrivals_already_held_in(inflow.line)
         if held is not None:
             withheld.append(WithheldLine(
                 line=inflow.line,
+                # **The CLAUSE is the value's own** (plan step
+                # ``bank_import:X-gj-2b``): the refund half composes the same
+                # withholding, and a second spelling of it here drifted at
+                # once -- this printed a bare ``Decimal`` where the card beside
+                # it printed ``$2,473.38``.  The ADVICE is
+                # ``_verdict.CHECK_FIRST``, so the receipt and the screen
+                # send the owner to the same place.
                 reason=(
-                    f"Your rule says this is income, and the pay period it "
-                    f"falls in already holds {held.total} of income no bank "
-                    f"line explains -- so recording it automatically could "
-                    f"count the same money twice.  Check it on the reconcile "
-                    f"screen."
+                    f"Your rule says this is income, and "
+                    f"{held.why_it_could_double_count}.  {CHECK_FIRST}"
                 ),
             ))
             continue

@@ -128,6 +128,22 @@ class AddTab:
     act: AddAct
     destinations: "tuple[PurchaseDestination, ...]"
     placement: "Placement | None"
+    #: Whether the purchase this ADD would file is a REFUND -- money the bank
+    #: gave BACK, filed as a negative purchase into the container the owner's
+    #: rule names (ruling **R-II**, plan step ``bank_import:X-gj-2b``).
+    #:
+    #: **A FIELD the builder states, for the reason :class:`AddAct` is one.**
+    #: The card builder already knows the line's direction; a template asking
+    #: ``card.line.amount > 0`` would be a SECOND spelling of the partition
+    #: :func:`~._rules.pipeline_for` owns, which the paragraph above forbids.
+    #: Always ``False`` for :attr:`AddAct.INCOME`, which files no purchase.
+    # **No DEFAULT** (plan step ``bank_import:X-gj-2b-3``).  It carried
+    # ``= False``, and a defaulted direction flag silently means CHARGE --
+    # which is the sentence this field was added to stop printing over a
+    # refund.  ``CreatedPurchase.records_a_refund`` is required for the same
+    # reason, and ``create_purchase_from_line``'s own arguments record the
+    # rule: a default would silently mean something.
+    records_a_refund: bool
 
     @property
     def records_a_purchase(self) -> bool:
@@ -142,6 +158,21 @@ class AddTab:
             later renders nothing rather than the wrong control.
         """
         return self.act is AddAct.PURCHASE
+
+    @property
+    def records_a_charge(self) -> bool:
+        """Return whether ADD would file a purchase the bank TOOK money for.
+
+        The complement of :attr:`records_a_refund` INSIDE the purchase arm, so
+        the screen renders one sentence each with no ``else`` -- the same
+        no-else partition :attr:`records_a_purchase` exists for.  A template
+        that said *"spending your budget did not have"* on the bare purchase
+        arm described a refund as spending, which is what this pair fixes.
+
+        Returns:
+            Whether ADD files a purchase and that purchase is not a refund.
+        """
+        return self.records_a_purchase and not self.records_a_refund
 
     @property
     def records_income(self) -> bool:

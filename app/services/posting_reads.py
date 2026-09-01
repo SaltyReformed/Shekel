@@ -353,8 +353,14 @@ def posted_purchase_effect(account_id: int, scenario_id: int) -> Decimal:
 
     Over the account's non-deleted, balance-contributing, NON-transfer
     transactions in *scenario_id* that are NOT settled: sum ``-amount`` over
-    their debit entries carrying a ``settled_on``.  Always negative or zero: a
-    purchase is an expense and its money leaves.
+    their debit entries carrying a ``settled_on``.  **SIGNED, and the claim
+    that it is always negative or zero left at plan step
+    ``bank_import:X-gj-2b-3``**: that held only while
+    ``ck_transaction_entries_positive_amount`` said ``amount > 0``, and ruling
+    **bank_import:R-II** made a merchant credit a NEGATIVE purchase -- whose
+    posted cash leg is POSITIVE, because the money arrived.  The expression
+    needed nothing: negating the amount is what converts a purchase into its
+    cash effect, and it is total over both directions.
 
     **The three narrowings are the write side's, restated in SQL rather than
     shared with it** -- the same deliberate independence

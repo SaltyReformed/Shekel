@@ -49,7 +49,11 @@ from app.models.ledger_account import LedgerAccount
 from app.models.statement_match import StatementMatchMember
 from app.models.transaction import Transaction
 from app.services import statement_match
-from app.services.statement_match._variance import MatchSides
+from app.services.statement_match._candidates import purchase_candidate
+from app.services.statement_match._variance import (
+    MatchSides,
+    corrected_figure,
+)
 
 from ._builders import (
     accepted_acts,
@@ -1647,3 +1651,65 @@ class TestTheReceiptNamesIt:
         assert _uncategorized_net(
             seed_user, LedgerAccountClassEnum.EXPENSE,
         ) == Decimal("0.02")
+
+
+class TestCorrectingAPurchaseOntoTheBanksFigure:
+    """``corrected_figure`` inverts the purchase candidate's own negation.
+
+    Plan step ``bank_import:X-gj-2b``, ruling **R-II**.  A purchase's cash is
+    ``-entry.amount`` (:func:`~._candidates.purchase_candidate`), so the figure
+    that moves its cash onto the bank's is ``-bank_cash``.
+
+    **It was ``abs(bank_cash)``, and the two agree only for an OUTFLOW.**
+    While every purchase was positive its cash was negative and the magnitude
+    WAS the negation; a merchant refund is a negative purchase whose cash is
+    POSITIVE, and there ``abs()`` books ``+X`` where the row must store ``-X``
+    -- turning a refund into a charge of the same size.
+
+    **Both directions are asserted**, because a case staging only the refund
+    would pass against a naive ``-bank_cash`` that had broken every outflow,
+    and a case staging only the outflow is what let the defect ship.
+    """
+
+    def test_an_OUTFLOW_purchase_still_corrects_to_the_magnitude(
+        self, app, db, seed_user,
+    ):
+        """The case that was already right, pinned so the fix cannot break it."""
+        with app.app_context():
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="60.00", is_envelope=True,
+            )
+            purchase = a_purchase(
+                seed_user, envelope, amount="60.00",
+                purchased_on=seed_user["bootstrap_period"].start_date,
+            )
+            db.session.flush()
+
+            row = purchase_candidate(purchase)
+            assert row.cash_amount == Decimal("-60.00")
+
+            # The bank took 60.06, not 60.00.
+            assert corrected_figure(row, Decimal("-60.06")) == Decimal("60.06")
+
+    def test_a_REFUND_purchase_corrects_to_a_NEGATIVE_figure(
+        self, app, db, seed_user,
+    ):
+        """The case ``abs()`` inverted.
+
+        A refund stored at ``-28.29`` has cash ``+28.29``; a bank line stating
+        ``+30.00`` must move the STORED figure to ``-30.00``, not ``+30.00``.
+        """
+        with app.app_context():
+            envelope = a_transaction(
+                seed_user, name="Amazon", amount="0.00", is_envelope=True,
+            )
+            refund = a_purchase(
+                seed_user, envelope, amount="-28.29",
+                purchased_on=seed_user["bootstrap_period"].start_date,
+            )
+            db.session.flush()
+
+            row = purchase_candidate(refund)
+            assert row.cash_amount == Decimal("28.29")
+
+            assert corrected_figure(row, Decimal("30.00")) == Decimal("-30.00")

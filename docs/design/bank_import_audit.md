@@ -94,7 +94,7 @@ Five pages plus the account's reconcile panel, reached from one another through 
 | 2 | Alert banner on every page | `_statement_review_body.html:41`, `_statement_workbench_body.html`, `statements.html`, `statement_agreement.html` | remove: the consequence of an act belongs in its confirm and its receipt, not above the fold of every visit |
 | 3 | Proposed matches card | `_statement_review_body.html`, "Proposed matches" | fix: keep the per-class sweep (R-FZ(c)); render as rows of the one list with a solid suggestion chip, not a separate card |
 | 4 | The evidence groups | `_queue.py` `_SAID`, rendered as two cards | fix: the grouping the reader needs is by VERB (match / add / transfer / skip), not by what the evidence says; the evidence becomes the chip's style |
-| 5 | Per-row amber sentences | `_queue.py` `_notes_for`, `income_already_held` | fix: a sentence per row is the wrong grain; state it once per signature and put the sentence one click away |
+| 5 | Per-row amber sentences | `_queue.py` `_notes_for`, `arrivals_already_held` | fix: a sentence per row is the wrong grain; state it once per signature and put the sentence one click away |
 | 6 | Parked card payments in the queue | `_bars.py` ParkedLine, rendered as 9 rows | remove from the queue: a line with no available act is a HOLDING STATE (a count in the header, a Transfers tab), never inbox work |
 | 7 | The destination select defaulting to "leave this line alone" | `_statement_review_body.html`, `data-destination` | fix: a JUSTIFIED suggestion (a rule, an exact or near match) is pre-filled; an untouched row is not submitted; undo is the safety. Amends R-FZ(b), which banned an ARBITRARY default and was right to |
 | 8 | "What Apply will create" and "What this page did not look at" panels | `_statement_review_body.html` | move: the first is the confirm dialog's text; the second is a footer line with a disclosure |
@@ -127,9 +127,9 @@ The result is a screen that is half rationale. Measured on the templates:
 | `_statement_workbench_body.html` | ~354 | 9,172 / 17,976 |
 
 On the review page today the two sentences "You have said Capital One Credit Card is never a
-purchase..." and "This pay period already holds 2 income row(s)..." are printed, between them,
-sixteen times. Trimming words does not fix this; the grain does. The remedy is a different rendering
-principle, stated as a screen rule:
+purchase..." and "This pay period already holds 2 row(s) ... your records say arrived..." are
+printed, between them, sixteen times. Trimming words does not fix this; the grain does. The remedy
+is a different rendering principle, stated as a screen rule:
 **the row shows the decision; the disclosure is one click away.** The RECEIPT keeps every sentence
 (that half of R-FZ stands); the queue does not.
 
