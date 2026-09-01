@@ -20,11 +20,12 @@ because rule 4's producer answers *what does this row's amount resolve to*,
 which is the amount model's question rather than this module's -- and hosting
 it here forced ``cash_ledger._amount_source`` to reach UP a tier for it, which
 is what forced the split of :mod:`app.services.row_valuation`.  That reach is
-deleted rather than routed around, and this package may now import the amount
-model -- which plan step X-au-g-2c needs, to route :func:`get_payment_history`
-through the resolver instead of through ``owned_contribution``.  **The cycle
-that reach created was real and pylint reported nothing about it**, which is
-measured once, in ``cash_ledger._loan_installment``.
+deleted rather than routed around, so this package imports the amount model --
+which plan step X-au-g-2c did: :func:`get_payment_history` prices its feed
+through ``cash_ledger.contributions_by_id`` rather than through
+``row_valuation.owned_contribution``, which closed finding **N-266**(a).  **The
+cycle that reach created was real and pylint reported nothing about it**, which
+is measured once, in ``cash_ledger._loan_installment``.
 
 **Why it is STILL a package, stated honestly because its original reason is
 gone.**  This was one module standing at 1009 of pylint's 1000-line ceiling,

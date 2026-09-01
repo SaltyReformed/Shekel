@@ -306,14 +306,23 @@ def resolve_loan_bundle(
     if params is None:
         return None
     anchor_facts = load_loan_anchor_facts(params)
-    # ``scenario_id_or_none``, deliberately: a loan's payment feed is the ONE
-    # scenario-scoped input to its resolution, and its params, anchors and rate
-    # history are contract facts.  With no baseline the feed is empty and the
-    # CONTRACT terms still resolve -- plan step C8e's rule, and what keeps
-    # escrow and rate editing working for a user whose baseline is missing.
-    # Every other reader takes the raising ``scenario_id`` (ruling R-BX).
+    # ``amounts_or_none``, deliberately, and it is the same nullability this
+    # line has always spelled: a loan's payment feed is the ONE scenario-scoped
+    # input to its resolution, and its params, anchors and rate history are
+    # contract facts.  With no baseline the feed is empty and the CONTRACT terms
+    # still resolve -- plan step C8e's rule, and what keeps escrow and rate
+    # editing working for a user whose baseline is missing.  Every other reader
+    # takes the raising ``amounts`` / ``scenario_id`` (ruling R-BX).
+    #
+    # It was ``ctx.scenario_id_or_none`` until plan step X-au-g-2c, which routed
+    # ``get_payment_history`` through the amount model: the loader now takes the
+    # BASIS that prices the feed rather than an id that only scopes it, so the
+    # feed and its figures cannot come from two different scenarios.  Passing
+    # the pass's own basis is also what keeps this read to ONE pricing pass --
+    # ``ctx.amounts()`` is memoized, so a render resolving several loans runs
+    # the paycheck engine once (findings N-268, N-269).
     context = load_loan_context(
-        account.id, ctx.scenario_id_or_none, params,
+        account.id, ctx.amounts_or_none(), params,
     )
     standing = standing_payment(account.id, account.user_id)
     # The resolver takes the EXTRA alone -- it prices the contractual schedule

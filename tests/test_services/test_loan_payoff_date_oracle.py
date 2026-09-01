@@ -66,6 +66,7 @@ from app.services.balance_at._resolution import (
 from app.services.balance_at import BalanceContext
 from app.utils.dates import add_months
 from tests._test_helpers import (
+    amount_basis_for_scenario,
     create_loan_account,
     insert_trueup_event,
     loan_params_for,
@@ -275,7 +276,8 @@ def _committed_payoff(loan_params, scenario_id, as_of, extra):
     ``split_payment_cash`` -- so agreement is meaningful, not tautological.
     """
     ctx_loan = loan_payment_service.load_loan_context(
-        loan_params.account_id, scenario_id, loan_params,
+        loan_params.account_id, amount_basis_for_scenario(scenario_id),
+        loan_params,
     )
     anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
     scenarios = loan_resolver.compute_payoff_scenarios(

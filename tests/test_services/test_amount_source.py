@@ -337,26 +337,33 @@ def _declare_loan_payment_derived(xfer):
     column, and only THEN declares it -- the transition the loan cutover (plan
     step X-au-g) performs.
 
-    **The other is that the LOAN-side income leg cannot be declared at all
-    today, and that is a finding rather than a fixture convenience.**
-    ``loan_payment_service.get_payment_history`` reads every shadow income row
-    ON THE LOAN ACCOUNT and prices each one through
-    ``row_valuation.owned_contribution``, which REFUSES a row whose plan is
-    derived.  Emptying that column therefore breaks the producer.  The
-    checking-side expense leg is invisible to ``query_shadow_income`` (it
-    filters to the destination account and the income type), so declaring it
-    exercises rule 4 end to end without reaching that reader, and it is the leg
-    every CASH reader prices.
+    **The other is that this helper declares ONE of the two legs, and the
+    reason it could not declare both is now GONE.**  It read: the loan-side
+    income leg cannot be declared at all, because
+    ``loan_payment_service.get_payment_history`` prices every shadow income row
+    on the loan account through ``row_valuation.owned_contribution``, which
+    REFUSES a row whose plan is derived.  Plan step **balance:X-au-g-2c** routed
+    that reader through ``cash_ledger.contributions_by_id``, closing finding
+    **N-266**(a), so the bound is lifted and this helper's scope is now a
+    CHOICE rather than a constraint.
 
-    **This docstring used to call that a CYCLE, and it is not one.**  It read:
-    the loan resolves through ``load_loan_context`` -> ``get_payment_history``,
-    so the rule that prices the row routes back to the row.  That path is
-    deleted -- ``_resolve_loan_basis`` reads the loan's terms alone and loads no
-    payment history -- which is why finding **N-266** (a) is MISDIAGNOSED rather
-    than closed: the restriction this helper honours is real and still holds,
-    but it is ONE UNROUTED READER, and plan step **X-au-g** routes it and then
-    declares both legs.  Whoever does that widens this helper; until then the
-    scoping below is correct and not merely convenient.
+    **It stays scoped to the checking-side EXPENSE leg here, deliberately.**
+    That leg is invisible to ``query_shadow_income`` (which filters to the
+    destination account and the income type), so declaring it exercises rule 4
+    without involving the payment feed at all -- which is what these cases are
+    about.  Declaring BOTH legs is the CUTOVER (plan step X-au-g-2c's second
+    leaf): it needs the stamp on live rows, a migration, and the deletion of
+    ``LoanPricing.live_cash``, and it is graded where those live rather than
+    widened into a fixture here.
+
+    **This docstring used to call the bound a CYCLE, and it was not one.**  It
+    read: the loan resolves through ``load_loan_context`` ->
+    ``get_payment_history``, so the rule that prices the row routes back to the
+    row.  That path was deleted at plan step X-au-g-1 --
+    ``_resolve_loan_basis`` reads the loan's terms alone -- leaving finding
+    N-266(a)'s conclusion standing on ONE UNROUTED READER, which is what
+    X-au-g-2c routed.  Three weeks between the diagnosis and its true cause,
+    which is why a finding's claim is re-measured before its remedy is built.
     """
     _declare_derived(_shadow_of(xfer), AmountSourceEnum.PARENT_TRANSFER)
     return _declare_transfer_derived(xfer)

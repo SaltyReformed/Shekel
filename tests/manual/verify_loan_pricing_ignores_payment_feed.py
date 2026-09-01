@@ -100,7 +100,9 @@ def main():
             params = load_loan_params(account_id)
             anchors = load_loan_anchor_facts(params)
             ctx = BalanceContext.build(lp.account.user_id)
-            context = load_loan_context(account_id, ctx.scenario_id, params)
+            context = load_loan_context(
+                account_id, ctx.amounts(), params,
+            )
             full = list(context.payments)
             confirmed = [p for p in full if p.is_confirmed]
             feeds = {

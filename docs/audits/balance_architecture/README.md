@@ -413,18 +413,32 @@ hides.
     `test_amount_source.TestTheAmountModelReadsNoClock`). Closed **N-40** and **N-410**.
     **A LATER step must obey:** the escrow-threshold site was BUILT, measured a REGRESSION and
     reverted -- **N-409** stands with its remedy withdrawn, re-owned to `X-au-g-2c`.
-  * [ ] **X-au-g-2c** `refactor(loans): a loan payment's shadow is derived` -- the CUTOVER itself,
-    closing **N-266**(a). **Its first move is routing `get_payment_history` through the resolver**,
-    which X-au-g-2a makes legal; two obstacles are named rather than left to be discovered -- it
-    takes no `AmountBasis`, so the signature change reaches `load_loan_context` and its three
-    callers, and it must route to `contributions_by_id` rather than `amounts_by_id`, since it feeds
-    SETTLED rows to the amortization engine and the wrong one replaces recorded cash with forecast
-    cash. Declaring both legs derived is what DELETES the loan half of the read-time repair
-    (`LoanPricing.live_cash`, `_manual_shadow_amount`) rather than leaving it maintained. Dormant on
-    production (`budget.loan_payment_settings` is EMPTY), so it moves `$0.00` there and is graded on
-    a seeded loan. **It also owes a fence decision**: routing through `cash_ledger` puts that whole
-    package on the resolver reference's transitive path, and `_LEDGER_IMPORT_TOKENS` matches nothing
-    in it.
+  * [ ] **X-au-g-2c** the DECOMPOSED parent of the CUTOVER, split 2026-09-01 into the readers,
+    the declaration, and the escrow rule. It ticks with the last of its three leaves.
+    * [x] **X-au-g-2c-1** `cdc2c7d9` -- BOTH readers of a projected loan-side shadow take the
+      amount model. **N-266 said ONE unrouted reader; the census says TWO of NINE, seven
+      settled-only.** The second is `_plan._planned_from_shadows`, and `loan_payment_settings` is
+      EMPTY on production, so 47 of 58 projected shadows take its fallback -- `2c-2` would have
+      shipped an `AmountUnresolvable` on `/savings`. Closed **N-266**; opened **N-432**. The ledger
+      fence is a VALUE control now, with a static check reading W9908's own allowlist.
+    * [ ] **X-au-g-2c-2** `refactor(loans): a loan payment's shadow is derived` -- the DECLARATION.
+      Stamp `amount_source_id` on BOTH legs and empty their figure, which DELETES the loan half of
+      the read-time repair (`LoanPricing.live_cash`, `_manual_shadow_amount`) rather than leaving
+      it maintained. Dormant on production (`budget.loan_payment_settings` is EMPTY), so it moves
+      `$0.00` there and is graded on a seeded loan. **Two obligations it must not discover
+      mid-build:** `query_shadow_income` still eager-loads only `status` and `pay_period`, and a
+      DERIVED row's rule reads `transfer` -> `template` -> `settings` per row, so the eager load
+      belongs in that loader with the stamp; and X-au-f NULLs these same rows, so
+      `_manual_shadow_amount` must be gone before it lands.
+    * [ ] **X-au-g-2c-3** `fix(loans): escrow is charged once per installment` -- **N-409**, and
+      the developer ruled its remedy on 2026-09-01. `prepare_payments_for_engine` floors the escrow
+      subtraction at `amount - contractual_pi` while the fold's `apply_payment_cash` subtracts the
+      full escrow and lets principal go negative (plan D5): TWO allocation rules for one question.
+      The floor is the defect -- on a `$1,700.00` payment against a `$1,910.95` installment it
+      reports `$1,293.96`, exactly the contractual P&I, so a short payment reads as on schedule and
+      the shortfall vanishes in the OPTIMISTIC direction. Escrow becomes a charge against the
+      INSTALLMENT, once, in both producers. **MOVES MONEY**; `$0.00` on production, where every
+      mortgage payment is exactly PITI and one per due month.
 * [ ] **X-au-f** `refactor(transfers): a shadow's amount is its parent's` -- the TRANSFER cutover.
   `transfers.amount` resolves from the template series for a generated transfer, a shadow resolves
   from its parent, and the copy at `transfer_service.py:534` with the drift corrector at `:814` both
