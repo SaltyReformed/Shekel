@@ -21,6 +21,7 @@ import pathlib
 import re
 
 import _registry as registry
+import _row_width as row_width
 from _classes import decomposition_leaf_keys
 from _staging import (
     a_live_ledger_row,
@@ -877,24 +878,65 @@ class TestNoLedgerRowHasGrownIntoASpecification:
         rows = registry.ledger_rows()
         assert len(rows) >= 100, "the ledger parsed almost no rows"
 
-    def test_the_cap_targets_outliers_rather_than_the_corpus(self):
-        """A cap most rows crowd is a cap fitted to the file, which rule 4 refuses.
+    def test_the_crowding_count_is_reported_and_true(self):
+        """Rule 4's corpus signal is a REPORT, and the file states it truthfully.
 
-        **Deliberately not a "widest row has headroom" check.**  That is the
-        right instrument for a LINE cap, where headroom means the document can
-        absorb another finding.  A row has a different remedy always available
-        -- move its narrative to the owning step -- so the meaningful property
-        is that the cap bites on outliers, not on ordinary rows.  The median
-        sat at 409 against a 2,000 cap when this was written; if it ever
-        approaches half the cap, the ledger has become a plan document again.
+        **This was a GATE on the ledger's median row width until plan step
+        balance:X-au-g-2b**, which measured that shape wrong twice over; the
+        argument is on :func:`_row_width.crowded_ledger_rows` and is not
+        repeated here.  Developer ruling 2026-09-01: the signal is REPORTED.
+
+        What is graded is only that the number in the file is TRUE.  Nothing
+        here refuses a wide table; :meth:`test_no_row_is_over_the_row_cap` and
+        the runaway backstop remain the only failures about size.
         """
-        widths = sorted(row.width for row in registry.ledger_rows())
-        median = widths[len(widths) // 2]
-        assert median <= registry.LEDGER_ROW_CAP // 2, (
-            f"the MEDIAN row is {median} of {registry.LEDGER_ROW_CAP}. The cap "
-            "is no longer catching outliers -- the whole table has grown into "
-            "specifications. conventions.md rule 4"
+        assert row_width.stated_crowding_violation() is None
+
+    def test_the_signal_discriminates_at_the_threshold(self):
+        """A reported zero must mean zero, and the signal must be a FILTER.
+
+        **Deliberately not ``len(crowded) == sum(1 for r in rows if r.width >=
+        W)``**, which was the first draft: that recomputes the producer's own
+        one-line expression on both sides, so it holds for any threshold and
+        any producer that applies one -- an equality whose two sides come from
+        one rule. What it grades instead is the BOUNDARY: every row named is at
+        or over the width, no row at or over it is missing, and the ledger
+        really does contain rows on both sides, so a producer returning
+        everything or nothing fails here rather than reading as a clean answer.
+        """
+        by_key = {row.key: row.width for row in registry.ledger_rows()}
+        crowded = set(row_width.crowded_ledger_rows())
+        width = row_width.LEDGER_CROWDING_WIDTH
+
+        assert len(by_key) >= 100, "the ledger parsed almost no rows"
+        assert crowded <= set(by_key), "the signal named a row not in the table"
+        assert all(by_key[key] >= width for key in crowded), (
+            "a row under the crowding width was reported as crowding"
         )
+        assert not [
+            key for key, w in by_key.items() if w >= width and key not in crowded
+        ], "a row at or over the crowding width was left out"
+        assert crowded and len(crowded) < len(by_key), (
+            "every row is on one side of the threshold, so this graded nothing"
+        )
+
+    def test_the_control_fires_on_a_stale_crowding_count(self, stage):
+        """A number nobody grades is a number that goes stale.
+
+        Planted by DERIVING the stated figure off the file and writing a
+        different one, rather than by naming today's count: a control that
+        hardcodes a volatile value goes stale on every branch that opens or
+        closes a finding, which this registry has already paid for once.
+        """
+        text = registry.LEDGER.read_text()
+        match = re.search(r"(\d+) of its rows crowd", text)
+        assert match, "ledger.md states no crowding count to plant in"
+        stated = match.group(0)
+        stage("ledger", stated, f"{int(match.group(1)) + 7} of its rows crowd")
+
+        violation = row_width.stated_crowding_violation()
+        assert violation is not None
+        assert "crowd the row cap" in violation
 
     def test_the_control_fires_on_a_row_that_became_a_specification(self, stage):
         """The shape eight rows carried until 2026-08-11.

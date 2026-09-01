@@ -13,7 +13,9 @@ was carried by the balance README until 2026-08-26 (rule 16): a finding is not a
 step by hand, and one of those pairs went unnoticed for months.
 
 **The ledger stands at 272 rows.** By arc: balance 181, pay_calendar 43, recurrence 33, bank_import
-12, credit_card 3.
+12, credit_card 3. **135 of its rows crowd the 2000-character row cap** (at or over 1000
+characters) -- rule 4's corpus signal, REPORTED rather than gated, because no statistic is both
+monotone under rule 5's archiving and relative to the corpus (`_row_width.crowded_ledger_rows`).
 
 **Every row here is a defect in the CODE** (rule 1, developer ruling 2026-08-28). A finding about a
 planning document -- its length, its shape, the gate that grades it -- is not a row here.
