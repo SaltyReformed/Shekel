@@ -58,7 +58,7 @@ from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.cash_ledger import AnchorPoint
-from app.services.pay_calendar import PayCalendar
+from app.services.pay_calendar import FiledRow, PayCalendar
 from app.services.settle_day import SettleDay
 from app.utils.balance_predicates import (
     balance_contributing_clause,
@@ -416,7 +416,7 @@ def attributed_on(statement: Statement, txn: Transaction) -> date:
             from somewhere else
             (:meth:`~app.services.pay_calendar.PayCalendar.require_period`).
     """
-    period = statement.calendar.require_period(txn.pay_period_id, txn.id)
+    period = statement.calendar.require_period(FiledRow.for_row(txn))
     return period.attribution_day(txn.due_date)
 
 

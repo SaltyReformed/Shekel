@@ -64,7 +64,7 @@ from app.services import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import FiledRow, calendar_for
 from app.utils.dates import display_today
 from tests._test_helpers import (
     amount_basis_for,
@@ -519,7 +519,7 @@ class TestEveryDoorReachesTheSameFigure:
             # due date, so the two differ and a statement asserted before the
             # landing day would (correctly) offer nothing.
             period = calendar_for(seed_user["user"].id).require_period(
-                shadow.pay_period_id, shadow.id,
+                FiledRow.for_row(shadow),
             )
             observed = period.attribution_day(shadow.due_date)
 
