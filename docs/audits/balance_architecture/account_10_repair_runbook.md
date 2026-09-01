@@ -6,6 +6,10 @@ in `../../plans/steps.md`.
 
 **IT MOVES MONEY.** Six acts, 32 door submissions, three accounts. Read the whole thing first.
 
+**ONE ACT IS OPEN AND BLOCKS THE PROCEDURE: act 4b.** The developer rejected its method on
+2026-09-01 and the replacement design is not written. Everything else is ruled and rehearsed, but
+this runbook cannot be worked end to end until 4b is settled -- see act 4.
+
 **It cannot start until the restatement door has DEPLOYED.** The door is `balance:X-f3c-2b-2a`,
 commit `59b485df`, and it is on `dev` only; production has no `budget.account_openings` table until
 a release carries it.
@@ -195,10 +199,24 @@ written** -- the door reports a refusal by flashing and returning you to the sam
 and delete it. Also template-linked, so also a soft delete -- **N-386** again, and this second
 instance doubles that finding's standing exposure from `$500.00` to `$1,000.00`.
 
-**4b.** Its Checking leg was real money and must survive. On the grid, in Checking's
-**Financial: Emergency Fund** row for the pay period starting 2026-03-26, create an expense of
-**`$500.00`**; mark it Paid; then reopen the now-settled card and set **Money moved on** to
-**2026-03-27**.
+**4b IS OPEN AND MUST NOT BE PERFORMED AS WRITTEN. STOP HERE UNTIL IT IS RULED.**
+
+The developer rejected this act's method on 2026-09-01, on the principle *"I prefer root cause
+solutions. I prefer the from scratch design. I don't like faking or hiding money."* Booking an
+expense that did not happen is what he is refusing, and the two alternatives so far offered do not
+survive the same principle either: recording NOTHING hides the same real outflow inside an equity
+correction against Checking's next assertion, and opening the books a day earlier was rejected on
+its own grounds by **R-HK**. **The correct double-entry design is owed and has not been written.**
+What is true and not in dispute: the `$500.00` genuinely left Checking on 2026-03-27, it is not
+spending, and account 10's restated opening already holds it -- so the movement is Checking into
+another account's OPENING EQUITY, which is a shape this app has no way to record.
+
+Acts 1, 2, 3, 4a, 4c, 4d, 5 and 6 are unaffected and remain as ruled. **The figures below are what
+was rehearsed, kept so the rehearsal stays reproducible -- they are NOT an instruction.**
+
+*The rehearsed method was:* on the grid, in Checking's **Financial: Emergency Fund** row for the pay
+period starting 2026-03-26, create an expense of **`$500.00`**; mark it Paid; then reopen the
+now-settled card and set **Money moved on** to **2026-03-27**.
 
 **Three saves, and finish all three before moving on.** The day box only appears once a row is
 settled, so the day cannot be stated at creation -- and marking it Paid stamps **today**. Between the
@@ -395,9 +413,10 @@ rather than comparing against a quoted one.**
 - **The class behind the twin survives the instance.** An account archived while its ledger still
   holds a net is a state the app can still reach, and no surface says the balance sheet and the
   dashboards disagree about it. **N-384**, owned by `balance:X-f4`.
-- **The `$500.00` of expense act 4b books is not spending.** Recorded above. **The alternatives are
-  a developer decision that has not been taken, and the blocker this document used to cite was the
-  wrong one** (adversarial review, 2026-09-01): it named `pay_calendar:C6` and ledger row `P10`,
+- **The `$500.00` of expense act 4b books is not spending, and the developer has now REJECTED that
+  method** (2026-09-01) -- so this is no longer a limitation the repair accepts, it is an OPEN act
+  that blocks the procedure. **The blocker this document used to cite was also the wrong one**
+  (adversarial review, 2026-09-01): it named `pay_calendar:C6` and ledger row `P10`,
   which are both about a payday inserted MID-SCHEDULE, between two existing ones. Neither is a
   backward extension of the calendar, and neither is what would have to change. Nor does the
   restatement door impose a calendar floor at all: `opening_service` says in terms that
