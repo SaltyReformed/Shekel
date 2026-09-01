@@ -200,6 +200,18 @@ class CashOutstandingDifference:
         (``accounts.difference.difference_verdict``), which is why the two
         share one verdict rather than each mapping a sign to a meaning.
 
+        **The SIGN is shared and the FIGURE is not**, and the two surfaces
+        render on one page, so the distinction is load-bearing rather than
+        pedantic: that preview measures against
+        :func:`~._cash_flow.records_balance_at`, the running balance just
+        before a day's assertion, which already contains every EARLIER
+        assertion's reset; this measures against the records alone.  They
+        differ by the net of every prior correction -- ``$0.00`` here against
+        ``-$1,000.00`` there on the fixture
+        ``TestItIsOneFigureAndNotThePerAssertionPlug`` builds -- so each
+        surface writes its own sentences.  Publishing two money figures under
+        one vocabulary is the defect this arc has now measured three times.
+
         ``0.00`` is the state this whole arc is aiming at, and it is a real
         answer rather than an empty one: every movement the owner's bank showed
         is recorded, so their declaration and their books say the same thing.
