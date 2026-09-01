@@ -503,6 +503,22 @@ def _entry_checking_impact(entries, estimated_amount: Decimal) -> Decimal:
     through a CC Payback sibling transaction), so it only reduces the
     reservation and its own dates are irrelevant.
 
+    **THE ``max`` SURVIVES A NEGATIVE ENTRY, and that is derived rather than
+    hoped** (plan step ``bank_import:X-gj-2b-3``).  Ruling **bank_import:R-II**
+    made a refund a NEGATIVE purchase, so ``unposted_debit`` can be negative and
+    an adversarial review read this as a floor that had stopped flooring.  The
+    expression is identically equal to *the movements already known, plus
+    whatever budget is left after everything recorded, floored at zero*::
+
+        max(E - P - C, U)  ==  U + max(0, E - P - C - U)
+
+    -- for EVERY sign of ``U``, checked exhaustively over the four terms.  So an
+    envelope budgeting `$100.00` with a `$120.00` posted purchase and a `$40.00`
+    refund not yet posted reserves ``-20.00``: the refund arrives (`+40.00`) and
+    `$20.00` of the budget is still expected to leave.  Reading ``-40.00`` as
+    the answer instead assumes the envelope will spend nothing further, which is
+    the opposite of what a reservation is for.
+
     **Which bucket a debit falls in is whether it has POSTED, and that is
     ruling R-FM** (plan step X-f3b).  Its history is the point, because this
     bucket has been re-decided three times and each move was a narrowing.  It

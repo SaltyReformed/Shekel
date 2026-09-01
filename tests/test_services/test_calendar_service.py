@@ -29,12 +29,18 @@ from app.services import (
     pay_period_write,
     pay_schedule_service,
     paycheck_calculator,
+    status_seam,
 )
 from tests._test_helpers import (
     settle_day_columns,
     settlement_columns,
 )
 from tests._test_helpers import default_settle_day, make_cadence_rule
+from tests._test_helpers import (
+    add_entry,
+    create_envelope_txn,
+    settlement_if_settling,
+)
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     EVERY_N_PERIODS,
@@ -1995,3 +2001,95 @@ class TestCalendarDailyView:
         assert overflow.net == Decimal("-500.00")
         # Days at or under the cap carry no overflow entry.
         assert 5 not in result.day_overflow
+
+
+class TestARefundedDayOnTheRealCalendar:
+    """The PRODUCER CHAIN, which is what makes a negative day entry possible.
+
+    Plan step ``bank_import:X-gj-2b-3``.  ``test_calendar_day_flows`` grades
+    the three day-level rules as pure arithmetic; this grades the claim those
+    rules rest on -- that ``DayEntry.amount`` reaches them NEGATIVE.  The chain
+    is ``contributions_by_id -> fixed_contribution -> settled_figure ->
+    purchases_total(txn.entries)``, and ruling **bank_import:R-II** relaxed
+    ``ck_transaction_entries_positive_amount`` to ``amount <> 0`` so a settled
+    envelope can be worth less than nothing.
+
+    **Without this case the pure tests grade a shape nothing produces**, which
+    is the hazard a fold tested only on hand-built records always has.
+    """
+
+    def _settled_envelope(self, db, seed_user, period, name, amounts):
+        """Settle an envelope worth exactly the entries handed to it."""
+        txn = create_envelope_txn(
+            seed_user, db.session, period, name, Decimal("0.00"),
+        )
+        for amount in amounts:
+            add_entry(
+                db.session, seed_user, txn, Decimal(amount),
+                period.start_date,
+            )
+        done = ref_cache.status_id(StatusEnum.DONE)
+        status_seam.apply_status_change(
+            txn, done,
+            settlement=settlement_if_settling(txn, done),
+        )
+        db.session.flush()
+        return txn
+
+    def test_a_refund_dominated_envelope_reaches_the_fold_NEGATIVE(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The entry, the fold and the month headline, in one pass.
+
+        Asserts the DayEntry's own amount as well as the totals: a chain that
+        clamped the figure on the way in would leave a correct-looking month
+        while the defect had merely moved upstream.
+        """
+        with app.app_context():
+            self._settled_envelope(
+                db, seed_user, seed_periods[0], "Amazon", ["-86.67"],
+            )
+            db.session.commit()
+
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+            )
+
+            refunds = [
+                entry
+                for entries in result.day_entries.values()
+                for entry in entries
+                if entry.name == "Amazon"
+            ]
+            assert len(refunds) == 1, "the envelope must reach a day cell"
+            assert refunds[0].amount == Decimal("-86.67")
+            assert refunds[0].is_income is False, (
+                "an expense that came back is not income -- booking it on the "
+                "income leg grosses up both sides of the month"
+            )
+            # THE HEADLINE: under the abs() this read +86.67 and net moved by
+            # $173.34 on a month in which the account RECEIVED the money.
+            assert result.total_expenses == Decimal("-86.67")
+            assert result.net == Decimal("86.67")
+
+    def test_a_partly_refunded_envelope_NETS(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The ordinary shape, which nets correctly either way.
+
+        Staged beside the case above deliberately: only the refund-DOMINATED
+        envelope inverts under ``abs()``, so a suite holding only this one
+        would pass with the defect restored.
+        """
+        with app.app_context():
+            self._settled_envelope(
+                db, seed_user, seed_periods[0], "Groceries",
+                ["100.00", "-30.00"],
+            )
+            db.session.commit()
+
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+            )
+
+            assert result.total_expenses == Decimal("70.00")
