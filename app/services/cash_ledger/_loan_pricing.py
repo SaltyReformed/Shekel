@@ -1,15 +1,19 @@
 """
-Shekel Budget App -- The read pass's LOAN-PAYMENT derivation.
+Shekel Budget App -- Cash ledger: the read pass's LOAN-PAYMENT derivation.
 
-:class:`LoanPricing` is amount rule 4's producer, pinned to a scenario and an
-``as_of``: which transfers are loan payments, and what each one's shadow costs.
-Lazy, so a pass that prices no loan payment issues no query.
+:class:`LoanPricing` is amount rule 4's producer, pinned to a scenario and to
+nothing else: which transfers are loan payments, and what each one's shadow
+costs.  Lazy, so a pass that prices no loan payment issues no query.
 
-Sits above :mod:`._basis`, which owns the per-installment rules it delegates to.
+Sits above :mod:`._loan_installment`, which owns the per-installment rules it
+delegates to, and below :mod:`._amount_basis`, which holds ONE of these per
+read pass.
+
+**Moved here from ``loan_payment_service`` at plan step X-au-g-2a.**  The
+argument for the move is written once, in :mod:`._loan_installment`.
 """
 
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.orm import contains_eager
@@ -22,7 +26,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services.loan_loaders import load_escrow_lines
 from app.services.recurring_transfer_query import loan_payment_config
 from app.utils.balance_predicates import is_projected
-from ._basis import (
+from ._loan_installment import (
     _LoanCashBasis,
     _manual_shadow_amount,
     _resolve_loan_basis,
@@ -74,25 +78,26 @@ class LoanPricing:
     "no query when there are no candidates" property the row-set producers had,
     kept rather than traded away.
 
-    **The clock is read ONCE, at construction, and that is a disclosure rather
-    than a fix.**  Resolving a loan's rate-period P&I ``as_of`` the wall clock
-    is finding **N-40**: a resolver may not read the clock, and ruling D5's rule
-    -- a shadow's figure resolves on the shadow's own DUE date, as its escrow
-    already does -- is what plan step **X-au-g** applies to the P&I term.  Until
-    then the read exists; pinning it here makes it one field a reader can see
-    and one value a whole pass shares, where it was one ``date.today()`` per row
-    set before.
+    **IT READS NO CLOCK, and plan step X-au-g-2b is what deleted the one it
+    used to read.**  It took an ``as_of`` and resolved each loan's rate-period
+    P&I against it -- one figure per pass, applied to every installment the
+    pass priced, which is finding **N-40**.  Ruling **R-IJ** put a loan's
+    contractual terms on the INSTALLMENT they govern, as ruling D5 had already
+    put a payment's escrow, so there is no pass-level date left to pin: the
+    per-loan resolve (:func:`._loan_installment._resolve_loan_basis`) answers
+    the loan's term SET, which no date parameterises, and each shadow reads
+    the period governing its own due date.  What a whole pass now shares is
+    the derivation rather than an answer, which is the same property the
+    scenario pin has.
     """
 
-    def __init__(self, scenario_id: int, as_of: date) -> None:
-        """Pin the scenario and the evaluation date; resolve nothing yet.
+    def __init__(self, scenario_id: int) -> None:
+        """Pin the scenario; resolve nothing yet.
 
         Args:
             scenario_id: The scenario whose loan payments this prices.
-            as_of: The evaluation date for each loan's rate-period P&I.
         """
         self._scenario_id = scenario_id
-        self._as_of = as_of
         self._config: "dict[int, _LivePaymentConfig] | None" = None
         self._loans: "dict[int, tuple[_LoanCashBasis | None, list]]" = {}
 
@@ -136,7 +141,7 @@ class LoanPricing:
             configured loan) paired with its escrow lines (empty then).
         """
         if loan_account_id not in self._loans:
-            basis = _resolve_loan_basis(loan_account_id, self._as_of)
+            basis = _resolve_loan_basis(loan_account_id)
             lines = [] if basis is None else load_escrow_lines(loan_account_id)
             self._loans[loan_account_id] = (basis, lines)
         return self._loans[loan_account_id]
@@ -224,22 +229,25 @@ class LoanPricing:
         return _shadow_live_amount(basis, escrow_lines, shadow, extra_principal)
 
 
-def loan_pricing(scenario_id: int, as_of: date) -> LoanPricing:
+def loan_pricing(scenario_id: int) -> LoanPricing:
     """Return the read pass's :class:`LoanPricing` for *scenario_id*.
 
     The named constructor the amount model calls, so no caller reaches for the
-    class directly and the two pins are always supplied together.  Resolves
-    nothing: every derivation behind it is lazy, so a pass that prices no loan
-    payment issues no query.
+    class directly.  Resolves nothing: every derivation behind it is lazy, so a
+    pass that prices no loan payment issues no query.
+
+    It took an ``as_of`` beside the scenario until plan step X-au-g-2b, and the
+    argument for its absence is on :class:`LoanPricing`: a loan's contractual
+    terms resolve on the installment they govern (ruling **R-IJ**), so a read
+    pass has no date to hand this.
 
     Args:
         scenario_id: The scenario whose loan payments this prices.
-        as_of: The evaluation date for each loan's rate-period P&I.
 
     Returns:
         The unresolved :class:`LoanPricing` handle.
     """
-    return LoanPricing(scenario_id, as_of)
+    return LoanPricing(scenario_id)
 
 
 def _load_live_payment_configs(

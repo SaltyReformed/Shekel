@@ -40,7 +40,12 @@ through its import graph at all; ``app.utils.dates`` carries
 CALLS a clock" rather than "no clock is reachable".  It was taken so the period
 LABEL is one rule rather than one per type that answers "which paycheck" (see
 :attr:`DerivedPeriod.label`), and ``app.utils.dates`` is the only leaf this
-package may take on those terms.
+package may take on those terms.  *There is one such type now* -- plan step
+``pay_calendar:C4-a-5`` deleted the ORM row's accessor -- *and the import
+stays for the reason* :func:`~app.utils.dates.pay_period_label`'s *own
+docstring gives: the narrow register and the wide one are one decision (ledger
+row P47) and live together, and the wide one has a caller outside this
+package.*
 
 **Why the last end is a different KIND of value, and says so.**  Every other
 end is dictated by a fact -- the next payday.  The last one has no next payday,
@@ -297,14 +302,19 @@ class DerivedPeriod:
     def label(self) -> str:
         """Return this period's human label (``"02/21 - 03/06"``).
 
-        **The same rule the ORM row answers**
-        (:attr:`app.models.pay_period.PayPeriod.label`), because both types
-        reach :func:`app.utils.dates.pay_period_label`: plan step C2-f moved
-        the period-move ``<select>`` onto this value while the conflict
-        chooser still renders the row, and one paycheck labelled two ways on
-        two screens is the denormalization this arc exists to remove.  Plan
-        step **C4** deletes the row's accessor with the column it reads; this
-        one is what survives.
+        **The ONLY accessor that answers "which paycheck" in words**, since
+        plan step ``pay_calendar:C4-a-5``.  It was one of two: the ORM row
+        carried ``PayPeriod.label``, reaching the same
+        :func:`app.utils.dates.pay_period_label` -- so the FORMAT agreed while
+        the DATES did not, because the row fed it the STORED ``end_date`` and
+        this value the derived one.  Under the P12 / P28 shape that stored end
+        goes stale, and the two rendered one paycheck two ways: C4-a-2 saw it
+        across screens, and C4-a-5 measured it inside ONE card, where the
+        grid's full-edit popover named the row's period off the row while the
+        period ``<select>`` two sections below it named the same period off
+        this property.  That step moved both readers here and deleted the
+        accessor, so the stored column is no longer reachable for a label at
+        all.  The COLUMN itself goes at ``C4-c``.
 
         Returns:
             The label, carrying the year on both halves only when this period
@@ -319,9 +329,14 @@ class DerivedPeriod:
         :attr:`label`'s sibling register, for a surface with room for month
         names -- today the Income Statement's window ``<select>``, whose
         ``<option>`` sits on screen beside the report heading the same rule
-        produces (``ledger_report_service`` labels that heading by calling
-        :func:`~app.utils.dates.pay_period_range_label` directly, exactly as
-        :attr:`label` and ``PayPeriod.label`` both call the narrow one).
+        produces.  That heading reaches
+        :func:`~app.utils.dates.pay_period_range_label` through
+        ``spending_analysis.window_label``
+        (``ledger_report_service._income_statement:111``), which is one call
+        away rather than the direct one this sentence claimed until plan step
+        ``pay_calendar:C4-a-5`` re-checked it; either way the ``<option>`` and
+        the heading beside it come from one rule, which is the property that
+        matters.
 
         It is a PROPERTY rather than a Jinja global for :attr:`label`'s reason:
         the format belongs to ``app.utils.dates``, and a template that called a
@@ -329,7 +344,12 @@ class DerivedPeriod:
         register next appeared (ledger row **P47**).  Plan step C2-f3a.
 
         Returns:
-            The label, carrying the END date's four-digit year.
+            The label.  The four-digit year rides on the END date alone, and
+            on BOTH halves where the period straddles one -- ledger row
+            **P67**, ruled 2026-08-25.  *This line said "the END date's" flat
+            until ``C4-a-5``, which rewrote the paragraph above it and left the
+            residue; :func:`~app.utils.dates.pay_period_range_label` has stated
+            the ruled rule since P67 landed.*
         """
         return pay_period_range_label(self.start_date, self.end_date)
 

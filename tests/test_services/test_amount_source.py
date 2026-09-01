@@ -337,26 +337,33 @@ def _declare_loan_payment_derived(xfer):
     column, and only THEN declares it -- the transition the loan cutover (plan
     step X-au-g) performs.
 
-    **The other is that the LOAN-side income leg cannot be declared at all
-    today, and that is a finding rather than a fixture convenience.**
-    ``loan_payment_service.get_payment_history`` reads every shadow income row
-    ON THE LOAN ACCOUNT and prices each one through
-    ``row_valuation.owned_contribution``, which REFUSES a row whose plan is
-    derived.  Emptying that column therefore breaks the producer.  The
-    checking-side expense leg is invisible to ``query_shadow_income`` (it
-    filters to the destination account and the income type), so declaring it
-    exercises rule 4 end to end without reaching that reader, and it is the leg
-    every CASH reader prices.
+    **The other is that this helper declares ONE of the two legs, and the
+    reason it could not declare both is now GONE.**  It read: the loan-side
+    income leg cannot be declared at all, because
+    ``loan_payment_service.get_payment_history`` prices every shadow income row
+    on the loan account through ``row_valuation.owned_contribution``, which
+    REFUSES a row whose plan is derived.  Plan step **balance:X-au-g-2c** routed
+    that reader through ``cash_ledger.contributions_by_id``, closing finding
+    **N-266**(a), so the bound is lifted and this helper's scope is now a
+    CHOICE rather than a constraint.
 
-    **This docstring used to call that a CYCLE, and it is not one.**  It read:
-    the loan resolves through ``load_loan_context`` -> ``get_payment_history``,
-    so the rule that prices the row routes back to the row.  That path is
-    deleted -- ``_resolve_loan_basis`` reads the loan's terms alone and loads no
-    payment history -- which is why finding **N-266** (a) is MISDIAGNOSED rather
-    than closed: the restriction this helper honours is real and still holds,
-    but it is ONE UNROUTED READER, and plan step **X-au-g** routes it and then
-    declares both legs.  Whoever does that widens this helper; until then the
-    scoping below is correct and not merely convenient.
+    **It stays scoped to the checking-side EXPENSE leg here, deliberately.**
+    That leg is invisible to ``query_shadow_income`` (which filters to the
+    destination account and the income type), so declaring it exercises rule 4
+    without involving the payment feed at all -- which is what these cases are
+    about.  Declaring BOTH legs is the CUTOVER (plan step X-au-g-2c's second
+    leaf): it needs the stamp on live rows, a migration, and the deletion of
+    ``LoanPricing.live_cash``, and it is graded where those live rather than
+    widened into a fixture here.
+
+    **This docstring used to call the bound a CYCLE, and it was not one.**  It
+    read: the loan resolves through ``load_loan_context`` ->
+    ``get_payment_history``, so the rule that prices the row routes back to the
+    row.  That path was deleted at plan step X-au-g-1 --
+    ``_resolve_loan_basis`` reads the loan's terms alone -- leaving finding
+    N-266(a)'s conclusion standing on ONE UNROUTED READER, which is what
+    X-au-g-2c routed.  Three weeks between the diagnosis and its true cause,
+    which is why a finding's claim is re-measured before its remedy is built.
     """
     _declare_derived(_shadow_of(xfer), AmountSourceEnum.PARENT_TRANSFER)
     return _declare_transfer_derived(xfer)
@@ -1739,3 +1746,157 @@ class TestPricingReadsNoSTATUS:
 
         assert basis.loans.live_cash(shadow) is None
         assert resolve_transaction_amount(shadow, basis) == Decimal("1499.10")
+
+
+#: Every producer that answers "what day is it" without being told.  Matched by
+#: the CALLED name, so ``date.today()``, ``datetime.now(...)``,
+#: ``dt.datetime.utcnow()`` and a bare ``display_today()`` all count however the
+#: module spelled its import.
+#:
+#: **A CONVERTER is not a clock**, and an early draft of this set said otherwise:
+#: ``utc_instant(row.created_at)`` normalises a STORED instant the caller
+#: already has, so listing it made ``cash_ledger._events`` read as a clock
+#: reader twice over.  The distinction is whether the call takes the moment as
+#: an argument or invents it.
+#:
+#: **What this does NOT catch, enumerated rather than claimed away.**  It
+#: matches the CALLED NAME in this package's own source, so four shapes pass:
+#: an alias (``from app.utils.dates import display_today as d`` then ``d()``);
+#: a bound reference (``_CLOCK = date.today`` then ``_CLOCK()``); a SQL clock
+#: (``func.current_date()``, ``text("CURRENT_DATE")``); and -- the widest hole
+#: -- a TRANSITIVE read, where a module here calls a helper that reads the
+#: clock somewhere else.  An adversarial review demonstrated the last one:
+#: adding a ``status_seam.day_is_in_the_future(due)`` branch to
+#: ``_loan_installment`` left this green while pricing every future installment
+#: with no escrow.
+#:
+#: Closing it would need a call graph, and a name-keyed call graph
+#: OVER-connects -- it can establish "something reaches X", never "nothing
+#: does", which is the direction this claim needs.  So the scope is stated
+#: instead: **this grades the shapes this package writes today**, and it is the
+#: reason the module docstrings say the package makes no clock CALL rather than
+#: that it cannot read a clock.
+_CLOCK_PRODUCERS = frozenset({
+    "today", "now", "utcnow", "display_today",
+})
+
+
+def _clock_calls_in(package_dir):
+    """Return ``["<path>:<line>: <expression>", ...]`` for every clock call under it.
+
+    An AST walk rather than a grep: a grep for ``date.today`` matches the word
+    inside a docstring, and this package's docstrings discuss the clock read it
+    no longer makes at length.  Only a ``Call`` node whose called NAME is a
+    clock producer counts.
+
+    Args:
+        package_dir: A :class:`pathlib.Path` to walk (recursively).
+
+    Returns:
+        One human-readable location string per clock call found, in path order.
+    """
+    # Pylint: import-outside-toplevel -- the file-wide test convention.
+    import ast  # pylint: disable=import-outside-toplevel
+
+    found = []
+    for path in sorted(package_dir.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                name = func.attr
+            elif isinstance(func, ast.Name):
+                name = func.id
+            else:
+                continue
+            if name in _CLOCK_PRODUCERS:
+                found.append(f"{path}:{node.lineno}: {ast.unparse(node)}")
+    return found
+
+
+class TestTheAmountModelReadsNoClock:
+    """No module of ``cash_ledger`` asks what day it is.
+
+    **Ruling R-IJ's structural consequence** (plan step X-au-g-2b).  The amount
+    model's whole job is *what is this row's amount*, and that is a question
+    about the ROW: its rules read the row's own dates -- a definition's series
+    ``as of`` the row's due date, a loan installment's P&I and escrow on the
+    installment's own day.  A clock read inside it means some row is priced by
+    when the page was opened rather than by what it is.
+
+    ``_amount_basis.amount_basis`` held the last one, building the loan
+    derivation as ``loan_pricing(scenario_id, date.today())`` -- finding
+    **N-40**.  The salary half lost its own at plan step X-as.  With both gone
+    the package makes NO clock call at all, and that is worth pinning as a
+    property rather than leaving as a paragraph: it is the difference between a
+    fact and a habit, and the next derivation added here is the one that would
+    reintroduce it.
+
+    Stated as an ABSENCE, so it needs TWO controls that the answer is not
+    empty for the wrong reason -- a broken walker and a clock-free package
+    return the same thing.  ``test_the_walker_can_see_a_clock_call`` shows the
+    walker firing; ``test_the_scan_reaches_this_package`` shows it reading THIS
+    directory, which the first cannot, since it walks a different one.
+
+    The shapes this does not catch are enumerated on :data:`_CLOCK_PRODUCERS`,
+    including the transitive one an adversarial review used to slip a wall-clock
+    branch past it.
+    """
+
+    @staticmethod
+    def _cash_ledger_dir():
+        """Return the ``app/services/cash_ledger`` package directory."""
+        # Pylint: import-outside-toplevel -- the file-wide test convention.
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        import app.services.cash_ledger as package  # pylint: disable=import-outside-toplevel
+
+        return pathlib.Path(package.__file__).parent
+
+    def test_the_walker_can_see_a_clock_call(self):
+        """The walker finds a clock call where one is known to be.
+
+        Without this the assertion below is satisfied by a walker that parses
+        nothing: an empty list is what "no clock" and "measured nothing" both
+        look like.  ``loan_payment_service._context`` resolves the loan CARD's
+        escrow at ``date.today()`` -- legitimately, because the card answers
+        what the owner pays THIS month -- so it is a stable positive.
+        """
+        # Pylint: import-outside-toplevel -- the file-wide test convention.
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        import app.services.loan_payment_service as package  # pylint: disable=import-outside-toplevel
+
+        found = _clock_calls_in(pathlib.Path(package.__file__).parent)
+        assert found, (
+            "the walker found no clock call in loan_payment_service, where the "
+            "loan card's escrow is resolved at date.today() -- so it is "
+            "measuring nothing and the absence it reports elsewhere is empty"
+        )
+
+    def test_the_scan_reaches_this_package(self):
+        """The cash_ledger scan reads real files, and enough of them.
+
+        The positive control above walks ``loan_payment_service`` -- a
+        DIFFERENT directory -- so it cannot tell whether the scan of THIS one
+        read anything.  Without this, "no clock in the amount model" and
+        "resolved a path with no ``.py`` in it" are the same empty list.
+        """
+        scanned = sorted(
+            path.name for path in self._cash_ledger_dir().rglob("*.py")
+        )
+        assert "_amount_basis.py" in scanned and "_loan_installment.py" in scanned
+        assert len(scanned) >= 12, (
+            f"the scan found only {len(scanned)} module(s) in the amount "
+            f"model, so its clock census covers almost nothing: {scanned}"
+        )
+
+    def test_no_module_of_the_amount_model_reads_a_clock(self):
+        """``app/services/cash_ledger`` makes no clock call."""
+        found = _clock_calls_in(self._cash_ledger_dir())
+        assert found == [], (
+            "the amount model read the clock; a row's amount is a question "
+            "about the ROW, and its own dates are what price it (ruling "
+            f"R-IJ): {found}"
+        )

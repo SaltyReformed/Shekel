@@ -58,6 +58,7 @@ from ._builders import (
     a_bank_line,
     a_basis,
     a_later_period,
+    a_payday_on,
     a_purchase,
     a_rule,
     a_scope,
@@ -97,7 +98,6 @@ def _closed_from_purchases(seed_user, *, name="Groceries", amount="500.00",
     return envelope
 
 
-
 def _offerable(seed_user):
     """Return the destinations the screen may offer RIGHT NOW.
 
@@ -120,11 +120,11 @@ def _offerable(seed_user):
     """
     return statement_match.unmatched_destinations(
         statement_match.destinations_for(
-            seed_user["user"].id, seed_user["account"].id,
+            seed_user["account"].id,
+            pay_calendar.calendar_for(seed_user["user"].id),
         ),
         statement_match.matched_subjects(seed_user["account"].id),
     )
-
 
 
 def _balance_on(seed_user, day):
@@ -795,11 +795,295 @@ class TestWhatTheCreateDoorRefuses:
                 ))
 
 
+class TestTheSpanADestinationCarriesIsDERIVED:
+    """Pay-calendar plan step **C4-a-4**: the picker came off the ORM row.
+
+    ``destinations_for`` read ``txn.pay_period`` for each offered envelope's
+    paycheck, which is ``pay_periods.end_date`` -- a stored copy of the day
+    before the NEXT payday, with nothing reconciling the two, and plan step
+    C4-c drops it.  It now scopes its scan by
+    :meth:`~app.services.pay_calendar.PayCalendar.saved_by_id`'s own keys and
+    indexes that SAME mapping, so the span it publishes is DERIVED and the
+    lookup cannot miss a row the scan returned.
+
+    **Every case here stages a payday that is NOT one stored period-length
+    after the previous one**, through :func:`a_payday_on`, because on a
+    schedule written forward the stored end and the derived end are equal --
+    so a case built on the ordinary shape passes against the column it is
+    meant to catch.  On production both agree today (63 periods, 0
+    disagreements), which is what makes this a control rather than a repair.
+    """
+
+    @staticmethod
+    def _by_id(seed_user):
+        """Return what the screen may offer, keyed by budget line."""
+        return {
+            destination.transaction_id: destination
+            for destination in _offerable(seed_user)
+        }
+
+    def test_the_span_ends_the_day_before_the_NEXT_payday(
+        self, app, db, seed_user,
+    ):
+        """THE control: the stored column and the derivation disagree by seven days.
+
+        A payday eight days after the bootstrap period's stored ``end_date``
+        makes that period seven days longer than the row says.  The screen
+        must show the paycheck the owner is actually inside, which is the
+        derived one.
+        """
+        with app.app_context():
+            bootstrap = seed_user["bootstrap_period"]
+            stored_end = bootstrap.end_date
+            a_payday_on(seed_user, stored_end + timedelta(days=8))
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="500.00", is_envelope=True,
+            )
+
+            derived_end = stored_end + timedelta(days=7)
+            assert derived_end != stored_end
+            assert self._by_id(seed_user)[envelope.id].period.end_date == (
+                derived_end
+            )
+
+    def test_the_span_is_the_calendar_it_was_GIVEN_and_not_one_it_RE_READS(
+        self, app, db, seed_user,
+    ):
+        """THE control for this leaf's central claim, which had none.
+
+        Every argument for the accessor is that ONE mapping is both the scan's
+        scope and the per-row lookup, so the two cannot come apart.  Nothing
+        measured it: a mutant that filters from the threaded calendar and
+        resolves each span from a FRESHLY DERIVED one survives every other
+        case here, because in all of them the two calendars agree.  Named by
+        adversarial test-quality review 2026-08-31.
+
+        This is that disagreement, built WITHOUT concurrency: the calendar is
+        derived FIRST, a payday is then recorded, and the producer is handed
+        the earlier value.  A span read off the handed calendar ends where its
+        CADENCE projects; one read off a fresh derivation ends the day before
+        the new payday.  That is the READ-COMMITTED interleaving of finding
+        **N-358** made deterministic -- what a concurrent payday INSERT
+        between a command's two reads would do, staged in one thread.
+        """
+        with app.app_context():
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="500.00", is_envelope=True,
+            )
+            bootstrap = seed_user["bootstrap_period"]
+            # Derived BEFORE the write, which is the whole case.
+            handed = pay_calendar.calendar_for(seed_user["user"].id)
+            a_payday_on(seed_user, bootstrap.end_date + timedelta(days=8))
+
+            offered = {
+                d.transaction_id: d for d in statement_match.destinations_for(
+                    seed_user["account"].id, handed,
+                )
+            }
+
+            projected_end = bootstrap.start_date + timedelta(days=13)
+            re_read_end = bootstrap.end_date + timedelta(days=7)
+            assert projected_end != re_read_end
+            assert offered[envelope.id].period.end_date == projected_end
+
+    def test_two_envelopes_in_ONE_period_are_ordered_by_NAME(
+        self, app, db, seed_user,
+    ):
+        """The second half of the promised order, which nothing asserted.
+
+        "Oldest pay period first and THEN BY NAME" is what this producer
+        publishes, and every other case here stages one envelope per period --
+        so dropping the label from the sort key left the whole suite green and
+        the ``<select>`` inside one paycheck ordered by whatever the planner
+        returned.  Named by adversarial test-quality review 2026-08-31.
+
+        Staged in REVERSE alphabetical order so insertion order and the
+        promised order disagree.
+        """
+        with app.app_context():
+            later = a_transaction(
+                seed_user, name="Water", amount="80.00", is_envelope=True,
+            )
+            earlier = a_transaction(
+                seed_user, name="Groceries", amount="500.00", is_envelope=True,
+            )
+            assert later.id < earlier.id
+
+            ordered = [
+                d.transaction_id for d in _offerable(seed_user)
+                if d.transaction_id in {later.id, earlier.id}
+            ]
+            assert ordered == [earlier.id, later.id]
+
+    def test_the_LABEL_a_reviewer_READS_carries_the_derived_end(
+        self, app, db, seed_user,
+    ):
+        """The span is not an internal: it is what the chooser prints.
+
+        ``PurchaseDestination.label`` is what the destination ``<select>``
+        renders, and the same envelope name recurs every period -- so the
+        span is the whole of how a reviewer tells one Groceries from the
+        next.  Asserted through the label rather than only through the field,
+        because the field could be right while the derivation stopped
+        reaching the string.
+        """
+        with app.app_context():
+            bootstrap = seed_user["bootstrap_period"]
+            stored_end = bootstrap.end_date
+            a_payday_on(seed_user, stored_end + timedelta(days=8))
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="500.00", is_envelope=True,
+            )
+
+            label = self._by_id(seed_user)[envelope.id].label
+            assert label.endswith(
+                f"({bootstrap.start_date} - "
+                f"{stored_end + timedelta(days=7)})"
+            )
+            assert str(stored_end) not in label
+
+    def test_the_period_it_carries_is_the_ROWs_OWN_paycheck(
+        self, app, db, seed_user,
+    ):
+        """Indexed by the row's ``pay_period_id``, over a calendar of three.
+
+        A mapping indexed by anything else -- the first key, the line's
+        period -- would answer a real ``DerivedPeriod`` rather than raise, so
+        the identity is asserted rather than left to the absence of a
+        ``KeyError``.
+        """
+        with app.app_context():
+            bootstrap = seed_user["bootstrap_period"]
+            middle = a_payday_on(
+                seed_user, bootstrap.end_date + timedelta(days=8),
+            )
+            last = a_payday_on(
+                seed_user, bootstrap.end_date + timedelta(days=30),
+            )
+            here = a_transaction(
+                seed_user, name="Groceries", amount="500.00",
+                is_envelope=True, period=middle,
+            )
+            there = a_transaction(
+                seed_user, name="Gas", amount="120.00",
+                is_envelope=True, period=last,
+            )
+
+            offered = self._by_id(seed_user)
+            assert offered[here.id].period.period_id == middle.id
+            assert offered[there.id].period.period_id == last.id
+
+    def test_a_row_filed_in_ANOTHER_owners_paycheck_is_NOT_offered(
+        self, app, db, seed_user, second_user,
+    ):
+        """Ownership, and it is the CALENDAR that states it.
+
+        ``budget.transactions`` carries no ``user_id`` -- its owner IS its pay
+        period's, and nothing in the schema requires that owner to be its
+        ACCOUNT's (plan finding **P75**, closed by plan step
+        ``pay_calendar:C13``).  So a row on THIS account can name a period
+        this owner does not hold, and the scope has to exclude it.  It reads
+        the calendar's own saved ids since C4-a-4, where it asked
+        ``pay_periods.user_id`` through the relationship; both refuse it, and
+        the calendar's answer is the one that cannot disagree with the span
+        lookup beside it.
+
+        The two owners' bootstrap periods open on the SAME civil day, so the
+        case can only pass on the id -- a scope comparing spans would let this
+        row through.
+        """
+        with app.app_context():
+            foreign_period = second_user["bootstrap_period"]
+            assert foreign_period.start_date == (
+                seed_user["bootstrap_period"].start_date
+            )
+            trespasser = a_transaction(
+                seed_user, name="Groceries", amount="500.00",
+                is_envelope=True, period=foreign_period,
+            )
+            mine = a_transaction(
+                seed_user, name="Gas", amount="120.00", is_envelope=True,
+            )
+
+            offered = self._by_id(seed_user)
+            assert mine.id in offered
+            assert trespasser.id not in offered
+
+    def test_an_EMPTY_calendar_admits_NOTHING_rather_than_everything(
+        self, app, db, seed_user,
+    ):
+        """A scope with no periods is empty, not absent.
+
+        The producer's ownership clause IS the calendar's saved ids since
+        C4-a-4, so an owner holding no paydays scopes the scan by an empty
+        mapping -- which SQLAlchemy renders as a false predicate rather than
+        as no clause at all.  Reachable: plan step ``balance:X-ad-a`` stopped
+        registration writing a bootstrap payday, so a brand-new owner holds
+        none.  Asserted against a calendar built with no paydays rather than
+        by emptying the table, because the account's anchor names a period and
+        deleting it would be measuring the fixture.
+
+        The control beside it is the same account through its REAL calendar,
+        without which "returned nothing" could mean the account has nothing to
+        offer.
+        """
+        with app.app_context():
+            a_transaction(
+                seed_user, name="Groceries", amount="500.00", is_envelope=True,
+            )
+            empty = pay_calendar.PayCalendar.from_paydays(
+                [], None, seed_user["user"].id, history_opens_on=None,
+            )
+
+            assert statement_match.destinations_for(
+                seed_user["account"].id, empty,
+            ) == []
+            assert statement_match.destinations_for(
+                seed_user["account"].id,
+                pay_calendar.calendar_for(seed_user["user"].id),
+            ) != []
+
+    def test_the_ORDER_is_by_PAYDAY_and_not_by_period_id(
+        self, app, db, seed_user,
+    ):
+        """"Oldest pay period first" is what the producer promises.
+
+        It sorted on ``pay_period_id`` until C4-a-4, which is the same order
+        only while paydays are appended forward -- and plan step
+        ``pay_calendar:C6`` inserts one MID-SCHEDULE by design, giving the
+        newest row the newest id in the middle of the sequence.  Staged here
+        by recording the LATER payday first, so the two orders disagree and
+        the assertion can tell them apart.
+        """
+        with app.app_context():
+            bootstrap = seed_user["bootstrap_period"]
+            later = a_payday_on(
+                seed_user, bootstrap.end_date + timedelta(days=30),
+            )
+            middle = a_payday_on(
+                seed_user, bootstrap.end_date + timedelta(days=8),
+            )
+            assert middle.id > later.id
+            assert middle.start_date < later.start_date
+
+            in_middle = a_transaction(
+                seed_user, name="Groceries", amount="500.00",
+                is_envelope=True, period=middle,
+            )
+            in_later = a_transaction(
+                seed_user, name="Gas", amount="120.00",
+                is_envelope=True, period=later,
+            )
+
+            ordered = [d.transaction_id for d in _offerable(seed_user)]
+            assert ordered.index(in_middle.id) < ordered.index(in_later.id)
+
+
 class TestTheDestinationMustBeInTheLINEsOwnPeriod:
     """The security guard X-f6a-3c-2 added, which had NO test at all.
 
     Measured by adversarial test-quality review 2026-08-19: deleting
-    ``if destination.pay_period_id == pay_period_id`` from
+    ``if destination.period.period_id == pay_period_id`` from
     ``_create._existing_envelope`` left the whole suite green.  A security fix
     with no test is a security fix that gets refactored away.
 

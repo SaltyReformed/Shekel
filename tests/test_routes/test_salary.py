@@ -38,9 +38,10 @@ from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
     all_periods,
-    make_every_period_rule,
     create_loan_account,
     freeze_today,
+    make_every_period_rule,
+    open_owner_calendar,
     seed_fica_config,
     seed_state_tax_config,
     seed_tax_bracket_set,
@@ -111,8 +112,7 @@ def _create_other_user_profile():
     Returns:
         dict with keys: user, profile.
     """
-    from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
-    from app.models.pay_period import PayPeriod as _PayPeriod  # pylint: disable=import-outside-toplevel
+    from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
     other_user = User(
         email="other@shekel.local",
@@ -125,16 +125,10 @@ def _create_other_user_profile():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3) so the account factory
-    # can resolve an anchor period without raising ValidationError.
-    _bootstrap = _PayPeriod(
-        user_id=other_user.id,
-        start_date=_date(2024, 1, 5),
-        end_date=_date(2024, 1, 5) + _td(days=13),
-        period_index=0,
-    )
-    db.session.add(_bootstrap)
-    db.session.flush()
+    # The owner's calendar, so the account factory can resolve an anchor
+    # period without raising ValidationError.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    _bootstrap = open_owner_calendar(other_user.id, _date(2024, 1, 5))[0]
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = account_service.create_account(

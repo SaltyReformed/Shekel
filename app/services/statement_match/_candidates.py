@@ -41,9 +41,10 @@ data in, frozen dataclasses out, no Flask import, no clock read.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import aliased, contains_eager, joinedload, selectinload
 
@@ -61,6 +62,9 @@ from app.utils.balance_predicates import balance_contributing_clause
 
 from ._creations import PurchaseDestination
 from ._offers import CandidateRow, Candidates, RowKind
+
+if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from app.services.pay_calendar import PayCalendar
 
 
 @dataclass(frozen=True)
@@ -364,15 +368,12 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
     purchase is worth and when the app believes it moved, on the two sides of a
     single match.
 
-    A purchase's cash is the NEGATION of its stored figure, and stating it as
-    a conversion rather than as a direction is the correction plan step
-    ``bank_import:X-gj-2b-3`` made here: this read *"a purchase's cash is
-    always money LEAVING"*, which ruling **bank_import:R-II** ended.  The
-    negation is TOTAL over both signs -- a stored refund of ``-28.29`` is a
-    ``+28.29`` cash candidate -- and this function is exactly why a
-    positive-cash row in ``unmatched_rows`` need not be income, which is the
-    fact :mod:`._already_held` cites back to here -- the sign convention stated once in
-    :mod:`app.models.statement_import`.
+    A purchase's cash is the NEGATION of its stored figure -- a conversion,
+    total over both signs, not a direction.  It read *"always money LEAVING"*
+    until plan step ``bank_import:X-gj-2b-3``; ruling **bank_import:R-II**
+    ended that, and a stored refund of ``-28.29`` is a ``+28.29`` cash
+    candidate here, which is why :mod:`._already_held`'s positive-cash set need
+    not be income.
 
     Args:
         entry: The purchase, with its parent transaction loaded.
@@ -421,7 +422,7 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
 
 
 def transaction_candidate(
-    txn: Transaction, calendar, amount: Decimal,
+    txn: Transaction, calendar: "PayCalendar", amount: Decimal,
 ) -> "CandidateRow | None":
     """Return one transaction as the candidate value every consumer shares.
 
@@ -512,7 +513,8 @@ def transaction_candidate(
 
 
 def repriced(
-    row: CandidateRow, calendar, basis: "cash_ledger.AmountBasis",
+    row: CandidateRow, calendar: "PayCalendar",
+    basis: "cash_ledger.AmountBasis",
 ) -> "CandidateRow | None":
     """Return *row* as it stands NOW, re-read and re-valued.
 
@@ -578,7 +580,8 @@ def repriced(
 
 
 def _transaction_candidates(
-    account_id: int, calendar, period_ids: "set[int]",
+    account_id: int, calendar: "PayCalendar",
+    period_ids: "Collection[int]",
     basis: "cash_ledger.AmountBasis",
 ) -> "tuple[list[CandidateRow], list[int]]":
     """Return the transactions on *account_id* a statement could be showing.
@@ -640,9 +643,10 @@ def _transaction_candidates(
             (:attr:`~._offers.CandidateRow.expected_window`).  The DERIVED
             span, never ``pay_periods.end_date``: that column is a stored copy
             of a derivable fact and plan step ``pay_calendar:C4`` drops it.
-        period_ids: The saved period ids of that same calendar, resolved ONCE
-            by :func:`candidates_for` and threaded rather than re-derived per
-            arm.
+        period_ids: The saved period ids of that same calendar
+            (:meth:`~app.services.pay_calendar.PayCalendar.saved_by_id`),
+            resolved ONCE by :func:`candidates_for` and threaded rather than
+            re-derived per arm.
         basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`,
             threaded for exactly the reason ``period_ids`` above it is (plan
             step X-au-j): one derivation the whole pass shares, resolved once
@@ -695,7 +699,7 @@ def _transaction_candidates(
 
 
 def _purchase_candidates(
-    account_id: int, period_ids: "set[int]",
+    account_id: int, period_ids: "Collection[int]",
 ) -> "list[CandidateRow]":
     """Return the purchases on *account_id* a statement could be showing.
 
@@ -756,7 +760,8 @@ def _purchase_candidates(
 
 
 def candidates_for(
-    account_id: int, calendar, basis: "cash_ledger.AmountBasis",
+    account_id: int, calendar: "PayCalendar",
+    basis: "cash_ledger.AmountBasis",
 ) -> Candidates:
     """Return every row on *account_id* a statement could be showing.
 
@@ -815,16 +820,14 @@ def candidates_for(
         same question of both kinds: a bank line does not know which table its
         counterpart lives in.
     """
-    # The owner's SAVED periods, which are both arms' ownership scope and the
-    # source of every unsettled transaction's window.  Derived here rather than
-    # in each arm for the reason the calendar is threaded: two asks in one
-    # request is this project's DRY violation rather than a cost.
-    # ``period_id`` is nullable on a DerivedPeriod in general and never ``None``
-    # on one ``calendar_for`` built, which reads saved rows only.
-    period_ids = {
-        period.period_id for period in calendar.periods
-        if period.period_id is not None
-    }
+    # The owner's SAVED periods, which are both arms' ownership scope.  Asked
+    # of the calendar ONCE here rather than in each arm, for the reason the
+    # calendar itself is threaded: two asks in one request is this project's
+    # DRY violation rather than a cost.  The ``period_id is not None`` filter
+    # is :meth:`~app.services.pay_calendar.PayCalendar.saved_by_id`'s since
+    # pay-calendar plan step C4-a-4 -- one spelling of "is this period SAVED",
+    # which this module used to write for itself.
+    period_ids = calendar.saved_by_id().keys()
     transactions, unpriceable = _transaction_candidates(
         account_id, calendar, period_ids, basis,
     )
@@ -835,12 +838,12 @@ def candidates_for(
 
 
 def destinations_for(
-    owner_id: int, account_id: int,
+    account_id: int, calendar: "PayCalendar",
 ) -> "list[PurchaseDestination]":
     """Return every budget line a bank line could become a purchase against.
 
     **ONE scope, shared by the screen that offers a destination and the door
-    that writes into it** (:func:`~._create._existing_envelope`), which is the
+    that writes into it** (:func:`~._container._existing_envelope`), which is the
     property :func:`~._resolve.resolve_rows` rests on: a row this does not return
     cannot be reached by crafting a request, and a row it does return cannot be
     refused by the write door.  Every clause below is one of those doors'.
@@ -853,9 +856,20 @@ def destinations_for(
 
     Scope, and what each clause is:
 
-    * on THIS account, and its pay period is this OWNER's -- a statement is one
-      bank's record of one account, and ``Transaction`` carries no ``user_id``
-      of its own;
+    * on THIS account, and its pay period is one the OWNER'S CALENDAR holds --
+      a statement is one bank's record of one account, and ``Transaction``
+      carries no ``user_id`` of its own.  **The ids come from the calendar
+      rather than from a correlated subquery on ``pay_periods.user_id``, and
+      that is what makes the span lookup below total** (pay-calendar plan step
+      C4-a-4): the scan filters on
+      :meth:`~app.services.pay_calendar.PayCalendar.saved_by_id`'s own keys and
+      then indexes that same mapping, so a row it cannot place is
+      unconstructible rather than skipped.  It is the clause
+      :func:`_transaction_candidates` already carries, for its stated reason --
+      inside a COMMAND the two reads are separate snapshots under READ
+      COMMITTED, so a concurrent payday INSERT between them is expressible, and
+      scoping by the calendar's own ids means the query simply does not ask
+      about a period the calendar has not got;
     * it TRACKS PURCHASES -- ``entry_service.create_entry`` refuses a parent
       that does not, and a purchase needs a container that can hold more than
       one;
@@ -885,7 +899,7 @@ def destinations_for(
     **Whether it is ITSELF MATCHED is NOT a clause here**, and that is this
     step's change rather than a relaxation: it is :func:`unmatched_destinations`,
     applied by the screen against the claims it read and by
-    :func:`~._create._existing_envelope` against the claims that ACT read.  The
+    :func:`~._container._existing_envelope` against the claims that ACT read.  The
     rule is unchanged -- ``accept_match``'s
     :func:`~._accept._reject_parent_and_its_own_purchase` refuses a purchase
     whose parent another match already names, so offering such an envelope
@@ -909,32 +923,54 @@ def destinations_for(
     already refuses.
 
     Args:
-        owner_id: The user whose budget lines may be offered.
         account_id: The cash account the statement is for.
+        calendar: The owner's
+            :class:`~app.services.pay_calendar.PayCalendar`, built by the read
+            pass.  **It IS the ownership scope**, which is why no ``owner_id``
+            sits beside it -- the rule :func:`candidates_for` states for its
+            own signature, applied here at pay-calendar plan step C4-a-4: the
+            periods it carries are exactly that owner's, so a second parameter
+            naming the owner would be a second statement of whose rows may be
+            offered and the two could disagree.  It is also where each offered
+            row's SPAN comes from, DERIVED, where this producer read
+            ``txn.pay_period.end_date`` -- a stored copy of a derivable fact
+            that plan step ``pay_calendar:C4-c`` drops.
 
     Returns:
         One :class:`~._creations.PurchaseDestination` per offerable row, oldest
         pay period first and then by name -- a deterministic order, so the
         chooser a screen shows does not depend on what the planner returned.
+        **Ordered by the paycheck's own PAYDAY rather than by its id**, which
+        is what "oldest" means: the two agree on every schedule written
+        forward, and plan step ``pay_calendar:C6`` inserts a payday
+        MID-SCHEDULE by design, which would give the newest row the newest id
+        in the middle of the sequence.
     """
     purchases_basis = ref_cache.settlement_basis_id(
         SettlementBasisEnum.PURCHASES,
     )
+    # The owner's SAVED paychecks, keyed the way a row names one.  This ONE
+    # mapping is both halves of the answer -- the scan's ownership scope on the
+    # line below, and the span every offered row is labelled by -- so the two
+    # cannot describe different schedules and the lookup cannot miss.
+    spans = calendar.saved_by_id()
     rows = (
         db.session.query(Transaction)
         .options(
-            joinedload(Transaction.pay_period),
             # ``tracks_purchases`` below reads ``template.is_envelope`` for
             # every template-generated row, so the template travels with the
             # scan for the same reason ``_transaction_candidates`` loads it:
             # a predicate in the comprehension must not cost a query per row.
+            # **``Transaction.pay_period`` is NOT loaded beside it** since
+            # pay-calendar plan step C4-a-4: the relationship was here to read
+            # the period's stored span, and the span now comes off ``spans``.
             joinedload(Transaction.template),
         )
         .filter(
             Transaction.account_id == account_id,
             Transaction.transfer_id.is_(None),
             balance_contributing_clause(),
-            Transaction.pay_period.has(user_id=owner_id),
+            Transaction.pay_period_id.in_(spans.keys()),
         )
         .all()
     )
@@ -943,9 +979,9 @@ def destinations_for(
             transaction_id=txn.id,
             name=txn.name,
             category_id=txn.category_id,
-            period_start=txn.pay_period.start_date,
-            period_end=txn.pay_period.end_date,
-            pay_period_id=txn.pay_period_id,
+            # Indexed rather than searched, and a ``KeyError`` here is
+            # unconstructible: the filter above IS this mapping's key set.
+            period=spans[txn.pay_period_id],
             is_settled=txn.status.is_settled,
             # The row's identity ACROSS periods, which is what a merchant
             # rule names (plan step X-f6a-3d).
@@ -959,5 +995,5 @@ def destinations_for(
             or txn.settled_basis_id == purchases_basis
         )
     ]
-    offered.sort(key=lambda d: (d.pay_period_id, d.label))
+    offered.sort(key=lambda d: (d.period.start_date, d.label))
     return offered

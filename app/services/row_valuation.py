@@ -15,33 +15,53 @@ optional, so most settled rows fell through to the plan -- and since the plan is
 a derivation, the plan had to be frozen at settle to stop a later price change
 moving a figure the bank had already taken.
 
-**It is a LEAF because the loan stack may not NAME the cash-ledger package,
-and the gate that forbids it is pylint's** (plan step X-au-c2).
-:mod:`~app.services.cash_ledger._amount_source` reaches UP into
-``loan_payment_service`` for amount rule 4's producer (``LoanPricing``) and into
-``recurring_transfer_query`` for the MODE that selects its arm
-(``loan_payment_config``, moved there at plan step R7d-a).  Both of those
-imports are DEFERRED to call time, so the RUNTIME module graph is acyclic and
-importing :mod:`app.services.cash_ledger` pulls in no loan service at all --
-that much an adversarial review measured, correcting an earlier draft of this
-paragraph which claimed a runtime cycle.  What is NOT acyclic is the graph
-pylint builds: ``cyclic-import`` (R0401) traces function-level imports too, so
-a module-level ``from app.services.cash_ledger import ...`` anywhere reachable
-from ``loan_payment_service`` -- ``loan_ledger``, ``loan_loaders``,
-``loan_ledger._split`` -- produces the finding.  Measured: adding those imports
-raised EIGHT R0401s where ``pylint app/`` had none, and deferring them on the
-loan side left all eight standing, because deferral is exactly what pylint
-declines to honour.  ``CLAUDE.md``'s Definition of Done requires that gate
-clean, so the readers in that stack take the arms below -- none of which touch
-a producer -- from a module below both tiers.  There is still exactly ONE
-definition of each rule, which is the claim
-:mod:`app.services.cash_ledger._amounts` exists to make; it simply lives in a
-file both tiers can reach.
+**It was made a LEAF because the loan stack could not NAME the cash-ledger
+package, and the gate that forbade it was pylint's** (plan step X-au-c2).
+:mod:`~app.services.cash_ledger._amount_source` reached UP into
+``loan_payment_service`` for amount rule 4's producer (``LoanPricing``).  That
+import was DEFERRED to call time, so no ``import`` STATEMENT closed a loop --
+but ``cyclic-import`` (R0401) traces function-level imports too, so a
+module-level ``from app.services.cash_ledger import ...`` anywhere reachable
+from ``loan_payment_service`` closed the cycle for pylint.
 
-**What is genuinely inverted is the reach this file routes around**: the amount
-model is the LOWER tier and should not be asking a loan service to price
-anything.  Unwinding that belongs to plan step **X-au-g**, which rebuilds rule
-4's producer; recording it here rather than hiding it is the point.
+*This paragraph used to add that "importing ``app.services.cash_ledger``
+pulled in no loan service at all -- that much an adversarial review measured".
+It is DELETED rather than tensed, because it is false and was false when it
+was written: ``app/__init__.py`` is the application factory and imports the
+tree, so ``import app.services.cash_ledger`` puts 264 app modules in
+``sys.modules`` -- ``loan_payment_service`` among them -- on the pre-move tree
+and the post-move one alike (measured 2026-08-31, identical both sides).  What
+was true is the narrower claim the sentence above now makes: no import
+statement in this package NAMED a loan service at module level.*
+
+**THE REACH IS DELETED as of plan step X-au-g-2a, and this paragraph is kept in
+the PAST TENSE rather than left standing as a live reason.**  That step moved
+rule 4's producer DOWN into ``cash_ledger`` (``_loan_installment`` /
+``_loan_pricing``), which is the unwind the paragraph below has always said
+``X-au-g`` owes: the amount model is the lower tier and was asking a loan
+service to price a row.  What that package names now are loan TERM primitives
+-- ``loan_loaders``, ``loan_resolver``, ``escrow_calculator``,
+``recurring_transfer_query`` -- none of which names ``cash_ledger``, so the
+loan READING stack is free to import it, and plan step X-au-g-2c SPENT that
+freedom: ``loan_payment_service.get_payment_history`` prices its feed through
+``cash_ledger.contributions_by_id`` now, not through the accessor below.
+
+**So this module's split is no longer FORCED, and saying so is the point of
+keeping the history.  What survives is the SEAM; its ADDRESS is now
+arbitrary.**  The arms here answer from the row alone and consult no producer,
+which is a real distinction whichever tier can reach it -- but that argues for
+a seam, not for a separate top-level module: ``cash_ledger._amounts`` and
+``cash_ledger._amount_source`` are already two modules for exactly this
+producer / no-producer split, inside one package.  Its registry scope stands
+on separate ground
+(``shekel_checkers/_fence_rulings._ROW_VALUATION_MODULES`` -- extracting a
+fenced module's contents into an unfenced neighbour is finding N-28's shape,
+which never depended on the cycle).  Whether it should FOLD BACK into
+``cash_ledger`` now that it can is a question X-au-g-2a deliberately did not
+take -- a second change, with its own diff and its own review -- and silence
+here is not an answer to it.  There is still exactly ONE definition of each
+rule, which is the claim :mod:`app.services.cash_ledger._amounts` exists to
+make; it simply lives in a file both tiers can reach.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01): ORM rows in,
 ``Decimal`` out; no Flask import, no writes, and no query this module ISSUES.
@@ -331,7 +351,7 @@ def fixed_contribution(txn) -> "Decimal | None":
     excluded row from inside the valuation, where the resolver would REFUSE the
     same row: both live producers filter to Projected rows
     (``income_service.live_projected_net``,
-    ``loan_payment_service.LoanPricing.live_cash``), so a Cancelled salary
+    ``cash_ledger.LoanPricing.live_cash``), so a Cancelled salary
     row is absent from their maps and has no derived answer at all.  Asking what
     a row is worth before asking what it is priced at is what keeps that from
     being a 500 on a row nobody is counting.
@@ -463,23 +483,33 @@ def owned_contribution(txn) -> Decimal:
     LOUDLY here instead of publishing a wrong number, which is what makes the
     per-kind cutovers (X-au-d..X-au-i) safe to ship one at a time.
 
-    **One reader takes it for a different reason, and the CYCLE this paragraph
-    used to name is gone**: ``loan_payment_service.get_payment_history`` is NOT
-    settled-only -- its query admits Projected shadows -- and the rule that
-    would price one used to route back through it (rule 4 ->
-    ``LoanPricing.derive_cash`` -> ``_resolve_loan_basis`` ->
-    ``load_loan_context`` -> that function).  ``_resolve_loan_basis`` reads the
-    loan's terms alone now and loads no payment history, so that path does not
-    exist.
+    **TWO readers were not settled-only, and plan step X-au-g-2c-1 routed the
+    first of them.**  ``loan_payment_service.get_payment_history`` admits
+    Projected shadows and priced them here, so a derived loan-side income
+    shadow broke the feed the amortization engine replays -- which is why the
+    rule-4 controls declared only the checking-side EXPENSE leg, and which
+    finding **N-266**(a) recorded
+    (first as an irreducible CYCLE, then, once plan step X-au-g-1 deleted the
+    path it named, as ONE UNROUTED READER).  That reader takes
+    :func:`~app.services.cash_ledger.contributions_by_id` now, so nothing left
+    in ``app/`` asks this accessor about a row that might be derived.
 
-    **What survives is the CONCLUSION, not the cause**: ``get_payment_history``
-    prices its rows through this very accessor, so a derived loan-side income
-    shadow still breaks it and the rule-4 controls still declare only the
-    checking-side EXPENSE leg.  Finding **N-266** (a) is therefore
-    MISDIAGNOSED rather than closed -- one unrouted reader where it recorded an
-    irreducible cycle -- and routing this one call site is the first move of
-    plan step **X-au-g**.  The argument is written once, at
-    :func:`app.services.balance_at._plan._planned_from_shadows`.
+    **The SECOND is still here, and saying so is the point of counting them.**
+    ``balance_at._plan._planned_from_shadows`` values PROJECTED loan-side
+    shadows at ``owned_contribution(shadow)`` where the live-cash map has no
+    entry (``_plan.py``), which is the same row class and the same refusal.  It
+    is not this step's: that call site moves when plan step **X-au-f** stamps
+    the transfer shadows, and that step's own specification says so.  *A first
+    draft of this paragraph said "every caller is now settled-only" -- written
+    in the same commit as the ``_plan.py`` docstring that names this survivor,
+    which is the shape ``lessons.md`` records as a fix describing itself
+    ungraded.*
+
+    **The refusal below is what makes routing them safe to defer**, and that is
+    worth keeping rather than treating as an accident: a reader handed a
+    derived row fails LOUDLY here instead of feeding a ``None`` into a money
+    path, so the per-kind cutovers ship one at a time and each reader they would
+    break announces itself.
 
     Args:
         txn: The row being valued, whose ``estimated_amount`` is its own.

@@ -60,6 +60,7 @@ def a_transaction(
     template=True,
     reconciled_by=None,
     settle_day_basis=None,
+    account=None,
 ):
     """Stage and return one transaction on the seeded checking account.
 
@@ -98,6 +99,12 @@ def a_transaction(
             through an edit box or a Mark Paid carries.  A fixture standing in
             for a reconcile-panel tick says ``ASSERTED``; one standing in for a
             bank match says ``OBSERVED``.
+        account: The account to file it on; the seeded checking one by default.
+            **A case needs this where the ACCOUNT is the variable** rather than
+            the row -- an account whose books open INSIDE the pay calendar is
+            a shape the seeded one cannot be restated into, so a destination on
+            it has to be built here.  ``a_scope`` and ``an_import`` beside this
+            already take the same parameter for the same reason.
 
     Returns:
         The staged :class:`~app.models.transaction.Transaction`.
@@ -105,12 +112,13 @@ def a_transaction(
     type_id = ref_cache.txn_type_id(
         TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE,
     )
+    account_id = (account or seed_user["account"]).id
     category_id = (category or seed_user["categories"]["Groceries"]).id
     template_id = None
     if template:
         definition = TransactionTemplate(
             user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
+            account_id=account_id,
             category_id=category_id,
             transaction_type_id=type_id,
             name=name,
@@ -124,7 +132,7 @@ def a_transaction(
         template_id=template_id,
         pay_period_id=(period or seed_user["bootstrap_period"]).id,
         scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
+        account_id=account_id,
         status_id=ref_cache.status_id(status),
         name=name,
         category_id=category_id,
@@ -716,6 +724,49 @@ def a_later_period(seed_user):
         start_date=bootstrap.end_date + timedelta(days=1),
         end_date=bootstrap.end_date + timedelta(days=14),
         period_index=bootstrap.period_index + 1,
+    )
+    db.session.add(period)
+    db.session.flush()
+    return period
+
+
+def a_payday_on(seed_user, start_date):
+    """Stage and return one pay period of the owner's, OPENING on *start_date*.
+
+    :func:`a_later_period`'s general form, and it exists for the shape that
+    helper cannot build: it opens the next period the day after the bootstrap's
+    stored ``end_date``, where the derived end (the day before the NEXT payday)
+    and the stored one COINCIDE -- so a case asserting on a derived span and
+    built on it would pass against the stored column it is meant to catch.
+
+    Its own stored ``end_date`` is a fortnight, which is what keeps the owner's
+    cadence at 14 while this row is the last one: no seeded owner has a
+    ``budget.pay_schedule`` row, so
+    ``pay_schedule_service.resolve_schedule`` infers the cadence from the last
+    period's stored LENGTH.
+
+    ``period_index`` is the next free one rather than a position, because the
+    derivation renumbers by payday order anyway and the column only has to
+    satisfy ``uq_pay_periods_user_index`` -- which is what lets a caller stage
+    paydays whose id order and date order disagree.
+
+    Args:
+        seed_user: The seeded user bundle.
+        start_date: The payday this period opens on.
+
+    Returns:
+        The staged :class:`~app.models.pay_period.PayPeriod`.
+    """
+    highest = (
+        db.session.query(db.func.max(PayPeriod.period_index))
+        .filter(PayPeriod.user_id == seed_user["user"].id)
+        .scalar()
+    )
+    period = PayPeriod(
+        user_id=seed_user["user"].id,
+        start_date=start_date,
+        end_date=start_date + timedelta(days=13),
+        period_index=(highest or 0) + 1,
     )
     db.session.add(period)
     db.session.flush()

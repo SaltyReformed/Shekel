@@ -772,9 +772,14 @@ def blocked_by_violations() -> list[str]:
 #: prevents the failure the line cap was reached for, a row swelling into the
 #: arc document's argument.  :data:`LEDGER_RUNAWAY_ROWS` is a backstop set far
 #: above any real backlog, so an accident that duplicates the table still
-#: fails.  And :func:`open_findings_by_arc` PRINTS the backlog every run,
-#: because the thing worth forcing was never the file's length: it is that the
-#: pile is looked at.  On the day of the ruling that pile was 227 rows, 156 of
+#: fails.  And :func:`open_findings_by_arc` puts the backlog in the FILE, where
+#: :func:`stated_arc_counts_violation` grades that the number is true -- because
+#: the thing worth forcing was never the file's length: it is that the pile is
+#: looked at.  *This said the function "PRINTS the backlog every run" until
+#: 2026-09-01, and it does not: the plan gate contains no ``print`` call at all,
+#: and a number on gate stdout would be read by nobody anyway.  The report lives
+#: where every reader of the registry meets it, which is the stronger form.*
+#: On the day of the ruling that pile was 227 rows, 156 of
 #: them ``balance``, with 21 blocked on nothing but a decision -- the same 21
 #: whose clearance the 250 -> 260 raise had been granted against.
 #: **``steps.md``'s LINE cap was DROPPED on 2026-08-25, by developer ruling, on
@@ -835,11 +840,20 @@ LEDGER_RUNAWAY_ROWS = 400
 #: ledger, and the ledger went without it for as long as it did because rule 14
 #: was written about the index and graded only there.
 #:
-#: **2,000 is a FIRST FLOOR, deliberately above the p90 of 1,674.**  It is set
-#: where it catches rows that have become specifications without demanding a
-#: rewrite of the 51 rows over 1,200, which would be an unreviewed edit to half
-#: the registry.  It comes DOWN as rule 5 archives closed findings, the way the
-#: arc-document caps came down when the registries left.
+#: **2,000 is a FIRST FLOOR, deliberately above the p90 when it was set.**  It
+#: catches rows that have become specifications without demanding a rewrite of
+#: the rows just under it, which would be an unreviewed edit to half the
+#: registry.
+#:
+#: **It does NOT come down as rule 5 archives closed findings, and that sentence
+#: stood here until plan step ``balance:X-au-g-2b`` MEASURED it false**
+#: (2026-09-01).  Why archiving moves a corpus statistic the wrong way, and what
+#: replaced the arm that assumed otherwise, is on
+#: :func:`_row_width.crowded_ledger_rows` -- once, where the decision lives.  The two
+#: figures this paragraph quoted beside it (a p90 of 1,674, and "the 51 rows
+#: over 1,200") were stale by then as well, at 1,686 and 90, and are dropped
+#: rather than re-pinned: a measurement quoted as a REASON decays invisibly,
+#: because nobody re-checks a premise.
 LEDGER_ROW_CAP = 2000
 
 

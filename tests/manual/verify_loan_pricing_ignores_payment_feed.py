@@ -1,7 +1,7 @@
 """Prove a loan's PRICE does not depend on the loan's own payment rows.
 
 The regression harness for the balance step that deletes the pricing cycle:
-``loan_payment_service._resolve_loan_basis`` used to run
+``cash_ledger._resolve_loan_basis`` used to run
 :func:`~app.services.loan_payment_service.load_loan_context` and read
 ``resolve_loan(...).monthly_payment`` back out, which put
 :func:`~app.services.loan_payment_service.get_payment_history` on the pricing
@@ -62,10 +62,9 @@ from app.services.loan_loaders import (
     load_loan_params,
     load_rate_changes,
 )
-from app.services.loan_payment_service import (
-    _resolve_loan_basis,
-    load_loan_context,
-)
+from app.services.cash_ledger import _resolve_loan_basis
+from app.services.loan_payment_service import load_loan_context
+from app.services.rate_period_engine import period_for_date
 from app.services.balance_at import BalanceContext
 
 
@@ -101,7 +100,9 @@ def main():
             params = load_loan_params(account_id)
             anchors = load_loan_anchor_facts(params)
             ctx = BalanceContext.build(lp.account.user_id)
-            context = load_loan_context(account_id, ctx.scenario_id, params)
+            context = load_loan_context(
+                account_id, ctx.amounts(), params,
+            )
             full = list(context.payments)
             confirmed = [p for p in full if p.is_confirmed]
             feeds = {
@@ -119,8 +120,13 @@ def main():
                     f"  account={account_id} feed={name:<14} "
                     f"n={len(feed):>3} monthly_pi={answers[name]}"
                 )
-            basis = _resolve_loan_basis(account_id, as_of)
-            new = None if basis is None else basis.monthly_pi
+            basis = _resolve_loan_basis(account_id)
+            # The basis holds the loan's PERIOD SET since plan step X-au-g-2b
+            # (ruling R-IJ), so the figure this harness compares is the one
+            # governing ``as_of`` -- the same date every other arm reads.
+            new = None if basis is None else period_for_date(
+                basis.periods, as_of,
+            ).period_pi
             cheap = loan_resolver.compute_monthly_payment_baseline(
                 params, load_rate_changes(account_id), as_of,
             )

@@ -368,19 +368,41 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         loud, and reaching for the nullable is a deliberate act that reads as
         one at the call site.
 
-        **Exactly two callers, both inside the seam, both because a missing
-        baseline is the degenerate case of their own rule rather than an
-        error:**
+        **THREE callers, and the count read "exactly two, both inside the
+        seam" until plan step X-au-g-2c re-took it.**  The third
+        (``retirement_projection``, below) has read this since `731f6b3c`,
+        2026-08-16, so the claim was false for a fortnight -- which is the
+        failure this very docstring warns about two paragraphs down, committed
+        in the paragraph that warns about it.  A count is a claim; re-grep it
+        rather than carrying it.
 
-        * :func:`._resolution.resolve_loan_bundle` -- a loan's payment feed is
-          the ONE scenario-scoped input to its resolution; its params, anchors
-          and rate history are contract facts.  With no baseline the feed is
-          empty and the CONTRACT terms still resolve, which is plan step C8e's
-          rule and what keeps escrow and rate editing working for a user whose
-          baseline is missing (:func:`app.routes.loan._helpers._loan_terms_now`).
+        Two of the three are inside the seam, and both because a missing
+        baseline is the degenerate case of their own rule rather than an error:
+
+        * :meth:`amounts_or_none` -- the nullable form of this pass's amount
+          basis, and its ONE caller is the loan bundle.  ``resolve_loan_bundle``
+          read THIS accessor directly until plan step X-au-g-2c, for the same
+          reason and about the same loan: a loan's payment feed is the ONE
+          scenario-scoped input to its resolution; its params, anchors and rate
+          history are contract facts.  With no baseline the feed is empty and
+          the CONTRACT terms still resolve, which is plan step C8e's rule and
+          what keeps escrow and rate editing working for a user whose baseline
+          is missing (:func:`app.routes.loan._helpers._loan_terms_now`).  It
+          moved one level down because ``load_loan_context`` now takes the basis
+          that PRICES that feed rather than an id that only scopes it, and the
+          nullability is the same nullability.
         * :func:`._confirmed_view.confirmed_view` -- the confirmed ledger view
           is scenario-scoped by construction, so with no baseline there is no
           view and the resolver falls back to its anchor replay.
+
+        The third is OUTSIDE the seam and takes the nullable for a different
+        reason, which is why it is listed apart rather than folded into the
+        count: ``retirement_projection`` puts it in a MEMO KEY beside the
+        owner and the as-of.  A cache key must be TOTAL over the states its
+        pass can be in -- a key that raises for a no-baseline pass would turn a
+        degraded read into a 500 at the memo rather than at a figure -- so the
+        raise has nothing to protect there.  It scopes no query, which is the
+        line the paragraph below draws.
 
         A third reader tests the nullable directly rather than its id:
         :func:`app.services.balance_at.liability_owed_at_dates`, the one seam
@@ -527,12 +549,16 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         :class:`~app.services.cash_ledger.AmountBasis` are lazy, and each
         answers ``None`` from a row's own columns before it touches them.
 
-        **It pins no as-of, deliberately.**  The basis reads ``date.today()``
-        for the loan half rather than this pass's :attr:`as_of`, which is
-        finding **N-40** and plan step **X-i2** -- and X-i2 MOVES MONEY, so
-        handing it ``self.as_of`` here would ship that move inside a refactor
-        whose gate is byte-identity.  The read is disclosed rather than quietly
-        relocated; X-i2 is where a pass's one clock reaches this derivation too.
+        **It pins no as-of, and since plan step X-au-g-2b there is nothing
+        left for one to correct.**  The basis read ``date.today()`` for the
+        loan half rather than this pass's :attr:`as_of` -- finding **N-40** --
+        and the remedy was expected to be plan step **X-i2**, handing every
+        memoized loader this pass's clock.  Ruling **R-IJ** closed it a tier
+        DOWN instead: a loan's contractual terms resolve on the installment
+        they govern, so the derivation takes no date at all and
+        ``cash_ledger`` makes no clock call anywhere
+        (``test_amount_source.TestTheAmountModelReadsNoClock``).  X-i2 keeps
+        every other loader; this derivation is no longer among its subjects.
 
         **The derivation is imported outright**, so like :meth:`calendar` beside
         it this memo is filled here rather than by the seam:
@@ -555,6 +581,36 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
                 self.user_id, scenario_id,
             )
         return self._amount_bases[scenario_id]
+
+    def amounts_or_none(self) -> "AmountBasis | None":
+        """The pass's amount basis, or ``None`` -- for a rule that HAS an answer.
+
+        The verbose sibling of :meth:`amounts`, and it is
+        :attr:`scenario_id_or_none`'s companion in exactly the way ruling
+        **R-BX** names: the obvious spelling is the one that FAILS LOUD, and
+        reaching for the nullable is a deliberate act that reads as one at the
+        call site.  It reads that accessor rather than :attr:`scenario` itself,
+        so it adds no third reader of the nullable attribute ruling **R-BY**
+        bounds to two.
+
+        **One caller, and it is the one whose own rule has an answer here**
+        (plan step X-au-g-2c): :func:`._resolution.resolve_loan_bundle`, which
+        already spelled the nullable for the SAME loan and the SAME reason.  A
+        loan's payment feed is its one scenario-scoped input; its params,
+        anchors and rate history are contract facts.  With no baseline the feed
+        is empty and the CONTRACT terms still resolve, which is plan step C8e's
+        rule and what keeps escrow and rate editing working for an owner whose
+        baseline is missing.  That caller took ``ctx.scenario_id_or_none`` and
+        now takes this, because ``load_loan_context`` takes the basis that
+        prices the feed rather than an id that only scopes it.
+
+        Returns:
+            The pass's :class:`~app.services.cash_ledger.AmountBasis`, or
+            ``None`` when this pass has no baseline scenario.
+        """
+        if self.scenario_id_or_none is None:
+            return None
+        return self.amounts()
 
     def reported_periods(self) -> PeriodWindow:
         """Return the pay periods every per-period seam entry reports over.

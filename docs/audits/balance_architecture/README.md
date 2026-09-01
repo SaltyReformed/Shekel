@@ -258,18 +258,8 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
         OPERATOR act that cannot run until the first has deployed -- production is
         still at `a4c6f1d92b73` and has no `budget.account_openings` table at all.
         Carries **N-379**, **N-382**.
-        * [x] **X-f3c-2b-2a** `59b485df` -- the DOOR that restates an account's
-          opening: append-only, through the table's ONE writer, bounded by the
-          movements recorded and by today but NOT by `earliest_recordable_day`
-          (**R-ER**), two entrances (**R-IE**). Migration `c9f4b1e78d02` rides it:
-          the governing row is the latest `id`, never `created_at`. **N-275**,
-          **N-379**, **N-382** stay OPEN at **X-f3c-2b-2c**; opened **N-400**.
-        * [x] **X-f3c-2b-2b** `7ef63899` -- a matched bank LINE bounds its account's
-          opening at BOTH tiers (**R-IG**, **R-IH**): four doors refuse a line the
-          books cannot hold, three screens stop OFFERING one, and deferred triggers
-          on `statement_match_members` AND `bank_statement_lines` make the state
-          unstorable. The builders became ARM-EXPLICIT, deleting the migration's
-          90-line frozen body copy. Closed **N-383**; opened **N-407**.
+        * [x] **X-f3c-2b-2a** `59b485df` -- the DOOR that restates an account's opening, append-only through the table's ONE writer (**R-ER**, **R-IE**). **N-275**, **N-379**, **N-382** stay OPEN at **X-f3c-2b-2c**; opened **N-400**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
+        * [x] **X-f3c-2b-2b** `7ef63899` -- a matched bank LINE bounds its account's opening at BOTH tiers (**R-IG**, **R-IH**), the state made unstorable by deferred triggers. Closed **N-383**; opened **N-407**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
         * [ ] **X-f3c-2b-2c** the account-10 repair, performed through the app's own
           DOORS and never by a migration writing money rows (**R-HJ**). **It is an
           OPERATOR act, so this leaf is a rehearsed runbook and a re-measurement
@@ -283,8 +273,10 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
           the one fact neither holds, traced 2026-08-31: **transfer 1 is
           template-linked** (`transfer_template_id = 1`), so only a SOFT delete is
           reachable for it too -- the same limitation **N-386** already accepts for
-          transfer 102, now known to bind on both. The post-state must replay to
-          ZERO mismatches on the export's 17 stated days.
+          transfer 102, now known to bind on both. **The procedure is `account_10_repair_runbook.md` beside this file** -- six acts, 32 door submissions, rehearsed 2026-09-01 and NOT performed.
+          **ACT 4b IS OPEN AND BLOCKS THE PROCEDURE**: the developer rejected booking a `$500.00` expense that never happened (2026-09-01, "I don't like faking or hiding money"), and neither alternative offered survives the same principle -- recording nothing hides the outflow in an equity correction, and **R-HK** rejected the earlier opening on its own grounds. The movement is Checking into another account's OPENING EQUITY, a shape the app cannot record; the from-scratch design is owed before this step can run.
+          **Acceptance is `$0.00` on the opening day the measurement prints SEPARATELY -- the figure act 3 exists to set -- plus ZERO mismatches on every SCORED day for the cash-fold and cutover arms**, rehearsed 14 of 14 on each. The RENDERED arm is excused at 13 of 14: its `$0.32` is **R-HM**'s one-day accrual, a standing `$20.49` over five accounts this step does not own.
+          Those 14 are ELEVEN bank days above the books plus THREE the owner asserted on that the bank never names. NOT the export's 17 stated days: five fall below the books and **R-HG** puts them inside the opening equity, and the opening day is scored by no arm because nothing asserts on it -- so a predicate naming 17 is one no run can meet.
     * [x] **X-f3c-2c** `930f06fc` -- an assertion is append-only at the DATABASE tier (**R-HY**, **R-HZ**); closed **N-287**, opened **N-392** and **N-393**. Both leaves and what a later step must obey: `archive/x_f3c_2c_as_built_2026-08-30.md`.
       * [x] **X-f3c-2c-1** `930f06fc` -- a fixture PLACES an assertion and never edits one. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
       * [x] **X-f3c-2c-2** `930f06fc` -- `budget.refuse_append_only_change` on all three tables, `passive_deletes="all"` beside it. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
@@ -331,13 +323,17 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
 **What this phase is about, in one sentence: the app stores five amounts it also computes, and each
 one grew its own private repair mechanism.** Salary income is repaired at READ time by
 `income_service.live_projected_net`, which writes nothing back (**N-224**); a loan-payment shadow by
-`loan_payment_service.live_loan_transfer_amounts`, which also reads the wall clock (**N-40**); a
+`cash_ledger.LoanPricing.live_cash`, which also read the wall clock until `X-au-g-2b` (**N-40**); a
 transfer shadow by a two-line copy in `transfer_service.update_transfer` beside a drift corrector
 that logs `"Correcting shadow %d estimated_amount drift"`; an ordinary template row by
 `regenerate_for_template`, which DELETES and recreates every non-override row from a date the form
 supplies and never stores. `credit_card:CC4b` plans a fifth. **R-FI deletes the class**: a derived
 amount is not stored, one total resolver answers, and the CHECK makes a stale derived figure
 unrepresentable rather than merely unlikely.
+
+**EVERY LEAF HERE MUST OBEY ONE THING `X-au-c3` established**: a figure and a status change are
+independent facts that ONE seam call applies. It lived only on that step's entry until the
+2026-09-01 archive and is in no registry, so it is restated where it governs all of them.
 
 **Measured on production 2026-08-11**, so the size of each cutover is known rather than estimated:
 **997 rows, and the buckets RECONCILE to it** because a set of measurements that does not is a
@@ -389,9 +385,7 @@ hides.
   nothing reachable from `loan_payment_service` may NAME `cash_ledger`, which is why the
   producer-free arms live in `row_valuation.py`; and the amount rules read no STATUS, the basis
   pinning `date.today()` being `X-i2`'s money rather than theirs.
-  * [x] **X-au-c3** `3d1379d1` -- a settle RECORDS what moved rather than refreshing an amount.
-    **A LATER leaf must obey**: a figure and a status change are independent facts ONE seam call
-    applies. Held here rather than archived because two live blocker cells name it.
+  * [x] **X-au-c3** `3d1379d1` -- a settle RECORDS what moved rather than refreshing an amount. What a later leaf must obey is in this phase's preamble, not here. Record in `archive/eight_shipped_steps_2026-09-01.md`.
 * [ ] **X-au-d** `refactor(salary): a projected paycheck is not stored` -- the SALARY cutover. The
   recurrence engine stops pricing salary rows, the 51 live rows go NULL, and
   `income_service.live_projected_net`, `transaction_service._freshest_amount` and
@@ -403,26 +397,48 @@ hides.
   figure, so the collision the chooser mediates cannot occur (developer, 2026-08-11). **This is where
   the measured `$502.45` defect class dies** -- `_get_transaction_amount` priced a third paycheck from
   a truncated period list, and a generator that prices nothing cannot mis-price.
-* [ ] **X-au-g** the DECOMPOSED parent of the LOAN-PAYMENT cutover, split 2026-08-31: the cutover
-  was blocked by a cycle that turned out not to exist, so deleting that cycle is its own leaf.
-  * [x] **X-au-g-1** `af61263d` -- `_resolve_loan_basis` loaded the loan's whole payment history to
-    recover ONE field that is character for character `compute_monthly_payment_baseline`'s body, a
-    producer taking NO payments and NO anchors. Finding **N-266** (a) is MISDIAGNOSED rather than
-    falsified: its PATH is dead, its CONCLUSION stands, because `get_payment_history` prices through
-    `owned_contribution`, which refuses a derived row -- one unrouted reader, not an irreducible
-    cycle, which is why X-au-g-2 routes that reader before declaring either leg.
-  * [ ] **X-au-g-2** `refactor(loans): a loan payment resolves on its own due date` -- the
-    LOAN-PAYMENT cutover, closing **N-40**. **It must RULE first**, and the ruling is forced rather
-    than optional: a resolver may not read the wall clock, and `LoanPricing` pins `date.today()` when
-    the basis is built. The rule ruling D5 already applied to escrow -- a shadow's figure resolves on
-    its own DUE date -- is what makes the loan half resolvable. **Its first move is routing
-    `get_payment_history` through the resolver**, which X-au-g-1 made possible; two obstacles are
-    named rather than left to be discovered -- it takes no `AmountBasis`, so the signature change
-    reaches `load_loan_context` and its three callers, and it must route to `contributions_by_id`
-    rather than `amounts_by_id`, since it feeds SETTLED rows to the amortization engine and the wrong
-    one replaces recorded cash with forecast cash. Dormant on production
-    (`budget.loan_payment_settings` is EMPTY), so it moves `$0.00` there and is graded on a seeded
-    loan.
+* [ ] **X-au-g** the DECOMPOSED parent of the LOAN-PAYMENT cutover, split 2026-08-31 into four
+  leaves: the pricing cycle's deletion, the tier move that unwinds the amount model's reach into the
+  loan service, the ruling that puts a loan's terms on the installment they govern, and the cutover
+  those three unblock.
+  * [x] **X-au-g-1** `af61263d` -- a loan's price reads its TERMS, never its own payment rows. Finding **N-266**(a) is MISDIAGNOSED rather than falsified: the PATH is dead, the CONCLUSION stands. Record in `archive/eight_shipped_steps_2026-09-01.md`.
+  * [x] **X-au-g-2a -- rule 4's producer moves below the amount model.** `b16908f7`. The
+    tier move `row_valuation.py` has always said this arc owes: `_basis` / `_pricing` become
+    `cash_ledger._loan_installment` / `._loan_pricing`, so the arrow runs one way.
+    **A LATER step must obey:** the loan READING tier may now import the amount model, which
+    is what `X-au-g-2c` needs.  Byte-identical, AST-verified; opened **N-416**.
+  * [x] **X-au-g-2b** `6cd0ad44` -- a loan payment resolves on its own DUE date (**R-IJ**) at
+    three sites plus a fourth nobody had filed, so `LoanPricing` takes no `as_of` and
+    **`cash_ledger` makes no clock call at all** (AST census, thirteen modules, pinned by
+    `test_amount_source.TestTheAmountModelReadsNoClock`). Closed **N-40** and **N-410**.
+    **A LATER step must obey:** the escrow-threshold site was BUILT, measured a REGRESSION and
+    reverted -- **N-409** stands with its remedy withdrawn, re-owned to `X-au-g-2c`.
+  * [ ] **X-au-g-2c** the DECOMPOSED parent of the CUTOVER, split 2026-09-01 into the readers,
+    the declaration, and the escrow rule. It ticks with the last of its three leaves.
+    * [x] **X-au-g-2c-1** `cdc2c7d9` -- BOTH readers of a projected loan-side shadow take the
+      amount model. **N-266 said ONE unrouted reader; the census says TWO of NINE, seven
+      settled-only.** The second is `_plan._planned_from_shadows`, and `loan_payment_settings` is
+      EMPTY on production, so 47 of 58 projected shadows take its fallback -- `2c-2` would have
+      shipped an `AmountUnresolvable` on `/savings`. Closed **N-266**; opened **N-432**. The ledger
+      fence is a VALUE control now, with a static check reading W9908's own allowlist.
+    * [ ] **X-au-g-2c-2** `refactor(loans): a loan payment's shadow is derived` -- the DECLARATION.
+      Stamp `amount_source_id` on BOTH legs and empty their figure, which DELETES the loan half of
+      the read-time repair (`LoanPricing.live_cash`, `_manual_shadow_amount`) rather than leaving
+      it maintained. Dormant on production (`budget.loan_payment_settings` is EMPTY), so it moves
+      `$0.00` there and is graded on a seeded loan. **Two obligations it must not discover
+      mid-build:** `query_shadow_income` still eager-loads only `status` and `pay_period`, and a
+      DERIVED row's rule reads `transfer` -> `template` -> `settings` per row, so the eager load
+      belongs in that loader with the stamp; and X-au-f NULLs these same rows, so
+      `_manual_shadow_amount` must be gone before it lands.
+    * [ ] **X-au-g-2c-3** `fix(loans): escrow is charged once per installment` -- **N-409**, and
+      the developer ruled its remedy on 2026-09-01. `prepare_payments_for_engine` floors the escrow
+      subtraction at `amount - contractual_pi` while the fold's `apply_payment_cash` subtracts the
+      full escrow and lets principal go negative (plan D5): TWO allocation rules for one question.
+      The floor is the defect -- on a `$1,700.00` payment against a `$1,910.95` installment it
+      reports `$1,293.96`, exactly the contractual P&I, so a short payment reads as on schedule and
+      the shortfall vanishes in the OPTIMISTIC direction. Escrow becomes a charge against the
+      INSTALLMENT, once, in both producers. **MOVES MONEY**; `$0.00` on production, where every
+      mortgage payment is exactly PITI and one per due month.
 * [ ] **X-au-f** `refactor(transfers): a shadow's amount is its parent's` -- the TRANSFER cutover.
   `transfers.amount` resolves from the template series for a generated transfer, a shadow resolves
   from its parent, and the copy at `transfer_service.py:534` with the drift corrector at `:814` both
@@ -430,9 +446,11 @@ hides.
   is unaffected: its predicate is `transfer_template_id IS NULL`, and an ad-hoc transfer owns its
   amount. **It runs AFTER the loan leaf and the first draft had them the other way round**, which an
   adversarial review reproduced: a loan-payment shadow IS a transfer shadow, so this step NULLs it,
-  while `loan_payment_service._manual_shadow_amount:660` reads `shadow.estimated_amount` under a
-  docstring asserting that column is "NOT NULL, always the generated base" -- manual-mode loan
-  payments would be broken for the whole interval between the two leaves.
+  while `cash_ledger._loan_installment._manual_shadow_amount` reads `shadow.estimated_amount` under
+  a docstring asserting that column is "NOT NULL, always the generated base" -- manual-mode loan
+  payments would be broken for the whole interval between the two leaves. *That producer was
+  `loan_payment_service._manual_shadow_amount:660` until X-au-g-2a moved it; the line number was
+  already stale before the move, so the module path is cited without one.*
 
 * [ ] **X-au-h** `refactor(transactions): is_override says one thing` -- closes **N-238**. The flag
   carries FOUR facts, not the two the first draft named, and an adversarial review found the other
@@ -459,17 +477,8 @@ hides.
   N-391 records that a `$0.04` error in any of the twelve hand-entered deductions reproduces the
   same net, so the step opens with an operator re-reading one stub.
 * [x] **X-aw** `078077db` -- a paycheck's gross is a RATE (**R-HW**), so **N-239** died by construction. Closed its horizon half; opened **N-390** and **N-391**. Record in `archive/four_shipped_steps_2026-08-30.md`.
-* [x] **X-bh-1** `b955d0c8` -- the engine reads the owner's CALENDAR: `PayrollBasis` carries it,
-  `all_periods` is deleted, and the four judgements become two producers (`pay_calendar._rhythm`),
-  so **D25**'s narrow context is unrepresentable rather than forbidden in prose. Both trees driven
-  against the dev database agree on all 63 paychecks, `$170,974.29` of net and every analytics
-  month. Opened **N-394**, **N-395**, **N-396**.
-* [x] **X-bh-2** `49fdfb91` -- the rhythm runs BACKWARD too (**R-IA**), bounded by a stored
-  `budget.pay_schedule.history_opens_on` registration and the pay-periods settings section ask for.
-  Closed **N-390**: with his opening stated, the developer's 2026 year-to-date at 2026-05-21 goes
-  from four recorded paydays to the NINE he was really paid. **`NULL` means NOT STATED (`R-IF`)**,
-  so an unasked owner is counted from the record, unchanged. Also closed **N-396** by deleting
-  `earliest_start_in_month`. Opened **N-398**, **N-399**.
+* [x] **X-bh-1** `b955d0c8` -- the paycheck engine reads the owner's CALENDAR, so **D25**'s narrow context is unrepresentable rather than forbidden in prose. Opened **N-394**, **N-395**, **N-396**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
+* [x] **X-bh-2** `49fdfb91` -- the rhythm runs BACKWARD too (**R-IA**), bounded by a stored registration; **`NULL` means NOT STATED** (**R-IF**). Closed **N-390** and **N-396**; opened **N-398**, **N-399**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
 
 ### Phase X -- the posting restructure
 
@@ -623,8 +632,7 @@ hides.
   repair X-x's refusals point at is that step's and X-x waits on both.
   *Its opening line claimed this step "re-anchors accounts". That was expired when written: ruling
   R-EH deleted `accounts.current_anchor_period_id`, so there is nothing left to re-anchor.*
-  * [x] **X-ad-a** `2a4eb477` -- registration ASKS for the payday, the cadence and the horizon and
-    the bootstrap payday is DELETED; closed **N-123** (= pay-calendar `P3`), satisfies `C4`'s `P8`.
+  * [x] **X-ad-a** `2a4eb477` -- registration ASKS for the payday, the cadence and the horizon, and the bootstrap payday is DELETED; closed **N-123** (= pay-calendar `P3`), satisfies `C4`'s `P8`. Record in `archive/eight_shipped_steps_2026-09-01.md`.
   * [ ] **X-ad-b** the rolling top-up stops writing HISTORY (**N-124**, ruling **R-EZ**). With
     rolling enabled, a lapsed schedule's page load appends periods from `last.end_date + 1`
     wherever that is and populates them -- **61 -> 113 -> 132 periods and +991 transactions** over
@@ -850,12 +858,7 @@ hides.
   one object where the next instance will be a different one -- the same shape as an allowlist.
 * [x] **X-bd** `39935763` -- every route in the sweep is its OWN pytest item. Closed **N-364**, whose diagnosis it measured FALSE; opened **N-387**. Record in `archive/four_shipped_steps_2026-08-30.md`.
 * [x] **X-be-2** `167aab8d` -- a test SAYS what world it starts in. Closed **N-387**, whose read-only premise it measured FALSE; opened **N-388**. Record in `archive/four_shipped_steps_2026-08-30.md`.
-* [x] **X-be-3** `0aa2cc80` -- the sweep grades EVERY GET route and carries no list of the ones it
-  does not. Closed **N-388**: `_UNREACHED_RULES` and the skip branch that fed it are DELETED, the
-  world holds a row of every kind a GET rule takes an id for, and coverage is an equality against
-  `url_map` no list can satisfy. **All 17 unrequested rules answer and NONE 5xx.** The fill map is
-  keyed `(blueprint, converter)` with NO bare-name fallback. `X-bd`'s and `X-be-2`'s two standing
-  constraints moved into `_SWEEP_CASES`, the one home an archive cannot govern away.
+* [x] **X-be-3** `0aa2cc80` -- the sweep grades EVERY GET route and carries no list of the ones it does not; coverage is an equality against `url_map`. Closed **N-388**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
 * [ ] **X-be** `refactor(services): three modules are at the line ceiling, not near it` -- closes
   **N-365**, whose row carries the census and both instances. **Root: in a corpus whose docstrings
   ARE the design record, a per-module LINE cap binds what gets WRITTEN DOWN.** The fork, per module:

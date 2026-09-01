@@ -4122,8 +4122,11 @@ def open_books_before_the_first_assertion(
     **BACKWARD only, and that is a rule rather than an accident.**  The books
     never move forward here, so calling this twice, or calling it on an account
     some other helper already opened earlier, cannot strand a row that was
-    legal a moment ago.  ``tests/conftest._drop_seed_user_bootstrap`` learned
-    the same rule the same way one table over.
+    legal a moment ago.  ``tests/conftest``'s own calendar reset learned the
+    same rule the same way one table over, and plan step
+    ``pay_calendar:C4-b-1`` then measured that its backward-only restatement
+    could not move a day in any world that file builds and deleted it; what
+    enforces the rule there now is a refusal, not a restatement.
 
     A no-op for an account carrying no assertion, and equally for one carrying
     no opening ROW -- both production-unreachable, both states a raw-model
@@ -6648,7 +6651,7 @@ class PlantedPricing:
 
     It satisfies both halves of the seam: :meth:`net_for` is what
     ``income_service.salary_net_for`` asks, and :meth:`live_cash` is what
-    ``loan_payment_service.LoanPricing`` answers with.  Planting by
+    ``cash_ledger.LoanPricing`` answers with.  Planting by
     TRANSACTION id therefore lands on the loan half, which
     ``cash_ledger.live_override`` asks first.
 
@@ -6791,6 +6794,217 @@ def all_periods(user_id):
     )
 
 
+def open_owner_calendar(user_id, first_payday, num_periods=1, cadence_days=14):
+    """Open *user_id*'s pay calendar through the writer that owns the table.
+
+    **Plan step ``pay_calendar:C4-b-1``.**  For a test that hand-builds a
+    ``User`` and needs a pay period before ``account_service.create_account``,
+    which refuses an owner who has none.  The sites this replaced each carried
+    the same five lines -- a bare ``PayPeriod(...)`` setting ``end_date`` and
+    ``period_index``, the two values ``pay_period_write._write_derivation``
+    DERIVES, and no ``budget.pay_schedule`` row beside them.  *No count is
+    stated here: two drafts of this docstring and the plan's own sentence gave
+    three different ones, which is what a number nothing recomputes does.*
+
+    That pairing is one no application door can produce: ``record_paydays``
+    upserts the owner's cadence in the same call that records a payday (the
+    cadence rule, plan step C3-b), and ``auth_service.register_user`` reaches
+    the table only through it.  So every one of those sites built the single
+    owner shape production does not have -- pay-calendar finding **P8** -- and
+    the derived columns they typed were free to disagree with the derivation
+    that reads them.
+
+    Use :func:`rebuild_calendar` instead when the owner ALREADY has periods:
+    this writes, that resets.
+
+    Args:
+        user_id: The owning user's id, already flushed.
+        first_payday: The opening payday.
+        num_periods: How many periods to record from it, default one.
+        cadence_days: Days between them, persisted as the owner's cadence.
+
+    Returns:
+        The created :class:`~app.models.pay_period.PayPeriod` rows, payday
+        ascending -- ``period_index`` 0..n-1 and each end derived, so a caller
+        that wants one period may index ``[0]``.  **EMPTY when every requested
+        payday is already on the table**, which is ``record_paydays``' own
+        contract for a batch that records nothing: an ``[0]`` on that answer is
+        an ``IndexError``.  No caller re-requests an existing payday today, and
+        the day one does it should read the answer rather than index it.
+    """
+    from app.services import (  # pylint: disable=import-outside-toplevel
+        pay_period_write,
+    )
+
+    return pay_period_write.record_paydays(
+        user_id=user_id,
+        first_payday=first_payday,
+        num_periods=num_periods,
+        cadence_days=cadence_days,
+    )
+
+
+def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
+    """Rebuild *user_id*'s WHOLE pay-period schedule through the reset door.
+
+    **Plan step ``pay_calendar:C4-b-1``.**  The one place the test tree says
+    "give this owner that calendar", and it says it by calling
+    ``pay_period_admin.reset_pay_periods`` -- the settings-page correction at
+    ``POST /pay-periods/reset``, which wipes every period, records the new
+    batch through the writer and re-syncs the loan genesis postings and the
+    account anchor corrections onto what it built.
+
+    **A test that builds a pay period by hand builds a row no owner can
+    have**, and that is not a style point.  ``end_date`` and ``period_index``
+    are DERIVED from the payday set; a hand-built row sets them to whatever
+    the author typed, and it writes no ``budget.pay_schedule`` row, so
+    ``pay_schedule_service.resolve_schedule`` falls back to INFERRING the
+    cadence from that same hand-typed ``end_date``.  Eight cases in
+    ``test_recurrence_engine.TestDueDateGeneration`` passed only through that
+    loop: they wrote a 28-day February period, the fallback read 28 back as
+    the owner's cadence, and the derived span therefore matched the typed one.
+    Give the owner a real cadence and the same rows derive a 14-day span and
+    generate nothing.  Ruling **P54**'s shape: one shared helper here, never a
+    ``for_test`` door on the real API.
+
+    Args:
+        user_id: The owning user's id.
+        first_payday: The opening payday of the rebuilt schedule.
+        num_periods: How many periods to build from it.
+        cadence_days: Days between them, persisted as the owner's cadence by
+            the writer (the cadence rule, plan step C3-b).
+
+    Returns:
+        The owner's periods, payday ascending -- :func:`all_periods`' answer,
+        for the reason that function gives.
+
+    Raises:
+        PayPeriodResetBlocked: The owner has a settled transaction, which the
+            reset door refuses; build the calendar before settling anything.
+    """
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.models.account import Account  # pylint: disable=import-outside-toplevel
+    from app.services import (  # pylint: disable=import-outside-toplevel
+        pay_period_admin,
+    )
+
+    # **The BOOKS bound the opening payday, and since plan step
+    # ``pay_calendar:C4-b-1`` nothing else does.**  Two accidental protections
+    # went when ``conftest._drop_seed_user_bootstrap`` did, and an adversarial
+    # review of that step found both: the hand-rolled version APPENDED beside
+    # the owner's existing paydays, so ``_reject_backward_payday`` refused any
+    # first payday earlier than one cadence after the latest -- and where that
+    # let something through, a backward-only restatement moved the books to
+    # meet it.  The reset door retires every surviving payday in the SAME call
+    # that records the new batch, so that refusal returns early on an empty
+    # surviving set and every opening day became legal.
+    #
+    # A pay period opening at or before an account's books contradicts ruling
+    # ``balance:R-HG`` -- an opening equity is the CLOSING balance for its own
+    # day -- so it is refused here, loudly, rather than built and left for
+    # whichever balance case notices.  **On this door rather than on one of its
+    # callers**: a second adversarial review found the first placement was on
+    # ``conftest._reset_seed_calendar``, which is one of three callers, and the
+    # one a new case is least likely to use --
+    # ``rebuild_calendar_from_spans`` reaches this directly and already types
+    # arbitrary years.
+    #
+    # **Per account it is the GOVERNING row, not the latest DAY**, and the
+    # difference is not academic: ``budget.account_openings`` is append-only
+    # and the governing row is the one recorded LAST (ruling ``balance:R-HE``),
+    # so an account restated BACKWARD carries a row with a later ``opened_on``
+    # that no longer governs.  The seeded Checking is exactly that -- 2024-01-05
+    # from the factory, then 2024-01-04 from
+    # ``open_books_before_the_first_assertion`` -- and a first cut of this
+    # guard reduced with ``max(opened_on)``, read 2024-01-05, and refused the
+    # legal opening day.  ``test_it_admits_the_first_day_it_legally_can``, the
+    # second direction of this guard's own control, is what measured it.
+    books = max(
+        (
+            day for day in (
+                _governing_opening_day(db.session, account)
+                for account in db.session.query(Account)
+                .filter(Account.user_id == user_id).all()
+            )
+            if day is not _real_date.max
+        ),
+        default=None,
+    )
+    assert books is None or first_payday > books, (
+        f"user {user_id} has an account whose books open {books}, and this "
+        f"asks for a calendar opening {first_payday}, which is on or before "
+        f"them.  An opening equity is the CLOSING balance for its own day "
+        f"(ruling balance:R-HG), so no pay period may open at or before one.  "
+        f"Ask for a later first payday, or open that account's books earlier."
+    )
+    pay_period_admin.reset_pay_periods(
+        user_id, first_payday, num_periods, cadence_days,
+    )
+    # The door is one transaction its ROUTE commits, so a test caller commits
+    # it, and expires: the caller may hold rows the wipe deleted.
+    db.session.commit()
+    db.session.expire_all()
+    return all_periods(user_id)
+
+
+def rebuild_calendar_from_spans(user_id, spans):
+    """Rebuild *user_id*'s calendar so its periods OPEN on each span's start.
+
+    :func:`rebuild_calendar` for a case that wants several periods the writer
+    cannot space evenly -- "January, April, July and October", which is four
+    paydays 90, 91 and 92 days apart.  One reset opens the schedule and each
+    later payday is appended by the same writer, so every row is still the
+    derivation's.
+
+    **What a span's END is worth here, stated because it is NOT what a
+    hand-built row gave.**  Every period's end is the day BEFORE the next
+    payday, so an interior span's stated end is honoured only when the next
+    span opens the day after it; where the caller asks for gapped spans the
+    interior ends run WIDER than asked, because a gap is not expressible in a
+    derived calendar (``docs/plans/implementation_plan_pay_calendar.md``
+    section 3).  The LAST span is the one end the derivation projects, and it
+    is exact: the owner's cadence is that span's length.  Callers here assert
+    on the occurrence's own day, which lands in the same period under either
+    width.
+
+    Args:
+        user_id: The owning user's id.
+        spans: ``[(start, end), ...]``, ascending and non-overlapping, at
+            least one.  Each ``start`` becomes a payday.
+
+    Returns:
+        The owner's periods, payday ascending -- one per span.
+
+    Raises:
+        ValidationError: Two spans open closer together than the last span's
+            length, which is the forward-only rule
+            ``pay_period_write._reject_backward_payday`` states.
+    """
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.services import (  # pylint: disable=import-outside-toplevel
+        pay_period_write,
+    )
+
+    last_start, last_end = spans[-1]
+    cadence_days = (last_end - last_start).days + 1
+    rebuild_calendar(user_id, spans[0][0], 1, cadence_days)
+    for start, _end in spans[1:]:
+        pay_period_write.record_paydays(
+            user_id=user_id,
+            first_payday=start,
+            num_periods=1,
+            cadence_days=cadence_days,
+        )
+    # COMMIT the appends too.  :func:`rebuild_calendar` commits the opening
+    # payday because the door it wraps leaves the transaction to its caller,
+    # and ``record_paydays`` only FLUSHES -- so without this the calendar was
+    # half committed and half pending.  Nothing broke (a test client reuses the
+    # live app context, so the same session sees both), but a half-committed
+    # calendar is an asymmetry no reader would predict.
+    db.session.commit()
+    return all_periods(user_id)
+
+
 @contextmanager
 def pay_periods_hydrated():
     """Count the ``PayPeriod`` ORM entities LOADED inside this block.
@@ -6886,6 +7100,62 @@ def amount_basis_for(row):
     from app.services.cash_ledger import amount_basis
 
     return amount_basis(row.account.user_id, row.scenario_id)
+
+
+def amount_basis_for_scenario(scenario_id):
+    """Return the amount basis for *scenario_id*, deriving its owner from the scenario.
+
+    **The ONE spelling for a test helper that holds a scenario id and no
+    owner** (plan step balance:X-au-g-2c).  Routing
+    ``loan_payment_service.get_payment_history`` through the amount model gave
+    ``load_loan_context`` an :class:`~app.services.cash_ledger.AmountBasis`
+    where it took a bare ``scenario_id``, and a dozen replay helpers in this
+    suite hold exactly that id: they are built from a loan and a scenario,
+    never from a request with a ``current_user``.
+
+    A scenario belongs to exactly one owner (``budget.scenarios.user_id``), so
+    the owner is DERIVED here rather than taken beside the id.  Spelling both
+    at a dozen call sites would invite a pair naming one owner and another's
+    scenario, which is the mismatch
+    :func:`~app.services.cash_ledger.resolve_transaction_amount` refuses a row
+    for -- and a test is exactly where such a pair would be written by hand.
+
+    **The sibling of :func:`amount_basis_for` above, keyed differently.**  That
+    one takes a ROW and reads its account's owner and its own scenario; this
+    takes the SCENARIO because its callers are replay helpers built from a loan
+    id and a scenario id, with no row in hand at all.  Two keys, one
+    derivation, and neither may answer to the other's name.
+
+    Ruling **P54** is why this is a shared helper here rather than a
+    convenience on the production constructor: a production API with only test
+    callers is the speculative shape ``CLAUDE.md`` rule 13 forbids.
+    **Production has the same asymmetry and it is filed, not fixed here**
+    (finding **N-432**): ``amount_basis`` takes an owner AND a scenario and
+    nothing checks they agree, where the scenario already states its owner.
+
+    Args:
+        scenario_id: The scenario the rows being priced belong to.
+
+    Returns:
+        The unresolved :class:`~app.services.cash_ledger.AmountBasis` for that
+        scenario's owner and that scenario.
+
+    Raises:
+        NoResultFound: When no scenario carries that id -- loud, because a
+            basis built for a scenario that does not exist would price every
+            row it is handed as belonging to another.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.extensions import db
+    from app.models.scenario import Scenario
+    from app.services.cash_ledger import amount_basis
+
+    scenario = db.session.query(Scenario).filter(
+        Scenario.id == scenario_id,
+    ).one()
+    return amount_basis(scenario.user_id, scenario_id)
 
 
 def count_amount_bases(monkeypatch):

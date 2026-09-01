@@ -37,7 +37,7 @@ from app.services.entry_service import (
     build_entry_lists_dict,
     build_entry_sums_dict,
 )
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import FiledRow, calendar_for
 from app.utils.auth_helpers import get_accessible_transaction
 from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
@@ -219,7 +219,7 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     # ``get_accessible_transaction`` and reordering that door is not this
     # leaf's to do.
     period = (
-        calendar_for(owner_id).require_period(txn.pay_period_id, txn.id)
+        calendar_for(owner_id).require_period(FiledRow.for_row(txn))
         if txn.tracks_purchases
         else None
     )

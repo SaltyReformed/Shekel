@@ -1521,13 +1521,24 @@ class TestTransactionCRUD:
             assert 'name="pay_period_id"' in html
             sel_start = html.index('name="pay_period_id"')
             period_select = html[sel_start:html.index("</select>", sel_start)]
-            # Own past period present and selected.
-            assert source_period.label in period_select
+            # Own past period present and selected.  The labels come off the
+            # CALENDAR since pay-calendar plan step C4-a-5, which deleted
+            # ``PayPeriod.label``: the ``<option>`` renders
+            # ``DerivedPeriod.label``, so that is what an assertion about the
+            # markup may be built from.
+            calendar = calendar_for(seed_user["user"].id)
+            assert calendar.period_by_id(
+                source_period.id,
+            ).label in period_select
             assert f'value="{source_period.id}" selected' in period_select
             # Future period offered.
-            assert target_period.label in period_select
+            assert calendar.period_by_id(
+                target_period.id,
+            ).label in period_select
             # A past period that is not the row's own is excluded.
-            assert excluded_past.label not in period_select
+            assert calendar.period_by_id(
+                excluded_past.id,
+            ).label not in period_select
 
             # Saving a future period reassigns the transaction and asks
             # the client for a full grid refresh so the row relocates to
@@ -6797,7 +6808,18 @@ class TestMobileThisPeriodPartial:
             # The partial's header div is followed by the period
             # label inside a fw-bold div.  Encode the label so non-ASCII
             # whitespace and quoting are byte-stable.
-            assert current.label.encode("utf-8") in response.data
+            #
+            # The label comes off the CALENDAR since pay-calendar plan step
+            # C4-a-5 deleted ``PayPeriod.label``: the partial renders
+            # ``DerivedPeriod.label`` (``grid/_mobile_this_period.html``), and
+            # ``current_pay_period`` returns the ORM ROW on purpose because the
+            # factories take one.  The two name the same paycheck by
+            # construction -- that helper resolves the row FROM the derivation
+            # -- so this reads the derived value for the id it just resolved.
+            derived = calendar_for(
+                seed_user["user"].id,
+            ).period_by_id(current.id)
+            assert derived.label.encode("utf-8") in response.data
             # The partial-specific collapse IDs prefix with mobile-tp-
             # to avoid colliding with the Plan tab's mobile-income-/mobile-expense-.
             assert f"mobile-tp-income-{current.id}".encode("utf-8") in response.data
@@ -10003,13 +10025,19 @@ class TestTheGridRefusesBeforeItReadsACadence:
         )
         with app.app_context():
             user_id = seed_user["user"].id
-            assert db.session.query(PaySchedule).filter_by(
-                user_id=user_id,
-            ).count() == 0, (
-                "this case needs an owner with no stored cadence; the fixture "
-                "now writes one, so the refusal it exercises has moved"
-            )
+            # **The owner must hold no stored cadence, and since plan step
+            # ``pay_calendar:C4-b-1`` the fixture writes one** -- the seeded
+            # opening payday comes from ``pay_period_write.record_paydays``,
+            # which upserts the ``budget.pay_schedule`` row in the same call.
+            # So this state is CONSTRUCTED here rather than inherited from a
+            # fixture that happened to supply it, which is the stronger form:
+            # the assertion that used to stand here could only report that the
+            # fixture had changed.  It is still a real owner -- somebody who
+            # has never generated a schedule holds neither row -- and the
+            # periods go FIRST, which is the order the foreign key plan step
+            # ``pay_calendar:C4-b-2`` adds makes the only non-cascading one.
             db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
             db.session.commit()
 
             with pytest.raises(PayCalendarError):
@@ -10093,9 +10121,19 @@ class TestThePlanWindowIsDerivedFromTheOwnersCadence:
         is optional where a tab is not.
         """
         with app.app_context():
-            # One period of history, not the default four: the writer is
-            # forward-only and four 300-day periods back starts before
-            # ``seed_user``'s own bootstrap payday.
+            # One period of history, not the default four.  *The reason was
+            # that the writer is forward-only and four 300-day periods back
+            # starts before ``seed_user``'s own opening payday; plan step
+            # ``pay_calendar:C4-b-1`` moved this fixture onto the reset door,
+            # which retires every surviving payday in the same call, so that
+            # bound is gone.*  What replaces it is the BOOKS: a calendar may
+            # not open at or before the day the seeded account's books open
+            # (ruling ``balance:R-HG``), and four 300-day periods back is about
+            # three and a half years -- well before the 2024 books -- which
+            # ``_test_helpers.rebuild_calendar`` now refuses outright.  One
+            # period back keeps this case inside that bound.  *The day itself
+            # is not named because it moves with the wall clock: the fixture
+            # derives it from ``display_today()``.*
             seed_schedule_at_cadence(
                 cadence_days=300, num_periods=6, periods_before=1,
             )

@@ -40,6 +40,7 @@ from tests._test_helpers import (
     assert_pay_period_invariants,
     linked_ledger_total,
     open_books_before_the_first_assertion,
+    open_owner_calendar,
 )
 from app.services import cash_ledger
 from app.utils.dates import display_today
@@ -161,20 +162,14 @@ def _create_user_with_data(db_session):
     # CI run inside that window to appear.
     today = display_today()
     current_start = today - timedelta(days=today.weekday())  # Monday this week
-    past_period = PayPeriod(
-        user_id=user.id,
-        start_date=current_start - timedelta(days=14),
-        end_date=current_start - timedelta(days=1),
-        period_index=0,
+    # TWO periods from one batch, through the writer that owns the table.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    # A two-payday batch at a fortnightly cadence derives exactly the pair
+    # this built by hand: the first ends the day before the second opens, and
+    # the second ends its own payday plus thirteen.
+    past_period, current_period = open_owner_calendar(
+        user.id, current_start - timedelta(days=14), num_periods=2,
     )
-    current_period = PayPeriod(
-        user_id=user.id,
-        start_date=current_start,
-        end_date=current_start + timedelta(days=13),
-        period_index=1,
-    )
-    db_session.add_all([past_period, current_period])
-    db_session.flush()
 
     checking_type = (
         db_session.query(AccountType).filter_by(name="Checking").one()

@@ -38,13 +38,16 @@ written at the edges rather than in the middle:
 has no clock; a test that gave it one would be testing the fixture.
 """
 
+from dataclasses import FrozenInstanceError
 from datetime import date, timedelta
 from itertools import islice
+from types import SimpleNamespace
 
 import pytest
 
 from app.services.pay_calendar import (
     DerivedPeriod,
+    FiledRow,
     PayCalendar,
     PayCalendarError,
     PeriodWindow,
@@ -148,6 +151,15 @@ def calendar(paydays=None, cadence=14, user_id=1):
         BIWEEKLY if paydays is None else paydays, cadence, user_id,
         history_opens_on=None,
     )
+
+
+def _filed(*, table="budget.transactions", row_id=77, period_id):
+    """Build the :class:`FiledRow` a ``require_period`` test places.
+
+    Keyword-only for the value's own reason: these tests would otherwise be
+    the first place two bare ids get written in a fixed order again.
+    """
+    return FiledRow(table=table, row_id=row_id, period_id=period_id)
 
 
 class TestThePeriodsAreDerivedAndCannotBeSuppliedOrChanged:
@@ -1675,6 +1687,191 @@ class TestPeriodByIdIsIdentityNotASearch:
         assert all(period.period_id is not None for period in cal.periods)
 
 
+#: :data:`SHAPES` plus the one axis it does not vary.  Identity indexing is
+#: blind to payday SPACING, so six of those seven shapes re-measure one thing;
+#: what adds information is a candidate INSIDE the saved set, which
+#: ``WITH_UNSAVED`` puts at the head and :data:`WITH_INTERIOR_UNSAVED` puts in
+#: the middle.  Appended here rather than to :data:`SHAPES`, which three other
+#: classes parametrize over for their own reasons.
+_INDEX_SHAPES = SHAPES + [
+    ("an interior unsaved candidate", WITH_INTERIOR_UNSAVED, 14),
+]
+
+
+class TestTheSavedIndexIsBOTHTheScopeAndTheLookup:
+    """``saved_by_id`` -- ``period_by_id`` in BULK (plan step **C4-a-4**).
+
+    Two callers hold a whole ROW SET rather than one id --
+    ``statement_match._candidates`` and both of
+    ``reconcile_service._rows``'s scope properties -- and each wrote its own
+    ``period_id is not None`` comprehension until this step.  What the one
+    accessor buys is not the comprehension: it is that a caller's query SCOPE
+    and its per-row LOOKUP come from ONE value, so a row the query returns and
+    the mapping cannot place is unconstructible rather than guarded against.
+
+    The cases below grade the value.  **The property that needs a caller is
+    graded at the caller** -- that ``destinations_for`` filters on this
+    mapping and indexes the same one -- in
+    ``test_statement_match/test_create.py``.
+    """
+
+    def test_it_keys_on_the_ID_and_not_on_the_ordinal(self):
+        """The fixture's ids start at 10, so the two cannot be confused.
+
+        An implementation keyed on ``period_index`` would answer the FIRST
+        period for key 0 and hold nothing at 10.
+        """
+        index = calendar().saved_by_id()
+
+        assert sorted(index) == [10, 11, 12, 13]
+        assert index[12].start_date == date(2026, 1, 30)
+        assert index[12].period_index == 2
+
+    def test_every_value_IS_the_period_the_scanning_twin_answers(self):
+        """One derivation behind both, so an indexer and a scanner agree.
+
+        The whole reason the accessor is on the calendar rather than spelled
+        at each caller: two ways of asking "which paycheck is id N" that came
+        from two places could drift, and this asserts they are the same
+        object rather than merely equal.
+        """
+        cal = calendar()
+
+        for period_id, period in cal.saved_by_id().items():
+            assert period is cal.period_by_id(period_id)
+
+    def test_it_answers_over_an_OFF_CADENCE_schedule_too(self):
+        """The end a caller reads is the DERIVED one, on the shape that shows it.
+
+        ``OFF_CADENCE``'s second payday is four days after the first, so
+        ``lead(start) - 1`` and ``start + cadence - 1`` disagree -- which is
+        exactly the divergence ``pay_periods.end_date`` stores and plan step
+        C4-c drops.  On ``BIWEEKLY`` the two rules coincide and this assertion
+        would pass against either.
+        """
+        index = calendar(OFF_CADENCE).saved_by_id()
+
+        assert index[10].end_date == date(2026, 1, 15)
+        assert index[11].end_date == date(2026, 1, 19)
+
+    def test_an_UNSAVED_candidate_is_not_in_it(self):
+        """A projection and a candidate carry no id, so neither may be a key.
+
+        Ledger row **P21**: an ``{p.id: ...}`` map over a set holding more
+        than one of them collapses, because they SHARE that ``None``.  The
+        filter is ``materialised_periods``' -- the package's one "is this
+        period SAVED" rule -- rather than a fourth spelling of it.
+        """
+        cal = calendar(WITH_UNSAVED)
+        index = cal.saved_by_id()
+
+        assert sorted(index) == [11]
+        assert None not in index
+        assert any(period.period_id is None for period in cal.periods)
+
+    def test_an_INTERIOR_unsaved_candidate_is_not_in_it_either(self):
+        """The candidate INSIDE the saved set, which the head case cannot show.
+
+        ``WITH_UNSAVED`` puts the candidate FIRST, so an implementation that
+        dropped ``periods[0]`` rather than filtering would pass it; this one
+        cannot be passed that way, and it is the shape plan step **C6** builds
+        by design.  The key set is asserted EXACTLY rather than by absence:
+        "the candidate is not in it" is also true of an empty mapping.
+
+        **It replaces a case that could not fail** (adversarial test-quality
+        review 2026-08-31): the old one asked whether a period from
+        ``span_containing`` -- a PROJECTION, ``period_id`` ``None`` -- was
+        among the values, which holds for ``return {}`` and for any keying
+        whatever, because ``saved_by_id`` is only ever shown ``self.periods``
+        and a projection is never in those.  That is the same vacuity
+        ``test_the_searchable_id_space_holds_only_saved_periods`` above records
+        a review catching on this very producer pair.
+        """
+        cal = calendar(WITH_INTERIOR_UNSAVED)
+        index = cal.saved_by_id()
+
+        assert sorted(index) == [10, 12]
+        assert index[10].start_date == date(2026, 1, 2)
+        assert index[12].start_date == date(2026, 1, 30)
+        assert any(period.period_id is None for period in cal.periods)
+
+    def test_an_EMPTY_calendar_answers_an_empty_mapping(self):
+        """Which as a SCOPE admits nothing, and that is the right answer.
+
+        An owner with no paydays has no rows to offer, so a filter built from
+        this returns none -- rather than a scope that is missing and reads as
+        unbounded.
+        """
+        assert calendar(paydays=[], cadence=None).saved_by_id() == {}
+
+    def test_the_mapping_is_READ_ONLY_and_the_same_one_every_call(self):
+        """MEMOIZED, and immutable so the sharing cannot be turned against it.
+
+        One review pass asks this twice -- a candidate scope and a destination
+        scope -- and each apply door builds two passes, so a request asks four
+        times; that is what the memo is for, and an adversarial design review
+        measured the "once per pass" claim a first cut rested on as false
+        (2026-08-31).
+
+        **Memoizing and handing out a plain ``dict`` would be worse than not
+        memoizing**: the value is a query SCOPE deciding whose budget rows may
+        be offered money, so one producer clearing or narrowing it would
+        silently narrow the other's. The proxy makes that unconstructible.
+        Both halves are asserted, because a memo that returned a fresh copy
+        would pass the mutation half alone.
+        """
+        cal = calendar()
+        first = cal.saved_by_id()
+
+        assert cal.saved_by_id() is first
+        # The attack this is for is NARROWING, not emptying: dropping one id
+        # from a shared scope removes exactly that paycheck's rows from the
+        # other producer's offer set, and nothing downstream would say so.
+        with pytest.raises(TypeError):
+            del first[10]
+        with pytest.raises(TypeError):
+            first[99] = cal.periods[0]
+        assert sorted(cal.saved_by_id()) == [10, 11, 12, 13]
+
+    def test_the_memo_is_PER_CALENDAR_and_not_shared_between_two(self):
+        """Two owners' calendars answer their own ids, memo or no memo.
+
+        The slot is an instance field, but a memo written wrong -- on the class,
+        or keyed on nothing -- would hand the second calendar the first one's
+        scope, which is one owner's rows offered under another's name.
+        """
+        mine = calendar(paydays=[(1, date(2026, 1, 2))], user_id=1)
+        theirs = calendar(paydays=[(81, date(2026, 1, 9))], user_id=2)
+
+        assert sorted(mine.saved_by_id()) == [1]
+        assert sorted(theirs.saved_by_id()) == [81]
+        assert sorted(mine.saved_by_id()) == [1]
+
+    @pytest.mark.parametrize(
+        "name,paydays,cadence", _INDEX_SHAPES,
+        ids=[s[0][:40] for s in _INDEX_SHAPES],
+    )
+    def test_it_equals_the_comprehension_it_replaced_on_every_shape(
+        self, name, paydays, cadence,
+    ):
+        """The accessor and the open-coded map agree over every payday shape.
+
+        The expectation is the comprehension the three retired sites wrote
+        out, SPELLED HERE, so the two sides come from two places -- the
+        discipline ``TestTheContainmentRuleOnOnePeriod``'s own sweep states,
+        for the same reason: an expectation derived from the producer under
+        test measures nothing.
+        """
+        cal = calendar(paydays, cadence)
+        expected = {
+            period.period_id: period
+            for period in cal.periods
+            if period.period_id is not None
+        }
+
+        assert cal.saved_by_id() == expected, name
+
+
 class TestTheHistoryBoundIsAFactOfTheCALENDAR:
     """Plan step **balance:X-bh-2**: the second bound the rhythm is read to.
 
@@ -1962,6 +2159,55 @@ class TestTheAttributionClamp:
         assert cal.periods[2].attribution_day(stray) == date(2026, 1, 30)
 
 
+class TestTheLabelIsTheDERIVEDSpan:
+    """``DerivedPeriod.label`` names the span this value derives, not a column.
+
+    Pay-calendar plan step **C4-a-5**, and the reason it is graded on an
+    OFF-CADENCE shape: on a contiguous biweekly schedule ``lead(start) - 1``
+    and ``start + cadence - 1`` agree, so a label asserted there passes against
+    the stored-column reader this step deletes.  ``OFF_CADENCE``'s second
+    period is the shape that tells them apart.
+
+    The FORMAT itself is ``utils.dates.pay_period_label``'s and is graded in
+    ``tests/test_utils/test_dates.py``; what is graded here is which two dates
+    reach it.
+    """
+
+    def test_the_end_is_the_next_paydays_eve_not_the_cadence_projection(self):
+        """The middle period of ``OFF_CADENCE``, where the two rules differ.
+
+        Paydays 01-02, 01-16, 01-20 at a 14-day cadence.  The second period
+        ends 01-19 -- the day before the NEXT payday -- where a cadence
+        projection off its own start would say 01-29.  The label carries the
+        first.
+        """
+        cal = calendar(paydays=OFF_CADENCE)
+
+        assert cal.periods[1].label == "01/16 - 01/19"
+        assert cal.periods[1].label != "01/16 - 01/29"
+
+    def test_the_LAST_periods_label_follows_its_projection(self):
+        """The one end that IS the cadence projection, so the label moves with it.
+
+        The last period has no next payday, so its end is
+        ``start + cadence - 1`` and :attr:`end_is_projected` says so.  Asserted
+        because it is the end the STORED column disagrees with most often --
+        plan findings **P12** and **P28** both move this one and only this one.
+        """
+        cal = calendar(paydays=OFF_CADENCE)
+
+        assert cal.periods[-1].end_is_projected is True
+        assert cal.periods[-1].label == "01/20 - 02/02"
+
+    def test_a_period_straddling_a_year_carries_the_year(self):
+        """The shared rule reaches this type too, not just the format string."""
+        cal = calendar(
+            paydays=((1, date(2026, 12, 26)), (2, date(2027, 1, 9))),
+        )
+
+        assert cal.periods[0].label == "12/26/26 - 01/08/27"
+
+
 class TestTheRaisingTwinOfTheIdentityLookup:
     """``require_period`` REFUSES where ``period_by_id`` answers ``None``.
 
@@ -1985,7 +2231,9 @@ class TestTheRaisingTwinOfTheIdentityLookup:
         cal = calendar()
         held = cal.periods[1].period_id
 
-        assert cal.require_period(held, 77) == cal.period_by_id(held)
+        assert cal.require_period(
+            _filed(period_id=held),
+        ) == cal.period_by_id(held)
 
     def test_a_period_this_calendar_does_not_hold_RAISES(self):
         """The twin answers ``None`` for the same id; this refuses.
@@ -1998,25 +2246,47 @@ class TestTheRaisingTwinOfTheIdentityLookup:
 
         assert cal.period_by_id(foreign) is None
         with pytest.raises(RuntimeError):
-            cal.require_period(foreign, 77)
+            cal.require_period(_filed(period_id=foreign))
 
     def test_the_message_names_the_ROW_the_PERIOD_and_the_OWNER(self):
-        """All three, because the triple is what identifies the broken pairing.
+        """All four, because they are what identifies the broken pairing.
 
         A refusal naming only the period cannot tell an investigator WHICH row
         is filed against it, and one naming neither owner cannot distinguish
         the two states the method documents -- a cross-owner filing from two
-        reads taken at different moments.
+        reads taken at different moments.  **The TABLE joined them at plan step
+        C4-a-5**: ``budget.transactions``, ``budget.transfers`` and
+        ``budget.journal_entries`` all carry a ``pay_period_id`` and their id
+        spaces overlap, so "id=77" alone sends a reader to whichever row of
+        that number they happen to look at.
         """
         cal = calendar(user_id=42)
 
         with pytest.raises(RuntimeError) as raised:
-            cal.require_period(9_999, 77)
+            cal.require_period(_filed(period_id=9_999))
 
         message = str(raised.value)
-        assert "transaction id=77 " in message
+        assert "budget.transactions id=77 " in message
         assert "pay period id=9999," in message
         assert "user 42's pay calendar" in message
+
+    def test_the_message_names_the_TABLE_the_row_came_from(self):
+        """A TRANSFER's refusal says transfer, which is C4-a-5's own reason.
+
+        The message was ``f"transaction id={...}"`` outright until that step
+        gave the recurrence conflict chooser -- which builds rows for
+        transactions AND transfers -- its first non-transaction caller.  A
+        transfer described as a transaction sends an investigator to
+        ``budget.transactions`` id=77, a DIFFERENT row that very likely exists.
+        """
+        cal = calendar(user_id=42)
+
+        with pytest.raises(RuntimeError) as raised:
+            cal.require_period(
+                _filed(table="budget.transfers", period_id=9_999),
+            )
+
+        assert "budget.transfers id=77 " in str(raised.value)
 
     def test_it_refuses_ANOTHER_owners_period_by_the_same_rule(self):
         """The second documented state, which had no direct exercise.
@@ -2033,9 +2303,65 @@ class TestTheRaisingTwinOfTheIdentityLookup:
             user_id=2,
         )
 
-        assert mine.require_period(1, 77).period_id == 1
-        assert theirs.require_period(81, 78).period_id == 81
+        assert mine.require_period(_filed(period_id=1)).period_id == 1
+        assert theirs.require_period(
+            _filed(row_id=78, period_id=81),
+        ).period_id == 81
         with pytest.raises(RuntimeError):
-            mine.require_period(81, 78)
+            mine.require_period(_filed(row_id=78, period_id=81))
         with pytest.raises(RuntimeError):
-            theirs.require_period(1, 77)
+            theirs.require_period(_filed(period_id=1))
+
+
+class TestTheFiledRowCannotBeMispaired:
+    """``FiledRow`` is the pair ``require_period`` used to take loose.
+
+    Pay-calendar plan step **C4-a-5**.  The signature was
+    ``require_period(period_id, transaction_id)`` -- two ``int``s in a fixed
+    order, held to one row by nothing.  A crossed pair does not raise: it finds
+    a DIFFERENT period, and ``balance_at._cash_fold._cash_plan`` dates the
+    daily balance line with the answer.  These grade the two properties that
+    replace the old signature's inspection: it cannot be built positionally,
+    and the constructor every entity-holding caller uses reads both ids off ONE
+    object.
+    """
+
+    def test_two_bare_integers_do_not_construct_one(self):
+        """``FiledRow(1, 2)`` is a ``TypeError``, not a filed row.
+
+        The keyword-only fields ARE the guarantee.  Without them the value
+        would be a rename of the defect: a caller could still write the two
+        ids in the wrong order and get an object back.
+        """
+        with pytest.raises(TypeError):
+            FiledRow("budget.transactions", 1, 2)  # pylint: disable=too-many-function-args  # noqa: E501  # the refusal under test
+
+    def test_for_row_reads_both_ids_off_ONE_object(self):
+        """The constructor a caller holding a mapped row uses.
+
+        It takes the row, so there is no second object whose id could be
+        substituted -- which is the whole difference from the two-argument
+        call it replaces.  Driven with a stand-in carrying the three attributes
+        a mapped row has, because this value is in the model-free half of the
+        package and the property under test is that it reads rather than
+        imports.
+        """
+        class _Row:  # pylint: disable=too-few-public-methods  # a stand-in row
+            __table__ = SimpleNamespace(fullname="budget.transfers")
+            id = 501
+            pay_period_id = 88
+
+        filed = FiledRow.for_row(_Row())
+
+        assert filed == FiledRow(
+            table="budget.transfers", row_id=501, period_id=88,
+        )
+
+    def test_it_is_frozen_so_a_holder_cannot_re_point_it(self):
+        """One value, one row: rebinding a field would restore the crossing."""
+        filed = FiledRow(
+            table="budget.transactions", row_id=1, period_id=2,
+        )
+
+        with pytest.raises(FrozenInstanceError):
+            filed.period_id = 3

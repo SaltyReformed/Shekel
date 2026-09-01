@@ -19,7 +19,7 @@ The PAYMENTS come in two tiers:
 
 * **PLANNED** -- the loan's PROJECTED transfer shadows
   (:func:`app.services.loan_loaders.projected_income_shadows`), each at its LIVE
-  D3 cash (:meth:`app.services.loan_payment_service.LoanPricing.live_cash` =
+  D3 cash (:meth:`app.services.cash_ledger.LoanPricing.live_cash` =
   P&I + current escrow + ``extra_principal``, the SAME cash the checking side
   shows leaving).  A record is the evidence a payment will happen; where the
   record's due date has already passed but it has not settled, it is clamped
@@ -86,7 +86,7 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.services import escrow_calculator, loan_loaders, loan_resolver
-from app.services.cash_ledger import live_amounts, owned_contribution
+from app.services.cash_ledger import display_amounts_by_id
 from app.services.loan_ledger import confirmed_shadows_through
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.rate_period_engine import period_for_date
@@ -275,48 +275,76 @@ class _ForwardInputs:
 
 def _planned_from_shadows(
     projected_shadows: list,
-    live_cash: dict[int, Decimal],
+    priced: dict[int, Decimal],
     fwd: _ForwardInputs,
 ) -> list[PlannedPayment]:
     """Build the PLANNED tier: one record per projected transfer shadow.
 
     Each projected loan-side income shadow becomes a :class:`PlannedPayment` at
-    its LIVE D3 cash (``live_cash`` override, falling back to the figure the
-    shadow OWNS for a payment that needs no override -- a manual payment with no
-    standing extra, or an operator-overridden one, exactly as the checking side
-    reads it).
+    what a SCREEN would show for it: its amount as the model resolves it,
+    superseded by a live recompute where one exists
+    (:func:`~app.services.cash_ledger.display_amounts_by_id`).
 
-    **The fallback is ``owned_contribution`` rather than the amount resolver,
-    and the reason this docstring used to give for that is FALSE.**  It read:
-    asking the resolver here would ask the loan to price the rows its own price
-    is derived from, because pricing routed ``resolve_transaction_amount`` ->
-    ``LoanPricing.derive_cash`` -> ``_resolve_loan_basis`` ->
-    ``load_loan_context`` -> ``get_payment_history``.  That cycle is DELETED:
-    ``_resolve_loan_basis`` reads the loan's TERMS and nothing else
+    **It read ``owned_contribution`` with the live map laid over it by hand
+    until plan step X-au-g-2c-1**, and that was the SECOND unrouted reader of a
+    projected loan-side shadow -- the same row class, the same accessor, the
+    same refusal.  The first was
+    ``loan_payment_service.get_payment_history``; routing only that one would
+    have left this to 500 the moment the cutover emptied the column, on
+    ``/savings`` and every surface that folds a loan's forward plan.  An
+    adversarial review found it by censusing the accessor's callers rather than
+    trusting the finding's own count of them, which is the lesson: **"one
+    unrouted reader" was itself an unmeasured claim.**
+
+    The two-line merge it replaces -- a resolved figure with a live override on
+    top -- is exactly what ``display_amounts_by_id`` IS, so this is one
+    composition in one place rather than the same composition written at two
+    call sites, which is the defect that function was extracted for
+    (finding **N-224**'s shape).
+
+    **The cycle a much older draft blamed is DELETED and was never the
+    reason.**  It read: asking the resolver here would ask the loan to price
+    the rows its own price is derived from, because pricing routed
+    ``resolve_transaction_amount`` -> ``LoanPricing.derive_cash`` ->
+    ``_resolve_loan_basis`` -> ``load_loan_context`` ->
+    ``get_payment_history``.  ``_resolve_loan_basis`` reads the loan's TERMS
+    and nothing else
     (:func:`~app.services.loan_resolver.compute_monthly_payment_baseline`), so
     it loads no payment history at all.
 
-    **Finding N-266 (a) is MISDIAGNOSED rather than retired, and the difference
-    is the size of the remedy.**  Its conclusion still holds -- a loan-side
-    INCOME shadow cannot be declared derived today -- but not because anything
-    is circular.  ``get_payment_history`` prices each row with
+    **Finding N-266 (a) is CLOSED at plan step X-au-g-2c-1, and its DIAGNOSIS
+    was wrong twice before its remedy was right.**  It first recorded an
+    irreducible CYCLE: the rule that priced a loan payment routed back through
+    the payment feed.  Plan step X-au-g-1 deleted that path, leaving the
+    conclusion standing on something smaller -- ``get_payment_history`` priced
+    each row through
     :func:`~app.services.row_valuation.owned_contribution`, which REFUSES a row
-    whose plan is derived, so emptying that column breaks it.  That is one
-    unrouted reader, not an irreducible cycle: routing it through the resolver
-    is now possible where before no ordering existed that worked, and it is the
-    first move of plan step **X-au-g** rather than an architecture change.
+    whose plan is derived -- and the row was restated as **"ONE unrouted
+    reader"**.  That count was itself unmeasured, and an adversarial review of
+    X-au-g-2c-1 censused the accessor: there were **TWO**, and the second is
+    this function.  Both are routed now, so the loan-side INCOME leg is
+    declarable; had only the named one moved, the cutover would have 500'd
+    every surface that folds a loan's forward plan.
 
-    **The real reason is the CUTOVER, and it is a fact about the DATA rather
-    than about the loan.**  ``ck_transactions_amount_ownership`` is a
+    **The other seven callers of that accessor really are settled-only**, which
+    is what makes "two" a census rather than a second guess:
+    ``cash_ledger.settled_cash_leg``, ``loan_ledger._split.split_one_payment``,
+    ``loan_posting_service._sync`` and ``._display``,
+    ``savings_dashboard_service._metrics``, and the spending report's
+    ``_window`` and ``_breakdown`` -- each loading rows filtered to the settled
+    statuses in SQL.
+
+    **What has NOT changed is the DATA, and that is a fact about production
+    rather than about the loan.**  ``ck_transactions_amount_ownership`` is a
     biconditional -- ``(amount_source_id IS NULL) = (estimated_amount IS NOT
     NULL)`` -- so a row states EITHER what prices it or its own figure, never
     both.  Every loan-payment shadow is still on the second side of it:
-    measured on a production clone 2026-08-31, all 58 shadows and all 58 parent
-    transfers carry ``amount_source_id IS NULL``, so the resolver classifies
-    them ``AmountRule.OWN`` and would answer from the very column this fallback
-    already reads.  Routing here would change nothing until plan step
-    **X-au-f** stamps that column, and X-au-f is what replaces this fallback
-    with :func:`~app.services.cash_ledger.display_amounts_by_id`.
+    re-measured against production 2026-09-01 (stamp ``a4c6f1d92b73``), all 58
+    shadows and all 175 transfers carry ``amount_source_id IS NULL``, so the
+    resolver classifies them ``AmountRule.OWN`` and answers from the very
+    column the old fallback read.  **This routing therefore moves ``$0.00``**;
+    what it removes is the interval in which stamping that column would have
+    broken this surface.
 
     **Until then a projected row's figure is a stored copy of its definition's
     price and nothing keeps the two equal** (finding **N-401**, owned by
@@ -337,9 +365,14 @@ def _planned_from_shadows(
     reaches.  BOTH directions of this column are wrong, which is the whole
     argument for the cutover: ``estimated_amount`` carries two facts, the plan's
     price and what the OWNER said, and no reading rule can tell them apart.
-    ``amount_source_id`` is what distinguishes them, and stamping it also
-    FORCES this call site to move -- ``owned_contribution`` raises on a NULL
-    column, so the fallback removes itself rather than being maintained.
+    ``amount_source_id`` is what distinguishes them.  **Stamping it used to
+    FORCE this call site to move, and that is why it moved FIRST**: the old
+    fallback raised on a NULL column, so the cutover that empties it would have
+    taken this surface down in the interval before the move.  Routing ahead of
+    the stamp is byte-identical -- every one of these rows carries
+    ``amount_source_id IS NULL`` today, so the resolver dispatches to
+    ``AmountRule.OWN`` and answers from the same column -- which is what makes
+    it safe to do early rather than late.
 
     **It resolves NO rate and NO escrow since plan step R16-a**: those belong to
     the period, not to the payment, and :func:`_charges_for` resolves them on the
@@ -351,9 +384,11 @@ def _planned_from_shadows(
     Args:
         projected_shadows: The loan's projected income shadows
             (:func:`app.services.loan_loaders.projected_income_shadows`).
-        live_cash: ``{transaction_id: live cash}``
-            (:func:`app.services.cash_ledger.live_amounts` over the pass's own
-            basis).
+        priced: ``{transaction_id: the figure a screen shows}``
+            (:func:`app.services.cash_ledger.display_amounts_by_id` over the
+            pass's own basis).  Indexed with ``[]``: it covers every row it was
+            built over, so a shadow it forgot raises where it is read rather
+            than defaulting to a fabricated figure.
         fwd: The resolved :class:`_ForwardInputs`.
 
     Returns:
@@ -363,11 +398,13 @@ def _planned_from_shadows(
     clamp_floor = fwd.as_of + _ONE_DAY
     for shadow in projected_shadows:
         due = loan_payment_due_date(shadow, fwd.payment_day)
-        # ``is None`` and not truthiness: a live cash of ``Decimal("0")`` is a
-        # real answer (a waived payment), and falling through on it would price
-        # the shadow off a column the loan has superseded.
-        live = live_cash.get(shadow.id)
-        cash = owned_contribution(shadow) if live is None else live
+        # ONE map, no fallback.  The ``is None`` dance this replaces existed
+        # because a live cash of ``Decimal("0")`` is a real answer (a waived
+        # payment) and truthiness would have priced the shadow off the column
+        # the loan supersedes; ``display_amounts_by_id`` composes the two
+        # inside the amount model, so there is no second answer to choose
+        # between here.
+        cash = priced[shadow.id]
         planned.append(PlannedPayment(
             due_date=due,
             effective_date=max(due, clamp_floor),
@@ -608,8 +645,8 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     # basis that called it again, so one request resolved the same loan twice
     # (finding **N-268**'s shape).  Plan step X-au-c2b made the derivation a
     # read-pass value, so both readers ask the same one.
-    live_cash = live_amounts(ctx.amounts(), projected_shadows)
-    planned = _planned_from_shadows(projected_shadows, live_cash, fwd)
+    priced = display_amounts_by_id(projected_shadows, ctx.amounts())
+    planned = _planned_from_shadows(projected_shadows, priced, fwd)
 
     # Slots the fold already accounts for and the ESTIMATED tier must NOT
     # re-synthesize: the PLANNED records this pass folds forward, plus the settled

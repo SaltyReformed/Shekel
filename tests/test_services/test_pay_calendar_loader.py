@@ -26,9 +26,13 @@ cadence the batch was generated at and ``end = start + cadence - 1`` is its
 exact inverse.  Both controls die at plan step **C4** with the columns they
 read.
 
-The contiguous shape is the ``seed_periods`` fixture, which drops ``seed_user``'s
-2024 bootstrap period and RENUMBERS what is left.  That renumbering matters: an
-earlier draft of this module deleted the bootstrap row by hand, left the stored
+The contiguous shape is the ``seed_periods`` fixture, which RESETS the owner's
+whole schedule through ``pay_period_admin.reset_pay_periods``, so the writer
+derives ``period_index`` 0..9 when it writes the rows.  *Nothing renumbers
+anything since plan step ``pay_calendar:C4-b-1``*: this said the fixture "drops
+the 2024 bootstrap period and RENUMBERS what is left", which was true of the
+135-line helper that step deleted.  Why it matters is unchanged -- an earlier
+draft of this module deleted the bootstrap row by hand, left the stored
 ordinals at 1..10, and the oracle immediately reported the ledger row **P26**
 disagreement against its own fixture.
 

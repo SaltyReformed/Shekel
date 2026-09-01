@@ -25,6 +25,7 @@ from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
 from app.models.ref import AccountType, Status
 from app.services import balance_at, pay_period_write
+from app.services.pay_calendar import calendar_for
 from app.services.balance_at import BalanceContext
 from app.services import transfer_service
 from app.services.auth_service import hash_password
@@ -140,19 +141,12 @@ def _create_other_user_with_template():
     db.session.flush()
 
 
-    # Bootstrap pay period (E-19, Commit 3): the
-    # account_service factory requires the user to have at
-    # least one pay period to anchor against.
-    from datetime import date as _date, timedelta as _td
-    from app.models.pay_period import PayPeriod as _PayPeriod
-    _bootstrap = _PayPeriod(
-        user_id=other_user.id,
-        start_date=_date(2024, 1, 5),
-        end_date=_date(2024, 1, 5) + _td(days=13),
-        period_index=0,
-    )
-    db.session.add(_bootstrap)
-    db.session.flush()
+    # The account_service factory requires the user to have at least one pay
+    # period to anchor against.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    from datetime import date as _date
+    from tests._test_helpers import open_owner_calendar as _open_calendar
+    _bootstrap = _open_calendar(other_user.id, _date(2024, 1, 5))[0]
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
@@ -4371,10 +4365,16 @@ class TestTransferPeriodMove:
             assert 'name="pay_period_id"' in html
             start = html.index('name="pay_period_id"')
             period_select = html[start:html.index("</select>", start)]
-            assert own.label in period_select
+            # Labels off the CALENDAR since pay-calendar plan step C4-a-5,
+            # which deleted ``PayPeriod.label``: the ``<option>`` renders
+            # ``DerivedPeriod.label``.
+            calendar = calendar_for(seed_user["user"].id)
+            assert calendar.period_by_id(own.id).label in period_select
             assert f'value="{own.id}" selected' in period_select
-            assert future.label in period_select
-            assert excluded_past.label not in period_select
+            assert calendar.period_by_id(future.id).label in period_select
+            assert calendar.period_by_id(
+                excluded_past.id,
+            ).label not in period_select
 
     def test_move_relocates_transfer_and_both_shadows(
         self, app, auth_client, seed_user, seed_periods_today,

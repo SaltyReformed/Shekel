@@ -20,7 +20,7 @@ from app.models.ref import Status
 from app.models.category import Category
 from app.models.account import Account
 from app.services import pay_period_service, transaction_service
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import log_refused_lookup, require_owner
@@ -122,7 +122,9 @@ def get_full_edit(txn_id):
         # Current + future periods (plus the transfer's own) power the
         # period-move selector when a transfer is edited from a grid
         # shadow cell -- same set the transfers blueprint supplies.
-        periods = period_move_options(current_user.id, xfer.pay_period_id)
+        periods = period_move_options(
+            calendar_for(current_user.id), xfer.pay_period_id,
+        )
         # The pair's recorded and retained figures -- see the transfers
         # blueprint's own render site: ONE helper answers for both, so the two
         # doors onto this popover cannot show different figures.
@@ -159,11 +161,51 @@ def get_full_edit(txn_id):
     # in a past period stays selected (and is not silently re-pointed at
     # the first current period on save).  Periods are per-user; the PATCH
     # handler re-checks ownership of the submitted id (F-029).
-    periods = period_move_options(current_user.id, txn.pay_period_id)
+    # ONE derivation for this render, threaded -- the shape of ledger row
+    # **P68**, closed by C2-f3c (two derivations of one owner's calendar in
+    # one render, nothing holding the two equal; **P69** is its open
+    # sibling): the
+    # ``<select>`` below is built from it and so is the card's context line,
+    # which names the row's OWN paycheck.  Asking twice would be two answers to
+    # one question with nothing holding them equal.
+    #
+    # **The row is loaded BEFORE the calendar is derived**, and each
+    # ``require_period`` caller owes its own statement of that order.  That
+    # method documents TWO states that reach its refusal and BOTH are closed
+    # here, which a first draft of this comment did not say -- it argued only
+    # the first and read as a proof (adversarial review, 2026-08-31).
+    #
+    #   * **A picture from more than one moment** (finding **N-358**).  This
+    #     door is a GET, so ``db_transaction`` binds it to ``REPEATABLE READ,
+    #     READ ONLY`` -- both reads see one snapshot.  It is not a fragment
+    #     that splits its own transaction: no ``write_transaction`` block runs
+    #     on this path, which is what makes the GET argument sound where it is
+    #     unsound on ``/grid``.
+    #   * **A row filed in ANOTHER owner's pay period.**  Closed by
+    #     ``_get_owned_transaction``, which scopes on ``txn.pay_period.user_id``
+    #     -- so the calendar built from ``current_user.id`` below and the owner
+    #     of the period the row names are the same by construction, and the
+    #     offer set the ``<select>`` renders is the requesting owner's.
+    #     **``pay_calendar:C13`` reopens this leg**: it makes a transaction's
+    #     owner a COLUMN, and a door re-scoped onto ``Transaction.user_id``
+    #     stops proving anything about the row's PERIOD's owner.  That step
+    #     also makes the mismatch unconstructible with a composite foreign key,
+    #     so the leg is replaced rather than lost -- but it is replaced there,
+    #     not here.
+    calendar = calendar_for(current_user.id)
+    periods = period_move_options(calendar, txn.pay_period_id)
     amounts = fragment_amounts(txn)
     return render_template(
         "grid/_transaction_full_edit.html",
         txn=txn,
+        # The row's OWN paycheck, as the DERIVED value (plan step C4-a-5).  The
+        # card printed ``txn.pay_period.label`` -- the ORM row's accessor, which
+        # formats the STORED ``end_date`` -- while the ``<select>`` beside it
+        # printed the derived one, so on a period whose stored end has gone
+        # stale (findings **P12** / **P28**) one paycheck was labelled two ways
+        # inside one card.  ``PayPeriod.label`` is deleted with this step, so
+        # the wrong source is unreachable rather than merely unused.
+        period=calendar.require_period(FiledRow.for_row(txn)),
         # See ``get_quick_edit`` for why the Estimated field is primed with the
         # RESOLVED amount rather than the column, and why it is a MAP.
         #

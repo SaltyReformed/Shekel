@@ -18,25 +18,31 @@ trimmed two docstrings to reach 1010 lines before taking that sentence at its
 word.
 
 Nothing here imports from :mod:`._amount_source`, so the split introduces no
-cycle: this module is strictly below it.
+cycle: this module is strictly below it, and strictly above
+:mod:`._loan_pricing`, which it imports outright.
 
 Boundary discipline (``CLAUDE.md`` Architecture / B6-01): plain ids in, a
 frozen dataclass out; no Flask import, no writes, and no runtime import of the
-paycheck or loan-resolver stacks (finding **N-267**).
+PAYCHECK stack (finding **N-267**).  *The same sentence named the loan-resolver
+stack until plan step X-au-g-2a moved rule 4's producer into this package: the
+loan derivation is a module of the cash ledger now, so there is no reach to
+defer and the import is stated at the top like any other.*
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
 from typing import TYPE_CHECKING
 
+from ._loan_pricing import LoanPricing, loan_pricing
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    # Named for the annotations alone.  A runtime import of either would put the
-    # paycheck / loan-resolver stacks on this module's load path, which is the
-    # cycle every call site in this module defers to avoid (finding N-267).
+    # Named for the annotation alone.  A runtime import would put the paycheck
+    # / tax stack on this module's load path, which is the cycle the one call
+    # site below defers to avoid (finding N-267).  The LOAN half needed the
+    # same deferral until plan step X-au-g-2a; its producer is a module of this
+    # package now, so it is imported outright above.
     from app.services.income_service import SalaryPricing
-    from app.services.loan_payment_service import LoanPricing
 
 @dataclass(frozen=True)
 class AmountBasis:
@@ -93,15 +99,15 @@ class AmountBasis:
             (:class:`app.services.income_service.SalaryPricing`): what each
             active profile pays, per template and period.
         loans: The scenario's loan-payment derivation
-            (:class:`app.services.loan_payment_service.LoanPricing`): which
-            transfers are loan payments, and each destination loan's P&I,
-            payment day and escrow history.
+            (:class:`._loan_pricing.LoanPricing`): which transfers are loan
+            payments, and each destination loan's P&I, payment day and escrow
+            history.
     """
 
     user_id: int
     scenario_id: int
     salary: "SalaryPricing" = field(compare=False, repr=False)
-    loans: "LoanPricing" = field(compare=False, repr=False)
+    loans: LoanPricing = field(compare=False, repr=False)
 
 
 def amount_basis(user_id, scenario_id) -> AmountBasis:
@@ -130,13 +136,18 @@ def amount_basis(user_id, scenario_id) -> AmountBasis:
     object forced a CROSS-ACCOUNT reader -- the calendar, the spending report, a
     dashboard -- to group its rows by account and pay for one basis per group.
 
-    **The loan derivation's clock is ``date.today()`` and DELIBERATELY not a
-    caller's as-of.**  Resolving a loan's rate-period P&I against the wall clock
-    is finding **N-40**, owned by plan step X-au-g, and handing this a read
-    pass's own ``as_of`` instead is plan step **X-i2**, which MOVES MONEY
-    (``$3,631.74`` today against ``$3,722.53`` at a 2027 read).  Taking it here
-    would ship that move inside a refactor whose gate is byte-identity, so the
-    read stays where it was and is disclosed rather than quietly relocated.
+    **NEITHER derivation reads a clock, and plan step X-au-g-2b is what made
+    that true of the loan half.**  It was built as
+    ``loan_pricing(scenario_id, date.today())`` and resolved every loan-payment
+    shadow's P&I against that one date -- finding **N-40**, and the last
+    ``date.today()`` call anywhere in this package (a control asserts the
+    absence: ``test_amount_source.TestTheAmountModelReadsNoClock``).  Ruling
+    **R-IJ** closed it STRUCTURALLY rather than by threading a different date: a
+    loan's contractual terms resolve on the installment they govern, so
+    :class:`._loan_pricing.LoanPricing` has no date to take.  Plan step
+    **X-i2**, which hands each memoized loader the read pass's own ``as_of``,
+    therefore no longer has this derivation as a subject -- there is nothing
+    left here for a pass-level clock to correct.
 
     Args:
         user_id: The owner whose rows are being priced; scopes the salary
@@ -146,17 +157,19 @@ def amount_basis(user_id, scenario_id) -> AmountBasis:
     Returns:
         The unresolved :class:`AmountBasis` for that owner and scenario.
     """
-    # Pylint: ``import-outside-toplevel`` -- imported locally to keep the
-    # income_service (paycheck/tax) and loan_payment_service (loan-resolver)
-    # stacks off this module's load path and out of any import cycle, exactly as
-    # ``_amounts`` has always done; the helpers are only needed at call time.
+    # Pylint: ``import-outside-toplevel`` -- ``income_service`` is imported
+    # locally to keep the paycheck / tax stack off this module's load path and
+    # out of any import cycle, exactly as ``_amounts`` has always done; it is
+    # only needed at call time.  The LOAN derivation needed the same deferral
+    # until plan step X-au-g-2a moved it into this package, and now does not:
+    # :func:`._loan_pricing.loan_pricing` is imported at the top.
     # pylint: disable=import-outside-toplevel
-    from app.services import income_service, loan_payment_service
+    from app.services import income_service
     return AmountBasis(
         user_id=user_id,
         scenario_id=scenario_id,
         salary=income_service.salary_pricing(user_id, scenario_id),
-        loans=loan_payment_service.loan_pricing(scenario_id, date.today()),
+        loans=loan_pricing(scenario_id),
     )
 
 

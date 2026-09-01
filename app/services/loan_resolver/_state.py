@@ -149,10 +149,17 @@ def current_rate_baseline(
 
     Single source of truth for "what rate is in effect on ``as_of``" for callers
     that need the rate WITHOUT the full schedule generation
-    :func:`resolve_loan` runs -- the standalone amortization-schedule route,
-    whose ARM rate column falls back to it for rows carrying no per-row rate, and
-    which composes its own schedule (so a full resolve just to read the rate
-    would derive the schedule twice).  Returns the same value as
+    :func:`resolve_loan` runs.
+
+    **It has NO caller in ``app/`` as of plan step X-au-g-2b**, and this
+    paragraph named the one it had: the standalone amortization-schedule route,
+    whose ARM rate column fell back to this for rows carrying no per-row rate.
+    That fallback guarded a state no ``AmortizationRow`` can be in -- every
+    construction sets ``interest_rate`` from a rate period -- so the step
+    deleted the branch and the route's ``date.today()`` call with it.  What is
+    left here is a public, fence-ruled name with no production reader; whether
+    it should go is a decision on its own and is NOT taken here (rule 6).
+    Returns the same value as
     ``resolve_loan(...).current_rate`` for the same inputs -- the governing rate
     period's annual rate (DH-#56: the resolver-derived rate that replaced the
     retired ``LoanParams.interest_rate`` column) -- by the same cheap rate-period

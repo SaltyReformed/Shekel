@@ -15,10 +15,11 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import AmountSourceEnum, StatusEnum
 from app.models.escrow_line import EscrowComponentVersion
 from app.models.loan_features import RateHistory
 from app.services import loan_loaders, transfer_service
+from app.services.row_valuation import owned_contribution
 from app.services.balance_at._plan import (
     _PAYOFF_EXTENSION_MONTHS,
     loan_plan,
@@ -30,7 +31,7 @@ from app.services.balance_at._resolution import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._context import _memoize_once
-from app.exceptions import ForeignAccountError
+from app.exceptions import AmountUnresolvable, ForeignAccountError
 from app.models.account import Account
 from tests._test_helpers import (
     add_escrow_line,
@@ -175,6 +176,56 @@ def _project_loan_payment(seed_user, db, loan, period, amount, due_date):
     return shadow
 
 
+def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
+    seed_user, db, seed_periods,
+):
+    """A projected shadow with NO stored figure is priced, not refused.
+
+    **The PLAN tier's half of plan step balance:X-au-g-2c-1**, and the reason
+    that step routed two readers rather than the one its finding named.
+    ``_planned_from_shadows`` valued these rows through
+    ``row_valuation.owned_contribution``, which REFUSES a row whose plan is
+    DERIVED -- the same accessor and the same refusal that made
+    ``get_payment_history`` the named blocker of finding **N-266**(a).  Routing
+    only the named one would have left the cutover to 500 here instead, on
+    ``/savings`` and every surface that folds a loan's forward plan; an
+    adversarial review censused the accessor and found TWO callers of an
+    unsettled row, not one.
+
+    The paired refusal below is what makes this a measurement rather than a
+    happy path: the SAME declaration, in the same fixture, still breaks the
+    accessor the tier used to call.
+    """
+    account = create_loan_account(
+        seed_user, db.session,
+        principal=_PRINCIPAL, rate=_RATE, term=_TERM,
+        origination_date=_ORIGINATION, payment_day=1,
+    )
+    shadow = _project_loan_payment(
+        seed_user, db, account, seed_periods[9],
+        amount=Decimal("2100.00"), due_date=date(2026, 6, 1),
+    )
+    # Declare it DERIVED: the two writes ``ck_transactions_amount_ownership``
+    # makes one.  Its parent transfer keeps its own figure, so rule 5 answers.
+    shadow.estimated_amount = None
+    shadow.amount_source_id = ref_cache.amount_source_id(
+        AmountSourceEnum.PARENT_TRANSFER,
+    )
+    db.session.commit()
+
+    # The accessor the tier used to call still refuses this row...
+    with pytest.raises(AmountUnresolvable):
+        owned_contribution(shadow)
+
+    # ...and the tier prices it anyway, from the parent transfer.
+    ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
+    plan = loan_plan(account, ctx)
+
+    june = {p.due_date: p for p in plan.payments}[date(2026, 6, 1)]
+    assert june.is_estimated is False
+    assert june.cash == Decimal("2100.00")
+
+
 def test_a_projected_record_makes_its_slot_planned_not_estimated(
     seed_user, db, seed_periods,
 ):
@@ -224,7 +275,7 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
     This is not cosmetic on the forward side.  The escrow figure is what
     :func:`app.services.balance_at._plan_fold.fold_forward` subtracts from the record's
     cash, and the cash itself is now built on the DUE date's escrow
-    (``loan_payment_service._shadow_live_amount``); if the two ends key on
+    (``cash_ledger._loan_installment._shadow_live_amount``); if the two ends key on
     different dates, the difference lands silently in PROJECTED principal and
     propagates to the forward balance, ``plan_payoff_date``,
     ``plan_required_extra``, the projected Schedule A interest, and the property

@@ -32,6 +32,7 @@ from app.models.statement_import import BankStatementLine
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
+from app.services.pay_calendar import calendar_for
 from app.services.statement_import import delete_import
 from app.services.statement_match import (
     account_merchants,
@@ -121,14 +122,20 @@ def _view(*rules, templates=None, categories=frozenset(), stale=None,
 
 
 def _destination(txn, *, is_settled=False):
-    """Return *txn* as the offer value a placement resolves against."""
+    """Return *txn* as the offer value a placement resolves against.
+
+    **The paycheck comes off the owner's CALENDAR, exactly as
+    ``destinations_for`` reads it** (pay-calendar plan step C4-a-4), and this
+    helper stands in for that producer -- so it derives the span rather than
+    reading the ``pay_periods.end_date`` column plan step C4-c drops.
+    """
     return PurchaseDestination(
         transaction_id=txn.id,
         name=txn.name,
         category_id=txn.category_id,
-        period_start=txn.pay_period.start_date,
-        period_end=txn.pay_period.end_date,
-        pay_period_id=txn.pay_period_id,
+        period=calendar_for(txn.pay_period.user_id).saved_by_id()[
+            txn.pay_period_id
+        ],
         is_settled=is_settled,
         template_id=txn.template_id,
     )

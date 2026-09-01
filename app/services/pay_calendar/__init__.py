@@ -100,6 +100,7 @@ from ._rhythm import (
     saved_paydays_in_month_through,
 )
 from ._searches import (
+    FiledRow,
     containing_period,
     earliest_started_period,
     final_covered_day,
@@ -115,6 +116,7 @@ __all__ = [
     "MAX_CADENCE_DAYS",
     "MIN_CADENCE_DAYS",
     "DerivedPeriod",
+    "FiledRow",
     "PayCadence",
     "PayCalendar",
     "PayCalendarError",

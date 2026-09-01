@@ -21,7 +21,7 @@ collapse the two facts a purchase keeps apart, and it would give a later
 statement line nowhere to go.  So the only question the owner answers is which
 budget line CONTAINS it, and there are exactly two answers:
 
-* an existing envelope, from the set :func:`~._reads.destinations_for` offers;
+* an existing envelope, from the set :func:`~._candidates.destinations_for` offers;
 * a NEW envelope this door creates in the line's own pay period, named from
   what the bank called it.
 

@@ -6,18 +6,21 @@ the same SHAPE.  A loan's balance is a fold over its event stream; so is a cash
 account's (plan step X-b, "a cash account is an event stream").  Both folds need
 the same things underneath them, and this package owns the cash copies:
 
-===================  ==============================  ==========================
-question             here                            loan analog
-===================  ==============================  ==========================
-what is stored?      :mod:`._facts`                  ``loan_loaders``
-what happened, when? :mod:`._events`                 ``loan_ledger._events``
-where do books open? :mod:`._books`                  (no loan analog)
-what IS the amount?  :mod:`._amount_source`          (see below)
-what was it worth?   :mod:`._amounts`                ``loan_ledger._split``
-did the bank show it? :mod:`._clearing`              (no loan analog)
-in what order?       :mod:`._walk`                   ``loan_ledger._walk``
-what do they sum to? :mod:`._flows`                  (a peer reduction)
-===================  ==============================  ==========================
+==============================  ========================  ======================
+question                        here                      loan analog
+==============================  ========================  ======================
+what is stored?                 :mod:`._facts`            ``loan_loaders``
+what happened, when?            :mod:`._events`           ``loan_ledger._events``
+where do books open?            :mod:`._books`            (no loan analog)
+what IS the amount?             :mod:`._amount_source`    (see below)
+what does a pass derive live?   :mod:`._amount_basis`     (no loan analog)
+which transfers are payments?   :mod:`._loan_pricing`     (no loan analog)
+what does an installment cost?  :mod:`._loan_installment` ``loan_resolver``
+what was it worth?              :mod:`._amounts`          ``loan_ledger._split``
+did the bank show it?           :mod:`._clearing`         (no loan analog)
+in what order?                  :mod:`._walk`             ``loan_ledger._walk``
+what do they sum to?            :mod:`._flows`            (a peer reduction)
+==============================  ========================  ======================
 
 **The clearing row has no loan analog because a loan has no bank statement to
 clear against**: its balance is an amortization the app derives, and its
@@ -34,6 +37,40 @@ that amount with an entered actual, an excluded status and an envelope's
 purchases.  The arrow runs one way: the second consumes the first.  The loan
 side has no analog for :mod:`._amount_source` because a loan payment's amount
 has exactly one source; a cash row's has five, and four of them are derived.
+
+**The LOAN PRICING pair is in this package, and plan step X-au-g-2a is what
+put it there.**  Amount rule 4 -- a loan payment's shadow is worth what the
+loan says that installment costs -- is a rule about a ROW'S AMOUNT, which is
+this package's question; its producer lived in ``loan_payment_service`` until
+that step, so :mod:`._amount_source` had to reach UP a tier to price a row and
+the loan stack could never name this package back.
+:mod:`app.services.row_valuation` exists because of that reach.  The cycle it
+created was REAL and pylint could not see it -- a ``TYPE_CHECKING`` import
+masked the runtime one -- which is measured, with the arms and their dates, in
+:mod:`._loan_installment` and stated nowhere else.  The producer moved DOWN
+rather than the readers routing around it, so the arrow runs one way again --
+this package
+names the loan TERM primitives (``loan_loaders``, ``loan_resolver``,
+``escrow_calculator``, ``recurring_transfer_query``), none of which names it --
+and the loan READING tier may import this package, which plan step X-au-g-2c-1
+SPENT: ``loan_payment_service.get_payment_history`` prices its feed through
+:func:`contributions_by_id` rather than through
+``row_valuation.owned_contribution``.  **One reader of an unsettled row
+remains** -- ``balance_at._plan._planned_from_shadows`` -- and it moves at plan
+step X-au-f, not here.
+
+**IT BROUGHT A ``budget.transfers`` QUERY WITH IT, and that is disclosed here
+because the package it left disclosed it.**  :mod:`._events` invokes Transfer
+Invariant 5 as a principle of this package ("the same reason the projection
+engine never queries ``Transfer`` directly"), and
+``_loan_pricing._load_live_payment_configs`` is now the ONE statement against
+``budget.transfers`` in these thirteen modules -- transfers INNER-joined
+through their template to ``loan_payment_settings``.  It must be: discovering
+WHICH transfers are loan payments is a question about that table.  Invariant 5
+binds the BALANCE CALCULATOR rather than every reader, so nothing is violated;
+what would be wrong is the query arriving silently, which is exactly how
+``loan_payment_service``'s own "queries ONLY budget.transactions" sentence came
+to be false at the top of its file for months.
 
 **The books row has no loan analog because a loan has no books to open.**  Its
 origination is ``LoanParams.original_principal``, synthesized rather than
@@ -99,6 +136,14 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 from app.services.row_valuation import (
     recorded_amounts_by_id,
     settled_amounts_by_id,
+)
+# The loan-pricing pair FIRST, because it is the bottom of this package's
+# pricing line: ``_loan_installment`` -> ``_loan_pricing`` -> ``_amount_basis``
+# -> ``_amount_source``, and the block below reads in tier order.
+from ._loan_installment import _resolve_loan_basis
+from ._loan_pricing import (
+    LoanPricing,
+    loan_pricing,
 )
 from ._amount_basis import (
     AmountBasis,
@@ -176,6 +221,7 @@ __all__ = [
     "AmountBasis",
     "AmountRule",
     "AnchorPoint",
+    "LoanPricing",
     "governing_account_opening",
     "governing_anchor",
     "governing_anchor_on",
@@ -206,6 +252,7 @@ __all__ = [
     "income_amount",
     "live_amounts",
     "live_override",
+    "loan_pricing",
     "cash_leg_of",
     "off_statement_sum",
     "owned_amount",
@@ -228,4 +275,19 @@ __all__ = [
     "statement_coverage",
     "sum_projected",
     "walk_cash_ledger",
+    # Re-exported PRIVATE, deliberately, and it moved here whole with rule 4's
+    # producer at plan step X-au-g-2a.  The cycle-deletion controls
+    # (``test_loan_payment_service.TestALoansPriceDoesNotReadItsOwnPayments``
+    # and ``tests/manual/verify_loan_pricing_ignores_payment_feed.py``) assert
+    # that this producer reads the loan's TERMS and issues no statement against
+    # ``budget.transactions``.  Publishing the name here is the honest public
+    # path and keeps the leaf boundary intact; ``shekel-private-module-import``
+    # is what would forbid the direct ``._loan_installment`` import from
+    # ``app/`` or ``scripts/``.  *The sentence carried from the module this
+    # moved out of said that checker forbids it from a TEST, and it does not:
+    # ``tests/`` is linted for ``shekel-decimal-from-float`` alone
+    # (``.pre-commit-config.yaml``) and CI's pylint step covers ``app/`` and
+    # ``scripts/``.  In ``tests/`` it is a convention, not a gate -- worth
+    # keeping, worth not overstating.*
+    "_resolve_loan_basis",
 ]

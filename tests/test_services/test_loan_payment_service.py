@@ -22,8 +22,8 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
-from app.exceptions import UndatedSettleError
+from app.enums import AmountSourceEnum, SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.exceptions import AmountUnresolvable, UndatedSettleError
 from app.extensions import db
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
@@ -34,8 +34,10 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     settlement_basis_id,
 )
+from app.services.cash_ledger import _resolve_loan_basis
+from app.services.cash_ledger import amount_basis
+from app.services.row_valuation import owned_contribution
 from app.services.loan_payment_service import (
-    _resolve_loan_basis,
     compute_contractual_pi,
     get_payment_history,
     prepare_payments_for_engine,
@@ -51,6 +53,22 @@ _PAYMENT_DAY = 1
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _basis(seed_user):
+    """Return the seeded owner's amount basis -- what ``get_payment_history`` prices with.
+
+    Spelled once because every case in this file passes the same one, and
+    because an :class:`~app.services.cash_ledger.AmountBasis` is pinned to an
+    OWNER and a SCENARIO: writing it per case invites a pair that names one
+    owner's rows and another's scenario, which is the mismatch
+    ``resolve_transaction_amount`` refuses a row for.  Not a fixture, because
+    the basis must be built INSIDE each case's ``app.app_context()`` -- both of
+    its derivations are lazy and neither may outlive the session that will
+    resolve them.
+    """
+    return amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+
 
 
 #: The mortgage this file builds closes here.  Named because the books-boundary
@@ -165,7 +183,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert result == []
 
@@ -185,7 +203,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].amount == Decimal("1500.00")
@@ -218,7 +236,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             # No transfer_id -> excluded.
             assert result == []
@@ -249,7 +267,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert result == []
 
@@ -270,7 +288,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert result == []
 
@@ -305,7 +323,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 1
             # effective_amount returns actual when populated.
@@ -327,7 +345,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].amount == Decimal("1500.00")
@@ -348,7 +366,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].is_confirmed is True
@@ -369,7 +387,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].is_confirmed is False
@@ -386,7 +404,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].payment_date == seed_periods[2].start_date
@@ -414,7 +432,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].settled_on == cash_day
@@ -439,7 +457,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].settled_on is None
@@ -488,7 +506,7 @@ class TestGetPaymentHistory:
 
             with pytest.raises(UndatedSettleError):
                 get_payment_history(
-                    loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                    loan.id, _basis(seed_user), _PAYMENT_DAY,
                 )
 
     def test_ordered_by_pay_period_date(
@@ -507,7 +525,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 2
             assert result[0].payment_date < result[1].payment_date
@@ -518,7 +536,16 @@ class TestGetPaymentHistory:
     def test_filters_by_scenario(
         self, app, db, seed_user, seed_periods,
     ):
-        """Transactions from a different scenario are excluded."""
+        """A basis pinned to another scenario sees none of this one's payments.
+
+        **The scope and the pricing are ONE object since plan step
+        X-au-g-2c**, so this case grades more than it used to. The feed is
+        scoped by ``basis.scenario_id``, and that is the same id
+        ``resolve_transaction_amount`` refuses a foreign row for -- so a caller
+        holding the wrong basis gets an EMPTY feed rather than this scenario's
+        rows priced against another scenario's loans. There is no longer a way
+        to state the two differently.
+        """
         from app.models.scenario import Scenario  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
@@ -528,7 +555,6 @@ class TestGetPaymentHistory:
             )
             db.session.commit()
 
-            # Query with a non-existent scenario ID.
             other_scenario = Scenario(
                 user_id=seed_user["user"].id,
                 name="What-If",
@@ -537,15 +563,31 @@ class TestGetPaymentHistory:
             db.session.add(other_scenario)
             db.session.commit()
 
+            # The baseline basis DOES see the payment, so the emptiness below
+            # is this scenario filter and not a fixture that built nothing.
+            assert len(get_payment_history(
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
+            )) == 1
+
             result = get_payment_history(
-                loan.id, other_scenario.id, _PAYMENT_DAY,
+                loan.id,
+                amount_basis(seed_user["user"].id, other_scenario.id),
+                _PAYMENT_DAY,
             )
             assert result == []
 
     def test_returns_decimal_amounts(
         self, app, db, seed_user, seed_periods,
     ):
-        """PaymentRecord.amount is Decimal, not float."""
+        """PaymentRecord.amount is Decimal, not float.
+
+        **It grades the amount model's TOTALITY now, where it used to grade a
+        coercion** (plan step X-au-g-2c). ``get_payment_history`` wrapped every
+        figure in ``Decimal(str(amount))`` "even if the stored column somehow
+        yields a non-Decimal"; the resolver returns a ``Decimal`` or raises, so
+        the padding is gone and this asserts the contract directly rather than
+        the guard that used to stand in front of it.
+        """
         with app.app_context():
             loan = _create_loan_account(seed_user)
             _create_transfer_to_loan(
@@ -554,7 +596,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert isinstance(result[0].amount, Decimal)
@@ -577,9 +619,104 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             )
             assert len(result) == 3
+
+
+class TestTheFeedPricesADerivedRow:
+    """A loan-side shadow that stores NO figure is priced, not refused.
+
+    **The whole point of plan step balance:X-au-g-2c's first leaf**, and the
+    thing finding **N-266**(a) was.  ``get_payment_history`` priced every row
+    through :func:`~app.services.row_valuation.owned_contribution` -- the
+    accessor whose NAME asserts the row owns its figure, and which REFUSES a row
+    whose plan is DERIVED.  So the loan-side INCOME leg of a loan payment could
+    not be declared derived while that call stood: emptying
+    ``estimated_amount`` broke the feed the amortization engine replays.  Not a
+    cycle, which is what the finding recorded for three weeks; ONE unrouted
+    reader.
+
+    The cases below have **disjoint fail sets on purpose**.  The first says the
+    reader answers for a derived row; the second says the accessor it used to
+    call still refuses that same row, in the same transaction, so the first is
+    passing because the ROUTE changed and not because the fixture failed to
+    declare anything.  A control that only asserted the happy path would go
+    green against a row that was never derived at all.
+    """
+
+    def test_a_derived_shadow_resolves_through_the_amount_model(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A shadow with no stored figure is priced from its parent transfer.
+
+        Declares the LOAN-side income leg derived -- ``estimated_amount`` NULL
+        and ``amount_source_id`` naming the parent transfer, the two writes
+        ``ck_transactions_amount_ownership`` makes one -- and asserts the feed
+        carries the parent's figure.
+
+        The transfer here has no ``LoanPaymentSettings``, so the row resolves by
+        rule 5 (a shadow is worth exactly what its parent is) rather than rule 4.
+        That is deliberate for THIS leaf: what is being graded is that a derived
+        row reaches the resolver at all.  Rule 4 end to end -- a derive-mode
+        payment priced from the loan's own installment -- is the next leaf's,
+        which is where a payment gains a settings row.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            xfer = _create_transfer_to_loan(
+                seed_user, loan, seed_periods[1], Decimal("1500.00"),
+            )
+            db.session.commit()
+
+            shadow = db.session.query(Transaction).filter(
+                Transaction.transfer_id == xfer.id,
+                Transaction.account_id == loan.id,
+            ).one()
+            shadow.estimated_amount = None
+            shadow.amount_source_id = ref_cache.amount_source_id(
+                AmountSourceEnum.PARENT_TRANSFER,
+            )
+            db.session.commit()
+
+            result = get_payment_history(
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
+            )
+            assert len(result) == 1
+            assert result[0].amount == Decimal("1500.00")
+
+    def test_the_accessor_it_used_to_call_still_refuses_that_row(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``owned_contribution`` refuses the row the feed above prices.
+
+        The other half of the pair, and it is what makes the pair a measurement.
+        Same fixture, same declaration: the accessor
+        ``get_payment_history`` called until this step raises
+        :class:`~app.exceptions.AmountUnresolvable` on this row, which is the
+        state that made the loan-side leg undeclarable.  If a future change
+        reverted the route, this test would still pass and its sibling would
+        fail -- which is the direction that matters.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            xfer = _create_transfer_to_loan(
+                seed_user, loan, seed_periods[1], Decimal("1500.00"),
+            )
+            db.session.commit()
+
+            shadow = db.session.query(Transaction).filter(
+                Transaction.transfer_id == xfer.id,
+                Transaction.account_id == loan.id,
+            ).one()
+            shadow.estimated_amount = None
+            shadow.amount_source_id = ref_cache.amount_source_id(
+                AmountSourceEnum.PARENT_TRANSFER,
+            )
+            db.session.commit()
+
+            with pytest.raises(AmountUnresolvable):
+                owned_contribution(shadow)
 
 
 # ── Tests for compute_contractual_pi ─────────────────────────────
@@ -1089,6 +1226,14 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
     ``tests/manual/verify_loan_pricing_ignores_payment_feed.py``: both live
     loans answer one figure (``1293.96`` and ``531.94``) across a FULL 29-record
     feed, an EMPTY one, the confirmed 5 alone, and a DOUBLED 58.
+
+    **The producer moved to ``cash_ledger`` at plan step X-au-g-2a and this
+    control did NOT follow it**, deliberately: what it grades is the
+    RELATIONSHIP between the two packages -- the first test calls
+    :func:`get_payment_history` to prove the feed is non-empty before emptying
+    it -- and both tests build their loan with this module's
+    ``_create_loan_account`` / ``_create_transfer_to_loan``.  Moving the class
+    would either duplicate those two fixtures or move them for one caller.
     """
 
     def test_the_price_is_unchanged_when_every_payment_row_is_deleted(
@@ -1109,10 +1254,10 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
                 )
             db.session.commit()
 
-            before = _resolve_loan_basis(loan.id, date(2026, 6, 1))
+            before = _resolve_loan_basis(loan.id)
             assert before is not None
             assert get_payment_history(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
             ), "the feed must be non-empty for emptying it to mean anything"
 
             db.session.query(Transaction).filter(
@@ -1120,9 +1265,18 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
             ).delete(synchronize_session=False)
             db.session.commit()
 
-            after = _resolve_loan_basis(loan.id, date(2026, 6, 1))
+            after = _resolve_loan_basis(loan.id)
             assert after is not None
-            assert after.monthly_pi == before.monthly_pi
+            # The whole TERM SET, period by period -- not one resolved figure.
+            # A producer that read the feed could agree on the period governing
+            # one date while differing on another; comparing the set closes
+            # that.  (The basis holds periods rather than a scalar since plan
+            # step X-au-g-2b, ruling R-IJ.)
+            assert [
+                (p.start_date, p.annual_rate, p.period_pi) for p in after.periods
+            ] == [
+                (p.start_date, p.annual_rate, p.period_pi) for p in before.periods
+            ]
             assert after.payment_day == before.payment_day
 
     def test_pricing_a_loan_issues_no_statement_against_the_payment_rows(
@@ -1146,7 +1300,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
             db.session.expire_all()
 
             with _statements_issued() as seen:
-                basis = _resolve_loan_basis(loan.id, date(2026, 6, 1))
+                basis = _resolve_loan_basis(loan.id)
 
             assert basis is not None
             assert seen, "the probe recorded nothing, so it graded nothing"

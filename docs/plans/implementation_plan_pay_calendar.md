@@ -6,13 +6,12 @@
 ticked at `C2-f3e` (`4f134bf4`). Built: **C1**, **C2** whole, **C3**. Section 4 carries each commit;
 what reached `main` is a MEASUREMENT (`git log --oneline origin/main..dev`).
 
-**`C4` is IN FLIGHT, is the deepest cut in the arc, and was DECOMPOSED into seven leaves on
-2026-08-25** (developer) once its reader census was re-measured: the four ORM-relationship readers
-section 3 named were two stale and two moved, and five more were named by no step at all, which row
-**P70**'s query-position census structurally could not see. The leaves ARE that census: five take
-the readers off the columns one PACKAGE at a time, one makes an owner's recorded cadence a foreign
-key, and the last drops the columns.
-**`C4-a-1`, `C4-a-2` and `C4-a-3` have SHIPPED; `C4-a-4` is next.**
+**`C4` is IN FLIGHT and is the deepest cut in the arc.** Decomposed into seven leaves 2026-08-25
+(developer) once its reader census was re-measured -- the leaves ARE that census, which row
+**P70**'s query-position count structurally could not see.
+**All five `C4-a` reader leaves have SHIPPED, and `C4-b` was split in two on 2026-09-01**
+(developer, **R-PC40**) once its real prerequisite was measured: `C4-b-1` takes the TEST CORPUS off
+hand-built pay periods, `C4-b-2` adds the key, `C4-c` drops the columns.
 
 **`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
 salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
@@ -262,65 +261,73 @@ their only live specimen from them, which both `_staging` docstrings predict and
       top-up itself left for `pay_period_rolling`, `pay_period_admin` having had nine lines under
       its ceiling (row **P31**). Closes **P1**, **P4**, **P5**, **P8**, **P9**.
 
-**THE READER CENSUS is now the leaf list**, re-measured by AST over `app/` on 2026-08-25: the four
-sites section 3 named were two stale and two moved, and a census keyed on QUERY position cannot see
-a RELATIONSHIP read. 118 accesses over 52 files, of which every one but the leaves below survives
-untouched; each survivor is an `AttributeError` or a `ProgrammingError` the day the columns go.
-**Three sites a reader would expect in it are NOT, checked one at a time**: `calendar_service`
-(`:939`) and `pay_period_locks` (`:215`) read `DerivedPeriod` values, and
-`settings/_pay_periods_manage.html` has since `C2-f3b`.
-
-**RE-CENSUSED 2026-08-28 at `C4-a-2`, and the earlier census was blind to a SHAPE**: it saw
-`PayPeriod.end_date` in query position and `<row>.pay_period.end_date`, but not a read through a
-LOCAL bound from `.pay_period`, which is how two of the survivors are written. Widened, `app/` held
-FOUR Python reads and one Jinja read, each already named by the leaf that owns it below -- so this
-is a correction to those line numbers, not a second list. `_candidates` is `:941` and the conflict
-chooser `:196`; `resolve_cadence` reads `last.end_date` off a ROW rather than in query position,
-which is why `_block_headings` was the last query-position read of that column.
-**`C4-a-3` took one of the four**, the purchase-date warning, leaving THREE Python reads and the one
-Jinja read: `_candidates` (`C4-a-4`), the conflict chooser and the popover (`C4-a-5`), and
-`resolve_cadence` (`C4-b`). The count is restated rather than left to be recounted, because a number
-written in prose is what two branches can each decrement to the same string with nothing reconciling
-them.
+**THE READER CENSUS was the leaf list and the leaves have taken it**; its three re-measurements
+(2026-08-25 by AST, 2026-08-28 at `C4-a-2` for a SHAPE the first was blind to, and `C4-a-5`'s, which
+found a reader in `tests/` that both a paragraph and a fresh grep missed) are condensed here under
+rule 5, the commits being the record.
+**What survives is the PREDICATE, because a predicate cannot go stale where a count can**, and
+`C4-c` re-runs it rather than trusting any list: *a read of `end_date` or `period_index` reached
+through a `budget.pay_periods` ROW -- in query position, through `.pay_period`, or through a local
+bound from it.* `pay_schedule_service.resolve_schedule` is `C4-b-2`'s. Each `C4-a` leaf's "what a
+later leaf must obey" has MOVED into `C4-c`'s specification below, which is where rule 4 sends an
+entry's overflow; nothing live depends on a line here.
 
 - [x] **C4-a-1 -- the balance seam's attribution clamp.** `8962e073` + `2895f693`. Closed **P38**.
-      *Its specification here described a build `balance:X-i4` had already made impossible -- five
-      public entries each taking a `PayCalendar` -- and the shipped shape changes no public
-      signature at all. The commits are the record.*
-- [x] **C4-a-2 -- the reconcile panel, and the clamp moves onto the value.** `82bd762c`. Both reads
-      gone; `utils.dates.attribution_date` DELETED for `DerivedPeriod.attribution_day` (**R-PC31**).
-      `DerivedPeriod.covers` did NOT land with it -- the step order gave it to `C4-a-3`.
-      **What a later leaf must obey**: all three arms of that panel now scope ownership by the
-      calendar's own saved period ids, because the first build's "the refusal is unreachable"
-      argument was measured FALSE (`/grid` appends a payday AND populates it in one transaction).
+- [x] **C4-a-2 -- the reconcile panel, and the clamp moves onto the value.** `82bd762c`.
+      `utils.dates.attribution_date` DELETED for `DerivedPeriod.attribution_day` (**R-PC31**).
 - [x] **C4-a-3 -- the purchase-date warning, and `DerivedPeriod.covers` lands.** `a0fb14ba`.
-      `check_purchase_date_in_period` DELETED; `entry_list_view` stopped taking a transaction and
-      `build_entry_lists_dict` takes a `{period_id: DerivedPeriod}` map (**R-PC34**). `$0.00` on
-      LIVE PRODUCTION 2026-08-31, control fired. **What a later leaf must obey**: the five-argument
-      fork was answered by DELETION (**R-PC35**), so `_build_grid_row_data` builds no entry map and
-      `_build_entry_maps` is the one place that does.
-- [ ] **C4-a-4 -- the merchant-destination picker.** `statement_match/_candidates.destinations_for`
-      (`:923-924`) is the one relationship read left in that package, and `_scope` is its only
-      caller. `transaction_candidate` in the same module already resolves through
-      `calendar.period_by_id`, so this leaf makes one module answer one way.
-- [ ] **C4-a-5 -- the two LABEL readers, and the model accessor goes.**
-      `routes/_recurrence_conflict_chooser` (`:193`) renders `period.label` off the ORM row and
-      `grid/_transaction_full_edit.html` (`:42`) renders `txn.pay_period.label`. Both move onto
-      `DerivedPeriod.label`, which is the SAME rule through `utils.dates.pay_period_label`, and the
-      leaf ENDS by deleting `PayPeriod.label` -- so one paycheck can no longer be labelled two ways
-      on two screens.
-- [ ] **C4-b -- an owner with paydays HAS a recorded cadence.** One additive migration: backfill a
-      `budget.pay_schedule` row for every owner holding paydays (0 rows on both databases, measured
-      2026-08-25), then
+      `check_purchase_date_in_period` DELETED (**R-PC34**, **R-PC35**). `$0.00` on production.
+- [x] **C4-a-4 -- the merchant-destination picker.** `f18a58af`. `destinations_for` takes the
+      CALENDAR and no `owner_id` (**R-PC36**-**R-PC38**). `$0.00`.
+- [x] **C4-a-5 -- the two LABEL readers, and the model accessor goes.** `95b2dc67` (+ `ce96887a`).
+      `PayPeriod.label` DELETED; the COLUMN is `C4-c`'s (**R-PC39**). Opened **N-413**.
+- [ ] **C4-b -- an owner with paydays HAS a recorded cadence.** The DECOMPOSED parent, split into
+      two leaves 2026-09-01 (developer), and what split it is that the FK's prerequisite turned out
+      to be the TEST CORPUS: `tests/conftest.py` builds by hand the exact owner the key forbids, so
+      the fixture leaf goes first (**R-PC40**). It ticks with `C4-b-2`.
+- [ ] **C4-b-1 -- every test owner's calendar comes from the doors that own it.** 23 sites across 18
+      files built a pay period as a bare `PayPeriod(...)` -- setting `end_date` and `period_index`,
+      the two values the writer DERIVES, and writing no `budget.pay_schedule` row beside them. No
+      door can produce that owner, and
+      **118 of the 300 `seed_user` files never reach a periods fixture**, so finding **P8**'s state
+      is what a third of the suite ran in while production has never held it. 21 of them go through
+      `pay_period_write.record_paydays` (`_test_helpers.open_owner_calendar`) and the recurrence
+      engine's two through `rebuild_calendar_from_spans`, while the five calendar fixtures that
+      un-did the seeded opening period go through `pay_period_admin.reset_pay_periods` -- DELETING
+      `_drop_seed_user_bootstrap`, 135 lines that re-implemented that door and renumbered
+      `period_index` in raw SQL. **It refutes N-392's diagnosis**, which calls the seeded account's
+      resting state one "no production path performs": `POST /pay-periods/reset` performs it. No
+      `app/` change, no migration. *Its first draft took only conftest's three; an adversarial
+      review measured 19 files still building the forbidden owner and the leaf was widened to the
+      whole corpus, so its own sentence is true when it ticks.* Closes **N-392**; opens **P78**, the
+      one calendar here the app cannot write (36 calendar MONTHS, and `record_paydays` spaces a
+      batch at one cadence).
+- [ ] **C4-b-2 -- the key itself, and the fallback goes.** One additive migration: backfill a
+      `budget.pay_schedule` row for every owner holding paydays (0 rows on dev and on production,
+      re-measured 2026-09-01), then
       `FOREIGN KEY (user_id) REFERENCES budget.pay_schedule (user_id) ON DELETE CASCADE` on
-      `budget.pay_periods`. `resolve_cadence`'s inferring fallback is then DELETED rather than left
-      unreachable, and `MIN_MATERIALISABLE_CADENCE_DAYS`'s subject narrows to the stored end alone.
-      Closes **P8** and **P35**. **The double CASCADE is the thing to verify**:
+      `budget.pay_periods`, named for its target after `fk_statement_matches_owner`'s precedent
+      rather than after its column, which already carries the `auth.users` key. `resolve_schedule`'s
+      inferring fallback is then DELETED rather than left unreachable, with the ~25 docstrings that
+      assert it, and `MIN_MATERIALISABLE_CADENCE_DAYS`'s subject narrows to the stored cadence
+      alone. Closes **P8** and **P35**. **The double CASCADE is the thing to verify**:
       `pay_periods.user_id` and `pay_schedule.user_id` both cascade from `auth.users`, so deleting
       an owner must not deadlock or fail on ordering, and the migration test drives a real user
       delete rather than arguing from the DDL.
+      **Three things `C4-b-1`'s adversarial review measured and handed forward.** (a) `CASCADE` vs
+      `RESTRICT` is a DESIGN FORK, not a testing note: nothing in `app/` deletes a schedule row, so
+      the cascade has no live source and its blast radius is every period, transaction and journal
+      entry the owner has -- decide it, do not inherit it. (b)
+      **Six tests DELETE a schedule row while periods live** and each starts cascading them away:
+      `test_pay_calendar_loader` `:325`, `test_pay_schedule_service` `:254` `:333`,
+      `test_pay_period_extend` `:268`, `test_savings_dashboard_service` `:4203` are the fallback's
+      own cases and go with it; `test_rf16_paycheck_count_migration` `:202` is NOT -- it grades that
+      migration's own downgrade backfill and needs a rework rather than a deletion. (c)
+      `af8254074bef`'s `downgrade()` drops `budget.pay_schedule` while `budget.pay_periods`
+      survives, which both produces the forbidden state and meets a dependent FK; the reverse chain
+      order has to be tested, not argued.
 
-**What deleting that fallback stops raising is row P35's blast radius, and it belongs to `C4-b`
+**What deleting that fallback stops raising is row P35's blast radius, and it belongs to `C4-b-2`
 rather than to a ledger cell** (`conventions.md` rule 4). `resolve_cadence` infers an owner's
 cadence from their last period's LENGTH when they have no `budget.pay_schedule` row,
 `derive_periods` refuses anything outside 1..365, and `app/error_handlers.py` leaves the raise on a
@@ -360,26 +367,34 @@ goes with the stored-versus-derived comparison it raises from; `MIN_MATERIALISAB
 `CHECK (start_date < end_date)` fails outright on any one-day period this legalises (row **P9**),
 and the LAST row's rebuilt end is a projection off `cadence_days` as it reads at downgrade time.
 Deletes the four surviving fences of section 1, including `integrity_check` BA-03 / BA-04 / BA-07
-and `_pp_assert_structure`'s invariants 1, 2, 3a and 3b, and re-bases the 63 `PayPeriod(...)`
-constructions in 35 test files that pass a dropped column. **This leaf needs its own review pass**;
-it is the deepest cut into the spine.
+and `_pp_assert_structure`'s invariants 1, 2, 3a and 3b, and re-bases every hand-built
+`PayPeriod(...)` that passes a dropped column --
+**counted by the grep in (d) at the time, never from a number written here**, which stood at 63
+across 35 files before `C4-b-1`. **This leaf needs its own review pass**; it is the deepest cut into
+the spine.
 
-- [x] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** `4e8b40b3`,
-      ticked with `C5b`, its last leaf. The DECOMPOSED PARENT, split 2026-08-09 (developer): its two
-      halves shared only a sentence in row **P16** and were never one commit -- a pure deletion
-      gated on C4, and a migration gated on an arc this document does not own.
+**What the shipped `C4-a` leaves oblige this one to**, moved here from their own entries when that
+span was condensed. (a) The reconcile panel's three arms scope ownership by the calendar's own saved
+period ids -- the first build's "the refusal is unreachable" argument was measured FALSE, because
+`/grid` appends a payday AND populates it in one transaction. (b) `_build_grid_row_data` builds no
+entry map: `_build_entry_maps` is the one place that does (**R-PC35**). (c) Re-run the census
+PREDICATE stated above rather than trusting any list: `C4-a-5` found a reader in `tests/` that this
+document's own paragraph and a fresh grep both missed, because deleting an accessor censuses its
+class where a search cannot. (d) **Do not read a COUNT of hand-built `PayPeriod(...)` constructions
+out of any document, including this one.** `C4-b-1` converted the 21 sites that build an ORDINARY
+owner; what stays hand-built is deliberate -- the corrupt-state cases, the pure-value oracles, and
+row **P78**'s `_build_cross_page_calendar_periods`, which builds 36 calendar-MONTHLY periods no door
+can write. `grep -rn 'PayPeriod($' tests/` answered **38 across 19 files** on 2026-09-01; re-run it.
 
-- [x] **C5a -- delete what is now unconstructible.** `fe365de1`. Ticked at **C2-b2** rather than
-      after C4: nothing in the gap chain read a stored column, so it went dead when that leaf
-      pointed the engine at the derivation.
+*The C5 span is COMPLETE and is condensed here under rule 5, to buy the room `C4-b`'s decomposition
+needed; the commits are the record and `steps.md` carries each row's own sentence.*
 
-- [x] **C5b -- a paycheck may owe one template more than once.** `4e8b40b3`, ticked with
-      `recurrence:R17`, closing **P16**. One commit under two arc names: the predicate became
-      occurrence-aware, both indexes re-keyed onto `(template, scenario, occurs_on)` with an
-      `..._undated` partner, and `refuse_unstorable_repeats` retired with the paycheck key that
-      forced it. The re-key it waited on `R5` for came forward with `R17`. Measured: at
-      `cadence_days` 30 two templates repeat a paycheck, at 31 eleven.
-
+- [x] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** `4e8b40b3`. The
+      decomposed parent, ticked with `C5b`.
+- [x] **C5a -- delete what is now unconstructible.** `fe365de1`. Ticked at `C2-b2`; ticks
+      `recurrence:R-F10`.
+- [x] **C5b -- a paycheck may owe one template more than once.** `4e8b40b3`. One commit under two
+      arc names with `recurrence:R17`; closed **P16**.
 - [ ] **C6 -- a payday may be inserted mid-schedule.**
 
 **Starts with the two rulings section 3 names**, neither of which the 2026-08-08 lock ruling

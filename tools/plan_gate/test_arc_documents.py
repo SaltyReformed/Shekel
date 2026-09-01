@@ -40,14 +40,43 @@ from _plan_gate import (
 #: left: balance 1,200 -> 1,000, recurrence 900 -> 850, pay-calendar 560 -> 500,
 #: and credit-card was capped at 400 for the first time.  Lowering them is the
 #: point -- the space the duplication occupied must not silently become room to
-#: duplicate again.  conventions.md rule 4: raising a cap is never the answer
-#: when it binds.  No line count is quoted here: the three that were went stale
-#: within two commits, and `test_the_cap_still_has_headroom` measures the live
-#: files anyway.
+#: duplicate again.  No line count is quoted here: the three that were went
+#: stale within two commits, and `test_the_cap_still_has_headroom` measures the
+#: live files anyway.
+#:
+#: **What rule 4 actually says, corrected 2026-09-01.**  This comment read
+#: "conventions.md rule 4: raising a cap is never the answer when it binds",
+#: and rule 4 says no such thing.  It says a binding cap is **a QUESTION FOR
+#: THE DEVELOPER** -- "rule 5 answers it while a completed span is left to
+#: archive; where none is, say so and ask" -- and that "a cap is never raised
+#: without being asked for".  Those are different rules: one forbids raising,
+#: the other requires asking first.  The file already held the counterexample
+#: (bank_import, raised by the developer 2026-08-30) while the comment above it
+#: said raising is never the answer, so the misquote survived its own refutation
+#: sitting eight lines below it.
 CAPS = {
-    "balance": 1000,
+    # **RAISED 1000 -> 1180 by the developer, 2026-09-01**, on rule 4's terms
+    # and by bank_import's OWN calibration below.  The cap BOUND: the README
+    # sat at 971 of an effective 980, NINE lines, against 55 open steps still
+    # owing specifications -- 0.2 lines per open step.  Rule 5's escape was
+    # spent first: `balance:X-f3c-2b-2c`'s registry pass was reworked to net
+    # ZERO lines to fit, after a first draft at 986 was refused by this arm.
+    # The number is not invented.  bank_import's 260 gave that arc 3.4 lines
+    # per open step when the developer set it, so 55 x 3.4 = 187 of room, and
+    # 971 + 187 + 20 headroom = 1178, rounded to 1180.  It stays under the
+    # 1,200 this document carried before the registries left.
+    "balance": 1180,
     "recurrence": 850,
-    "pay_calendar": 500,
+    # **RAISED 500 -> 520 by the developer, 2026-09-01**, same terms and the
+    # same arithmetic: 466 of an effective 480 is FOURTEEN lines against 10
+    # open steps (1.4 each), and rule 5's escape was spent twice in one day --
+    # `pay_calendar:C4-b-1` condensed the COMPLETE `C4-a` span and then the
+    # COMPLETE reader census, keeping each one's PREDICATE, which is the half
+    # that cannot go stale.  10 x 3.4 = 34 of room: 466 + 34 + 20 = 520.
+    # Deliberately NOT back to the 560 this document carried before the
+    # registries left; that space was removed on purpose and 520 does not
+    # return it.
+    "pay_calendar": 520,
     "credit_card": 400,
     # **RAISED 200 -> 260 by the developer, 2026-08-30**, on rule 4's own
     # terms: the cap BOUND, and rule 5's escape was spent first.  The shipped

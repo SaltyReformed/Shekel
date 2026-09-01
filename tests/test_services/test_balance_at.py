@@ -88,8 +88,9 @@ from app.services.balance_at._resolution import (
 from tests.conftest import SEED_USER_BOOTSTRAP_START
 from tests._test_helpers import (
     account_never_asserted,
-    all_periods,
     add_txn,
+    all_periods,
+    amount_basis_for_scenario,
     append_balance_assertion,
     create_account_of_type,
     create_account_via_service,
@@ -4776,7 +4777,8 @@ class TestBrokenLoanFailsLoud:
             # The control's teeth: the money-blind replay genuinely diverges.
             params = loan_loaders.load_loan_params(acct.id)
             ctx = loan_payment_service.load_loan_context(
-                acct.id, seed_user["scenario"].id, params,
+                acct.id, amount_basis_for_scenario(seed_user["scenario"].id),
+                params,
             )
             inputs = loan_resolver.LoanInputs(
                 params, loan_loaders.load_loan_anchor_facts(params),

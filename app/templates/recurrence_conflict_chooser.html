@@ -10,9 +10,13 @@
    inputs) to ``action_url`` together with a per-instance keep/use
    decision.  Cancel abandons the whole edit.
 
-   Context (routes/_recurrence_form_helpers.render_recurrence_conflict_chooser):
+   Context (routes/_recurrence_conflict_chooser.render_recurrence_conflict_chooser):
      choices          -- list[ConflictChoice] (row_id, due_date,
                          period_label, your_amount, is_deleted_conflict).
+                         ``period_label`` is the DERIVED period's, off the
+                         pass's own calendar, since pay-calendar plan step
+                         C4-a-5; it was the ORM row's accessor, which reads a
+                         stored ``end_date`` no other screen reads.
      template_name    -- the edit's new name.
      new_amount       -- the template's new amount (the "Use" figure).
      effective_from   -- the edit's effective date.

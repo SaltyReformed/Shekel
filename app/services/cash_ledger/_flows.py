@@ -118,14 +118,16 @@ def sum_projected(transactions, basis: AmountBasis):
     is WORTH is now a function of the row, so ruling R-G's clamp in the seam's
     fold is the only place a cash balance consults a date.
 
-    Scoped honestly, because "no clock" would be a stronger claim than the code
-    supports: the *override map* this reduction is HANDED can still be built
-    from a wall-clock read one package over
-    (``loan_payment_service.LoanPricing`` pins ``date.today()`` when the read
-    pass's basis is built, and resolves a derive-mode loan-payment shadow's P&I
-    against it -- finding **N-40**, recorded and unchanged here).  This function
-    reads no clock; its inputs are not yet guaranteed to have been built without
-    one.
+    **The claim is now the strong one, and plan step X-au-g-2b is what earned
+    it**: this function reads no clock AND neither does anything it is handed.
+    The paragraph here used to scope itself down, because the *override map*
+    this reduction takes was built from a wall-clock read a module over --
+    :class:`._loan_pricing.LoanPricing` pinned ``date.today()`` when the read
+    pass's basis was built and resolved a derive-mode loan-payment shadow's
+    P&I against it (finding **N-40**).  Ruling **R-IJ** put that P&I on the
+    installment's own due date, which left the package with no ``date.today()``
+    call at all (a control asserts it:
+    ``test_amount_source.TestTheAmountModelReadsNoClock``).
 
     Args:
         transactions: Transaction objects for a single pay period.

@@ -40,8 +40,8 @@ discriminator by tracing -- because two of them are SUBSETS of two others:
      effective-dated series as of the row's OWN due date
      (``template_amount_service.amount_as_of``, plan step X-au-a).
   4. **LOAN_PAYMENT** -- a loan payment's shadow, priced by the loan
-     (``loan_payment_service.LoanPricing``).  A SUBSET of rule 5:
-     a loan payment IS a transfer.
+     (:class:`._loan_pricing.LoanPricing`, a module of this package since plan
+     step X-au-g-2a).  A SUBSET of rule 5: a loan payment IS a transfer.
   5. **TRANSFER** -- any other transfer shadow, priced by its parent transfer,
      which is itself priced by rule 1 or rule 3
      (:func:`resolve_transfer_amount`).
@@ -132,17 +132,20 @@ from app import ref_cache
 from app.enums import AmountSourceEnum
 from app.exceptions import AmountUnresolvable
 from app.services import template_amount_service
+from app.services.recurring_transfer_query import loan_payment_config
 from app.services.row_valuation import own_figure, owned_amount
 from app.utils.money import round_money
 
 from ._amount_basis import AmountBasis
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    # Named for the annotations alone.  A runtime import of either would put the
-    # paycheck / loan-resolver stacks on this module's load path, which is the
-    # cycle every call site in this module defers to avoid (finding N-267).
+    # Named for the annotation alone.  A runtime import would put the paycheck
+    # / tax stack on this module's load path, which is the cycle the salary
+    # rule's call site defers to avoid (finding N-267).  The LOAN half was
+    # named here for the same reason until plan step X-au-g-2a; rule 4's
+    # producer is a module of THIS package now, so nothing about it needs
+    # deferring and there is no import to keep.
     from app.services.income_service import SalaryPricing
-    from app.services.loan_payment_service import LoanPricing
 
 
 class AmountRule(Enum):
@@ -383,12 +386,22 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
         AmountUnresolvable: When *txn* belongs to another scenario than *basis*,
             or when the rule that owns this row cannot answer for it.  See the
             module docstring: a refusal is never a fallback.
-        UndatedSettleError: Propagated from the DERIVE-mode loan arm, whose
-            producer loads the loan's payment history and refuses a settled
-            payment carrying no settle day
-            (``balance_predicates.settled_day``).  Named here because a caller
-            catching only :class:`~app.exceptions.AmountUnresolvable` would
-            otherwise meet it unannounced.
+
+            **No OTHER exception this arc defines reaches a caller here**
+            -- ``amount_rule`` can still raise ``KeyError`` for a ref member
+            added without a rule beside it, which is documented at that
+            dispatch -- **and a second clause here said otherwise until plan
+            step X-au-g-2c-1 re-took it.**  That clause named
+            ``UndatedSettleError``, "propagated from the DERIVE-mode loan arm,
+            whose producer loads the loan's payment history" -- true when it was
+            written and false since plan step **X-au-g-1** deleted that load.
+            The derive arm reaches ``_shadow_live_amount``, which derives a due
+            date (``loan_loaders.loan_payment_due_date`` ->
+            ``installment_for``, total: a stored ``due_date`` or one computed
+            from the period start) and reads a rate period and an escrow
+            version on it.  No settle day is consulted on any of the five
+            rules' paths.  A stale ``Raises:`` is the quietest kind of false
+            claim: nothing executes it, so nothing contradicts it.
     """
     if txn.scenario_id != basis.scenario_id:
         raise AmountUnresolvable(
@@ -508,7 +521,7 @@ def resolve_transfer_amount(xfer) -> Decimal:
 def _is_loan_payment(xfer) -> bool:
     """Return whether *xfer* is a loan payment rather than a generic transfer.
 
-    The fact ``loan_payment_service`` keys its whole live-derive machinery on: a
+    The fact :mod:`._loan_pricing` keys its whole live-derive machinery on: a
     :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row hanging
     off the transfer's template (decision B).  A transfer with no template, or a
     template with no settings row, is an ordinary transfer -- an investment
@@ -743,14 +756,19 @@ def _loan_payment_answer(txn, basis: AmountBasis) -> Decimal:
     **N-262**'s separate question, answered above this rule rather than inside
     it.
 
-    **The derive arm still reads the wall clock, through the derivation it
-    delegates to** -- :class:`~app.services.loan_payment_service.LoanPricing`
-    pins ``date.today()`` when the basis is built,
-    which is finding **N-40**, owned by plan step X-au-g: the
-    leaf that rules a shadow's P&I onto its own due date as ruling D5 already
-    put its escrow.  The README states clock-freedom as the amount model's
-    precondition against the SALARY derivation, where plan step X-as closed it;
-    this is the remaining read and it is disclosed rather than claimed absent.
+    **The derive arm reads no wall clock, and plan step X-au-g-2b is what
+    closed the last read.**  :class:`._loan_pricing.LoanPricing` pinned
+    ``date.today()`` when the basis was built and resolved every shadow's P&I
+    against it -- finding **N-40** -- while the escrow beside it in the same
+    sum already resolved on the shadow's own due date.  Ruling **R-IJ** put
+    both on the installment (as ruling D5 had put the escrow), so the
+    derivation takes no date and the whole package makes no clock call --
+    an AST census over all thirteen modules, asserted by
+    ``test_amount_source.TestTheAmountModelReadsNoClock``.  *An earlier draft
+    of this paragraph credited the README with stating clock-freedom as the
+    amount model's precondition; it does not, and the only sentence there
+    joining the two was this step's own specification, which made the appeal
+    circular.  The property is stated here, where the control is.*
     Dormant on production (``budget.loan_payment_settings`` is empty), so this
     rule prices ``$0.00`` there and is graded only on a seeded loan.
 
@@ -766,11 +784,6 @@ def _loan_payment_answer(txn, basis: AmountBasis) -> Decimal:
         AmountUnresolvable: When a DERIVE-mode payment's loan will not resolve,
             or when a MANUAL payment's definition states no price.
     """
-    # Pylint: ``import-outside-toplevel`` -- the loan-resolver stack stays off
-    # this module's load path, the same reason ``amount_basis`` imports it at
-    # call time.
-    # pylint: disable=import-outside-toplevel
-    from app.services.recurring_transfer_query import loan_payment_config
     derive, extra = loan_payment_config(txn.transfer.template)
     if derive:
         live = basis.loans.derive_cash(

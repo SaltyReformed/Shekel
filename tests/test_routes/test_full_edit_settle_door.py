@@ -25,7 +25,9 @@ What these pin, in the order the request runs them:
   * a settled status that contradicts the row's TYPE is refused rather than
     silently substituted, and the dropdown does not offer it;
   * the Actual box is rendered exactly when the settle would honour a figure
-    typed into it (ruling **R-FF**), and a submitted one is refused otherwise.
+    typed into it (ruling **R-FF**), and a submitted one is refused otherwise;
+  * the settle-DAY box beside it is rendered exactly when there is a day to
+    state, which is what makes a settled row's day correctable in place.
 """
 # pylint: disable=redefined-outer-name
 # Rationale: ``redefined-outer-name`` is the canonical pytest fixture pattern;
@@ -660,6 +662,62 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
             assert "disabled" not in box, (
                 "the Actual box rendered disabled, which is the defect that "
                 "got the box deleted the first time"
+            )
+
+    def test_the_settle_DAY_box_appears_only_once_the_money_has_moved(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """"Money moved on" renders exactly when there is a day to state.
+
+        **The twin of the Actual box's gate above, and it went unpinned while
+        that one was asserted in both directions.**  The template states the
+        rule -- ``{% if txn.status and txn.status.is_settled %}`` -- and the
+        schema's ``settled_on`` is deliberately not ``allow_none``, so a
+        Projected row has no day and no box to state one in.
+
+        **What rests on it is a procedure rather than a screen.**  Plan step
+        ``balance:X-f3c-2b-2c``'s runbook tells an operator to record a
+        dividend in THREE saves -- create, settle, then reopen the settled card
+        and correct the day -- and the third save exists only because this box
+        is absent on the second.  A template change that rendered it earlier
+        would make those instructions wrong while every other test stayed
+        green, which is a document going stale against code nothing compares it
+        to.
+
+        Asserted in both directions for the reason the Actual box is: a box
+        that renders where nothing has moved and a box missing where something
+        has fail the same user in opposite directions.
+        """
+        with app.app_context():
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods_today[3],
+                "Kayla's Spending Money", Decimal("100.00"),
+            )
+            db.session.commit()
+            txn_id = txn.id
+
+            # Projected: the money has not moved, so there is no day to state.
+            resp = auth_client.get(f"/transactions/{txn_id}/full-edit")
+            assert resp.status_code == 200
+            assert b'name="settled_on"' not in resp.data
+
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            ).status_code == 200
+            db.session.expire_all()
+
+            # Settled: the day exists, so the box does -- and it is NOT
+            # disabled.  The #26 lock protects budget decisions; the day the
+            # bank moved money is an observed fact and is corrected in place.
+            resp = auth_client.get(f"/transactions/{txn_id}/full-edit")
+            assert resp.status_code == 200
+            assert b'name="settled_on"' in resp.data
+            body = resp.data.decode()
+            box = body[body.index('name="settled_on"'):]
+            box = box[:box.index(">")]
+            assert "disabled" not in box, (
+                "the settle-day box rendered disabled, so the day could not be "
+                "corrected in place and the runbook's third save would fail"
             )
 
     def test_correcting_the_actual_records_it_without_reverting(
