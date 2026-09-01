@@ -6,7 +6,6 @@ Tests for computed properties on models:
     rules, now ``row_valuation.owned_contribution``), is_income, is_expense
   - Transfer: what its amount resolves to (``resolve_transfer_amount``)
   - Category: display_name
-  - PayPeriod: label
   - PaycheckBreakdown: total_pre_tax, total_post_tax, total_taxes
 """
 
@@ -16,7 +15,6 @@ import pytest
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.ref import Status, TransactionType
 from app.models.mixins import reject_settle_instant
 from app.models.transaction import Transaction
@@ -617,78 +615,6 @@ class TestCategoryDisplayName:
         with app.app_context():
             cat = seed_user["categories"]["Rent"]
             assert cat.display_name == "Home: Rent"
-
-
-# ── PayPeriod.label ──────────────────────────────────────────────────
-
-
-class TestPayPeriodLabel:
-    """Tests for PayPeriod.label property."""
-
-    def test_label_format(self, app, db, seed_user, seed_periods):
-        """label returns 'MM/DD - MM/DD' formatted string."""
-        with app.app_context():
-            period = seed_periods[0]
-            # seed_periods start 2026-01-02, cadence 14 days → end 2026-01-15.
-            assert period.label == "01/02 - 01/15"
-
-    def test_label_cross_month(self, app, db, seed_user):
-        """Label formats correctly when period spans two different months.
-
-        A period from Jan 25 to Feb 7 should show both month prefixes.
-        Expected: '01/25 - 02/07'.
-        """
-        with app.app_context():
-            period = PayPeriod(
-                user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 25),
-                end_date=date(2026, 2, 7),
-                # Index 1: clear seed_user's bootstrap period (index 0) so
-                # the uq_pay_periods_user_index constraint holds.  label is
-                # date-derived, so the index does not affect the assertion.
-                period_index=1,
-            )
-            db.session.add(period)
-            db.session.flush()
-            assert period.label == "01/25 - 02/07"
-
-    def test_label_cross_year(self, app, db, seed_user):
-        """Label includes 2-digit year when period spans a year boundary.
-
-        A Dec 26 - Jan 8 period crosses the year boundary. The label
-        adds /YY to both dates so the user can distinguish the years.
-        Expected: '12/26/26 - 01/08/27'.
-        """
-        with app.app_context():
-            period = PayPeriod(
-                user_id=seed_user["user"].id,
-                start_date=date(2026, 12, 26),
-                end_date=date(2027, 1, 8),
-                # Index 1: clear seed_user's bootstrap period (index 0); the
-                # label is date-derived, so the index is invisible here.
-                period_index=1,
-            )
-            db.session.add(period)
-            db.session.flush()
-            assert period.label == "12/26/26 - 01/08/27"
-
-    def test_label_same_month(self, app, db, seed_user):
-        """Label formats correctly when start and end are in the same month.
-
-        Expected: '03/01 - 03/14'.
-        """
-        with app.app_context():
-            period = PayPeriod(
-                user_id=seed_user["user"].id,
-                start_date=date(2026, 3, 1),
-                end_date=date(2026, 3, 14),
-                # Index 1: clear seed_user's bootstrap period (index 0); the
-                # label is date-derived, so the index is invisible here.
-                period_index=1,
-            )
-            db.session.add(period)
-            db.session.flush()
-            assert period.label == "03/01 - 03/14"
 
 
 # ── PaycheckBreakdown computed totals ────────────────────────────────

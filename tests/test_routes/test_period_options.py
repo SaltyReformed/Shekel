@@ -25,15 +25,21 @@ rediscovered:
 index 1 = Jan 16-29, index 2 = Jan 30 - Feb 12, and so on.
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 import time_machine
 
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.routes import _period_options
 from app.routes._period_options import period_move_options
-from app.services.pay_calendar import PayCalendarError, PeriodWindow
+from app.services.pay_calendar import (
+    PayCalendarError,
+    PeriodWindow,
+    calendar_for,
+)
+from app.utils.dates import pay_period_label
 from tests._test_helpers import (
     add_txn as _add_txn,
     select_option_values as _select_option_values,
@@ -69,7 +75,9 @@ class TestTheOfferedPeriods:
         """
         frozen_today(date(2026, 2, 1))
         with app.app_context():
-            result = period_move_options(bare_user["user"].id, None)
+            result = period_move_options(
+                calendar_for(bare_user["user"].id), None,
+            )
             assert [p.period_index for p in result] == [2, 3, 4, 5, 6, 7, 8, 9]
 
     def test_current_period_included_on_its_end_date(
@@ -82,7 +90,9 @@ class TestTheOfferedPeriods:
         """
         frozen_today(date(2026, 1, 15))
         with app.app_context():
-            result = period_move_options(bare_user["user"].id, None)
+            result = period_move_options(
+                calendar_for(bare_user["user"].id), None,
+            )
             assert [p.period_index for p in result] == list(range(10))
 
     def test_the_rows_own_period_is_forced_back_in(
@@ -100,7 +110,7 @@ class TestTheOfferedPeriods:
         frozen_today(date(2026, 2, 1))
         with app.app_context():
             result = period_move_options(
-                bare_user["user"].id, bare_periods[0].id,
+                calendar_for(bare_user["user"].id), bare_periods[0].id,
             )
             assert [p.period_index for p in result] == [
                 0, 2, 3, 4, 5, 6, 7, 8, 9,
@@ -124,7 +134,7 @@ class TestWhatTheResultIsAndIsNot:
         frozen_today(date(2026, 2, 1))
         with app.app_context():
             result = period_move_options(
-                bare_user["user"].id, bare_periods[0].id,
+                calendar_for(bare_user["user"].id), bare_periods[0].id,
             )
             with pytest.raises(PayCalendarError) as exc:
                 PeriodWindow(periods=tuple(result))
@@ -175,7 +185,9 @@ class TestWhatTheResultIsAndIsNot:
                 ]
                 assert on_the_process_clock != [2, 3, 4, 5, 6, 7, 8, 9]
 
-                result = period_move_options(bare_user["user"].id, None)
+                result = period_move_options(
+                    calendar_for(bare_user["user"].id), None,
+                )
                 assert [p.period_index for p in result] == [
                     2, 3, 4, 5, 6, 7, 8, 9,
                 ]
@@ -191,7 +203,9 @@ class TestWhatTheResultIsAndIsNot:
         """
         frozen_today(date(2026, 2, 1))
         with app.app_context():
-            assert period_move_options(bare_user["user"].id, None) == []
+            assert period_move_options(
+                calendar_for(bare_user["user"].id), None,
+            ) == []
 
     def test_every_offered_period_carries_an_id_the_form_can_submit(
         self, app, db, bare_user, bare_periods, frozen_today,
@@ -206,7 +220,9 @@ class TestWhatTheResultIsAndIsNot:
         """
         frozen_today(date(2026, 2, 1))
         with app.app_context():
-            result = period_move_options(bare_user["user"].id, None)
+            result = period_move_options(
+                calendar_for(bare_user["user"].id), None,
+            )
             assert result
             assert all(isinstance(p.period_id, int) for p in result)
             assert all(p.label for p in result)
@@ -255,8 +271,13 @@ class TestTheRenderedSelect:
                 in html
             )
             # The label is the shared rule's, so the two types cannot render
-            # one paycheck two ways (``utils.dates.pay_period_label``).
-            assert seed_periods_today[1].label in html
+            # one paycheck two ways (``utils.dates.pay_period_label``).  Read
+            # off the CALENDAR since plan step C4-a-5, which deleted the ORM
+            # accessor this line used to call: the derived value is what the
+            # page renders, so it is what the assertion may build from.
+            assert calendar_for(
+                seed_user["user"].id,
+            ).period_by_id(seed_periods_today[1].id).label in html
 
     def test_the_transfer_popover_offers_the_calendar_ids(
         self, app, auth_client, seed_user, seed_periods_today, db,
@@ -310,3 +331,95 @@ class TestTheRenderedSelect:
             assert _select_option_values(html, "pay_period_id") == [
                 str(p.id) for p in expected
             ]
+
+
+class TestTheCardNamesTheDERIVEDPaycheck:
+    """The full-edit card's context line reads the calendar, not the column.
+
+    Pay-calendar plan step **C4-a-5**.  The card printed
+    ``txn.pay_period.label`` -- the ORM accessor, which formats the STORED
+    ``budget.pay_periods.end_date`` -- while the period ``<select>`` two
+    sections below it printed ``DerivedPeriod.label`` for the SAME paycheck.
+    Wherever the stored end has gone stale (plan findings **P12** and **P28**
+    both move it), one card named one paycheck two ways.
+
+    **These tests fail on the code that shipped before this step**, and the
+    fixture is what makes them fail: every schedule the suite builds stores an
+    end that AGREES with the derivation, so an assertion written on one cannot
+    tell the two readers apart.  ``_stale_stored_end`` breaks that agreement in
+    the one place the application still reads it.
+    """
+
+    @staticmethod
+    def _stale_stored_end(db, period, new_end: date) -> None:
+        """Move a period's STORED ``end_date`` away from its derived one.
+
+        The state legacy rows are in and no writer produces any more: the
+        column is a copy of ``lead(start_date) - 1`` with nothing reconciling
+        the two, which is the whole reason plan step C4 drops it.  Written
+        through the ORM rather than raw SQL, and it satisfies
+        ``ck_pay_periods_date_order`` -- what it violates is the functional
+        dependency, which no constraint expresses.
+        """
+        period.end_date = new_end
+        db.session.flush()
+
+    def test_the_context_line_shows_the_derived_span(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
+        """The stale STORED label appears nowhere in the card; the derived one does.
+
+        Absence is what grades this.  The derived label is also rendered by the
+        ``<select>``'s own ``<option>`` for this period, so asserting its
+        PRESENCE alone would pass against the defect -- both readers put a
+        string in the page and only one of them is wrong.
+        """
+        with app.app_context():
+            own = db.session.get(PayPeriod, seed_periods_today[1].id)
+            derived = calendar_for(seed_user["user"].id).period_by_id(own.id)
+            txn = _add_txn(db.session, seed_user, own, "Rent", "1200.00")
+            self._stale_stored_end(db, own, derived.end_date + timedelta(days=12))
+            stale = pay_period_label(own.start_date, own.end_date)
+            db.session.commit()
+
+            assert stale != derived.label
+
+            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            assert stale not in html
+            assert derived.label in html
+
+    def test_the_context_line_is_the_region_that_carries_it(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
+        """Located rather than searched for, so the assertion cannot drift.
+
+        The test above proves the stale label is nowhere on the card; this one
+        proves the DERIVED label is in the context line specifically, rather
+        than only in the ``<select>`` that would still render it if the
+        context line printed nothing at all.  Jinja renders a missing
+        attribute as the empty string, so "nothing at all" is a real outcome
+        here and not a hypothetical.
+        """
+        with app.app_context():
+            own = db.session.get(PayPeriod, seed_periods_today[1].id)
+            derived = calendar_for(seed_user["user"].id).period_by_id(own.id)
+            txn = _add_txn(db.session, seed_user, own, "Rent", "1200.00")
+            self._stale_stored_end(db, own, derived.end_date + timedelta(days=12))
+            db.session.commit()
+
+            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            html = resp.data.decode()
+
+            # ANCHORED ON THE FIRST ``txn-card-meta`` DIV, which is the
+            # context line (``grid/_transaction_full_edit.html``, the div
+            # directly under the header).  The template holds three divs with
+            # that class and this picks the first by DOCUMENT ORDER, not by
+            # identity -- so a reorder would silently re-point this at the
+            # Actual box's caption.  Named here rather than left implicit
+            # (adversarial review of C4-a-5).
+            start = html.index('class="txn-card-meta')
+            context_line = html[start:html.index("</div>", start)]
+            assert derived.label in context_line

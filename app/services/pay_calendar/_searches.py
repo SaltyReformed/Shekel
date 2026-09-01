@@ -321,17 +321,41 @@ class FiledRow:
     **The argument :func:`require_period` used to take as two loose integers**,
     and collapsing them is what plan step ``pay_calendar:C4-a-5`` did to it.
     That signature was ``(period_id, transaction_id)``: two ``int``s in a fixed
-    order, with nothing in the type system holding them to ONE row.  Five of
-    its six call sites read both off the same object on the same line and were
-    right by inspection; the sixth
+    order, with nothing in the type system holding them to ONE row.  FOUR of
+    its five call sites read both off the same object on the same line and were
+    right by inspection; the fifth
     (``reconcile_service._assemble._block_headings``) indexes a three-column
     query tuple by POSITION -- ``row[2], row[0]`` -- which is the spelling that
-    can be crossed without anything failing.  Nothing would fail loudly: a
-    crossed pair still finds *a* period, and
-    ``balance_at._cash_fold._cash_plan`` feeds the answer straight into
-    :meth:`~._derive.DerivedPeriod.attribution_day`, which is the day a
-    projected row lands on the daily balance line.  A wrong period there does
-    not raise, it moves money to another day.
+    can be crossed without anything failing.  A crossed pair does not raise; it
+    finds *a* period and returns it.  *This paragraph said "five of its six"
+    until an adversarial review recounted it: ``grep`` finds six occurrences of
+    the name, and the sixth is ``PayCalendar.require_period`` forwarding its own
+    two parameters to this function, which reads nothing off an object and is
+    neither kind of call site.*
+
+    **What a crossed pair COSTS, measured rather than assumed, because the
+    first draft of this paragraph overstated it** (adversarial design review,
+    2026-08-31).  That draft said a wrong period here "moves money to another
+    day", citing ``balance_at._cash_fold._cash_plan`` feeding the answer into
+    :meth:`~._derive.DerivedPeriod.attribution_day` -- which dates a projected
+    row on the daily balance line.  **Those are two different call sites.**
+    ``_cash_plan`` reads ``txn.pay_period_id`` and ``txn.id`` off one object on
+    one line and was never crossable at all; ``_block_headings``' answer
+    becomes ``OutstandingGroup.period``, whose only consumer in the repository
+    is the reconcile panel's ``period_span`` macro
+    (``accounts/_reconcile_panel.html``) -- no Python reads it.  So the site
+    with the money consequence never had the defect shape, and the site with
+    the defect shape prints a HEADING.
+
+    **That is still worth a value, and the honest reason is the class rather
+    than the instance.**  The heading names which paycheck's envelope a block
+    of settle checkboxes belongs to, on a screen whose instruction is "tick
+    everything your statement shows" -- a mislabelled block is a wrong input to
+    a money decision, not a wrong figure.  And the crossing becomes
+    unconstructible for the NEXT caller: ``budget.journal_entries`` carries a
+    ``pay_period_id`` too and plan step ``pay_calendar:C7`` opens it, and a
+    caller that holds ids rather than a row is exactly where this shape
+    reappears -- next time possibly at a site that computes.
 
     **The fields are KEYWORD-ONLY, and that is the guarantee rather than a
     style.**  ``FiledRow(1, 2)`` is a ``TypeError``, so the only way to build

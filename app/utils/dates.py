@@ -495,28 +495,31 @@ def month_name(value: int | None, abbr: bool = False) -> str:
 def pay_period_label(start_date: date, end_date: date) -> str:
     """Return a pay period's human label (``"02/21 - 03/06"``).
 
-    **One rule, two accessors**, and that is why it is here rather than on
-    either of them.  A pay period is answered by TWO types in this
-    application: the ORM row (:class:`app.models.pay_period.PayPeriod`) and
-    the derived value
-    (:class:`app.services.pay_calendar.DerivedPeriod`), which plan step
-    **C2-f** moved every "which paycheck" reader onto -- a period-move
-    ``<select>`` renders one and the conflict chooser the other.  **What this
-    buys is that the FORMAT is stated once; it does not yet make the two
-    labels equal**, and saying so is the honest form: the row feeds it the
-    STORED ``end_date`` and the derived value the DERIVED one, so on the last
-    period under the P12 / P28 shape the two screens still render one paycheck
-    two ways.  Plan step C4 closes that by deleting the stored column.
-    Neither type can import the other's
-    module (the model would close a cycle through
-    ``pay_calendar._loader``, and the calendar package is deliberately
-    model-free), so the shared rule lives in this one, which both already
-    depend on.
+    **ONE accessor reaches it, since plan step ``pay_calendar:C4-a-5``**, and
+    the argument that used to stand here was "one rule, TWO accessors" -- so
+    it is restated rather than trimmed, because the reason a function lives
+    where it lives is exactly the kind of premise nobody re-checks.  A pay
+    period was answered by two types: the ORM row
+    (``app.models.pay_period.PayPeriod``) and the derived value
+    (:class:`app.services.pay_calendar.DerivedPeriod`).  Neither could import
+    the other -- the model closes a cycle through ``pay_calendar._loader``,
+    and the calendar package is deliberately model-free -- so the shared rule
+    lived here, which both already depended on.  **Stating the format once did
+    NOT make the two labels equal**: the row fed it the STORED ``end_date``
+    and the derived value the DERIVED one, so under the P12 / P28 shape two
+    screens still rendered one paycheck two ways.  C4-a-5 closed that by
+    deleting the ROW's accessor, and :attr:`DerivedPeriod.label
+    <app.services.pay_calendar.DerivedPeriod.label>` is now the only caller.
 
-    **Plan step C4 deletes the model accessor with the column it reads**
-    (``budget.pay_periods.end_date``); this function and the derived value's
-    property are what survive it, which is the other reason the rule is not
-    written inside the model.
+    **Why it stays here with one caller, rather than moving into that
+    property.**  Its sibling one function down,
+    :func:`pay_period_range_label`, is the WIDE register of the same value,
+    has two callers of its own, and states its year rule as "this one's".  The
+    two registers are ONE decision -- ledger row **P47** counts what happens
+    when spellings of a period's date range are written apart, and the answer
+    it reached is that the registers live together.  Moving the narrow one
+    onto a class would split the pair across modules and leave the wide one
+    citing a rule it cannot see, which is how a fourth spelling appears.
 
     The year is shown only when the period STRADDLES one, because that is
     the only time it disambiguates: ``"12/26/26 - 01/08/27"`` says which
@@ -572,11 +575,16 @@ def pay_period_range_label(start_date: date, end_date: date) -> str:
     Untouched here: which registers a screen should speak is P47's open half
     and a display decision rather than a calendar one.
 
-    **It takes the two dates rather than a period**, for
-    :func:`pay_period_label`'s reason one function up: a pay period is answered
-    by two types (the ORM row and
-    :class:`~app.services.pay_calendar.DerivedPeriod`), neither of their
-    modules may import the other, and both already depend on this one.
+    **It takes the two dates rather than a period**, and the reason changed
+    shape at plan step ``pay_calendar:C4-a-5`` rather than going away.  It was
+    that a pay period is answered by two types whose modules may not import
+    each other; C4-a-5 deleted the ORM row's label accessor, so the two
+    callers are now :attr:`DerivedPeriod.range_label
+    <app.services.pay_calendar.DerivedPeriod.range_label>` and
+    ``spending_analysis.window_label``.  Those are still in two packages that
+    cannot both be depended on from one place -- ``app.services.pay_calendar``
+    is deliberately model-free and imports no other service -- and taking two
+    dates is what lets a caller holding neither type ask.
 
     **The year is carried on BOTH halves when the period straddles one**, and
     on the END alone when it does not -- ledger row **P67**, developer ruling

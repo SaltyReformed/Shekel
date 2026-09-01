@@ -2159,6 +2159,55 @@ class TestTheAttributionClamp:
         assert cal.periods[2].attribution_day(stray) == date(2026, 1, 30)
 
 
+class TestTheLabelIsTheDERIVEDSpan:
+    """``DerivedPeriod.label`` names the span this value derives, not a column.
+
+    Pay-calendar plan step **C4-a-5**, and the reason it is graded on an
+    OFF-CADENCE shape: on a contiguous biweekly schedule ``lead(start) - 1``
+    and ``start + cadence - 1`` agree, so a label asserted there passes against
+    the stored-column reader this step deletes.  ``OFF_CADENCE``'s second
+    period is the shape that tells them apart.
+
+    The FORMAT itself is ``utils.dates.pay_period_label``'s and is graded in
+    ``tests/test_utils/test_dates.py``; what is graded here is which two dates
+    reach it.
+    """
+
+    def test_the_end_is_the_next_paydays_eve_not_the_cadence_projection(self):
+        """The middle period of ``OFF_CADENCE``, where the two rules differ.
+
+        Paydays 01-02, 01-16, 01-20 at a 14-day cadence.  The second period
+        ends 01-19 -- the day before the NEXT payday -- where a cadence
+        projection off its own start would say 01-29.  The label carries the
+        first.
+        """
+        cal = calendar(paydays=OFF_CADENCE)
+
+        assert cal.periods[1].label == "01/16 - 01/19"
+        assert cal.periods[1].label != "01/16 - 01/29"
+
+    def test_the_LAST_periods_label_follows_its_projection(self):
+        """The one end that IS the cadence projection, so the label moves with it.
+
+        The last period has no next payday, so its end is
+        ``start + cadence - 1`` and :attr:`end_is_projected` says so.  Asserted
+        because it is the end the STORED column disagrees with most often --
+        plan findings **P12** and **P28** both move this one and only this one.
+        """
+        cal = calendar(paydays=OFF_CADENCE)
+
+        assert cal.periods[-1].end_is_projected is True
+        assert cal.periods[-1].label == "01/20 - 02/02"
+
+    def test_a_period_straddling_a_year_carries_the_year(self):
+        """The shared rule reaches this type too, not just the format string."""
+        cal = calendar(
+            paydays=((1, date(2026, 12, 26)), (2, date(2027, 1, 9))),
+        )
+
+        assert cal.periods[0].label == "12/26/26 - 01/08/27"
+
+
 class TestTheRaisingTwinOfTheIdentityLookup:
     """``require_period`` REFUSES where ``period_by_id`` answers ``None``.
 

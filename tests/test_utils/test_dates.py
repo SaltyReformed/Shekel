@@ -318,3 +318,69 @@ class TestPayPeriodRangeLabel:
         assert pay_period_label(
             date(2026, 12, 26), date(2027, 1, 8),
         ) == "12/26/26 - 01/08/27"
+
+
+class TestPayPeriodLabel:
+    """The NARROW register (``"02/21 - 03/06"``), graded on the FUNCTION.
+
+    These four cases were ``tests/test_models/test_computed_properties.py``'s
+    ``TestPayPeriodLabel``, driven through the ORM accessor
+    ``PayPeriod.label`` -- which pay-calendar plan step **C4-a-5** deleted with
+    the stored ``end_date`` it formatted.  The RULE survives that deletion, so
+    the cases move here rather than going with it, and they get faster and
+    stricter on the way: each built a real ``budget.pay_periods`` row (one
+    database clone apiece) to assert a pure function of two dates, and three of
+    them carried a comment about ``uq_pay_periods_user_index`` that had nothing
+    to do with what they were testing.
+
+    The surviving reader is
+    :attr:`~app.services.pay_calendar.DerivedPeriod.label`, which calls this
+    same function -- ``tests/test_services/test_pay_calendar_value.py`` grades
+    that it does.
+    """
+
+    def test_a_period_inside_one_month(self):
+        """Both halves are ``MM/DD`` and neither carries a year."""
+        assert pay_period_label(
+            date(2026, 3, 1), date(2026, 3, 14),
+        ) == "03/01 - 03/14"
+
+    def test_a_period_crossing_a_MONTH_carries_both_months(self):
+        """The ordinary biweekly shape: the month changes, the year does not."""
+        assert pay_period_label(
+            date(2026, 1, 25), date(2026, 2, 7),
+        ) == "01/25 - 02/07"
+
+    def test_the_seed_schedules_opening_period(self):
+        """The value every fixture-built schedule opens on, pinned.
+
+        ``seed_periods`` starts 2026-01-02 at a 14-day cadence, so this is the
+        label a reader sees first on almost every screen in the suite.
+        """
+        assert pay_period_label(
+            date(2026, 1, 2), date(2026, 1, 15),
+        ) == "01/02 - 01/15"
+
+    def test_a_period_crossing_a_YEAR_carries_a_two_digit_year_on_BOTH(self):
+        """The one case a year disambiguates, and it goes on both halves.
+
+        ``"12/26/26 - 01/08/27"`` says WHICH January; ``"12/26 - 01/08"`` does
+        not.  Carrying it on the end alone would read as a December in 2027 --
+        which is the defect ledger row **P67** found in the WIDE register and
+        this one never had.
+
+        **The same call and the same expected string appear once more in this
+        file**, as ``TestPayPeriodRangeLabel``'s
+        ``test_the_narrow_register_already_carries_both_years`` -- flagged by
+        an adversarial review of ``pay_calendar:C4-a-5``, and kept rather than
+        collapsed.  That one is evidence INSIDE the wide register's class: P67
+        argued the wide register was inconsistent with its own neighbour, and
+        the neighbour's answer has to be visible there to make the argument.
+        This one is the narrow register's own year case, in the class that
+        owns it.  Deleting either leaves a class that does not state its own
+        rule; that is the reason, and it is written down so the next reader
+        does not collapse them.
+        """
+        assert pay_period_label(
+            date(2026, 12, 26), date(2027, 1, 8),
+        ) == "12/26/26 - 01/08/27"

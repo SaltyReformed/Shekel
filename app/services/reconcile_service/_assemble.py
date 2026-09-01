@@ -316,12 +316,16 @@ def outstanding_set(statement: _rows.Statement) -> OutstandingSet:
     distinct parent on a ``lazy="select"`` relationship.  A ``joinedload`` of
     that relationship would fix the count and cost a statement carrying **12
     LEFT OUTER JOINs and 121 selected columns**, because ``Transaction``
-    eager-joins its account, status, category and type and ``Account`` eager-
-    joins three parameter tables (one of which eager-joins a fourth) -- all to
-    fetch one name.  Hydrating the parent DIRECTLY, which is what would let
-    ``_block_headings`` use
-    :meth:`~app.services.pay_calendar.FiledRow.for_row`, is **9 joins and 89
-    columns** against the current **0 and 3**.  The grouping needs two scalars
+    eager-joins its account, status, category and type; ``Account`` eager-joins
+    its TYPE and three parameter tables; and one of those parameter tables
+    eager-joins a fourth -- nine in all, on the entity alone, to fetch one
+    name.  *The enumeration accounted for eight of the nine until an
+    adversarial review summed it against the measurement:
+    ``Account.account_type`` was the one it did not name.*
+
+    Hydrating the parent DIRECTLY, which is what would let ``_block_headings``
+    use :meth:`~app.services.pay_calendar.FiledRow.for_row`, is **9 joins and
+    89 columns** against the current **0 and 3**.  The grouping needs two scalars
     and a period id per parent, so it asks for three columns.
 
     *Re-measured 2026-08-31 at plan step ``pay_calendar:C4-a-5`` by compiling

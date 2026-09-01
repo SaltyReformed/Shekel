@@ -9,7 +9,16 @@
    away inside the same card.  Form submits via HTMX PATCH targeting
    the original cell by ID.
 
-   Expected context: txn, statuses.
+   Expected context: txn, period, statuses.
+
+   ``period`` is the row's own paycheck as a ``DerivedPeriod``, resolved by
+   the route off the ONE calendar it derives (pay-calendar plan step
+   C4-a-5).  The context line below printed ``txn.pay_period.label`` until
+   then -- the ORM row's accessor, which formats the STORED ``end_date`` --
+   while the period ``<select>`` further down printed the DERIVED label for
+   the same paycheck, so a period whose stored end had gone stale was
+   labelled two ways inside one card.  That accessor is deleted with this
+   step; nothing here can reach the stored column any more.
 
    Finalised rows (is_immutable: Paid / Received / Credit /
    Cancelled) lock the BUDGET DECISIONS -- the estimate, the period, the due
@@ -39,7 +48,7 @@
      the card cannot land on the wrong period. #}
   <div class="txn-card-meta mb-2">
     {% if txn.category %}{{ txn.category.display_name }} &middot; {% endif
-    %}{{ txn.pay_period.label }}{% if txn.status %} &middot;
+    %}{{ period.label }}{% if txn.status %} &middot;
     {{ txn.status.name }}{% endif %}{% if txn.due_date %} &middot;
     Due {{ txn.due_date.strftime('%-m/%-d') }}{% endif %}
   </div>
