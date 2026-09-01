@@ -416,10 +416,11 @@ hides.
   * [ ] **X-au-g-2c** the DECOMPOSED parent of the CUTOVER, split 2026-09-01 into the readers,
     the declaration, and the escrow rule. It ticks with the last of its three leaves.
     * [x] **X-au-g-2c-1** `cdc2c7d9` -- BOTH readers of a projected loan-side shadow take the
-      amount model. **The finding named ONE and a census found TWO**: `get_payment_history`, and
-      `_plan._planned_from_shadows`, which would have 500'd `/savings` at the next leaf. Closed
-      **N-266**(a); opened **N-432**. The ledger fence is a VALUE control now (perturb the ledger,
-      assert the reference does not move) with a narrow static check reading W9908's own allowlist.
+      amount model. **N-266 said ONE unrouted reader; the census says TWO of NINE, seven
+      settled-only.** The second is `_plan._planned_from_shadows`, and `loan_payment_settings` is
+      EMPTY on production, so 47 of 58 projected shadows take its fallback -- `2c-2` would have
+      shipped an `AmountUnresolvable` on `/savings`. Closed **N-266**; opened **N-432**. The ledger
+      fence is a VALUE control now, with a static check reading W9908's own allowlist.
     * [ ] **X-au-g-2c-2** `refactor(loans): a loan payment's shadow is derived` -- the DECLARATION.
       Stamp `amount_source_id` on BOTH legs and empty their figure, which DELETES the loan half of
       the read-time repair (`LoanPricing.live_cash`, `_manual_shadow_amount`) rather than leaving
