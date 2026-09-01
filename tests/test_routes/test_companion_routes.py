@@ -21,7 +21,6 @@ from app.extensions import db
 from app.services import status_seam
 from app.models.account import Account
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, TransactionType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -30,7 +29,10 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services.row_valuation import settled_figure
-from tests._test_helpers import settlement_if_settling
+from tests._test_helpers import (
+    open_owner_calendar,
+    settlement_if_settling,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -220,13 +222,8 @@ class TestPeriodNavigation:
         settings = UserSettings(user_id=second_user.id)
         db.session.add(settings)
 
-        other_period = PayPeriod(
-            user_id=second_user.id,
-            start_date=date(2026, 1, 2),
-            end_date=date(2026, 1, 15),
-            period_index=0,
-        )
-        db.session.add(other_period)
+        # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+        other_period = open_owner_calendar(second_user.id, date(2026, 1, 2))[0]
         db.session.commit()
 
         comp = _login_companion(app)

@@ -340,18 +340,27 @@ class TestScheduleRoute:
             schedule = pay_schedule_service.get_schedule(seed_user["user"].id)
             assert schedule.rolling_enabled is False
 
-    def test_no_schedule_row_flashes_error(self, app, auth_client, seed_user):
+    def test_no_schedule_row_flashes_error(
+        self, app, bare_auth_client, bare_user,
+    ):
         """Configuring rolling before generating a schedule is refused.
 
-        seed_user has a bootstrap period but no pay_schedule row, so the
-        service guard raises ValidationError and the route flashes it;
-        nothing is created.
+        **The owner is ``bare_user``, and which fixture holds this state is
+        the point** (plan step ``pay_calendar:C4-b-1``).  It read
+        ``seed_user``, which carried a bootstrap pay period and NO
+        ``budget.pay_schedule`` row -- a pairing no application door can
+        produce, because ``record_paydays`` writes the schedule row in the
+        same call that records a payday.  ``bare_user`` has neither, which is
+        the real state this guard exists for: somebody who has never generated
+        a schedule.  The rolling window keeps periods generated ahead and
+        needs a cadence to grow at, so the service refuses and the route
+        flashes it; nothing is created.
         """
         with app.app_context():
             assert pay_schedule_service.get_schedule(
-                seed_user["user"].id,
+                bare_user["user"].id,
             ) is None
-            resp = auth_client.post(
+            resp = bare_auth_client.post(
                 "/pay-periods/schedule",
                 data={
                     "rolling_enabled": "true",
@@ -362,7 +371,7 @@ class TestScheduleRoute:
             assert resp.status_code == 200
             assert b"Generate a pay-period schedule" in resp.data
             assert pay_schedule_service.get_schedule(
-                seed_user["user"].id,
+                bare_user["user"].id,
             ) is None
 
     def test_companion_cannot_set_schedule(self, app, companion_client):
@@ -513,14 +522,22 @@ class TestHistoryRoute:
                 user_id,
             ).history_opens_on is None
 
-    def test_no_schedule_row_flashes_error(self, app, auth_client, seed_user):
-        """A floor bounds a rhythm, and a row-less owner has no cadence."""
+    def test_no_schedule_row_flashes_error(
+        self, app, bare_auth_client, bare_user,
+    ):
+        """A floor bounds a rhythm, and a row-less owner has no cadence.
+
+        ``bare_user`` rather than ``seed_user`` for the reason
+        ``TestScheduleRoute``'s sibling case gives: an owner holding a payday
+        and no ``budget.pay_schedule`` row is a pairing no door can produce,
+        and this guard is about somebody who has never generated a schedule.
+        """
         with app.app_context():
             assert pay_schedule_service.get_schedule(
-                seed_user["user"].id,
+                bare_user["user"].id,
             ) is None
 
-            resp = auth_client.post(
+            resp = bare_auth_client.post(
                 "/pay-periods/history",
                 data={"history_opens_on": "2023-06-03"},
                 follow_redirects=True,
@@ -529,7 +546,7 @@ class TestHistoryRoute:
             assert resp.status_code == 200
             assert b"Generate a pay-period schedule" in resp.data
             assert pay_schedule_service.get_schedule(
-                seed_user["user"].id,
+                bare_user["user"].id,
             ) is None
 
     def test_companion_cannot_set_the_history_opening(

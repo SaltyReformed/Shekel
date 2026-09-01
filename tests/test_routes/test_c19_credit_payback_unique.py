@@ -41,7 +41,6 @@ from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -53,6 +52,7 @@ from app.services.auth_service import hash_password
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services import account_service
 from app.utils.dates import display_today
+from tests._test_helpers import open_owner_calendar
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ def _create_concurrent_user(db_session):
     a fresh user via the test session and then have each worker
     open its own app context for its own session.
     """
-    from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
+    from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
     user = User(
         email="c19-concurrent@shekel.local",
@@ -142,15 +142,9 @@ def _create_concurrent_user(db_session):
 
     db_session.add(UserSettings(user_id=user.id))
 
-    # Bootstrap pay period (E-19, Commit 3).
-    _bootstrap = PayPeriod(
-        user_id=user.id,
-        start_date=_date(2024, 1, 5),
-        end_date=_date(2024, 1, 5) + _td(days=13),
-        period_index=0,
-    )
-    db_session.add(_bootstrap)
-    db_session.flush()
+    # The owner's opening pay period.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    _bootstrap = open_owner_calendar(user.id, _date(2024, 1, 5))[0]
 
     checking_type = (
         db_session.query(AccountType).filter_by(name="Checking").one()
@@ -190,17 +184,13 @@ def _create_concurrent_user(db_session):
     # leaves the app's today outside it whenever the two calendars disagree.
     today = display_today()
     base = today - timedelta(days=today.weekday())  # Monday this week
-    periods = []
-    for i in range(3):
-        period = PayPeriod(
-            user_id=user.id,
-            start_date=base + timedelta(days=i * 14),
-            end_date=base + timedelta(days=i * 14 + 13),
-            period_index=i + 1,
-        )
-        db_session.add(period)
-        periods.append(period)
-    db_session.flush()
+    # Three fortnightly periods from one batch, through the writer.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    # They append past the opening 2024 payday, so they take indices 1..3
+    # exactly as the hand-built rows did -- and the opening period's own end
+    # becomes the day before this batch rather than a stored value nothing
+    # reconciles.
+    periods = open_owner_calendar(user.id, base, num_periods=3)
     db_session.commit()
 
     return {

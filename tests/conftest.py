@@ -725,19 +725,23 @@ from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
     AccountType, FilingStatus, Status, TransactionType,
 )
-from app.services import account_service, pay_period_write
+from app.services import (
+    account_service,
+    pay_period_write,
+    pay_schedule_service,
+)
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
     bind_db_clock_rewriter,
     create_loan_account,
-    governing_opening_row,
     insert_trueup_event,
     make_appreciating_account,
     make_every_period_rule,
     make_investment_account,
     open_books_before_the_first_assertion,
+    open_owner_calendar,
     posted_loan_balance_at,
-    restate_account_opening,
+    rebuild_calendar,
     settle_day_columns,
 )
 
@@ -1658,12 +1662,28 @@ SEED_USER_PASSWORD = "testpass"
 #:
 #: **Named because it is now a fixture CONTRACT rather than an implementation
 #: detail** (plan step X-f3c-2c).  ``budget.account_anchor_history`` is
-#: append-only, so ``_drop_seed_user_bootstrap`` can no longer re-home that
-#: assertion onto whatever calendar a periods fixture builds: the seeded
-#: account asserts here and only here until a test says otherwise.  A case that
-#: turns on which day was last asserted therefore either states its own (see
-#: ``_test_helpers.reassert_balance_on``) or names this one.
+#: append-only, so no fixture can re-home that assertion onto whatever calendar
+#: a periods fixture builds: the seeded account asserts here and only here
+#: until a test says otherwise.  A case that turns on which day was last
+#: asserted therefore either states its own (see
+#: ``_test_helpers.reassert_balance_on``) or names this one.  *This named
+#: ``_drop_seed_user_bootstrap`` as what could no longer re-home it; plan step
+#: ``pay_calendar:C4-b-1`` deleted that function for the door it was
+#: re-implementing, and the property is the append-only table's rather than any
+#: one caller's.*
 SEED_USER_BOOTSTRAP_START = date(2024, 1, 5)
+
+#: The cadence the seeded owner's schedule runs at, in days.
+#:
+#: Named beside the opening payday because plan step ``pay_calendar:C4-b-1``
+#: made it a STORED fact rather than an inferred one: the bootstrap batch goes
+#: through ``pay_period_write.record_paydays``, which upserts the owner's
+#: ``budget.pay_schedule`` row at whatever this says (the cadence rule, plan
+#: step C3-b).  It was the literal ``13`` in a ``timedelta`` before that -- a
+#: period LENGTH standing in for the cadence it derives from -- and the two
+#: differ by one, which is exactly the off-by-one a fixture computing a derived
+#: column by hand is free to make.
+SEED_USER_CADENCE_DAYS = 14
 
 
 def log_in_seed_user(client):
@@ -1717,22 +1737,34 @@ def build_seed_user(db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3): every account row has
-    # non-NULL anchor columns post-migration cfb15e782f86, so this
-    # fixture needs at least one period in place before the Checking
-    # account can be created.  Date is an arbitrary Friday well
-    # before any test's typical 2026 range, so the bootstrap stays
-    # out of the way of date-anchored assertions.  The period is
-    # exposed as ``seed_user["bootstrap_period"]`` so tests that
+    # The owner's OPENING pay period, written by the door that owns the
+    # table (plan step pay_calendar:C4-b-1).  ``create_account`` refuses an
+    # owner with no pay period, so one has to exist before the Checking
+    # account below; what changed is WHO writes it.  This was a hand-built
+    # ``PayPeriod(...)`` -- three columns set by the fixture, two of them
+    # (``end_date``, ``period_index``) values the writer DERIVES -- and no
+    # ``budget.pay_schedule`` row beside it, which is a state
+    # ``pay_period_write.record_paydays`` cannot produce and
+    # ``auth_service.register_user`` therefore never produces either.  The
+    # seeded owner was consequently the one shape production does not have:
+    # paydays with no recorded cadence, pay-calendar finding **P8**, which
+    # ``pay_schedule_service.resolve_schedule`` had to carry an inferring
+    # fallback for.  Going through the writer makes the seeded owner's
+    # calendar the same object production's is.
+    #
+    # The row it writes is byte-identical to the one this replaced --
+    # ``end_date`` is ``start + cadence - 1`` and ``period_index`` is 0 for a
+    # single-payday batch -- so nothing dated against it moves.  What is NEW
+    # is the ``budget.pay_schedule`` row the same call upserts (the cadence
+    # rule, plan step C3-b).
+    #
+    # The day is an arbitrary Friday well before any test's typical 2026
+    # range, so it stays out of the way of date-anchored assertions.  The
+    # period is exposed as ``seed_user["bootstrap_period"]`` so tests that
     # create additional accounts inline can anchor them to it.
-    bootstrap_period = PayPeriod(
-        user_id=user.id,
-        start_date=SEED_USER_BOOTSTRAP_START,
-        end_date=SEED_USER_BOOTSTRAP_START + timedelta(days=13),
-        period_index=0,
-    )
-    db.session.add(bootstrap_period)
-    db.session.flush()
+    bootstrap_period = open_owner_calendar(
+        user.id, SEED_USER_BOOTSTRAP_START, cadence_days=SEED_USER_CADENCE_DAYS,
+    )[0]
 
     # Baseline scenario BEFORE the account, matching production
     # registration order (Build-Order Step 5): ``create_account`` posts the
@@ -1843,172 +1875,87 @@ def seed_user(app, db):  # pylint: disable=unused-argument
     return build_seed_user(db)
 
 
-def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
-    """Replace ``seed_user``'s bootstrap pay period with the supplied new
-    anchor and renumber the user's remaining periods to start at 0.
+def _reset_seed_calendar(owner, first_payday, num_periods, cadence_days):
+    """Rebuild *owner*'s WHOLE pay-period schedule through the production door.
 
-    The ``seed_user`` fixture provisions a ``period_index=0`` bootstrap
-    so the account factory has something to anchor against (E-19 /
-    Commit 3 makes that anchor NOT NULL).  Periods fixtures
-    (``seed_periods``, ``seed_periods_today``, etc.) generate the
-    user's "real" pay-period set after the bootstrap; those rows
-    therefore take indices 1..N.  Without cleanup, every existing
-    test that counts user pay periods or asserts ``periods[0].period_index == 0``
-    drifts by 1.
+    **Plan step ``pay_calendar:C4-b-1``.**  This replaces
+    ``_drop_seed_user_bootstrap``, 135 lines that carried out a schedule reset
+    by hand: it re-stated the account's opening, deleted the opening pay period
+    with a bare ``query.delete()``, renumbered every survivor with raw SQL
+    (``SET period_index = period_index - 1``), and then re-posted the anchor
+    corrections that delete had disposed.
 
-    This helper restores the pre-Commit-3 expectation in one place:
-    (1) repoints the account's anchor (and any matching
-    AccountAnchorHistory row) at the supplied ``new_anchor_period``,
-    (2) deletes the bootstrap (CASCADE removes the bootstrap's
-    history row and any transactions in it -- there should be none
-    at fixture-setup time), (3) renumbers the surviving periods to
-    start at 0.
+    **The application already has a door that does that job**:
+    ``pay_period_admin.reset_pay_periods``, the settings-page correction that
+    wipes every period, rebuilds the schedule from a new opening payday and
+    re-syncs the loan genesis postings and the account anchor corrections onto
+    what it built.  It is not "exactly" the hand-rolled sequence -- it does
+    strictly MORE, and the extra is one of the three differences below.  Each
+    difference was a defect in the hand-rolled version:
+
+    * it renumbered ``period_index`` ITSELF -- a fixture computing by hand the
+      derived column this arc exists to delete, in raw SQL the ORM cannot see;
+    * it never re-synced LOAN genesis postings, so a world holding a loan would
+      have been rebuilt with that loan's opening entries missing;
+    * it recorded the new batch BESIDE the surviving opening period and deleted
+      that period afterwards, so the new periods were written at indices 1..N
+      and pulled back to 0..N-1.  The door retires and records in ONE
+      ``record_paydays`` call, so they are 0..N-1 when they are written.
+
+    **It refutes ledger row N-392's diagnosis**, which says the seeded account
+    reaches its resting state "through a DELETE of the pay period it was opened
+    against, which no production path performs".  ``reset_pay_periods`` deletes
+    every pay period the owner has, the account's own opening period included,
+    and it is reachable from ``POST /pay-periods/reset``.  What was true is
+    narrower: no production path performed the hand-rolled SEQUENCE.
+
+    **The re-statement of the account's opening is deliberately NOT carried
+    over, and that is measured rather than argued.**  The deleted helper moved
+    the books to ``min(governing.opened_on, new_anchor.start_date - 1 day)`` --
+    backward only.  Every owner this file builds opens its books the day before
+    :data:`SEED_USER_BOOTSTRAP_START`, and every calendar this function is
+    asked for starts later than that, so the ``min`` always chose the day
+    already stored: the call could not move a day in any world this file
+    builds.  ``TestTheResetDoesNotMoveTheBooks`` in
+    ``tests/test_arch/test_the_seeded_calendar_comes_from_the_writer.py`` holds
+    that as a property rather than leaving it as this paragraph's claim.
 
     Args:
-        db: the SQLAlchemy ``db`` fixture.
-        seed_user: dict returned by the ``seed_user`` fixture.
-        account: the account whose anchor must be repointed.
-        new_anchor_period: the period to anchor the account against
-            after the bootstrap is removed.
+        owner: The owner dict a seed fixture returned; ``owner["user"]`` is
+            whose schedule is rebuilt.
+        first_payday: The opening payday of the rebuilt schedule.
+        num_periods: How many periods to build from it.
+        cadence_days: Days between them, persisted as the owner's cadence by
+            the writer (the cadence rule, plan step C3-b).
 
     Returns:
-        None.  The mutation is committed before returning so
-        subsequent fixture/test code sees the cleaned state.
+        The owner's periods, PAYDAY ascending -- which is ``period_index``
+        ascending by construction, and is the spelling that survives the column
+        drop at plan step ``pay_calendar:C4-c``.
     """
-    bootstrap = seed_user.get("bootstrap_period")
-    if bootstrap is None:
-        return
-    # Re-fetch by id -- the cached object might be stale across the
-    # nested commits below.
-    bootstrap_id = bootstrap.id
-    # **Step 1 USED TO RE-POINT THE ORIGINATION ASSERTION AND NO LONGER DOES**
-    # (plan step X-f3c-2c).  It moved the row's ``observed_on`` / ``created_at``
-    # / ``recorded_on`` onto *new_anchor_period*'s first day with a bulk
-    # ``query.update()``, and both halves of that were wrong once the table
-    # became append-only:
-    #
-    # * an assertion is a permanent record of what a bank said on a day, so a
-    #   fixture PLACES one and never edits one.  The append-only guard is an
-    #   ORM listener plus a database trigger, and a bulk ``UPDATE`` was
-    #   invisible to the first and is refused outright by the second;
-    # * its stated reason had already expired.  It says "the account factory
-    #   stamps the opening with the WALL CLOCK", and ``build_seed_user`` has
-    #   passed ``observed_on=bootstrap_period.start_date`` to the factory since
-    #   the day that comment was written -- so the row it was correcting was
-    #   never on the wall clock in the first place.  The second reason, that
-    #   the row "would assert a 2026 period from a 2024 day", names a column
-    #   ruling **R-EO** deleted: an assertion carries no ``pay_period_id``.
-    #
-    # **What the seeded account carries instead is its ORIGINATION assertion
-    # and nothing else**: ``$1,000.00`` on the 2024 bootstrap day, with its
-    # books open the day before.  Deleting the bootstrap PERIOD below leaves
-    # that assertion exactly where it is, and it moves no figure any test
-    # computes, because nothing this fixture writes is dated between the
-    # bootstrap day and the new calendar's first.
-    #
-    # **Asserting again on the new calendar's first day was the other
-    # candidate and it was MEASURED worse, not judged worse.**  It preserves
-    # more of the old shape -- the governing assertion lands in period 0 --
-    # but a test that then places its own early assertion is silently
-    # overridden by this one: ~15 fold and walk cases assert an opening on
-    # 2026-01-01, one day BEFORE the calendar's first, so a fixture row nobody
-    # wrote would govern instead of the row the test author placed.  A fixture
-    # that quietly wins over its caller is worse than one that starts earlier
-    # than the calendar.
-    # **The account's OPENING RECORD moves with its assertion** (plan step
-    # X-f3c-2a).  ``budget.account_openings`` stores the day the books opened
-    # beside the equity, and ``create_account`` wrote both from the factory's
-    # bootstrap day.  Leaving it behind builds the very shape this fixture
-    # exists to eliminate, one table over: books opening in 2024 against a
-    # first assertion in 2026, with the posted ``account_opening`` entry dated
-    # off a period step 2 is about to delete.
-    #
-    # **It lands the day BEFORE the calendar's first day, not on it** (plan
-    # step X-f3c-2b, ruling **R-HG**).  An opening equity is the CLOSING
-    # balance for its own day, so nothing may be dated on or before it -- and
-    # the first pay period's ``start_date`` is a day the suite settles rows on
-    # constantly.  Opening the books on it would make every such fixture
-    # unstorable, which is the same repair production needs: Checking's own
-    # books moved from 2026-03-27 to 2026-03-26 for exactly this reason.
-    # It moves NO figure: the assertion on ``start_date`` clears whatever
-    # settled that day either way, so the correction is unchanged.
-    #
-    # The table is APPEND-ONLY, so this restates rather than edits, exactly as
-    # a production restatement would.
-    governing = governing_opening_row(db.session, account)
-    if governing is not None:
-        # **BACKWARD only, never forward** (plan step X-f3c-2b).  Moving the
-        # books to just before the new calendar reads as the production shape,
-        # and for an account whose whole life is inside that calendar it is --
-        # but ``seed_user`` has already opened these books before the BOOTSTRAP
-        # period, and moving them forward to 2026 strands every fixture that
-        # deliberately records money moving BEFORE the schedule starts.  That
-        # is a real thing to do (ruling **R-EL**: "a bank import would do it in
-        # bulk") and the statement-match suites are built on it.  Ruling R-HG
-        # bounds a MOVEMENT by the books, not by the calendar, so the fixture
-        # must not narrow the books to the calendar either.
-        restate_account_opening(db.session, account, min(
-            governing.opened_on,
-            new_anchor_period.start_date - timedelta(days=1),
-        ))
-    db.session.flush()
-    # Step 2: delete the bootstrap row.
-    db.session.query(PayPeriod).filter_by(id=bootstrap_id).delete()
-    db.session.flush()
-    # Step 3: renumber remaining periods to start at 0.
-    db.session.execute(_db.text(
-        "UPDATE budget.pay_periods "
-        "SET period_index = period_index - 1 "
-        "WHERE user_id = :u"
-    ), {"u": seed_user["user"].id})
-    # Step 4: re-post the anchor corrections the bootstrap delete disposed
-    # (Build-Order Step 5).  The seeded Checking's $1000 opening entry was
-    # attributed to the bootstrap period (journal_entries.pay_period_id is
-    # ON DELETE CASCADE), so step 2 took it with the period; the history
-    # rows survive because ruling **R-EO** deleted
-    # ``AccountAnchorHistory.pay_period_id`` and its CASCADE FK, so a period
-    # delete cannot take an assertion with it -- this said "via the step-1
-    # repoint" until plan step X-f3c-2c deleted that repoint.  So the per-user
-    # resync re-derives the openings onto the new anchor period, the same
-    # re-derivation the production pay-period reset performs.
-    from app.services import account_posting_service  # pylint: disable=import-outside-toplevel
-    account_posting_service.resync_user_account_anchor_postings(
-        seed_user["user"].id,
+    # The books bound the opening payday; :func:`rebuild_calendar` refuses one
+    # at or before them, which is the door every caller reaches rather than
+    # this wrapper alone (ruling ``balance:R-HG``).
+    return rebuild_calendar(
+        owner["user"].id, first_payday, num_periods, cadence_days,
     )
-    db.session.commit()
-    # Refresh the in-memory period rows the caller will use.
-    db.session.expire_all()
 
 
 @pytest.fixture()
 def seed_periods(app, db, seed_user):
-    """Generate 10 pay periods starting from 2026-01-02.
+    """Rebuild the seeded owner's schedule as 10 pay periods from 2026-01-02.
 
-    Also sets the anchor period to the first period and removes the
-    ``seed_user`` bootstrap (see ``_drop_seed_user_bootstrap`` for
-    the rationale) so the returned periods occupy indices 0..9 as
-    pre-Commit-3 tests expect.
+    The owner opens with one period at :data:`SEED_USER_BOOTSTRAP_START`, and
+    this RESETS that schedule to the one the test wants through
+    :func:`_reset_seed_calendar` -- so the returned periods occupy indices
+    0..9 because the writer derived them, not because anything renumbered
+    them afterwards.
 
     Returns:
-        List of PayPeriod objects.
+        List of PayPeriod objects, payday ascending.
     """
-
-    periods = pay_period_write.record_paydays(
-        user_id=seed_user["user"].id,
-        first_payday=date(2026, 1, 2),
-        num_periods=10,
-        cadence_days=14,
-    )
-    db.session.flush()
-
-    account = seed_user["account"]
-    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
-    # Reload periods so callers see the renumbered period_index values.
-    return (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=seed_user["user"].id)
-        .order_by(PayPeriod.period_index)
-        .all()
+    return _reset_seed_calendar(
+        seed_user, date(2026, 1, 2), 10, SEED_USER_CADENCE_DAYS,
     )
 
 
@@ -2041,27 +1988,26 @@ def build_periods_today(db, seed_user):
     midnight would place today in a period this no longer builds.
 
     Args:
-        db: The Flask-SQLAlchemy extension to write through.
+        db: The Flask-SQLAlchemy extension.  **Unread since plan step
+            ``pay_calendar:C4-b-1``** -- the write goes through
+            :func:`_reset_seed_calendar`, which reaches the session itself --
+            and kept because it is how the two external callers
+            (``test_no_baseline_policy``, the seeded-state builders) declare
+            that the ``db`` fixture must be active before this runs.
+            **This is the shape ledger row ``balance:N-393`` records as a
+            defect** -- an argument its body never reads -- and the reason it
+            is kept anyway is the one thing that row's subject does not have: a
+            pytest fixture parameter is a DEPENDENCY DECLARATION, so removing
+            it would not tidy a signature, it would let a caller run this
+            before the database fixture had built a session.  Named rather
+            than left for the next reviewer to re-derive.
         seed_user: The owner dict :func:`build_seed_user` returned.
 
     Returns:
-        List of PayPeriod objects, ordered by period_index.
+        List of PayPeriod objects, payday ascending.
     """
-    periods = pay_period_write.record_paydays(
-        user_id=seed_user["user"].id,
-        first_payday=_today_relative_start_date(),
-        num_periods=10,
-        cadence_days=14,
-    )
-    db.session.flush()
-
-    account = seed_user["account"]
-    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
-    return (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=seed_user["user"].id)
-        .order_by(PayPeriod.period_index)
-        .all()
+    return _reset_seed_calendar(
+        seed_user, _today_relative_start_date(), 10, SEED_USER_CADENCE_DAYS,
     )
 
 
@@ -2096,8 +2042,9 @@ def seed_schedule_at_cadence(app, db, seed_user):
     window uses this; one that only needs "today is in a paycheck" keeps the
     cheaper fixture.
 
-    Like :func:`seed_periods_today` it drops the ``seed_user`` bootstrap, so
-    ``period_index`` still runs from 0, and it places today in period
+    Like :func:`seed_periods_today` it RESETS the seeded owner's schedule
+    through :func:`_reset_seed_calendar`, so ``period_index`` runs from 0
+    because the writer derived it, and it places today in period
     *periods_before* -- **for a cadence of 7 days or more**.  The first payday
     is aligned back to the most recent Monday first, so at a shorter cadence
     that up-to-six-day alignment is itself worth a period or more and today
@@ -2112,16 +2059,20 @@ def seed_schedule_at_cadence(app, db, seed_user):
 
     Returns:
         ``_seed(cadence_days, num_periods=40, periods_before=4)`` -> the
-        owner's periods, ordered by ``period_index``.  40 is wide enough that a
-        full year of paychecks fits at cadences of 14 days or longer; a weekly
-        case asks for more.
+        owner's periods, payday ascending.  40 is wide enough that a full year
+        of paychecks fits at cadences of 14 days or longer; a weekly case asks
+        for more.
 
-        **``periods_before`` exists because the writer is forward-only.**
-        ``pay_period_write._reject_backward_payday`` refuses a first payday
-        earlier than one full cycle after the owner's latest recorded one, and
-        ``seed_user``'s bootstrap payday is fixed -- so four periods of history
-        at a 300-day cadence starts three years before it and is refused.  A
-        long-cadence case passes a smaller number; the default matches
+        **``periods_before`` used to be bounded by the writer's forward-only
+        rule and no longer is** (plan step ``pay_calendar:C4-b-1``).  While this
+        fixture APPENDED beside the seeded owner's opening payday,
+        ``pay_period_write._reject_backward_payday`` refused a first payday
+        earlier than one full cycle after it -- so four periods of history at a
+        300-day cadence started three years before that payday and was refused.
+        Going through the reset door retires every existing period in the same
+        ``record_paydays`` call that records the new ones, and that refusal
+        returns early on an empty surviving set, so a long-cadence case is free
+        to ask for as much history as it wants.  The default still matches
         :func:`seed_periods_today`.
     """
     def _seed(cadence_days, num_periods=40, periods_before=4):
@@ -2129,21 +2080,8 @@ def seed_schedule_at_cadence(app, db, seed_user):
         first_payday = today - timedelta(
             days=today.weekday() + periods_before * cadence_days,
         )
-        periods = pay_period_write.record_paydays(
-            user_id=seed_user["user"].id,
-            first_payday=first_payday,
-            num_periods=num_periods,
-            cadence_days=cadence_days,
-        )
-        db.session.flush()
-        _drop_seed_user_bootstrap(
-            db, seed_user, seed_user["account"], periods[0],
-        )
-        return (
-            db.session.query(PayPeriod)
-            .filter_by(user_id=seed_user["user"].id)
-            .order_by(PayPeriod.period_index)
-            .all()
+        return _reset_seed_calendar(
+            seed_user, first_payday, num_periods, cadence_days,
         )
     return _seed
 
@@ -2176,16 +2114,26 @@ def _build_cross_page_calendar_periods(db, user):
     lets ``PayCalendar.period_containing`` land on it with no date-mock
     plumbing.
 
-    The ``seed_user`` bootstrap pay period is left in place rather than
-    deleted via ``_drop_seed_user_bootstrap``: deleting it cascades the
-    ``AccountAnchorHistory.pay_period_id`` ondelete=CASCADE and forces an
-    autoflush UPDATE on the account anchor mid-flush, which races the
-    just-flushed new pay periods on stricter autoflush orderings (observed:
-    ``ForeignKeyViolation`` on ``current_anchor_period_id``).  Keeping the
-    bootstrap is benign for the lock: it is a 2024 pre-anchor period every
-    surface skips (the resolver only emits balances from the anchor period
-    forward, and grid / dashboard / savings / accounts all key off the period
-    CONTAINING today, which is today's month rather than the bootstrap).
+    **This is the one calendar in this file the application cannot write, and
+    that is why it is still built by hand** (ledger row **P76**, plan step
+    ``pay_calendar:C4-b-1``).  ``pay_period_write.record_paydays`` spaces a
+    batch at ONE cadence; calendar months are 28 to 31 days apart, so no door
+    produces this schedule and no owner can have one.  Every other periods
+    fixture here goes through :func:`_reset_seed_calendar`.  Plan step
+    ``pay_calendar:C4-c``, which re-bases every hand-written ``PayPeriod(...)``
+    when the two derived columns drop, owns the question of what these cases
+    should assert on instead.
+
+    The seeded owner's opening pay period is left in place beneath these, at
+    ``period_index`` 0.  *The reason recorded here was that deleting it would
+    cascade ``AccountAnchorHistory.pay_period_id`` and race an autoflush; that
+    column no longer exists -- ruling ``balance:R-EO`` deleted it and its
+    CASCADE FK -- so the stated hazard has had no subject for some time.* What
+    is true is that keeping it is benign for the lock: it is a 2024 pre-anchor
+    period every surface skips (the resolver only emits balances from the
+    anchor period forward, and grid / dashboard / savings / accounts all key
+    off the period CONTAINING today, which is today's month rather than the
+    opening one).
 
     Args:
         db: The SQLAlchemy ``db`` fixture.
@@ -2231,10 +2179,28 @@ def _build_cross_page_calendar_periods(db, user):
         f"does not contain today={today}; fixture invariant broken"
     )
 
+    # **The owner's STORED cadence is set to match these rows, and an
+    # adversarial review of plan step ``pay_calendar:C4-b-1`` is why.**  Before
+    # that step the seeded owner had no ``budget.pay_schedule`` row, so
+    # ``pay_schedule_service.resolve_schedule`` INFERRED the cadence from the
+    # highest-indexed period's stored span -- December of ``first_year + 2``,
+    # which is 31 days.  The step gives every owner a real row, at the seeded
+    # 14, and that silently halved ``PayCalendar.cadence`` for these eight
+    # fixtures: the savings horizons and the emergency-fund coverage derive
+    # their period counts from it, so they would have read twice as far out on
+    # a calendar whose periods are months.  Nothing asserted on it, which is
+    # what makes writing it down the fix rather than a green run.
+    #
+    # 31 is what the inference answered, so this restores the figure rather
+    # than choosing a new one.  It is still a stored fact disagreeing with rows
+    # that are 28 to 31 days apart -- that is row **P78**, and the real remedy
+    # is a door that can express a monthly schedule at all.
+    pay_schedule_service.upsert_schedule(user.id, 31)
+
     all_periods = (
         db.session.query(PayPeriod)
         .filter_by(user_id=user.id)
-        .order_by(PayPeriod.period_index)
+        .order_by(PayPeriod.start_date)
         .all()
     )
     return all_periods, anchor_period
@@ -2948,16 +2914,12 @@ def second_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3); see ``seed_user`` for
-    # the rationale.
-    bootstrap_period = PayPeriod(
-        user_id=user.id,
-        start_date=SEED_USER_BOOTSTRAP_START,
-        end_date=SEED_USER_BOOTSTRAP_START + timedelta(days=13),
-        period_index=0,
-    )
-    db.session.add(bootstrap_period)
-    db.session.flush()
+    # The owner's opening pay period and the schedule row beside it, from the
+    # writer that owns both; see ``_test_helpers.open_owner_calendar`` for
+    # the argument.
+    bootstrap_period = open_owner_calendar(
+        user.id, SEED_USER_BOOTSTRAP_START, cadence_days=SEED_USER_CADENCE_DAYS,
+    )[0]
 
     checking_type = (
         db.session.query(AccountType).filter_by(name="Checking").one()
@@ -3013,30 +2975,16 @@ def second_user(app, db):
 
 @pytest.fixture()
 def seed_periods_52(app, db, seed_user):
-    """Generate 52 pay periods (2-year projection) starting from 2026-01-02.
+    """Rebuild the seeded owner's schedule as 52 pay periods from 2026-01-02.
 
-    Sets anchor to the first period.  Use for FIN tests that require
-    production-scale data volumes.
+    :func:`seed_periods` at a two-year horizon, for the FIN cases that need
+    production-scale data volumes.  Same door, same derivation.
 
     Returns:
-        List of PayPeriod objects.
+        List of PayPeriod objects, payday ascending.
     """
-
-    periods = pay_period_write.record_paydays(
-        user_id=seed_user["user"].id,
-        first_payday=date(2026, 1, 2),
-        num_periods=52,
-        cadence_days=14,
-    )
-    db.session.flush()
-
-    account = seed_user["account"]
-    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
-    return (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=seed_user["user"].id)
-        .order_by(PayPeriod.period_index)
-        .all()
+    return _reset_seed_calendar(
+        seed_user, date(2026, 1, 2), 52, SEED_USER_CADENCE_DAYS,
     )
 
 
@@ -3064,16 +3012,12 @@ def seed_second_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3); see ``seed_user`` for
-    # the rationale.
-    bootstrap_period = PayPeriod(
-        user_id=user.id,
-        start_date=SEED_USER_BOOTSTRAP_START,
-        end_date=SEED_USER_BOOTSTRAP_START + timedelta(days=13),
-        period_index=0,
-    )
-    db.session.add(bootstrap_period)
-    db.session.flush()
+    # The owner's opening pay period and the schedule row beside it, from the
+    # writer that owns both; see ``_test_helpers.open_owner_calendar`` for
+    # the argument.
+    bootstrap_period = open_owner_calendar(
+        user.id, SEED_USER_BOOTSTRAP_START, cadence_days=SEED_USER_CADENCE_DAYS,
+    )[0]
 
     # Baseline scenario BEFORE the account, mirroring ``seed_user`` (and
     # production registration): ``create_account`` posts the opening anchor
@@ -3136,29 +3080,17 @@ def seed_second_user(app, db):
 
 @pytest.fixture()
 def seed_second_periods(app, db, seed_second_user):
-    """Generate 10 pay periods for the second user starting 2026-01-02.
+    """Rebuild the SECOND owner's schedule as 10 pay periods from 2026-01-02.
 
-    Sets the anchor period to the first period.
+    :func:`seed_periods` for the isolation fixtures' other owner, through the
+    same door and against the same dates, so a cross-user case compares two
+    calendars built the one way.
 
     Returns:
-        List of PayPeriod objects.
+        List of PayPeriod objects, payday ascending.
     """
-
-    periods = pay_period_write.record_paydays(
-        user_id=seed_second_user["user"].id,
-        first_payday=date(2026, 1, 2),
-        num_periods=10,
-        cadence_days=14,
-    )
-    db.session.flush()
-
-    account = seed_second_user["account"]
-    _drop_seed_user_bootstrap(db, seed_second_user, account, periods[0])
-    return (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=seed_second_user["user"].id)
-        .order_by(PayPeriod.period_index)
-        .all()
+    return _reset_seed_calendar(
+        seed_second_user, date(2026, 1, 2), 10, SEED_USER_CADENCE_DAYS,
     )
 
 
