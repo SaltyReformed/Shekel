@@ -175,15 +175,36 @@ class PayCadence:
     def __post_init__(self) -> None:
         """Refuse a cadence ``ck_pay_schedule_cadence_range`` would refuse.
 
-        The check is load-bearing HERE and not merely repeated from
-        :func:`~._derive.derive_periods`, because this value has a door that
-        does not go through a calendar: ``pay_schedule_service.resolve_cadence``
-        falls back for a schedule-row-less owner to
-        ``(end_date - start_date).days + 1`` off the last period, which
-        ``ck_pay_periods_date_order`` bounds below and NOTHING bounds above
-        (plan finding **P8**).  A hand-written period spanning two years would
-        otherwise answer "half a paycheck a year" and misstate every monthly
-        equivalent on the page.
+        The check is a property of the VALUE rather than of any one producer,
+        which is why it is here and not merely repeated from
+        :func:`~._derive.derive_periods`.  A :class:`PayCadence` is constructed
+        from a bare ``int`` at four sites in ``app/`` -- ``_loader.cadence_for``,
+        :meth:`~._calendar.PayCalendar.cadence`,
+        ``routes.salary.profiles``' paycheck count, and
+        ``recurrence._frequency._WEEKLY``, a module-level literal answering to
+        no database at all -- so the type is the only tier every one of them
+        passes through.  A type that admitted 800 would answer "half a
+        paycheck a year" and misstate every monthly equivalent derived from it.
+        It is graded directly, not inferred:
+        ``test_paycheck_calculator`` asserts ``PayCadence(cadence_days=0)``
+        raises, and ``test_grid`` builds one at 365 to drive the range options.
+
+        *An earlier draft of this paragraph cited "the harness that drives the
+        derivation over production's paydays" as a caller that constructs one.
+        It does not: ``tests/oracles/pay_calendar_derivation.py`` and
+        ``tests/manual/verify_pay_calendar_derivation.py`` pass a bare ``int``
+        to :func:`~._derive.derive_periods`, which is a different function and
+        a different code path.  An adversarial review measured it.*
+
+        *Until plan step C4-b-2 the reason was a specific producer:
+        ``pay_schedule_service.resolve_cadence`` fell back for a
+        schedule-row-less owner to ``(end_date - start_date).days + 1`` off the
+        last period, which ``ck_pay_periods_date_order`` bounds below and
+        nothing bounded above -- ledger rows **P8** and **P35**.  That producer
+        is gone: ``fk_pay_periods_schedule`` makes the owner unstorable and the
+        only source now is the column, bounded to 1..365 by
+        ``ck_pay_schedule_cadence_range``.  The check stays because the
+        argument for it never needed that producer.*
 
         Raises:
             PayCalendarError: The value is not a plain ``int`` (a ``bool``

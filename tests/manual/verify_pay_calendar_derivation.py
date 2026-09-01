@@ -32,16 +32,23 @@ added to the session; the run ends in a rollback regardless.  Run it against a
 clone all the same -- the developer's clones are ``shekel`` and
 ``shekel_f3_final`` on ``shekel-dev-db``.
 
-**The one thing it cannot prove, stated so the blob is not over-read.**  For a
-user with paydays but NO ``budget.pay_schedule`` row, the cadence has to be
-inferred from the last period's own length
-(``pay_schedule_service.resolve_cadence``), so the LAST row's end reproduces
-itself by arithmetic and agreement there means nothing (plan finding P8).  Only
-that one row is tainted -- every earlier end derives from the next payday and
-never reads the cadence -- so the verdict disqualifies the row, not the user.
-No such user exists on production today (the single owner carries a cadence-14
-row), but registration writes a bootstrap payday and no schedule row at all, so
-the state is one signup away.
+**The one thing it could not prove, and why that is now moot.**  For a user
+with paydays but NO ``budget.pay_schedule`` row, the cadence had to be inferred
+from the last period's own length (``pay_schedule_service.resolve_cadence``),
+so the LAST row's end reproduced itself by arithmetic and agreement there meant
+nothing (plan finding **P8**).  Only that one row was tainted -- every earlier
+end derives from the next payday and never reads the cadence -- so the verdict
+disqualified the row, not the user, and :class:`CalendarComparison`'s
+``cadence_is_stored`` flag is what carried it.
+
+**Plan step ``pay_calendar:C4-b-2`` removed the state rather than the
+disqualification.**  ``fk_pay_periods_schedule`` makes an owner with paydays
+and no cadence row unstorable, and the inferring arm is deleted, so every owner
+this harness can find carries a stored cadence and the flag is ``True`` for all
+of them.  *An earlier version of this paragraph also said registration "writes
+a bootstrap payday and no schedule row at all, so the state is one signup
+away"; that has been false since plan step ``balance:X-ad-a`` -- registration
+writes both in one call -- and is now false structurally as well.*
 
 **Usage** (from the repository root)::
 
@@ -97,22 +104,36 @@ from tests._test_helpers import all_periods
 def _resolve_cadence(user_id):
     """Return ``(cadence_days, cadence_is_stored)`` for *user_id*.
 
-    Prefers the user's stored ``budget.pay_schedule.cadence_days``.  Falls back
-    to ``pay_schedule_service.resolve_cadence``, which infers the cadence from
-    the last period's length -- and flags that, because the inference reads
-    back the very value the derivation is being asked to produce for that row.
+    Reads the user's stored ``budget.pay_schedule.cadence_days``, and there is
+    no second source since plan step ``pay_calendar:C4-b-2``.
+
+    **The fallback that stood here is deleted with the state it served.**  It
+    called ``pay_schedule_service.resolve_cadence``, which inferred the cadence
+    from the last period's length and so read back the very value the
+    derivation is asked to produce for that row -- flagged as
+    ``cadence_is_stored=False`` for exactly that reason.
+    ``fk_pay_periods_schedule`` makes a payday-holding owner without a cadence
+    row unstorable, so that call can now only answer ``None``; leaving it would
+    have handed ``derive_periods`` a ``None`` cadence beside a non-empty payday
+    set, which RAISES rather than disqualifying a row, so the branch had become
+    a promise this module could not keep.
+
+    The second element is kept, always ``True`` when a cadence is returned,
+    because :class:`~tests.oracles.pay_calendar_derivation.CalendarComparison`
+    takes it as a parameter and stays total over both values.
 
     Args:
         user_id: The owner whose cadence to resolve.
 
     Returns:
-        ``(cadence_days, cadence_is_stored)``, or ``(None, False)`` when the
-        user has neither a schedule row nor a period to infer from.
+        ``(cadence_days, True)``, or ``(None, False)`` when the user has no
+        ``budget.pay_schedule`` row -- which, by that key, is a user with no
+        paydays for this harness to compare.
     """
     schedule = pay_schedule_service.get_schedule(user_id)
     if schedule is not None:
         return schedule.cadence_days, True
-    return pay_schedule_service.resolve_cadence(user_id), False
+    return None, False
 
 
 def _payday_control_blob(user_id, perturbation, cadence_days, cadence_is_stored):

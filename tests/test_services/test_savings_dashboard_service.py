@@ -4154,53 +4154,61 @@ class TestNetWorthHorizon:
                 BalanceContext.build(user_id),
             ) is None
 
-    def test_the_narrow_producers_do_not_need_a_CALENDAR_they_never_use(
+    def test_a_stored_span_no_longer_decides_whether_a_calendar_derives(
         self, app, db, seed_user,
     ):
-        """An owner whose paydays cannot define a calendar still gets ``/``.
+        """Plan step **C4-b-2**: ledger row **P35** closed, asserted here.
 
-        **The case above CANNOT fire on this defect and that is why this one
-        exists** (adversarial code review of pay-calendar plan step C2-f2d-3).
-        ``bare_user`` has no periods at all, so ``derive_periods((), None)``
-        answers the empty calendar and nothing is refused -- the arm is never
-        reached.  The state that reaches it is an owner who HAS a payday whose
-        span exceeds the 1..365 cadence range: ``derive_periods`` refuses it,
-        and every producer that touches the calendar raises.
+        **This case REPLACES
+        ``test_the_narrow_producers_do_not_need_a_CALENDAR_they_never_use``,
+        and it keeps that case's setup while inverting its verdict.**  That
+        case built an owner whose calendar REFUSED -- a period with a 545-day
+        stored span and no ``budget.pay_schedule`` row, so
+        ``resolve_cadence``'s fallback inferred 546, ``derive_periods``
+        refused anything outside 1..365, and every producer touching the
+        calendar raised -- and pinned that the two narrow producers answered
+        anyway.  It was the regression control for a defect plan step
+        C2-f2d-3 introduced and fixed in one commit.
 
-        That owner is reachable rather than contrived: ``pay_schedule`` did not
-        exist before plan step X-ad-a, so a period stored before it carries
-        whatever span it was generated with, and ``resolve_cadence``'s legacy
-        fallback infers the cadence from the periods themselves.
+        **That owner cannot exist now**, which is what closing P35 means and
+        is a stronger statement than the old case's.  ``fk_pay_periods_schedule``
+        makes paydays-without-a-cadence-row unstorable, so the only source of
+        a cadence is ``budget.pay_schedule.cadence_days`` -- bounded to 1..365
+        by ``ck_pay_schedule_cadence_range``, the same range
+        ``_derive.validate_cadence`` enforces.  The two bounds cannot disagree,
+        so a stored span, however long, no longer reaches the derivation at
+        all.
 
-        The defect this pins was live for one commit: C2-f2d-3 resolved the
-        current period inside ``_load_dashboard_core_data``, so
-        ``compute_debt_summary`` RAISED where it had answered ``None``.  It is
-        the pay cadence's defect from R7a-2a, on the same loader, through the
-        same two producers, one fact over -- which is why the remedy is the
-        same: the loader resolves neither, and the bundle derives on demand.
+        So the SPAN is kept -- the same 545 days on the same seeded owner --
+        and the assertion becomes that the calendar builds.  Deleting the case
+        outright would have removed the only place that span is written down,
+        and a reader would have no way to tell "we stopped testing this" from
+        "this stopped being possible".
+
+        **Two things about the old case are NOT kept, and an adversarial review
+        asked for both to be said rather than implied.**  Its setup ALSO
+        deleted the ``budget.pay_schedule`` row, which is what the key now
+        refuses -- so the span alone cannot reproduce the state, which is the
+        whole point.  And it asserted ``compute_debt_summary(...) is None``
+        beside the goal producer; that assertion is dropped rather than
+        inverted, because it graded a producer RETURNING EARLY past a calendar
+        that refused, and there is no longer a storable owner whose calendar
+        refuses.  What survives of that concern -- a page must not fail for a
+        fact it does not use -- is graded by
+        ``test_the_narrow_producers_do_not_need_a_cadence_they_never_use``
+        directly above, on an owner with no paydays at all.
         """
         # pylint: disable=import-outside-toplevel
         from datetime import timedelta
 
         from app.models.pay_period import PayPeriod
-        from app.models.pay_schedule import PaySchedule
-        from app.services.pay_calendar import PayCalendarError
+        from app.services.pay_schedule_service import resolve_cadence
+        from tests.conftest import SEED_USER_CADENCE_DAYS
 
         with app.app_context():
             user_id = seed_user["user"].id
-            # **The LEGACY owner is constructed, not inherited** (plan step
-            # ``pay_calendar:C4-b-1``).  The docstring above already says what
-            # this owner is -- somebody whose period was stored before
-            # ``budget.pay_schedule`` existed -- and the fixture used to supply
-            # that shape by accident.  It writes the schedule row now, so the
-            # row is removed here and the case says what it is about.
-            #
-            # **Plan step ``pay_calendar:C4-b-2`` DELETES this case's subject**:
-            # removing ``resolve_schedule``'s inferring fallback closes ledger
-            # row **P35**, after which no owner's stored span can produce an
-            # out-of-range cadence and there is nothing left for the calendar
-            # to refuse here.  Delete the case with the fallback.
-            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
+            # The schedule row STAYS -- deleting it is what the old case did
+            # and what the key now refuses.  The span alone is the variable.
             period = (
                 db.session.query(PayPeriod).filter_by(user_id=user_id)
                 .order_by(PayPeriod.start_date).first()
@@ -4208,15 +4216,16 @@ class TestNetWorthHorizon:
             period.end_date = period.start_date + timedelta(days=545)
             db.session.commit()
 
-            # The premise, asserted rather than assumed: this owner's calendar
-            # really is unbuildable, so the two assertions below are about a
-            # producer NOT reaching it rather than about a benign state.
-            with pytest.raises(PayCalendarError):
-                BalanceContext.build(user_id).calendar()
+            # The premise, asserted rather than assumed: the cadence really is
+            # read from the ROW and not from that span, so this case cannot
+            # pass by the span having been reverted.  The EXACT seeded value
+            # rather than a range -- a range would pass for any of 365 numbers
+            # and this passes for one.
+            assert (period.end_date - period.start_date).days + 1 == 546
+            assert resolve_cadence(user_id) == SEED_USER_CADENCE_DAYS
 
-            assert savings_dashboard_service.compute_debt_summary(
-                BalanceContext.build(user_id),
-            ) is None
+            # What used to raise now answers.
+            assert BalanceContext.build(user_id).calendar() is not None
             assert savings_dashboard_service.compute_goal_progress(
                 BalanceContext.build(user_id),
             ) == []

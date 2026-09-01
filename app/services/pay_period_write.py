@@ -222,6 +222,13 @@ def _reject_unmaterialisable_cadence(cadence_days: int) -> None:
     predates the form floor, and the difference between a rendered form error
     and a ``CheckViolation`` 500 is the whole reason the check exists.
 
+    **The second value is now the STORED cadence and nothing else** (plan step
+    C4-b-2).  ``resolve_cadence`` used to answer an INFERRED one for an owner
+    with no ``budget.pay_schedule`` row, which ``ck_pay_schedule_cadence_range``
+    never saw and nothing bounded above; ``fk_pay_periods_schedule`` makes that
+    owner unstorable, so what reaches here is a column value in 1..365 and the
+    only thing left to refuse is the 1 this writer cannot materialise.
+
     Args:
         cadence_days: Days between paydays -- submitted or stored.
 
@@ -610,11 +617,16 @@ def owner_period_ids(user_id: int) -> "set[int]":
     C2-f3b).  A first cut spelled this ``calendar_for(user_id).saved()``, which
     made the door that REPAIRS a broken schedule depend on the schedule being
     derivable: an owner with no ``budget.pay_schedule`` row whose last period
-    spans more than a year resolves a cadence outside 1..365, and
+    spans more than a year resolved a cadence outside 1..365, and
     ``derive_periods`` refuses it -- so reset, which used to succeed there
     (``keep`` is empty, and :func:`_apply` derives at the SUBMITTED cadence),
-    became an unhandled 500.  The identity of a row is not a derived value and
-    must not be reached through one.
+    became an unhandled 500.  *That particular owner is unstorable since plan
+    step C4-b-2 (ledger rows **P8** / **P35**), so the example no longer
+    reproduces; the RULE it was an example of is what this door is built on and
+    is not weakened by losing it.*  The identity of a row is not a derived value
+    and must not be reached through one -- a repair door that asks the
+    derivation for the ids it is about to fix can only repair schedules that
+    were not broken.
 
     Args:
         user_id: The owning user's id.
@@ -669,12 +681,14 @@ def _horizon_cadence(user_id: int) -> "int | None":
 
     Returns:
         The days between paydays the horizon projects at, or ``None`` for an
-        owner with neither a schedule row nor a period to infer one from.
-        ``None`` is legal ONLY beside an empty payday set, which is the rule
-        ``derive_periods`` states and enforces; no caller here can reach it
-        with paydays, because a batch that records one upserts the row first
-        and a batch that records none is asked about an owner who already has
-        periods.  Returned rather than refused so that rule has one home.
+        owner with no ``budget.pay_schedule`` row -- which since plan step
+        C4-b-2 is an owner with no pay periods, ``fk_pay_periods_schedule``
+        making the two one fact.  ``None`` is legal ONLY beside an empty payday
+        set, which is the rule ``derive_periods`` states and enforces; the key
+        is now what makes that pairing hold here, where it used to rest on the
+        callers -- a batch that records a payday upserts the row first, and one
+        that records none is asked about an owner who already has periods.
+        Returned rather than refused so that rule has one home.
 
     Raises:
         ValidationError: The stored cadence is below

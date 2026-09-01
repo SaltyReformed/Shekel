@@ -196,9 +196,11 @@ def _contribution_inputs_for_accounts(
     # this loader is on the SEAM -- the grid, /savings and /investments all
     # reach it -- so resolving it unconditionally would turn a rendering page
     # into a 500 for that owner.  It costs no figure to skip: an owner with no
-    # resolvable cadence has no ``budget.pay_schedule`` row AND no pay period
-    # (:func:`app.services.pay_schedule_service.resolve_cadence` infers one
-    # from the last period otherwise), so there is no period for a per-period
+    # resolvable cadence has no ``budget.pay_schedule`` row and therefore no
+    # pay period either -- one fact rather than two since plan step C4-b-2,
+    # where it took ``fk_pay_periods_schedule`` to make it so and
+    # ``resolve_cadence`` used to infer a cadence off the last period instead.
+    # So there is no period for a per-period
     # contribution to be modelled over and the fold reads nothing here either
     # way.  Measured at R-F16: the unconditional form raised
     # ``PayCalendarError`` for exactly this owner where the pre-step code

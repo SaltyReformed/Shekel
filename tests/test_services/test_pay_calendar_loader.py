@@ -310,29 +310,17 @@ class TestTheCadenceComesFromTheScheduleService:
 
             assert calendar_for(user_id).cadence_days == CADENCE + 7
 
-    def test_it_infers_the_cadence_when_no_schedule_row_exists(
-        self, app, db, seed_user,
-    ):
-        """P8's circular fallback, reached rather than reimplemented.
-
-        **The row is DELETED here, and until plan step C3-b it did not have to
-        be.**  No fixture in this suite wrote a ``budget.pay_schedule`` row, so
-        this was the path every other test took; C3-b's cadence rule makes
-        every batch that records a payday store one, so the state finding
-        **P8** is about now has to be constructed on purpose.  That is the
-        finding narrowing rather than the test weakening: no door can produce a
-        payday-bearing owner without a cadence any more, so what is left is
-        legacy data, and this is what the loader does with it.
-        """
-        with app.app_context():
-            user_id = seed_user["user"].id
-            db.session.query(PaySchedule).filter_by(user_id=user_id).delete(
-                synchronize_session=False,
-            )
-            db.session.commit()
-
-            assert pay_schedule_service.get_schedule(user_id) is None
-            assert calendar_for(user_id).cadence_days == CADENCE
+    # ``test_it_infers_the_cadence_when_no_schedule_row_exists`` stood here
+    # until plan step **C4-b-2** and was DELETED with its subject, not with
+    # its coverage.  It built an owner with paydays and no
+    # ``budget.pay_schedule`` row and asserted the loader inferred ``CADENCE``
+    # from their period lengths -- an answer that was circular (the stored end
+    # it read is derived FROM the cadence since C3-b) and unbounded above,
+    # which is ledger row **P35**.  ``fk_pay_periods_schedule`` makes that
+    # owner unstorable, so the loader cannot meet one; the constraint itself
+    # is graded in ONE place,
+    # ``tests/test_models/test_c4b2_pay_period_schedule_key.py``, rather than
+    # restated at every reader that used to have to cope with it.
 
     def test_a_changed_cadence_moves_the_horizon_and_only_the_horizon(
         self, app, db, seed_user,

@@ -1626,6 +1626,41 @@ def bare_auth_client(app, db, client, bare_user):  # pylint: disable=unused-argu
 
 
 @pytest.fixture()
+def bare_user_with_cadence(db, bare_user):
+    """``bare_user`` plus the cadence row every payday-holding owner has.
+
+    **For the cases that must hand-build a CORRUPT pay period** -- a duplicate
+    ``period_index``, an index out of calendar order, a gap, an overlapping
+    span.  Those shapes exist to prove a checker or a migration pre-flight
+    catches them, and no application door can produce any of them, so
+    ``_test_helpers.open_owner_calendar`` is not the answer there the way plan
+    step ``pay_calendar:C4-b-1`` made it the answer for ordinary owners.
+
+    What such a case still needs is the half of the owner that is NOT corrupt:
+    since plan step ``pay_calendar:C4-b-2``, ``fk_pay_periods_schedule``
+    refuses a pay period whose owner holds no ``budget.pay_schedule`` row, so
+    ``bare_user`` alone can no longer carry one.  This fixture is that rule
+    stated ONCE rather than an ``upsert_schedule`` line copied into each case
+    -- four of them today, and the fifth would be the one that copies it
+    wrongly.
+
+    The cadence is 14 and no case should assert on it: these owners' periods
+    are written by hand and are deliberately inconsistent with any cadence.
+    It exists to satisfy the key, not to describe the rows.
+
+    Returns:
+        ``bare_user``'s own dict, unchanged -- the schedule row is a side
+        effect on the database, not a new key, so a case can swap this fixture
+        in for ``bare_user`` without touching anything else it reads.
+    """
+    pay_schedule_service.upsert_schedule(
+        bare_user["user"].id, cadence_days=14,
+    )
+    db.session.commit()
+    return bare_user
+
+
+@pytest.fixture()
 def bare_periods(app, db, bare_user):
     """Generate 10 pay periods for ``bare_user`` starting 2026-01-02.
 

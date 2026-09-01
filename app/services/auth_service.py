@@ -739,8 +739,9 @@ class RegistrationSpec:
         cadence_days: Days between the owner's paydays.  Bounded by
             ``ck_pay_schedule_cadence_range``; persisted as the owner's
             schedule so extend and the rolling top-up have a cadence to
-            continue from rather than inferring one (pay-calendar finding
-            **P8**).
+            continue from.  *They used to infer one where it was absent --
+            pay-calendar finding **P8** -- which plan step C4-b-2 closed by
+            making the absence unstorable.*
         num_periods: How many periods to generate forward from
             *first_payday*.
         history_opens_on: How far back the owner's paychecks reach, or ``None``
@@ -868,9 +869,13 @@ def register_user(spec: RegistrationSpec):
     # correction, and ``pay_calendar.PayCalendar.filing_period`` raises when
     # there is no materialised period to file it under (finding **N-192**).
     # ``record_paydays`` writes the ``budget.pay_schedule`` row in the same
-    # call -- the cadence rule, plan step C3-b -- which is what keeps
+    # call -- the cadence rule, plan step C3-b -- which is what kept
     # registration from re-opening pay-calendar finding **P8**, a payday with
-    # no schedule row beside it, on every new sign-up.
+    # no schedule row beside it, on every new sign-up.  Since plan step C4-b-2
+    # ``fk_pay_periods_schedule`` refuses that pairing outright, so the rule is
+    # ENFORCED rather than remembered.  It is not made safe: dropping the
+    # cadence rule would make this call raise ``IntegrityError`` and 500 the
+    # sign-up form, which is a loud failure rather than a silent wrong owner.
     pay_period_write.record_paydays(
         user_id=user.id,
         first_payday=spec.first_payday,

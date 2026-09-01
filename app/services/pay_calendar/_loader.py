@@ -42,12 +42,17 @@ the cadence read in front of it.  The claim about the COLUMNS still holds; the
 claim about the FILE did not.*
 
 The schedule facts come from ``pay_schedule_service.resolve_schedule`` rather
-than from a second query of ``budget.pay_schedule``, because that function
-carries the fallback for an owner with no schedule row, and a second copy of it
-would be a second copy of plan finding **P8**'s circularity.  It answers BOTH
-calendar facts in one read since plan step **balance:X-bh-2** -- the cadence
-and ``history_opens_on``, the floor the backward rhythm stops at -- so a
-calendar load is still the two queries it always was rather than three.
+than from a second query of ``budget.pay_schedule``: that function is the one
+place "what are this owner's calendar facts" is answered, and a second copy
+would be a second thing to keep in step.  *Until plan step C4-b-2 the reason
+was stronger and worse -- that function carried an inferring FALLBACK for an
+owner with no schedule row, so a copy would have been a second copy of plan
+finding P8's circularity.  ``fk_pay_periods_schedule`` made that owner
+unstorable and the fallback went with them, so what is left is ordinary
+single-source discipline.*  It answers BOTH calendar facts in one read since
+plan step **balance:X-bh-2** -- the cadence and ``history_opens_on``, the floor
+the backward rhythm stops at -- so a calendar load is still the two queries it
+always was rather than three.
 """
 
 from app.extensions import db
@@ -227,27 +232,33 @@ def cadence_for(user_id: int) -> PayCadence:
         The owner's :class:`~._cadence.PayCadence`.
 
     Raises:
-        PayCalendarError: The owner has no resolvable cadence -- neither a
-            ``budget.pay_schedule`` row nor a pay period to infer one from.
-            Refused rather than defaulted, for the reason
-            :attr:`~._calendar.PayCalendar.cadence` gives: every monthly
-            equivalent in the application is a function of this number, and
-            assuming biweekly would report a weekly-paid owner's commitments at
-            half their true value.  Since plan step X-ad-a registration writes
-            the schedule row, so this names legacy data and the companion role,
-            which ``require_owner`` 404s before a page builds.  It is also what
-            :func:`~._derive.validate_cadence` refuses: the legacy fallback
-            infers a cadence from the last period's stored length, which
-            nothing bounds above (plan finding **P8**).
+        PayCalendarError: The owner has no ``budget.pay_schedule`` row, which
+            since plan step C4-b-2 IMPLIES no pay periods
+            (``fk_pay_periods_schedule``).  Refused rather than defaulted, for
+            the reason :attr:`~._calendar.PayCalendar.cadence` gives: every
+            monthly equivalent in the application is a function of this number,
+            and assuming biweekly would report a weekly-paid owner's
+            commitments at half their true value.  Since plan step X-ad-a
+            registration writes the row, so this names the companion role --
+            which ``require_owner`` 404s before a page builds -- and an owner
+            between sign-up and their first batch.
+            **It is no longer reachable with a cadence OUT OF RANGE**, which is
+            what closing ledger row **P35** means: the only source is the
+            stored column, bounded to 1..365 by
+            ``ck_pay_schedule_cadence_range``, so
+            :func:`~._derive.validate_cadence` can no longer refuse what this
+            resolves.
     """
     cadence_days = pay_schedule_service.resolve_cadence(user_id)
     if cadence_days is None:
         raise PayCalendarError(
-            f"user {user_id} has no pay cadence: no budget.pay_schedule row "
-            f"and no pay period to infer one from, so how many paychecks they "
-            f"receive in a year is unanswerable.  Since plan step X-ad-a "
-            f"registration writes the row, so this is legacy or companion "
-            f"data rather than a state to default.  Assuming biweekly would "
+            f"user {user_id} has no pay cadence: no budget.pay_schedule row, "
+            f"and since fk_pay_periods_schedule that means no pay periods "
+            f"either, so how many paychecks they receive in a year is "
+            f"unanswerable.  Since plan step X-ad-a "
+            f"registration writes the row, so this is companion data or an "
+            f"owner before their first batch rather than a state to default.  "
+            f"Assuming biweekly would "
             f"report a weekly-paid owner's commitments at half their true "
             f"monthly value."
         )
