@@ -54,9 +54,14 @@ than it does is this arc's most expensive recurring lesson:
   for a real row, 200, indistinguishable from the right one, and two mutations
   of that shape survived as an unobservable change must.  The three
   ``period_id`` pairs are the exception and were nearly stated wrong:
-  ``period`` is ``periods[4]``, **id 6**, because ``build_seed_user`` writes a
-  bootstrap period first and ``build_periods_today`` drops it -- so a swap
-  involving one of those WOULD 404 and would be caught.  What stands in the
+  ``period`` is ``periods[4]``, **id 6**, because ``build_seed_user`` writes an
+  opening period first (taking id 1) and ``build_periods_today`` then RESETS
+  the schedule, retiring that row and writing ten more at ids 2..11 -- so a
+  swap involving one of those WOULD 404 and would be caught.  *The mechanism
+  was a hand-rolled delete until plan step ``pay_calendar:C4-b-1`` moved it
+  onto ``pay_period_admin.reset_pay_periods``; the ids are unchanged, because
+  the door retires and records in one call and a sequence is not rolled
+  back.*  What stands in the
   other eight is
   :data:`_CONVERTER_ROWS` being TOTAL over ``(blueprint, name)`` with no
   fallback, so the mistake has to be WRITTEN DOWN rather than defaulted into.

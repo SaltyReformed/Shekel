@@ -4183,10 +4183,24 @@ class TestNetWorthHorizon:
         from datetime import timedelta
 
         from app.models.pay_period import PayPeriod
+        from app.models.pay_schedule import PaySchedule
         from app.services.pay_calendar import PayCalendarError
 
         with app.app_context():
             user_id = seed_user["user"].id
+            # **The LEGACY owner is constructed, not inherited** (plan step
+            # ``pay_calendar:C4-b-1``).  The docstring above already says what
+            # this owner is -- somebody whose period was stored before
+            # ``budget.pay_schedule`` existed -- and the fixture used to supply
+            # that shape by accident.  It writes the schedule row now, so the
+            # row is removed here and the case says what it is about.
+            #
+            # **Plan step ``pay_calendar:C4-b-2`` DELETES this case's subject**:
+            # removing ``resolve_schedule``'s inferring fallback closes ledger
+            # row **P35**, after which no owner's stored span can produce an
+            # out-of-range cadence and there is nothing left for the calendar
+            # to refuse here.  Delete the case with the fallback.
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
             period = (
                 db.session.query(PayPeriod).filter_by(user_id=user_id)
                 .order_by(PayPeriod.start_date).first()
@@ -6593,13 +6607,19 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
         )
         with app.app_context():
             user_id = seed_user["user"].id
-            assert db.session.query(PaySchedule).filter_by(
-                user_id=user_id,
-            ).count() == 0, (
-                "this case needs an owner with no stored cadence; the fixture "
-                "now writes one, so the refusal it exercises has moved"
-            )
+            # **The owner must hold no stored cadence, and since plan step
+            # ``pay_calendar:C4-b-1`` the fixture writes one** -- the seeded
+            # opening payday comes from ``pay_period_write.record_paydays``,
+            # which upserts the ``budget.pay_schedule`` row in the same call.
+            # So this state is CONSTRUCTED here rather than inherited from a
+            # fixture that happened to supply it, which is the stronger form:
+            # the assertion that used to stand here could only report that the
+            # fixture had changed.  It is still a real owner -- somebody who
+            # has never generated a schedule holds neither row -- and the
+            # periods go FIRST, which is the order the foreign key plan step
+            # ``pay_calendar:C4-b-2`` adds makes the only non-cascading one.
             db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
             db.session.commit()
 
             # The refusal is real: shown firing on the value the producer

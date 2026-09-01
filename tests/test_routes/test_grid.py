@@ -9979,13 +9979,19 @@ class TestTheGridRefusesBeforeItReadsACadence:
         )
         with app.app_context():
             user_id = seed_user["user"].id
-            assert db.session.query(PaySchedule).filter_by(
-                user_id=user_id,
-            ).count() == 0, (
-                "this case needs an owner with no stored cadence; the fixture "
-                "now writes one, so the refusal it exercises has moved"
-            )
+            # **The owner must hold no stored cadence, and since plan step
+            # ``pay_calendar:C4-b-1`` the fixture writes one** -- the seeded
+            # opening payday comes from ``pay_period_write.record_paydays``,
+            # which upserts the ``budget.pay_schedule`` row in the same call.
+            # So this state is CONSTRUCTED here rather than inherited from a
+            # fixture that happened to supply it, which is the stronger form:
+            # the assertion that used to stand here could only report that the
+            # fixture had changed.  It is still a real owner -- somebody who
+            # has never generated a schedule holds neither row -- and the
+            # periods go FIRST, which is the order the foreign key plan step
+            # ``pay_calendar:C4-b-2`` adds makes the only non-cascading one.
             db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
             db.session.commit()
 
             with pytest.raises(PayCalendarError):
@@ -10069,9 +10075,19 @@ class TestThePlanWindowIsDerivedFromTheOwnersCadence:
         is optional where a tab is not.
         """
         with app.app_context():
-            # One period of history, not the default four: the writer is
-            # forward-only and four 300-day periods back starts before
-            # ``seed_user``'s own bootstrap payday.
+            # One period of history, not the default four.  *The reason was
+            # that the writer is forward-only and four 300-day periods back
+            # starts before ``seed_user``'s own opening payday; plan step
+            # ``pay_calendar:C4-b-1`` moved this fixture onto the reset door,
+            # which retires every surviving payday in the same call, so that
+            # bound is gone.*  What replaces it is the BOOKS: a calendar may
+            # not open at or before the day the seeded account's books open
+            # (ruling ``balance:R-HG``), and four 300-day periods back is about
+            # three and a half years -- well before the 2024 books -- which
+            # ``_test_helpers.rebuild_calendar`` now refuses outright.  One
+            # period back keeps this case inside that bound.  *The day itself
+            # is not named because it moves with the wall clock: the fixture
+            # derives it from ``display_today()``.*
             seed_schedule_at_cadence(
                 cadence_days=300, num_periods=6, periods_before=1,
             )

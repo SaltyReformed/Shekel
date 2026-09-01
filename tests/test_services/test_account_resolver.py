@@ -147,8 +147,7 @@ class TestResolveGridAccount:
             from app.models.user import User
             from werkzeug.security import generate_password_hash
 
-            from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
-            from app.models.pay_period import PayPeriod as _PayPeriod  # pylint: disable=import-outside-toplevel
+            from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
             other_user = User(
                 email="other@test.local",
@@ -157,15 +156,13 @@ class TestResolveGridAccount:
             db.session.add(other_user)
             db.session.flush()
 
-            # Bootstrap pay period for the second user so the factory
-            # has somewhere to anchor against.
-            db.session.add(_PayPeriod(
-                user_id=other_user.id,
-                start_date=_date(2024, 1, 5),
-                end_date=_date(2024, 1, 5) + _td(days=13),
-                period_index=0,
-            ))
-            db.session.flush()
+            # The second user's calendar, so the factory has somewhere to
+            # anchor against.
+            # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                open_owner_calendar as _open_calendar,
+            )
+            _open_calendar(other_user.id, _date(2024, 1, 5))
 
             checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
             other_acct = account_service.create_account(

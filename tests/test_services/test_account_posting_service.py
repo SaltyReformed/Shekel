@@ -65,8 +65,8 @@ from app.services.pay_calendar import PayCalendarError
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
-    append_only_guard_lifted,
     an_entered_day,
+    append_only_guard_lifted,
     correction_net_in_period,
     create_account_of_type,
     create_account_via_service,
@@ -76,6 +76,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     ledger_net,
     observed_day_of,
+    open_owner_calendar,
     restate_account_opening,
     settle_day_columns,
     settle_instant_on,
@@ -1846,12 +1847,10 @@ class TestSyncEntryPoints:
             )
             _db.session.add(user2)
             _db.session.flush()
-            period2 = PayPeriod(
-                user_id=user2.id, start_date=seed_user["bootstrap_period"].start_date,
-                end_date=seed_user["bootstrap_period"].end_date, period_index=0,
-            )
-            _db.session.add(period2)
-            _db.session.flush()
+            # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+            period2 = open_owner_calendar(
+                user2.id, seed_user["bootstrap_period"].start_date,
+            )[0]
             checking_type_id = seed_user["account"].account_type_id
             account2 = account_service.create_account(
                 account_service.AccountSpec(

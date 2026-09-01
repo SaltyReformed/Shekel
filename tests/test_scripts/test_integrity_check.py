@@ -17,6 +17,7 @@ from app.services.auth_service import hash_password
 from app.services import account_service
 from tests._test_helpers import (
     account_never_asserted,
+    open_owner_calendar,
     settle_day_columns,
     settlement_columns,
 )
@@ -1015,8 +1016,7 @@ class TestDataConsistency:
         from app.models.scenario import Scenario  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
 
-        from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
-        from app.models.pay_period import PayPeriod as _PayPeriod  # pylint: disable=import-outside-toplevel
+        from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         # Create a second user with their own account.
         user2 = User(
@@ -1030,16 +1030,9 @@ class TestDataConsistency:
         db.session.add(settings2)
         scenario2 = Scenario(user_id=user2.id, name="Baseline", is_baseline=True)
         db.session.add(scenario2)
-        # Bootstrap pay period for user2 (E-19) so the account
-        # factory has an anchor to assign.
-        _bootstrap2 = _PayPeriod(
-            user_id=user2.id,
-            start_date=_date(2024, 1, 5),
-            end_date=_date(2024, 1, 5) + _td(days=13),
-            period_index=0,
-        )
-        db.session.add(_bootstrap2)
-        db.session.flush()
+        # user2's calendar, so the account factory has an anchor to assign.
+        # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+        _bootstrap2 = open_owner_calendar(user2.id, _date(2024, 1, 5))[0]
 
         checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
         account2 = account_service.create_account(

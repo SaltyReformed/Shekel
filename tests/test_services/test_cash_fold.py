@@ -1226,9 +1226,14 @@ class TestTotality:
 # and the ORACLE below read the same numbers without either deriving them from
 # the other -- and so a reader can see the whole fixture without reading either.
 
-# The ``seed_periods_52`` fixture's own opening assertion: $1,000.00 stamped at
-# midnight UTC on period 0's start (``_drop_seed_user_bootstrap`` re-points the
-# factory row and re-stamps it).
+# The ``seed_periods_52`` fixture's own opening assertion: ``build_seed_user``
+# creates the seeded Checking at this balance, asserted on
+# ``SEED_USER_BOOTSTRAP_START``.  *This said the assertion was "stamped at
+# midnight UTC on period 0's start" because ``_drop_seed_user_bootstrap``
+# re-pointed the factory row and re-stamped it.  Both halves are gone: plan
+# step ``balance:X-f3c-2c`` deleted the re-point when the table became
+# append-only, and ``pay_calendar:C4-b-1`` deleted the function.  The FIGURE is
+# unchanged, and it is the figure this constant is.*
 _DRIFT_OPENING = Decimal("1000.00")
 _DRIFT_INCOME = Decimal("2500.00")
 # Non-round, so a cent dropped or double-counted anywhere in 52 periods shows up
