@@ -144,7 +144,7 @@ def _anchor_is_assumed(agreement) -> bool:
     IDs-for-logic rule at the place a template makes it easiest to break: a
     ``{% if evidence.name == 'UNCORROBORATED' %}`` reads naturally, compares a
     display string, and sits in the one language this project forbids financial
-    reasoning in.  The same reason ``difference._difference_verdict`` hands its
+    reasoning in.  The same reason ``difference.difference_verdict`` hands its
     partial a computed name rather than a Decimal.
     """
     return (

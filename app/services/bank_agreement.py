@@ -221,6 +221,22 @@ class BankAgreement:
             places a figure -- in which case the LEVEL is unknown and only the
             movement half of this report is answerable.
         days: One :class:`AgreementDay` per day of the span, ascending.
+        imports: The account's imported spans merged into contiguous runs
+            (:func:`app.services.statement_import.covered_runs`), ascending and
+            disjoint -- so two runs are separated by at least one day nobody
+            has imported.  **A run is not the same question as
+            :attr:`ComparedSpan.recorded_from` and
+            :attr:`~ComparedSpan.recorded_through`**: two imports either side
+            of a gap reach both of those ends while nobody has read what lies
+            between them, and a quiet day inside a gap is indistinguishable
+            from a quiet day inside a run by any count over :attr:`days`.
+            **Carried on the VALUE and loaded once** (plan step
+            **balance:X-f3c-3**), because its reader is
+            :mod:`app.services.outstanding_difference`, which folds this report
+            down to a verdict for one span and must not issue a query of its
+            own: an answer that depended on when it was asked rather than on
+            what this report was built from is the shape a memoized read pass
+            exists to remove.
     """
 
     account_id: int
@@ -228,6 +244,7 @@ class BankAgreement:
     records_begin: "date | None"
     anchor: "statement_import.BankAnchor | None"
     days: "list[AgreementDay]"
+    imports: "list[tuple[date, date]]"
 
     @property
     def compared(self) -> "list[AgreementDay]":
@@ -440,6 +457,7 @@ class BankAgreement:
         return gaps.pop()
 
 
+
 @dataclass(frozen=True)
 class DayLine:
     """One bank line on a day, as the drill-down shows it.
@@ -560,6 +578,10 @@ def bank_agreement(
         ),
         records_begin=records_begin,
         anchor=None if folded is None else folded.anchor,
+        # The days an import actually vouches for, which is NOT the same
+        # question as the two ends of ``span``: two imports either side of a
+        # gap reach both ends while nobody has read what lies between them.
+        imports=statement_import.covered_runs(account.id),
         days=[
             AgreementDay(
                 day=day,

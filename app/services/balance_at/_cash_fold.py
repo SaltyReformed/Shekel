@@ -139,16 +139,33 @@ _ONE_DAY = timedelta(days=1)
 class AssembledCashFold:  # pylint: disable=too-many-instance-attributes
     """One account's whole running total, plus the facts it was built from.
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because the
-    count is the POINT rather than an accident.  Three of the eight are the
+    Pylint: ``too-many-instance-attributes`` (9/7) -- suppressed because the
+    count is the POINT rather than an accident.  Three of the nine are the
     inputs this record was built FROM (:attr:`account_id`, :attr:`scenario_id`,
     :attr:`calendar`), carried so a reader holding both this and one of them
-    cannot pair them wrongly; the other five are one derivation and its
-    groupings.  Collapsing the three into a nested value would hide exactly
+    cannot pair them wrongly; the other six (:attr:`seed`, :attr:`steps`,
+    :attr:`walk`, :attr:`corrections`, :attr:`plan`, :attr:`day_nets`) are one
+    derivation and its groupings.  Collapsing the three into a nested value
+    would hide exactly
     what each is here to make visible, and dropping one is what findings
     **N-354** and this step's own review re-opened.  Same disposition as
     :class:`~._context.BalanceContext` (10/7) one module over, for the same
     reason.
+
+    *This said* ``(8/7)`` *and "the other five" until plan step
+    balance:X-f3c-3, which is one short of the nine fields below:*
+    :attr:`calendar` *arrived at pay-calendar plan step C4-a-1 and the prose
+    was never recounted.*  **And the pairing argument above holds for only two
+    of the three today**: :attr:`account_id` is read by
+    :meth:`require_account` and :attr:`calendar` by
+    :func:`~._asset_fold.resolve`, while :attr:`scenario_id` has NO reader at
+    all -- a grep over ``app/``, ``tests/``, ``tests/manual/`` and ``scripts/``
+    on 2026-09-01 finds it written by :func:`_assemble` and read nowhere, so
+    the mis-pairing it is said to prevent is one no caller can perform.  That
+    is finding **N-433**, owned by plan step **X-f4**, which is where this
+    package's deletions land; it is recorded rather than removed here because
+    deleting a field from a shipped value is not X-f3c-3's subject.  What IS
+    its subject is that the rationale said something its own code does not.
 
     The output of :func:`~._cash_fold.assembled_fold`, and the reason the three readers below are
     readings of ONE valued row set rather than three producers a test keeps in

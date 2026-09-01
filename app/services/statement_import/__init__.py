@@ -60,6 +60,7 @@ from ._balance import (
     BankBalances,
     bank_balance_on,
     bank_daily_movements,
+    covered_runs,
     fold_bank_balances,
 )
 from ._integrity import (
@@ -108,6 +109,7 @@ __all__ = [
     "bank_balance_on",
     "bank_daily_movements",
     "carries_running_balance",
+    "covered_runs",
     "delete_import",
     "fold_bank_balances",
     "fresh_ordinals",

@@ -154,6 +154,7 @@ from app.routes.accounts import reconcile  # noqa: F401, E402
 from app.routes.accounts import history  # noqa: F401, E402
 from app.routes.accounts import anchor  # noqa: F401, E402
 from app.routes.accounts import difference  # noqa: F401, E402
+from app.routes.accounts import outstanding  # noqa: F401, E402
 from app.routes.accounts import opening  # noqa: F401, E402
 from app.routes.accounts import types  # noqa: F401, E402
 from app.routes.accounts import detail  # noqa: F401, E402
