@@ -354,5 +354,9 @@ class ReviewScope:
             # lines the books hold.
             opening=account_opening_fact(account_id),
             candidates=candidates_for(account_id, calendar, basis),
-            destinations=tuple(destinations_for(owner_id, account_id)),
+            # **The CALENDAR rather than the owner id** since pay-calendar
+            # plan step C4-a-4: it IS the ownership scope, and it is where each
+            # offered line's paycheck span is derived from, so this producer
+            # and ``candidates_for`` above it bound their answers by one value.
+            destinations=tuple(destinations_for(account_id, calendar)),
         )

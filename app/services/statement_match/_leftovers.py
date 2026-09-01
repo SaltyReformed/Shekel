@@ -273,7 +273,9 @@ def _creatable_lines(
     # is this project's DRY violation rather than a cost.
     by_period: "dict[int, list[PurchaseDestination]]" = {}
     for destination in destinations:
-        by_period.setdefault(destination.pay_period_id, []).append(destination)
+        by_period.setdefault(
+            destination.period.period_id, [],
+        ).append(destination)
     creatable: "list[CreatableLine]" = []
     parked: "list[ParkedLine]" = []
     for line in offerable:
