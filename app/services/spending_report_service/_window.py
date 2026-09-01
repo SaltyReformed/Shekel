@@ -359,7 +359,7 @@ def _spent_total(txns: list[Transaction]) -> Decimal:
     breakdown's share denominator: dividing by a net that refunds have pulled
     toward zero is what printed **600%** on a `$600.00` category, so
     :func:`~._breakdown._share_base` divides by what the window MOVED
-    (developer ruling 2026-09-01).  The two are the same figure wherever no
+    (developer ruling **bank_import:R-IL**, 2026-09-01).  The two are the same figure wherever no
     category went negative.
 
     Args:

@@ -191,7 +191,7 @@ class SpendingItemRow:
             of the categories' MAGNITUDES (:func:`~._breakdown._share_base`),
             a full-precision ``Decimal``; templates render, never compute.
             **In ``[-1, 1]``, and the denominator is what makes that a bound
-            rather than a hope** (developer ruling 2026-09-01, plan step
+            rather than a hope** (developer ruling **bank_import:R-IL**, 2026-09-01, plan step
             ``bank_import:X-gj-2b-3``).  A category whose refunds exceeded its
             purchases has a NEGATIVE amount and so a negative share, which is
             the honest reading -- *this category took the window DOWN by this

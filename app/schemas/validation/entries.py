@@ -33,7 +33,8 @@ class EntryCreateSchema(BaseSchema):
     (``statement_match._create._born_purchase``).
 
     **``direction`` is how a refund is stated, and it is why the bound can
-    stay** (developer ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``).
+    stay** (developer ruling **bank_import:R-IK**, 2026-09-01, plan step
+    ``bank_import:X-gj-2b-3``).
     A purchase's sign is composed by
     :func:`~app.services.entry_service.purchase_amount` from this pair, so a
     minus is not refused here -- it is unrepresentable, on both this form and

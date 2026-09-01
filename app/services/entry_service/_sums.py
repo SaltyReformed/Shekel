@@ -47,7 +47,8 @@ def purchase_amount(magnitude: Decimal, *, records_a_refund: bool) -> Decimal:
     """Return the figure a purchase STORES, from a magnitude and a direction.
 
     **The one composition of a purchase's sign from what a human stated**
-    (developer ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``).  Ruling
+    (developer ruling **bank_import:R-IK**, 2026-09-01, plan step
+    ``bank_import:X-gj-2b-3``).  Ruling
     **bank_import:R-II** made a merchant credit a NEGATIVE purchase and moved
     positivity off the table onto the hand-entry door -- and the branch that
     did it then deleted the bound from the EDIT door too, because that form
@@ -373,7 +374,7 @@ def compute_remaining(
     not checking impact.  Negative values indicate overspending.
 
     **THE BASE IS A NET CASH TARGET, SO THIS IS UNBOUNDED IN BOTH DIRECTIONS**
-    (developer ruling 2026-09-01, ruling **bank_import:R-II**, plan step
+    (developer ruling **bank_import:R-IK**, 2026-09-01, ruling **bank_import:R-II**, plan step
     ``bank_import:X-gj-2b-3``).  A merchant credit files as a NEGATIVE
     purchase, so ``sum(entries)`` can be negative and this can exceed the
     budget: an envelope budgeting `$100.00` that holds one `-$50.00` refund and

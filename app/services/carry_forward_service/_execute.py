@@ -365,7 +365,7 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
     # X-au-c2b): ruling E-21 fixes an envelope's base on its own amount
     # unconditionally, and a derived row stores none.
     # **The floor is against an OVERSPENT envelope and never against a
-    # refunded one** (developer ruling 2026-09-01, plan step
+    # refunded one** (developer ruling **bank_import:R-IK**, 2026-09-01, plan step
     # ``bank_import:X-gj-2b-3``).  Ruling **bank_import:R-II** made a merchant
     # credit a NEGATIVE purchase, so ``entries_sum`` can be negative and this
     # leftover can EXCEED the budget: an envelope budgeting `$100.00` holding

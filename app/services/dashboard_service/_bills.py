@@ -196,7 +196,7 @@ def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
     remaining, over-budget) all share one base.  ``entry_remaining`` is the
     NET-basis figure :func:`~app.services.entry_service.compute_remaining`
     states, so it can EXCEED the base for a row whose refunds exceeded its
-    purchases (developer ruling 2026-09-01); the reason is written once,
+    purchases (developer ruling **bank_import:R-IK**, 2026-09-01); the reason is written once,
     there.  ``txn_to_bill_dict`` anchors the amount cell on the same base and
     passes it in; the template surfaces ``bill.amount_base`` to disclose it.
 

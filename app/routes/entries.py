@@ -450,7 +450,8 @@ def create_entry(txn_id):
         )
 
     data = _create_schema.load(request.form)
-    # **The sign is COMPOSED, never typed** (developer ruling 2026-09-01, plan
+    # **The sign is COMPOSED, never typed** (developer ruling
+    # **bank_import:R-IK**, 2026-09-01, plan
     # step ``bank_import:X-gj-2b-3``).  The form posts a MAGNITUDE and a
     # direction; ``purchase_amount`` is the one place the pair becomes a stored
     # figure, so ``EntryDetails.amount`` stays the signed value the column
