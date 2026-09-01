@@ -56,7 +56,7 @@ from app.services.statement_match._bars import (  # pylint: disable=protected-ac
 )
 from app.services.statement_match._rules import (  # pylint: disable=protected-access
     _named_templates,
-    active_category_ids,
+    active_category_names,
     offerable_templates,
     rules_for,
 )
@@ -352,7 +352,7 @@ class TestWhatARuleResolvesTo:
         archived.is_active = False
         db.session.flush()
 
-        active = active_category_ids(seed_user["user"].id)
+        active = active_category_names(seed_user["user"].id)
 
         assert archived.id not in active
         assert seed_user["categories"]["Rent"].id in active
@@ -2050,15 +2050,21 @@ class TestTheScreenSaysWhichLineCREATESTheEnvelope:
         assert joining == [False, False]
 
 
-class TestTheFourAnswersRoundTrip:
+class TestTheFiveAnswersRoundTrip:
     """What an answer WRITES and what a row READS BACK are one mapping.
 
-    ``_columns_of`` turns an answer into four columns and ``RuleAnswer.of``
-    turns four columns back into an answer.  They are inverse functions stated
-    twice, which is the shape a fifth answer breaks by being added to one side
+    ``_columns_of`` turns an answer into five columns and ``RuleAnswer.of``
+    turns five columns back into an answer.  They are inverse functions stated
+    twice, which is the shape a new answer breaks by being added to one side
     only -- so what is graded is the round trip over EVERY member rather than
-    four hand-picked cases, and a member added to the enum without a column
+    one hand-picked case each, and a member added to the enum without a column
     mapping fails here on the day it is added.
+
+    **It did exactly that on 2026-08-31**, when ruling **R-HT(a)**'s
+    :attr:`~._rules.RuleAnswer.INCOME_CATEGORY` was added: all three cases
+    failed on their ``set(fields) == set(RuleAnswer)`` guard before any of them
+    reached a database, which is the cheapest place to learn it.  That guard is
+    why the maps below stay literal rather than derived from the enum.
     """
 
     def test_every_answer_reads_back_as_itself(self, app, db, seed_user):
@@ -2076,6 +2082,7 @@ class TestTheFourAnswersRoundTrip:
             RuleAnswer.NEW_ENVELOPE: {
                 "envelope_name": "Lowe's", "category_id": category.id,
             },
+            RuleAnswer.INCOME_CATEGORY: {"income_category_id": category.id},
             RuleAnswer.NEVER: {},
             RuleAnswer.ALWAYS_ASK: {},
         }
@@ -2105,11 +2112,12 @@ class TestTheFourAnswersRoundTrip:
     def test_every_answer_gets_its_OWN_sentence(self, app, db, seed_user):
         """The receipt is a fourth place the answer set is enumerated.
 
-        ``_columns_of`` derives the flag and ``_apply_one`` dispatches on three
-        members and falls through to the fourth, so a fifth member added to
-        :class:`RuleAnswer` would be STORED as *ask me every time* and
-        RECEIPTED as it too -- telling the owner they said something they did
-        not.  The round trip above catches the storage half; this catches the
+        ``_columns_of`` derives the flag and ``_apply_one`` DISPATCHED on three
+        members and fell through to the fourth, so a fifth member would be
+        STORED correctly and RECEIPTED as *ask me every time* -- telling the
+        owner they said something they did not.  **That fall-through is a raise
+        since plan step ``bank_import:X-gj-2a``**, and this case is what makes
+        it a test failure rather than a 500.  The round trip above catches the storage half; this catches the
         sentence, which is the half the owner reads.  Named by adversarial
         review 2026-08-26.
 
@@ -2126,6 +2134,7 @@ class TestTheFourAnswersRoundTrip:
             RuleAnswer.NEW_ENVELOPE: {
                 "envelope_name": "Lowe's", "category_id": category.id,
             },
+            RuleAnswer.INCOME_CATEGORY: {"income_category_id": category.id},
             RuleAnswer.NEVER: {},
             RuleAnswer.ALWAYS_ASK: {},
         }
@@ -2171,12 +2180,14 @@ class TestTheFourAnswersRoundTrip:
             template_id=envelope.template_id,
             envelope_name="Lowe's",
             category_id=seed_user["categories"]["Groceries"].id,
+            income_category_id=seed_user["categories"]["Groceries"].id,
         ))
 
         assert columns == {
             "template_id": None,
             "envelope_name": None,
             "category_id": None,
+            "income_category_id": None,
             "never_a_purchase": True,
         }
 

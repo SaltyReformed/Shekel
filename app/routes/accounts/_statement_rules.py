@@ -30,13 +30,10 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.routes.accounts._statement_doors import refusal_sentence
 from app.schemas.validation.merchant_rules import (
-    ALWAYS_ASK,
-    NEVER,
     NOT_SAID,
     MerchantRuleBatchSchema,
     rule_payload,
 )
-from app.schemas.validation.statements import NEW_ENVELOPE
 from app.services.statement_match import (
     RuleAnswer,
     RuleSubmission,
@@ -165,25 +162,85 @@ def submitted_rules(submitted) -> "tuple[RuleSubmission, ...]":
         answer = item["answer"]
         if answer == NOT_SAID:
             continue
-        if answer == NEVER:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"], answer=RuleAnswer.NEVER,
-            ))
-        elif answer == ALWAYS_ASK:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"], answer=RuleAnswer.ALWAYS_ASK,
-            ))
-        elif answer == NEW_ENVELOPE:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"],
-                answer=RuleAnswer.NEW_ENVELOPE,
-                envelope_name=item["envelope_name"],
-                category_id=item["category_id"],
-            ))
-        else:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"],
-                answer=RuleAnswer.TEMPLATE,
-                template_id=answer,
-            ))
+        statements.append(_one_statement(item["merchant_id"], answer, item))
     return tuple(statements)
+
+
+#: Where a submitted answer's ROW ID belongs on the service's own submission,
+#: by which answer it is.
+#:
+#: **This table is what replaced a fall-through, and the fall-through was a
+#: money defect waiting for a second id-bearing answer** (plan step
+#: ``bank_import:X-gj-2a``).  The dispatch it replaces named three answers and
+#: ended ``else: answer=RuleAnswer.TEMPLATE, template_id=answer`` -- correct
+#: while a template was the only answer carrying an id, and wrong the moment
+#: ruling **R-HT(a)** added one carrying a CATEGORY: that answer would have
+#: been recorded as a template rule, filing the merchant's SPENDING into a
+#: budget line the owner named nothing for, from an answer they gave about
+#: DEPOSITS.
+#:
+#: An answer added to :class:`~app.services.statement_match.RuleAnswer` and to
+#: neither this table nor :data:`_NAMES_NO_ROW` now reaches
+#: :func:`_one_statement`'s ``raise`` rather than being silently read as a
+#: template.
+_ID_FIELD: "dict[RuleAnswer, str]" = {
+    RuleAnswer.TEMPLATE: "template_id",
+    RuleAnswer.INCOME_CATEGORY: "income_category_id",
+}
+
+#: The answers that carry no row id of their own.  *New envelope* is here and
+#: not in :data:`_ID_FIELD` because its two parameters travel in fields of
+#: their own rather than in the answer value -- one control states the ARM and
+#: two beside it state the name and the category, which is the shape the
+#: ``d-none`` findings were about and is unchanged by this step.
+_NAMES_NO_ROW: "frozenset[RuleAnswer]" = frozenset({
+    RuleAnswer.NEVER, RuleAnswer.ALWAYS_ASK, RuleAnswer.NEW_ENVELOPE,
+})
+
+
+def _one_statement(merchant_id: int, answer, item) -> RuleSubmission:
+    """Return ONE merchant's submitted answer as the service's own value.
+
+    Args:
+        merchant_id: Which merchant this answers for.
+        answer: What the control submitted
+            (:class:`~app.schemas.validation.merchant_rules.SubmittedAnswer`),
+            carrying WHICH answer it is rather than leaving that to be inferred
+            from the shape of a bare id.
+        item: The whole loaded item, for the two fields a *new envelope* answer
+            states beside its arm.
+
+    Returns:
+        The :class:`~app.services.statement_match.RuleSubmission`.
+
+    Raises:
+        ValueError: When the answer is a member this mapping does not cover.
+            **A programming error rather than a designed refusal**, so it is
+            not a ``ValidationError``: no wire value can reach it -- the field
+            that produced this answer builds it from the same enum -- and it
+            fires only if a future member is added to
+            :class:`~app.services.statement_match.RuleAnswer` and to neither
+            table above.  Failing loudly is the point: the alternative is the
+            silent mis-recording this dispatch replaced.
+    """
+    if answer.kind in _NAMES_NO_ROW:
+        return RuleSubmission(
+            merchant_id=merchant_id,
+            answer=answer.kind,
+            # Read only for the answer that uses them, which is
+            # ``RuleSubmission``'s own documented contract: a submission
+            # pairing NEVER with a name writes a *never a purchase* row.
+            envelope_name=item["envelope_name"],
+            category_id=item["category_id"],
+        )
+    field = _ID_FIELD.get(answer.kind)
+    if field is None:
+        raise ValueError(
+            f"{answer.kind} is a rule answer no submission mapping covers; "
+            f"add it to _ID_FIELD or _NAMES_NO_ROW rather than letting it "
+            f"fall through to another answer's arm.",
+        )
+    return RuleSubmission(
+        merchant_id=merchant_id, answer=answer.kind,
+        **{field: answer.row_id},
+    )

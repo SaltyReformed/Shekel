@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 
 from ._panel import AddAct, AddTab, VerbPanel
 from ._sentence import NAMED_ROW_LIMIT, Span, choose, for_accepted
+from ._sentence import for_income_placement
 from ._sentence import for_parked_never
 from ._sentence import for_parked_transfer, for_placement, for_proposal
 from ._verbs import ADD_SHUT_BY_A_PROPOSAL, Verb, VerbOffer, offers_for
@@ -460,31 +461,60 @@ def _inflow_card(
 ) -> LineCard:
     """Return the card for money coming IN that no row explains.
 
-    Ruling **bank_import:R-HX**: nothing is pre-filled.  The only inflow door
-    that exists records uncategorized INCOME, and being the only act is not a
-    justification -- a merchant credit is a refund, and calling it income is
-    the wrong act ``X-gj-2`` exists to correct.
+    **Ruling R-HX, and the condition it set is now MET for one class of
+    deposit** (plan step ``bank_import:X-gj-2a``).  That ruling said every
+    unmatched inflow reads *Choose what this is* "until ``X-gj-2`` ships
+    **R-HT(a)**'s inflow rule and the destination becomes one the app can
+    defend" -- because recording a deposit as uncategorized income was the ONLY
+    inflow act, and being the only act is not what **R-HS** means by justified.
+
+    So the split is by whether a STANDING RULE answers this signature, and by
+    nothing else:
+
+    * a rule that names an income category is a destination the owner stated,
+      so the card states it and offers OK (:func:`~._sentence
+      .for_income_placement`);
+    * everything else still reads :func:`choose` and opens the panel -- a
+      merchant credit included, which is a REFUND whose act
+      ``bank_import:X-gj-2b`` builds, and calling it income remains the wrong
+      act this arc's audit measured.
+
+    **The reason a rule withheld is a NOTE and never a suppressed sentence.**
+    An unresolved placement carries one -- an archived category, or a spending
+    answer whose refund arm does not exist yet -- and it joins the panel's
+    notes beside the search gap, so the owner reads why their own rule did
+    nothing rather than seeing a card that looks unanswered.
 
     Args:
-        review: The pass, which owns both the search gap and the
-            books-already-hold-income signal.
+        review: The pass, which owns the search gap, the
+            books-already-hold-income signal and the category names a stated
+            rule resolves against.
         inflow: The :class:`~._leftovers.RecordableInflow`.
 
     Returns:
         The :class:`LineCard`.
     """
     gap = review.search_gap_for(inflow.line)
+    placement = inflow.placement
+    files_here = placement is not None and placement.records
+    withheld_by_rule = (
+        placement.unresolved_reason if placement is not None else None
+    )
     return LineCard(
         line=inflow.line,
-        section=Section.NOTHING,
-        suggested=None,
-        sentence=choose(),
+        section=Section.BY_RULE if files_here else Section.NOTHING,
+        suggested=Verb.ADD if files_here else None,
+        sentence=(
+            for_income_placement(placement)
+            if files_here else choose()
+        ),
         income_already_held=review.income_already_recorded_in(inflow.line),
         risk_class=None,
         panel=VerbPanel(
             offers=_offers(review, inflow.withheld, None),
             notes=tuple(
-                said for said in (inflow.withheld, gap) if said is not None
+                said for said in (inflow.withheld, withheld_by_rule, gap)
+                if said is not None
             ),
             answer_door=None,
             # **An income row is filed against NO container**, so the tab

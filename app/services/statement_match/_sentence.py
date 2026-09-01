@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from ._placement import Placement
+from ._placement import InflowPlacement, Placement
 from ._verbs import Verb
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
@@ -262,6 +262,57 @@ def for_placement(placement: Placement) -> "tuple[Span, ...]":
         f"A placement of kind {placement.kind.value!r} names no destination, "
         f"so no sentence can state where it files. Its card states "
         f"{placement.unresolved_reason!r} instead."
+    )
+
+
+def for_income_placement(placement: InflowPlacement) -> "tuple[Span, ...]":
+    """Return the sentence for a DEPOSIT a standing rule names a class for.
+
+    Rulings **bank_import:R-HS** and **R-HT(a)**, plan step
+    ``bank_import:X-gj-2a``.  :func:`for_placement`'s twin for the other
+    direction, and it is a separate composer for the reason
+    :class:`~._placement.InflowPlacement` is a separate type: what a deposit's
+    rule names is a CLASSIFICATION, so the sentence reads *Add as X* where the
+    outflow's reads *Add to X*.  One composer branching on direction would put
+    that preposition behind a condition, which is the template-restates-a-
+    partition shape this package keeps removing.
+
+    **No period span**, and that is not an omission.  An outflow's sentence
+    names the pay period because the destination IS a row in one particular
+    period and the owner needs to know which; an income row is filed against
+    nothing, so the only period it has is the one its own posting day falls in
+    -- which the card already prints beside the bank's facts.
+
+    **This is what ruling R-HX pointed at this step to build.**  Until now
+    every unmatched inflow's card read :func:`choose`, because recording a
+    deposit as uncategorized income was the only inflow act and *being the only
+    act* is not what R-HS means by justified.  A stated rule is a destination
+    the app can defend, which is the condition R-HX set for pre-filling one.
+
+    Args:
+        placement: The :class:`~._placement.InflowPlacement`, which must name a
+            category -- ``records``.  An unresolved one names none and its card
+            takes :func:`choose` instead.
+    Returns:
+        The spans.
+
+    Raises:
+        ValueError: When *placement* names no category.  **A refusal rather
+            than a fallback sentence**, for the reason :func:`for_placement`
+            raises: a card may not state a class the rule never named, and
+            substituting one is exactly the misfiling ruling **R-HX**
+            measured.
+    """
+    if not placement.records:
+        raise ValueError(
+            f"An inflow placement for {placement.merchant!r} names no income "
+            f"category, so no sentence can state what it records this as. Its "
+            f"card states {placement.unresolved_reason!r} instead."
+        )
+    return (
+        Span.words(Verb.ADD.word, Ink.VERB),
+        Span.words("as", Ink.PLAIN),
+        Span.words(placement.category, Ink.STRONG),
     )
 
 

@@ -454,9 +454,27 @@ def _filing_sentence(filing) -> str:
         # is *Filed by rules* and the other one holds none.  Twice now the
         # destination has moved and the sentence has had to move with it,
         # which is why it names a place rather than describing one.
+        # **The two DIRECTIONS are named separately, and neither is assumed**
+        # (ruling **R-HT(a)**, plan step ``bank_import:X-gj-2a``).  This read
+        # "filed N of them as purchases worth X" while a rule could only ever
+        # file spending; a rule now also files a DEPOSIT a standing income
+        # answer covers, so the flat sentence would have called income a
+        # purchase and -- because ``filed_count`` then read ``recorded_count``
+        # alone -- reported "0" for a pass that filed only deposits.  The net
+        # figure is stated as a net rather than as spending, because a pass
+        # carrying both can come to any sign.
+        classes = []
+        if filing.outcome.recorded_count:
+            classes.append(
+                f"{filing.outcome.recorded_count} as purchases"
+            )
+        if filing.outcome.deposited_count:
+            classes.append(
+                f"{filing.outcome.deposited_count} as income"
+            )
         parts.append(
-            f"  Your standing rules filed {filing.filed_count} of them as "
-            f"purchases worth {filing.filed_total:+,.2f}{envelopes}.  The most "
+            f"  Your standing rules filed {' and '.join(classes)}, "
+            f"{filing.filed_total:+,.2f} in total{envelopes}.  The most "
             f"recent are under 'Filed by your rules' below, each with an undo; "
             f"every one of them is on the Filed by rules tab of the "
             f"Reconcile screen."
