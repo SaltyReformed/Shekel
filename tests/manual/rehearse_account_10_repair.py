@@ -58,6 +58,7 @@ Then score the post-state against the same export::
 
 import argparse
 import csv
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -103,6 +104,27 @@ CHECKING_ACCOUNT = 1
 #: first, which doubles that finding's standing exposure once this runs.
 DUPLICATE_TRANSFER = 102
 ABSORBED_TRANSFER = 1
+
+#: What each DELETED transfer must be found to hold, reconciled against its own
+#: row before anything is written.  **Stated because the two deletes were the
+#: only acts in this repair whose subject was never read** (adversarial review,
+#: 2026-09-01): ``_map_problems`` put both ids into ``mapped`` for census
+#: membership and checked no figure, while ``_consolidate_twin`` re-recorded a
+#: literal ``$500.00`` and ``_expected_class_moves`` expected the same literal
+#: -- an equality whose two sides came from ONE constant and could not fail.
+#: Both rows are LIVE template-linked recurrences, so their amount is a thing
+#: that can drift between this file being written and the repair being
+#: performed; if it does, the operator deletes one figure and re-records
+#: another with every arm green.  ``(amount, from_account, to_account)``.
+DELETED_TRANSFERS = {
+    DUPLICATE_TRANSFER: (Decimal("500.00"), CHECKING_ACCOUNT, SUBJECT_ACCOUNT),
+    ABSORBED_TRANSFER: (Decimal("500.00"), CHECKING_ACCOUNT, TWIN_ACCOUNT),
+}
+
+#: The absorbed transfer's amount, re-recorded as a plain Checking expense.
+#: Read from :data:`DELETED_TRANSFERS` rather than spelled a second time, so
+#: the figure the act books is the figure the reconciliation checked.
+ABSORBED_LEG_AMOUNT = DELETED_TRANSFERS[ABSORBED_TRANSFER][0]
 
 #: The day the absorbed transfer's Checking leg is re-recorded on, and the
 #: category it keeps.  **It is NOT the bank's day and cannot be**: SECU posted
@@ -823,9 +845,26 @@ def _map_problems(export: _Export) -> "list[str]":
         if day > OPENED_ON and day not in answered
     )
 
+    for transfer_id, (amount, source, target) in DELETED_TRANSFERS.items():
+        transfer = db.session.get(Transfer, transfer_id)
+        if transfer is None or transfer.is_deleted:
+            problems.append(
+                f"transfer {transfer_id} is to be DELETED and does not exist "
+                f"or is already deleted"
+            )
+            continue
+        found = (transfer.amount, transfer.from_account_id,
+                 transfer.to_account_id)
+        if found != (amount, source, target):
+            problems.append(
+                f"transfer {transfer_id} is to be DELETED holding "
+                f"{amount} from account {source} to {target}, and the row "
+                f"holds {found[0]} from {found[1]} to {found[2]}"
+            )
+
     mapped = (
         {movement.transfer_id for movement in MOVEMENTS}
-        | {DUPLICATE_TRANSFER, ABSORBED_TRANSFER}
+        | set(DELETED_TRANSFERS)
     )
     problems.extend(
         f"account {row.account_id} carries a settled row (transaction "
@@ -943,6 +982,36 @@ def _account_trueup_total(account_id: int) -> Decimal:
         where la.account_id = :account and k.name = 'trueup'
           and cl.name = 'Asset'
     """), {"account": account_id}).scalar_one()
+
+
+def _postings_fingerprint() -> str:
+    """Return a digest of every posted-ledger row, ordered.
+
+    **Written because the runbook made a claim nothing graded.**  It said the
+    twin's archive round trip "moves no money (measured: a byte-identical
+    postings fingerprint either side)" and no fingerprint existed anywhere in
+    the instruments -- a one-off measurement quoted as a standing property,
+    which is this project's "a fix describes itself ungraded" (adversarial
+    review, 2026-09-01).  Now the round trip asserts it.
+
+    Every column that could carry money or attribution is in the digest, and
+    the ORDER is fixed by ``ap.id`` so two equal ledgers cannot hash
+    differently for a row-order reason.
+
+    Returns:
+        A hex SHA-256 over the posted ledger.
+    """
+    rows = db.session.execute(db.text("""
+        select ap.id, ap.journal_entry_id, ap.ledger_account_id,
+               ap.posting_kind_id, ap.amount, je.entry_date, je.pay_period_id
+        from budget.account_postings ap
+        join budget.journal_entries je on je.id = ap.journal_entry_id
+        order by ap.id
+    """)).all()
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update("|".join(str(cell) for cell in row).encode())
+    return f"{digest.hexdigest()[:16]} over {len(rows)} postings"
 
 
 def _interest_income_total(account_id: int) -> Decimal:
@@ -1279,20 +1348,33 @@ def _delete_transfer(op: _Operator, transfer_id: int) -> None:
 def _set_archived(op: _Operator, account_id: int, archived: bool) -> None:
     """Archive or unarchive an account and assert the flag moved.
 
+    **The posted ledger is fingerprinted either side, so "the round trip moves
+    no money" is GRADED rather than claimed.**  The runbook asserted that
+    property and nothing measured it (adversarial review, 2026-09-01).
+    Archiving is a visibility flag: the balance sheet reads the posted ledger
+    over the whole chart and filters no account (**N-384**), so a flip that
+    moved a posting would move net worth silently.
+
     Args:
         op: The owner's session.
         account_id: The account.
         archived: The state to reach.
 
     Raises:
-        AssertionError: When the flag did not move.
+        AssertionError: When the flag did not move, or the flip moved money.
     """
     door = "archive" if archived else "unarchive"
+    before = _postings_fingerprint()
     op.send("post", f"/accounts/{account_id}/{door}", {})
     db.session.expire_all()
     assert db.session.get(Account, account_id).is_active is not archived, \
         f"account {account_id} did not {door}"
-    print(f"  account {account_id} {door}d")
+    after = _postings_fingerprint()
+    assert after == before, (
+        f"{door} of account {account_id} MOVED THE POSTED LEDGER: "
+        f"{before} -> {after}"
+    )
+    print(f"  account {account_id} {door}d; postings unchanged ({after})")
 
 
 def _redate_all(op: _Operator) -> None:
@@ -1322,7 +1404,7 @@ def _consolidate_twin(op: _Operator) -> None:
 
     **The twin is UNARCHIVED for its own two acts and archived again after,
     because while it is archived neither door has a click path** (finding
-    **N-414**, measured 2026-08-31).  The cockpit's archived region offers
+    **N-430**, measured 2026-08-31).  The cockpit's archived region offers
     Unarchive and Delete and nothing else -- its own template says "archived
     accounts have no cell kebab or edit-form reach in the cockpit" -- and no
     other surface links the edit page or the detail page for one.  Both doors
@@ -1338,9 +1420,10 @@ def _consolidate_twin(op: _Operator) -> None:
     expense = _record(
         op, account_id=CHECKING_ACCOUNT,
         category_id=_category_id(op.user_id, *EXPENSE_CATEGORY),
-        type_id=_EXPENSE, day=ABSORBED_LEG_DAY, amount=Decimal("500.00"),
+        type_id=_EXPENSE, day=ABSORBED_LEG_DAY, amount=ABSORBED_LEG_AMOUNT,
     )
-    print(f"  Checking expense {expense}: 500.00 on {ABSORBED_LEG_DAY}")
+    print(f"  Checking expense {expense}: {ABSORBED_LEG_AMOUNT} on "
+          f"{ABSORBED_LEG_DAY}")
     _set_archived(op, TWIN_ACCOUNT, archived=False)
     _restate_opening(op, TWIN_ACCOUNT, _ZERO_MONEY)
     _assert_balance(op, TWIN_ACCOUNT, _ZERO_MONEY, TWIN_ASSERTED_ON)
@@ -1431,10 +1514,11 @@ def _perform(op: _Operator, export: _Export) -> None:
 
 def _verify(
     export: _Export, before: "dict[str, Decimal]", modelled_before: Decimal,
+    checking_before: Decimal,
 ) -> None:
     """Assert the post-state the repair exists to reach, and print it.
 
-    Six assertions, and none of them is the balance comparison -- that is
+    Seven assertions, and none of them is the balance comparison -- that is
     ``measure_cutover_against_bank.py``'s question, asked with the same export
     by the command this file's docstring names.  What is asked here is whether
     the ACTS landed.
@@ -1444,9 +1528,11 @@ def _verify(
         before: :func:`_class_totals` captured before the first act.
         modelled_before: The subject account's ``interest_income`` total before
             the first act.
+        checking_before: :func:`_account_trueup_total` for CHECKING before the
+            first act, so the arm can assert the CHANGE rather than a level.
 
     Raises:
-        AssertionError: On any of the six.
+        AssertionError: On any of the seven.
     """
     db.session.expire_all()
     after = _class_totals()
@@ -1485,6 +1571,25 @@ def _verify(
     )
     print(f"  account {SUBJECT_ACCOUNT}'s posted corrections total "
           f"{corrections}")
+
+    # **CHECKING, the third account this repair touches and the one nothing
+    # used to check** (adversarial review, 2026-09-01).  Its displayed balance
+    # never moves -- its own 2026-07-31 assertion resets the fold above
+    # everything here -- so the repair's whole effect on it is a change in what
+    # its records EXPLAIN, which is exactly what the correction total measures.
+    # The expected figure is DERIVED, not quoted: deleting the duplicate
+    # removes a ``$500.00`` outflow that never happened, so the ledger now
+    # holds that much more and the corrections shrink by it.  The absorbed
+    # transfer nets to zero here -- its leg leaves as a transfer and returns as
+    # an expense of the same amount on the same account.
+    checking_moved = _account_trueup_total(CHECKING_ACCOUNT) - checking_before
+    assert checking_moved == -DELETED_TRANSFERS[DUPLICATE_TRANSFER][0], (
+        f"account {CHECKING_ACCOUNT}'s corrections moved {checking_moved}, "
+        f"not the {-DELETED_TRANSFERS[DUPLICATE_TRANSFER][0]} the deleted "
+        "duplicate derives"
+    )
+    print(f"  account {CHECKING_ACCOUNT}'s corrections moved "
+          f"{checking_moved:+}")
 
     modelled = _interest_income_total(SUBJECT_ACCOUNT)
     assert modelled == _ZERO_MONEY, \
@@ -1565,10 +1670,11 @@ def main() -> None:
         _reconcile(export)
         before = _class_totals()
         modelled_before = _interest_income_total(SUBJECT_ACCOUNT)
+        checking_before = _account_trueup_total(CHECKING_ACCOUNT)
         operator = _Operator(app)
         _perform(operator, export)
         print(f"{operator.acts} door acts performed; verifying")
-        _verify(export, before, modelled_before)
+        _verify(export, before, modelled_before, checking_before)
     print("rehearsal complete")
 
 
