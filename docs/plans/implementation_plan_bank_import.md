@@ -148,25 +148,20 @@ what it leaves a LATER step is on that step's own entry.
           :class:`RuleAnswer` and `merchant_rules.income_category_id`, auto-applied at import.
           **A LATER step must obey:** a merchant CREDIT is reported UNRESOLVED and never filed here
           (**R-HX**) -- `X-gj-2b` is what files it.
-    - [ ] **X-gj-2b** `feat(import): a refund is a negative purchase` -- **R-II**:
-          `ck_transaction_entries_positive_amount` becomes `amount <> 0` and the positivity rule
-          moves to the hand-entry door, where a typed negative is a typo. **MOVES MONEY, OWN PR.**
-          **IT OPENS WITH A READER CENSUS, AND THE CENSUS HAS A DIRECTION.** What it must establish
-          is that no reader breaks on a negative -- which is an ABSENCE, and a name-keyed grep over
-          `entry.amount` can never establish one. So it ENUMERATES the readers and rules on each.
-          Four are already traced sign-general and are the starting set:
-          `_posting_purchases._purchase_target` (which at `-28.29` emits
-          `{cash: +28.29, category: -28.29}` with no branch), `cash_ledger.settled_cash_leg` (three
-          terms, all sums that net), `entry_service._sums.compute_entry_sums` and
-          `_posting_purchases.purchase_posts`. **Every other reader is UNKNOWN until read.**
-          **It must grade BOTH members of `rule.answer`**, and the reason is measured rather than
-          stylistic: `inflow_placement_for` reports a refund for
-          `rule.answer in (TEMPLATE, NEW_ENVELOPE)`, and until 2026-08-31 every case staged a
-          TEMPLATE -- so a mutation giving NEW_ENVELOPE an income arm survived **959 tests** and
-          auto-filed a credit as income. On the developer's own data his `Amazon` rule is
-          NEW_ENVELOPE and his `Walmart` is TEMPLATE, so the ungraded arm was the one covering his
-          LARGEST refund merchant. **2b makes that arm FILE where 2a only reports**, so the arm that
-          survived is the arm that moves money.
+    - [x] **X-gj-2b** `a23315dc` -- the DECOMPOSED parent of the refund filing, split three ways
+          during the build; ticked with its third leaf. Ruled **R-IK**, **R-IL**, **R-IM**; opened
+          **N-420** and **N-435**; **N-411** was opened and spent inside `X-gj-2b-1`.
+      - [x] **X-gj-2b-1** `9920bed7` -- `ck_transaction_entries_positive_amount` becomes
+            `amount <> 0` (**R-II**), so a merchant credit files as a contra-entry against its
+            merchant's envelope: representable, editable and safe, with no rule filing one yet.
+      - [x] **X-gj-2b-2** `1bfeff07` -- a standing rule FILES a refund (**R-HT(a)**), auto-applied
+            under **R-GH**. A PARTITION CORRECTION and not a new arm: `_creatable_lines`'
+            `amount < 0` and `_recordable_inflows`' `amount > 0` chose the pipeline before the
+            owner's rule was read at all.
+      - [x] **X-gj-2b-3** `a23315dc` -- the census, run twice (by NAME, then by SHAPE) because an
+            ABSENCE is what it had to establish. Both hand-entry doors now take a MAGNITUDE and a
+            Charge/Refund control; an envelope's budget is a NET target (**R-IK**); the spending
+            share divides by what MOVED (**R-IL**); the grid cell goes through `money()` (**R-IM**).
   - [ ] **X-gj-3** `feat(import): a rule names a row set` -- **R-HT(b)**: a payroll signature
         pre-builds the group match (the period's payroll rows, the residue onto the named row per
         **R-GD** or its own row per **R-FN**) as a solid suggestion, with the
