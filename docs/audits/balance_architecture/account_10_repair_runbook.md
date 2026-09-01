@@ -359,7 +359,7 @@ rather than comparing against a quoted one.**
 
 ## How this was rehearsed
 
-2026-09-01, on a throwaway clone of production taken to alembic head `d1f6a83c9e47`, driven through
+2026-09-01, on a throwaway clone of production taken to alembic head `e2d7a94f61c3`, driven through
 the same HTTP doors this document describes. Most acts fetch the form the owner opens, change only
 what they type, and submit the rest exactly as rendered; the two deletes, the archive round trip and
 the category create are direct submissions, because those controls are a button with no payload or —
