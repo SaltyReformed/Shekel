@@ -33,7 +33,7 @@ from app.services.statement_match import (
     RuleVerdict,
 )
 from app.services.statement_match._already_held import (  # pylint: disable=protected-access
-    IncomeAlreadyRecorded,
+    ArrivalsAlreadyHeld,
 )
 from app.services.statement_match._filing import (  # pylint: disable=protected-access
     _rule_filings,
@@ -122,14 +122,14 @@ def _held(total):
     """Return the double-count fact for a period holding *total* of income.
 
     **The REAL value object, not a stub with a ``total`` on it.**  The sentence
-    the pass writes is composed by :meth:`IncomeAlreadyRecorded.
+    the pass writes is composed by :meth:`ArrivalsAlreadyHeld.
     why_it_could_double_count` since plan step ``bank_import:X-gj-2b``, so a
     ``SimpleNamespace`` here would be a second implementation of the one thing
     both doors are supposed to share -- and it would pass while that method was
     deleted.  ``rows`` is empty because nothing in this module reads it; what
     the sentence states is the TOTAL.
     """
-    return IncomeAlreadyRecorded(rows=(), total=Decimal(total))
+    return ArrivalsAlreadyHeld(rows=(), total=Decimal(total))
 
 
 def _lines(creatable, **pass_facts):
@@ -600,7 +600,7 @@ class TestTheSentenceTheScreenPrintsIsComposedHERE:
 class TestARefundIsWithheldWhenTheBooksMayAlreadyHoldIt:
     """The double-count guard, asked of the PURCHASE pipeline too.
 
-    Plan step ``bank_import:X-gj-2b``.  ``income_already_recorded`` guards an
+    Plan step ``bank_import:X-gj-2b``.  ``arrivals_already_held`` guards an
     auto-filed DEPOSIT against recording money the books already hold.  Ruling
     **R-II** routes a container-answered merchant credit into the PURCHASE
     pipeline instead -- and this function, which rules that pipeline, asked

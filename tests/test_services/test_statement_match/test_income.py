@@ -762,7 +762,7 @@ class TestWhichConsentReachesThisDoor:
 
 
 class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
-    """Ruling **bank_import:R-GW**'s per-line duplicate check (``IncomeAlreadyRecorded``).
+    """Ruling **bank_import:R-GW**'s per-line duplicate check (``ArrivalsAlreadyHeld``).
 
     **The only way this door can double-count money** is by recording a
     deposit the books already hold, and the signal the card was first written
@@ -787,7 +787,7 @@ class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
         # figure is the proposer's to claim, and this case is about the method.
         line = _a_deposit(seed_user, amount="2600.00")
 
-        held = review_set(a_scope(seed_user)).income_already_recorded_in(line)
+        held = review_set(a_scope(seed_user)).arrivals_already_held_in(line)
 
         assert held is not None
         assert {row.label for row in held.rows} == {
@@ -803,7 +803,7 @@ class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
 
         assert review_set(
             a_scope(seed_user),
-        ).income_already_recorded_in(line) is None
+        ).arrivals_already_held_in(line) is None
 
     def test_rows_in_ANOTHER_period_do_not_warn(self, app, db, seed_user):
         """The question is about THIS deposit's paycheck, not the account.
@@ -840,7 +840,7 @@ class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
 
         # The row really is on offer -- otherwise this measures its absence.
         assert salary.name in {row.label for row in review.unmatched_rows}
-        assert review.income_already_recorded_in(line) is None
+        assert review.arrivals_already_held_in(line) is None
 
     def test_a_deposit_SMALLER_than_the_smallest_row_says_nothing(
         self, app, db, seed_user,
@@ -860,7 +860,7 @@ class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
 
         assert review_set(
             a_scope(seed_user),
-        ).income_already_recorded_in(line) is None
+        ).arrivals_already_held_in(line) is None
 
     def test_a_deposit_AT_OR_ABOVE_the_smallest_row_DOES_warn(
         self, app, db, seed_user,
@@ -883,7 +883,7 @@ class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
         )
         line = _a_deposit(seed_user, amount="60.00")
 
-        held = review_set(a_scope(seed_user)).income_already_recorded_in(line)
+        held = review_set(a_scope(seed_user)).arrivals_already_held_in(line)
 
         assert held is not None
         assert held.total == Decimal("2512.92")
@@ -897,7 +897,7 @@ class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
 
         assert review_set(
             a_scope(seed_user),
-        ).income_already_recorded_in(line) is None
+        ).arrivals_already_held_in(line) is None
 
     def test_a_REFUND_is_asked_the_SAME_question_by_the_screen(
         self, app, db, seed_user,

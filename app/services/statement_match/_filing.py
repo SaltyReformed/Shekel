@@ -460,7 +460,7 @@ def _inflow_filings(
       has not been shown to collide with anything.
     * **The books may ALREADY HOLD this deposit**, which is the hazard the
       outflow side does not have.
-      :meth:`~._reads.ReviewSet.income_already_recorded_in` answers it -- does
+      :meth:`~._reads.ReviewSet.arrivals_already_held_in` answers it -- does
       this deposit's own pay period hold unexplained income that could contain
       it -- and under a human tick the card renders that warning and the person
       decides.  **There is no person here**, so a rule withholds wherever the
@@ -524,7 +524,7 @@ def _inflow_filings(
         #
         # **The double-count guard below cannot stand in for it**, which is
         # what made the omission a money defect rather than a tidiness one:
-        # :meth:`~._reads.ReviewSet.income_already_recorded_in` tests
+        # :meth:`~._reads.ReviewSet.arrivals_already_held_in` tests
         # ``row.expected_on <= day <= row.expected_through``, so it sees only
         # rows in the deposit's OWN pay period, while the near tier reaches
         # across periods by ``DAY_WINDOW``.  A candidate row one period over is
@@ -542,7 +542,7 @@ def _inflow_filings(
                 ),
             ))
             continue
-        held = review.income_already_recorded_in(inflow.line)
+        held = review.arrivals_already_held_in(inflow.line)
         if held is not None:
             withheld.append(WithheldLine(
                 line=inflow.line,

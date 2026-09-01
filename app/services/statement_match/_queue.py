@@ -18,7 +18,7 @@ than re-derived:
 
 * a POSITIVE counterpart signal -- ruling **R-GJ**'s bar on an outflow, or
   income the books already record for an inflow's own pay period
-  (:meth:`~._reads.ReviewSet.income_already_recorded_in`);
+  (:meth:`~._reads.ReviewSet.arrivals_already_held_in`);
 * an UNFINISHED search -- :func:`~._gaps.search_gap`, which says why this pass
   cannot conclude the line has no counterpart.
 
@@ -51,7 +51,7 @@ if TYPE_CHECKING:  # pragma: no cover -- the edge back would be a cycle
     from ._bars import ParkedLine
     from ._offers import BankLine
     from ._leftovers import CreatableLine, RecordableInflow
-    from ._reads import IncomeAlreadyRecorded, ReviewSet
+    from ._reads import ArrivalsAlreadyHeld, ReviewSet
     # :mod:`._reads` imports THIS module for :attr:`~._reads.ReviewSet.queue`,
     # so the annotation is a forward reference and the import is type-checking
     # only.  The direction is right: the queue is assembled from a pass that
@@ -70,7 +70,7 @@ class Evidence(enum.Enum):
     * ``ALREADY_HELD`` -- something of the owner's points at this line.  For an
       outflow that is ruling **R-GJ**'s bar, which says this merchant's money
       is a payment to an account they hold or is spending they have said is
-      never a purchase; for an inflow it is unexplained income the books
+      never a purchase; for an inflow it is unexplained money the books
       already record for the line's own pay period.  The indicated act is to
       MATCH, and recording is the duplicate this arc measures.
     * ``UNFINISHED`` -- no positive signal, but the pass cannot say there is no
@@ -177,9 +177,12 @@ class QueueRow:
             That is how a PARKED line came to be the one kind that never
             printed its search gap -- the asymmetry ruling **bank_import:R-HB**
             names, measured at 1 of the developer's 9 parked lines.
-        income_already_held: What the books already record as unexplained
-            income for this line's own pay period
-            (:class:`~._reads.IncomeAlreadyRecorded`), or ``None``.  **Carried
+        arrivals_already_held: Every ARRIVING row this line's own pay period
+            already holds that no bank line explains
+            (:class:`~._reads.ArrivalsAlreadyHeld`), or ``None``.  **ARRIVING
+            and not income**: a stored refund is one of them since ruling
+            **bank_import:R-II**, and the field said ``income`` until plan step
+            ``bank_import:X-gj-2b-3``.  **Carried
             rather than re-asked**: the builder reads it to decide this row's
             group, and a template asking again would be the redundant producer
             call inside one request that this package treats as a DRY
@@ -192,7 +195,7 @@ class QueueRow:
     item: "CreatableLine | ParkedLine | RecordableInflow"
     act: QueueAct
     notes: "tuple[str, ...]"
-    income_already_held: "IncomeAlreadyRecorded | None"
+    arrivals_already_held: "ArrivalsAlreadyHeld | None"
 
     @property
     def line(self) -> "BankLine":
@@ -561,14 +564,14 @@ def _rows(review: "ReviewSet") -> "tuple[QueueRow, ...]":
         # redundant producer call this package refuses.
         rows.append(_row(
             review, inflow, QueueAct.RECORD_INCOME,
-            review.income_already_recorded_in(inflow.line),
+            review.arrivals_already_held_in(inflow.line),
         ))
     return tuple(rows)
 
 
 def _positive_for(
     item: "CreatableLine | ParkedLine | RecordableInflow",
-    act: QueueAct, held: "IncomeAlreadyRecorded | None",
+    act: QueueAct, held: "ArrivalsAlreadyHeld | None",
     gap: "str | None",
 ) -> bool:
     """Return whether a POSITIVE counterpart signal holds for one line.
@@ -600,7 +603,7 @@ def _positive_for(
 def _row(
     review: "ReviewSet",
     item: "CreatableLine | ParkedLine | RecordableInflow",
-    act: QueueAct, held: "IncomeAlreadyRecorded | None",
+    act: QueueAct, held: "ArrivalsAlreadyHeld | None",
 ) -> QueueRow:
     """Return one assembled queue row.
 
@@ -608,7 +611,7 @@ def _row(
         review: The pass, which owns the search gap.
         item: The mechanism's value.
         act: Which control this row renders.
-        held: What the books already record as unexplained income for this
+        held: What the books already record as arriving and unexplained for this
             line's pay period, or ``None`` -- which for the two OUTFLOW
             mechanisms is always ``None``, since a bar and a deposit's books
             are different claims and no outflow has the second.
@@ -624,7 +627,7 @@ def _row(
         item=item,
         act=act,
         notes=_notes_for(item, act, gap),
-        income_already_held=held,
+        arrivals_already_held=held,
     )
 
 

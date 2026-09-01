@@ -1,5 +1,6 @@
 {% from "_money_macros.html" import money %}
 {% from "accounts/_statement_undo_macros.html" import undo_form, undo_removals %}
+{% from "accounts/_statement_queue_macros.html" import books_already_hold %}
 
 {# THE TWO CARDS THIS PAGE IS MADE OF, and the panel one click behind one of
    them.
@@ -221,10 +222,10 @@
      rather than left to be inferred from a missing destination, which is the
      defect plan step X-f6a-3c-2 corrected on the purchase side. #}
   <input type="hidden" name="destination-{{ card.line.line_id }}" value="income">
-  {% if card.income_already_held %}
+  {% if card.arrivals_already_held %}
   <div class="alert rec-risk d-flex gap-2 align-items-start py-2 mb-2" role="alert">
     <i class="bi bi-exclamation-triangle mt-1"></i>
-    <div class="small">This pay period already holds {{ card.income_already_held.rows | length }} income row(s) totalling {{ money(card.income_already_held.total) }} that no line explains{% for held in card.income_already_held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ held.label }} {{ money(held.cash_amount) }}{% endfor %}. If this deposit is those, match it against them instead of recording it here.</div>
+    <div class="small">{{ books_already_hold(card.arrivals_already_held) }}</div>
   </div>
   {% endif %}
   {% endif %}
@@ -272,7 +273,7 @@
     </div>
     <div class="rec-sentence">
       {{ sentence(card.sentence) }}
-      {% if card.income_already_held %}
+      {% if card.arrivals_already_held %}
       <i class="bi bi-exclamation-triangle rec-risk-glyph"
          title="This pay period already holds income no line explains."></i>
       {% endif %}

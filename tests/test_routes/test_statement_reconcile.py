@@ -1931,3 +1931,82 @@ class TestTheADDSentenceSaysWhichWayTheMoneyWENT:
 
             assert self._CHARGE_WORDS in page
             assert self._REFUND_WORDS not in page
+
+
+class TestTheBooksAlreadyHoldSentenceIsONESpelling:
+    """The double-count warning, on the surface that had no case for it.
+
+    Plan step ``bank_import:X-gj-2b-3``.  This sentence was written TWICE --
+    once in ``_statement_review_body.html`` and once in
+    ``_statement_reconcile_macros.html`` -- and only the first was graded, by
+    one case in ``test_statement_matches.py``.  Both said *N income row(s)*
+    about a set filtered on ``cash_amount > 0`` over ``unmatched_rows``, which
+    holds PURCHASE rows: a stored REFUND is a positive-cash row there since
+    ruling **bank_import:R-II**.  The SERVICE-composed twin
+    (``ArrivalsAlreadyHeld.why_it_could_double_count``) was corrected at plan
+    step ``bank_import:X-gj-2b`` and these were not, which is the drift one
+    composer exists to prevent.
+
+    Both are now the shared ``books_already_hold`` macro, and this case is what
+    makes that claim checkable on the second surface.
+    """
+
+    _SAID = (
+        "This pay period already holds 1 row(s) totalling $2,473.38 your "
+        "records say arrived and no bank line explains"
+    )
+
+    def test_the_reconcile_card_prints_the_shared_sentence(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A deposit whose period already holds a salary row nothing explains.
+
+        The developer's own shape: three payroll deposits worth `$7,838.92`
+        each sat in a period holding a `$2,473.38` salary row, and this is the
+        only per-line signal any of them got.
+        """
+        with app.app_context():
+            a_transaction(
+                seed_user, name="Salary", amount="2473.38", income=True,
+            )
+            a_bank_line(
+                seed_user, an_import(seed_user), amount="2600.00",
+                posted_on=seed_user["bootstrap_period"].start_date,
+                description="ACH CREDIT PAYROLL", merchant="Some Employer",
+            )
+            db.session.commit()
+
+            page = " ".join(_page(auth_client, seed_user).split())
+
+            assert self._SAID in page
+            assert "Salary $2,473.38" in page, (
+                "the rows are NAMED, so the owner can find them"
+            )
+            assert "income row(s)" not in page, (
+                "the set holds a stored refund too, whose cash is positive"
+            )
+
+    def test_a_deposit_too_SMALL_to_be_them_gets_no_sentence(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The control: an alarm on every row teaches an owner to ignore them.
+
+        A `$0.15` dividend cannot be any subset of a `$2,473.38` row, every
+        member being positive -- so the macro is not reached, and without this
+        case the assertion above would pass on a page that printed the
+        sentence unconditionally.
+        """
+        with app.app_context():
+            a_transaction(
+                seed_user, name="Salary", amount="2473.38", income=True,
+            )
+            a_bank_line(
+                seed_user, an_import(seed_user), amount="0.15",
+                posted_on=seed_user["bootstrap_period"].start_date,
+                description="DIVIDEND EARNED", merchant="Dividend Earned",
+            )
+            db.session.commit()
+
+            page = " ".join(_page(auth_client, seed_user).split())
+
+            assert "This pay period already holds" not in page

@@ -1,9 +1,17 @@
-"""What the books ALREADY HOLD for one deposit's pay period.
+"""What the books ALREADY HOLD as ARRIVING, for one bank line's pay period.
 
 Plan step ``bank_import:X-gj-2b``.  Split out of :mod:`._reads`, whose subject
 is *what the review screen shows about this pass*; this one answers a narrower
-question that TWO pipelines now ask -- *does this period already hold income no
-bank line explains, which recording this line would count twice*.
+question that TWO pipelines now ask -- *does this period already hold money
+arriving that no bank line explains, which recording this line would count
+twice*.
+
+**The question is about ARRIVING money and not about INCOME**, and every name
+in this module said the narrower word until plan step
+``bank_import:X-gj-2b-3``.  The set is filtered on ``cash_amount > 0`` over
+``ReviewSet.unmatched_rows``, which holds PURCHASE rows too -- a stored refund
+is a positive-cash row there since ruling **bank_import:R-II** -- so the
+answer always included rows that are not income.
 
 **The split is what the 1,000-line ceiling on ``_reads`` was measuring.**  It
 had one caller while only the INCOME door asked it.  Ruling **R-II** routes a
@@ -27,8 +35,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 
 @dataclass(frozen=True)
-class IncomeAlreadyRecorded:
-    """The unexplained INCOME the books already hold for one deposit's period.
+class ArrivalsAlreadyHeld:
+    """Every unexplained ARRIVAL the books already hold for one line's period.
 
     Ruling **bank_import:R-GW**, added after this step's own adversarial review measured
     what the card was really protected by.  **Recording a deposit the books
@@ -48,13 +56,13 @@ class IncomeAlreadyRecorded:
     **R-GD**'s third amendment turns on: that amendment withdrew the reviewed
     line's candidate LIST because no bound made one anything but noise -- 0 of
     18 inspected correct.  This names no candidate and scores nothing.  It
-    answers *does your budget already hold income in this pay period that no
+    answers *does your budget already hold money arriving in this pay period that no
     bank line explains*, which is a question about the PERIOD, and it is the
     question whose answer decides whether recording this is a duplicate.
 
     **The one narrowing is a PROOF, not a threshold**, and it is the same
     argument ruling **bank_import:R-GW** rests on: a deposit SMALLER than the smallest
-    unexplained income row in its period cannot be any subset of them, because
+    unexplained arriving row in its period cannot be any subset of them, because
     every one of them is positive and already exceeds it.  So the five
     dividends of `$0.12`-`$0.22` and the three card refunds of `$11.73`-
     `$28.29` -- the eight lines this whole step exists for -- say nothing,
@@ -79,17 +87,26 @@ class IncomeAlreadyRecorded:
     ``-entry.amount``, so a stored REFUND is a positive-cash row here.  That is
     the right SET: the question is *could this money already be in the books*,
     and a refund the books already hold is money that already arrived.  It is
-    the wrong WORD, so no sentence composed here says *income* -- see
-    :meth:`why_it_could_double_count`.  Renaming the class, the
-    :meth:`~._reads.ReviewSet.income_already_recorded_in` method and the
-    ``income_already_held`` field the queue, the cards and two templates carry
-    is 70 references and belongs with the rest of that leaf's label work.
+    the wrong WORD, and the NAME is what plan step ``bank_import:X-gj-2b-3``
+    changed: this class was ``IncomeAlreadyRecorded``, the method was
+    ``ReviewSet.income_already_recorded_in``, and the field the queue, the
+    cards and two templates carry was ``income_already_held`` -- 74 references
+    across 13 files, renamed together so no half of it can go on saying
+    *income* about a set that holds refunds.  The two template SENTENCES said
+    it out loud (*already holds N income row(s)*) and were changed in the same
+    pass; the service-composed one had already been corrected at
+    ``bank_import:X-gj-2b`` (see :meth:`why_it_could_double_count`), which is
+    what left the name and the words disagreeing.
 
     Attributes:
-        rows: The unexplained ARRIVING rows whose pay period covers the day the
-            bank credited this line, in the order the offer set holds them.
-        total: What they come to, POSITIVE, so the screen states the figure
-            without arithmetic in a template.
+        rows: The unexplained ARRIVING rows whose pay period covers the day
+            the bank credited this line, in the order the offer set holds them.
+            **Not only income rows**: a stored REFUND is a positive-cash row
+            in ``unmatched_rows`` (ruling **bank_import:R-II**), and it is
+            money the books already hold arriving exactly as a salary row is.
+        total: What they come to, POSITIVE -- every member's ``cash_amount``
+            is, by the filter that selects them -- so the screen states the
+            figure without arithmetic in a template.
     """
 
     rows: "tuple[CandidateRow, ...]"
@@ -114,10 +131,11 @@ class IncomeAlreadyRecorded:
         **It does not say *income*, and that is not a wording preference.**
         The rows it totals are every ARRIVING row the books hold and no line
         explains, which since ruling **bank_import:R-II** includes a stored
-        refund -- a negative purchase, whose cash is positive.  The class is
-        still called :class:`IncomeAlreadyRecorded` because renaming it reaches
-        70 references across two templates; the SENTENCE is what the owner
-        reads, so the sentence is what has to be true first.
+        refund -- a negative purchase, whose cash is positive.  **The class
+        was still called ``IncomeAlreadyRecorded`` when this sentence was
+        written**, because renaming it reached 74 references across 13 files;
+        the SENTENCE is what the owner reads, so it was made true first and
+        plan step ``bank_import:X-gj-2b-3`` renamed the rest to match.
 
         **The FIGURE carries a currency symbol and separators**, which is what
         every other money sentence this package composes does
@@ -139,14 +157,14 @@ class IncomeAlreadyRecorded:
 
 
 
-def income_already_recorded(
+def arrivals_already_held(
     unmatched_rows, line: BankLine,
-) -> "IncomeAlreadyRecorded | None":
+) -> "ArrivalsAlreadyHeld | None":
     """Return what the books already hold for *line*'s period, or ``None``.
 
     **The ONE statement of the double-count safeguard, and it has TWO callers
     since plan step ``bank_import:X-gj-2b``.**  It was a method body reached
-    only by :meth:`ReviewSet.income_already_recorded_in`, which serves the
+    only by :meth:`ReviewSet.arrivals_already_held_in`, which serves the
     lines the INCOME pipeline owns.  That step routes a container-answered
     merchant credit into the PURCHASE pipeline instead, and those lines are
     ruled by :func:`~._verdict.ruled` -- so a hazard this package added a
@@ -163,7 +181,7 @@ def income_already_recorded(
         line: The inflow being considered.
 
     Returns:
-        The :class:`IncomeAlreadyRecorded`, or ``None`` when this period's
+        The :class:`ArrivalsAlreadyHeld`, or ``None`` when this period's
         books hold nothing that could be the same money.
     """
     day = line.posted_on
@@ -179,7 +197,7 @@ def income_already_recorded(
     # bound: it drops only what cannot match, at any tolerance.
     if not rows or line.amount < min(row.cash_amount for row in rows):
         return None
-    return IncomeAlreadyRecorded(
+    return ArrivalsAlreadyHeld(
         rows=rows,
         total=sum((row.cash_amount for row in rows), Decimal("0.00")),
     )

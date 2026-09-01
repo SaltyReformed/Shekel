@@ -79,7 +79,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from ._already_held import IncomeAlreadyRecorded
+from ._already_held import ArrivalsAlreadyHeld
 from ._creations import PurchaseCreation
 from ._gaps import search_gap
 from ._leftovers import CreatableLine
@@ -263,7 +263,7 @@ def ruled(
     proposals: "tuple[MatchProposal, ...]",
     declined_lines: "dict[int, str]",
     bounds,
-    already_held: "dict[int, IncomeAlreadyRecorded]",
+    already_held: "dict[int, ArrivalsAlreadyHeld]",
 ) -> "tuple[CreatableLine, ...]":
     """Return this pass's creatable lines, each carrying what it is owed.
 
@@ -283,9 +283,9 @@ def ruled(
         bounds: What this pass did not look at
             (:class:`~._gaps.ReviewBounds`), read for the two limits that
             belong to the PASS rather than to any one line.
-        already_held: ``{line_id: IncomeAlreadyRecorded}`` for the INFLOW lines
+        already_held: ``{line_id: ArrivalsAlreadyHeld}`` for the INFLOW lines
             whose period already holds income no bank line explains
-            (:func:`~._reads.income_already_recorded`), computed by the caller
+            (:func:`~._reads.arrivals_already_held`), computed by the caller
             because it holds the rows.  **Empty for every outflow**, which is
             what makes the arm below a no-op on the outflow side rather than a
             second rule about it.
@@ -339,7 +339,7 @@ def ruled(
             # ``bank_import:X-gj-2b``).  A merchant credit filed as a negative
             # purchase is money ARRIVING, so the period may already hold a row
             # for the same money -- exactly the hazard
-            # :func:`~._reads.income_already_recorded` was added for on the
+            # :func:`~._reads.arrivals_already_held` was added for on the
             # income side.  That step routed these lines into THIS pipeline,
             # which asked ``search_gap`` and the proposed-destination test and
             # not this one; their fail sets are not nested (the gap reaches

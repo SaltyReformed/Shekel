@@ -46,8 +46,8 @@ from ._offers import (
     MatchProposal,
 )
 from ._already_held import (
-    IncomeAlreadyRecorded,
-    income_already_recorded,
+    ArrivalsAlreadyHeld,
+    arrivals_already_held,
 )
 from ._bars import ParkedLine
 from ._gaps import ReviewBounds, bounded_lines, search_gap
@@ -137,7 +137,7 @@ class RowsNeverShown:
         Returns:
             The total as a POSITIVE figure, so the screen states it without
             arithmetic in a template -- the rule
-            :attr:`IncomeAlreadyRecorded.total` already sets.
+            :attr:`ArrivalsAlreadyHeld.total` already sets.
         """
         return -sum(
             (row.cash_amount for row in self.payments), Decimal("0.00"),
@@ -453,7 +453,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
 
         Finding **bank_import:N-380**, plan step ``bank_import:X-gf-3b-2``.
         **A property over** :attr:`unmatched_rows` **rather than a field**, for
-        the reason :meth:`income_already_recorded_in` is one: those rows are
+        the reason :meth:`arrivals_already_held_in` is one: those rows are
         derived after the leftovers are split, and a value built from a second
         read of them could disagree with the list the workbench renders --
         which is where this summary sends the owner.
@@ -473,13 +473,13 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             ),
         )
 
-    def income_already_recorded_in(
+    def arrivals_already_held_in(
         self, line: BankLine,
-    ) -> IncomeAlreadyRecorded | None:
+    ) -> ArrivalsAlreadyHeld | None:
         """Return what the books already hold for *line*'s period, or ``None``.
 
         The per-line safeguard on an unexplained INFLOW
-        (:class:`IncomeAlreadyRecorded`).  **A method over
+        (:class:`ArrivalsAlreadyHeld`).  **A method over
         :attr:`unmatched_rows` rather than a field on
         :class:`~._leftovers.RecordableInflow`**, because those rows are
         derived AFTER the leftovers are split -- and a value built from a
@@ -495,12 +495,13 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             line: A recordable inflow's bank line.
 
         Returns:
-            The :class:`IncomeAlreadyRecorded`, or ``None`` when this period's
-            books hold no unexplained income at all -- which is the state that
+            The :class:`ArrivalsAlreadyHeld`, or ``None`` when this period's
+            books hold nothing arriving that no line explains -- which is the
+            state that
             makes recording safe, and the screen says nothing rather than
             saying it is fine.
         """
-        return income_already_recorded(self.unmatched_rows, line)
+        return arrivals_already_held(self.unmatched_rows, line)
 
     def search_gap_for(self, line: BankLine) -> "str | None":
         """Return why this pass cannot say *line* has no counterpart, or ``None``.
@@ -841,14 +842,14 @@ def _unexplained(
 
 def _already_held_by_line(
     creatable, never_shown,
-) -> "dict[int, IncomeAlreadyRecorded]":
+) -> "dict[int, ArrivalsAlreadyHeld]":
     """Return the double-count answer for every creatable INFLOW.
 
     Plan step ``bank_import:X-gj-2b``.  **Asked of EVERY creatable line, with
     no direction guard, because the predicate is already total.**  A first
     version skipped outflows; adversarial review measured that skip an
     EQUIVALENT MUTANT and it is -- an outflow's amount is negative, every row
-    :func:`~._already_held.income_already_recorded` selects has positive cash,
+    :func:`~._already_held.arrivals_already_held` selects has positive cash,
     so ``line.amount < min(...)`` holds and the answer is ``None`` for every
     outflow the schema allows.  No mutation could reach the branch.  This
     package has deleted exactly that shape three times by name
@@ -860,7 +861,7 @@ def _already_held_by_line(
 
     It reads the SAME rows :attr:`ReviewSet.unmatched_rows` publishes and the
     same predicate the income pipeline asks
-    (:func:`~._already_held.income_already_recorded`), so a refund and a
+    (:func:`~._already_held.arrivals_already_held`), so a refund and a
     deposit in one period cannot come to different answers about what the books
     already hold.
 
@@ -870,13 +871,13 @@ def _already_held_by_line(
             the caller.
 
     Returns:
-        ``{line_id: IncomeAlreadyRecorded}``, holding only the lines that have
+        ``{line_id: ArrivalsAlreadyHeld}``, holding only the lines that have
         an answer -- absent means nothing to check, which is what
         :func:`~._verdict.ruled` reads a missing key as.
     """
     held_by_line = {}
     for item in creatable:
-        held = income_already_recorded(never_shown, item.line)
+        held = arrivals_already_held(never_shown, item.line)
         if held is not None:
             held_by_line[item.line.line_id] = held
     return held_by_line

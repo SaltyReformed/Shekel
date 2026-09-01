@@ -1519,7 +1519,7 @@ class TestARuleWithholdsADepositTheBooksMayAlreadyHold:
             # so no template filter reaches it: it read a bare ``100.00``
             # beside a card reading ``$100.00`` until plan step
             # ``bank_import:X-gj-2b`` gave the fact ONE composer
-            # (``IncomeAlreadyRecorded.why_it_could_double_count``), which the
+            # (``ArrivalsAlreadyHeld.why_it_could_double_count``), which the
             # refund half reads too.
             assert "$100.00" in story["withheld"][0]
             assert "holds 100.00" not in story["withheld"][0]
@@ -1706,7 +1706,7 @@ class TestARuleWithholdsADepositThePassDidNotFinishLookingAt:
     hazard.
 
     **The two guards have DISJOINT fail sets, which is why one cannot stand in
-    for the other.**  ``income_already_recorded_in`` tests the ROW's own span
+    for the other.**  ``arrivals_already_held_in`` tests the ROW's own span
     (``expected_on .. expected_through``), so it sees only rows in the
     deposit's pay period; the near tier reaches ACROSS periods by
     ``DAY_WINDOW``.  A candidate row one period over is invisible to the first

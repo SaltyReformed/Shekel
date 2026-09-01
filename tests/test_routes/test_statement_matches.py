@@ -1355,7 +1355,18 @@ class TestTheDepositArmOnTheWire:
             _review_url(seed_user["account"].id),
         ).data.decode()
 
-        assert "This pay period already holds 1 income row(s)" in page
+        # **The word *income* left this sentence at plan step
+        # ``bank_import:X-gj-2b-3``**: the rows it counts are every ARRIVING
+        # row the books hold that no line explains, which since ruling
+        # **bank_import:R-II** includes a stored REFUND -- a negative purchase,
+        # whose cash is positive.  The service-composed twin of this sentence
+        # was corrected at ``bank_import:X-gj-2b`` and the two templates that
+        # spell it were not, which is what left the screen saying *income*
+        # about a set that holds purchases.
+        assert (
+            "This pay period already holds 1 row(s) totalling $2,473.38 "
+            "your records say arrived and no bank line explains" in page
+        )
         assert "Salary" in page
         assert f'name="record_income-{line.id}"' in page
 
