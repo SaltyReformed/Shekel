@@ -1672,24 +1672,29 @@ class TestEntryCreateSchema:
             assert data["amount"] == Decimal("51.00")
 
 
-class TestTheTwoDoorsBoundTheAmountDIFFERENTLY:
-    """R-II's tier split, asserted as the ASYMMETRY it actually is.
+class TestNeitherHandDoorTakesATypedSign:
+    """R-II's tier split, as the developer RE-RULED it on 2026-09-01.
 
-    Ruling **bank_import:R-II** (developer 2026-08-31) puts two different rules
-    on two different tiers, and the whole point is that they disagree:
+    Ruling **bank_import:R-II** put the row invariant (``amount <> 0``) at the
+    service tier, where the bank-import door meets it too
+    (``entry_service._refusals._reject_zero_amount``), and moved POSITIVITY off
+    the table onto the hand-entry door.
 
-    * the ROW invariant is ``amount <> 0`` -- a purchase worth nothing is not a
-      purchase -- stated at the service tier, so the bank-import door meets it
-      too (``entry_service._refusals._reject_zero_amount``);
-    * POSITIVITY is a claim about a hand-entry FORM composing a NEW purchase --
-      a typed negative is a typo -- so it lives on ``EntryCreateSchema`` and NOT
-      on ``EntryUpdateSchema``, whose row may carry a sign the BANK stated.
+    **This class asserted the OPPOSITE of what it asserts now, and the reason
+    is a measurement rather than a preference.**  It read *the update schema
+    ACCEPTS a negative because a refund is one*, and defended the asymmetry as
+    R-II's point.  ``EntryUpdateSchema`` is reached ONLY by the human PATCH
+    route -- the bank-import door writes through ``entry_service`` and passes
+    no schema at all -- so both doors carrying this rule are doors a person
+    types at, and one of them had no bound.  A typed ``-45.00`` where ``45.00``
+    was meant booked a REFUND in silence and moved the projection by twice the
+    figure, while the identical keystroke on the ADD form was a 422.
 
-    **Asserted as a pair, in one class, because the risk is that one drifts
-    onto the other.**  Re-adding ``Range(min=0.01)`` to the update schema is a
-    one-line edit that reads as a tightening and silently makes every imported
-    refund uneditable, and a test that only checked the create door would stay
-    green through it.
+    **Both doors take a MAGNITUDE now**, and the direction is a control
+    (``entry_service.purchase_amount``).  The editable-refund problem the old
+    asymmetry solved is solved better: the edit form renders the magnitude and
+    preselects the direction, so re-describing a stored refund changes no
+    figure and needs no negative in the box.
     """
 
     def test_create_schema_still_refuses_a_typed_negative(self, app):
@@ -1704,18 +1709,43 @@ class TestTheTwoDoorsBoundTheAmountDIFFERENTLY:
                 })
             assert "amount" in exc_info.value.messages
 
-    def test_update_schema_ACCEPTS_a_negative_because_a_refund_is_one(self, app):
-        """The EDIT door takes a negative, which is what makes a refund editable.
+    def test_update_schema_ALSO_refuses_a_typed_negative(self, app):
+        """The EDIT door's bound, restored on the developer's 2026-09-01 ruling.
 
-        The inline form renders ``value="{{ entry.amount }}"`` and submits every
-        control it holds, so an imported refund's own amount is resubmitted on
-        any edit.  A bound here would refuse a description or date change over a
-        figure the owner never touched.
+        It is the same rule as the create door's now, and stating BOTH in one
+        class is what keeps a future edit from removing one and leaving the
+        other -- which is the shape that produced the silent refund.
         """
         with app.app_context():
             schema = EntryUpdateSchema()
-            data = schema.load({"amount": "-28.29"})
-            assert data["amount"] == Decimal("-28.29")
+            with pytest.raises(MarshmallowValidationError) as exc_info:
+                schema.load({"amount": "-28.29"})
+            assert "amount" in exc_info.value.messages
+
+    def test_a_refund_is_stated_by_the_DIRECTION_on_both_doors(self, app):
+        """The control the two refusals above must not have deleted.
+
+        A refund is still recordable -- that is ruling **R-II** -- and this is
+        how: a magnitude plus ``direction``, composed by
+        :func:`~app.services.entry_service.purchase_amount`.  Without this case
+        the pair above is satisfied by a door that cannot record a refund at
+        all.
+        """
+        with app.app_context():
+            for schema in (EntryCreateSchema(), EntryUpdateSchema()):
+                data = schema.load({
+                    "amount": "28.29", "direction": "refund",
+                    "description": "Amazon refund",
+                    "purchased_on": "2026-01-05",
+                })
+                assert data["amount"] == Decimal("28.29")
+                assert data["direction"] == "refund"
+            assert entry_service.purchase_amount(
+                Decimal("28.29"), records_a_refund=True,
+            ) == Decimal("-28.29")
+            assert entry_service.purchase_amount(
+                Decimal("28.29"), records_a_refund=False,
+            ) == Decimal("28.29")
 
     def test_neither_door_lets_a_zero_through_to_the_database(
         self, app, db, seed_user, seed_entry_template,
@@ -1830,23 +1860,13 @@ class TestEntryUpdateSchema:
                 schema.load({"amount": "0"})
             assert "amount" in exc_info.value.messages
 
-    def test_update_ACCEPTS_a_negative_amount(self, app):
-        """A negative amount is accepted in the update schema -- it is a REFUND.
-
-        **This asserted refusal until 2026-08-31** (ruling **bank_import:R-II**,
-        developer's fork ruling on the same date).  Positivity binds the CREATE
-        door, where a typed negative is a typo; this door edits a purchase whose
-        sign may be one the BANK stated, and a merchant credit files as a
-        negative purchase.
-
-        Zero is still refused here -- see
-        :meth:`test_update_rejects_zero_amount` beside it, which is the half of
-        the old rule that survived.
-        """
-        with app.app_context():
-            schema = EntryUpdateSchema()
-            data = schema.load({"amount": "-5.00"})
-            assert data["amount"] == Decimal("-5.00")
+    # **The negative-amount case that stood here is GONE, not moved** (plan
+    # step ``bank_import:X-gj-2b-3``).  It was a second copy of
+    # ``TestNeitherHandDoorTakesATypedSign``'s subject -- adversarial test-quality
+    # review found the pair -- and both asserted the contract the developer
+    # re-ruled on 2026-09-01: the edit door takes a MAGNITUDE, and a refund is
+    # stated by ``direction``.  One class states that now, with the control
+    # that a refund is still recordable, rather than two that agreed.
 
     def test_update_unknown_fields_excluded(self, app):
         """Unknown fields are excluded by BaseSchema (Meta.unknown = EXCLUDE)."""

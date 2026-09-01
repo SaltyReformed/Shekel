@@ -36,6 +36,53 @@ from app.utils.entry_partition import partition_entries
 from app.utils.money import percent_complete
 
 
+#: What the two HAND-ENTRY doors call the two directions a purchase can have.
+#: Values, not display text: the add and edit forms post one of these and
+#: :func:`purchase_amount` is what turns the pair into a stored figure.
+CHARGE = "charge"
+REFUND = "refund"
+
+
+def purchase_amount(magnitude: Decimal, *, records_a_refund: bool) -> Decimal:
+    """Return the figure a purchase STORES, from a magnitude and a direction.
+
+    **The one composition of a purchase's sign from what a human stated**
+    (developer ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``).  Ruling
+    **bank_import:R-II** made a merchant credit a NEGATIVE purchase and moved
+    positivity off the table onto the hand-entry door -- and the branch that
+    did it then deleted the bound from the EDIT door too, because that form
+    resubmits its amount box even when the owner only changed a date, so a
+    stored refund could not be re-described while the box refused a negative.
+
+    That left a typed ``-45.00`` booking a refund in silence: the projection
+    moved by twice the figure, nothing on any screen said a refund had been
+    recorded, and the identical keystroke on the ADD form was a 422.  **The
+    remedy is that neither form can express a sign at all**: both bound the
+    amount at ``>= 0.01`` and both carry a Charge/Refund control, and this is
+    where the two become a figure.  A minus is not refused, it is
+    unrepresentable -- which is what makes the bound structural rather than a
+    fence somebody has to keep.
+
+    **The bank-import door does NOT come through here**, and that is not an
+    omission: a bank line arrives already signed, so
+    ``statement_match._create._born_purchase`` converts it with
+    ``-line.amount`` -- one expression, total over both directions.  Two
+    different inputs, two conversions, each stated once.
+
+    Args:
+        magnitude: What the purchase cost, as a POSITIVE figure.  The schemas
+            bound it at ``>= 0.01``; this asserts nothing and would happily
+            negate a negative, because the bound belongs on the door that has
+            an HTTP status to answer with.
+        records_a_refund: Whether the owner said this money came BACK.
+
+    Returns:
+        The stored figure: *magnitude* negated for a refund, unchanged for a
+        charge.
+    """
+    return -magnitude if records_a_refund else magnitude
+
+
 def compute_entry_sums(
     entries: list[TransactionEntry],
 ) -> tuple[Decimal, Decimal]:

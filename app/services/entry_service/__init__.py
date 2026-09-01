@@ -59,9 +59,12 @@ from ._sums import (
     build_entry_lists_dict,
     build_entry_sums_dict,
     compute_entry_sums,
+    CHARGE,
+    REFUND,
     compute_remaining,
     entry_list_view,
     pct_complete,
+    purchase_amount,
 )
 
 __all__ = [
@@ -69,12 +72,15 @@ __all__ = [
     "build_entry_lists_dict",
     "build_entry_sums_dict",
     "compute_entry_sums",
+    "CHARGE",
+    "REFUND",
     "compute_remaining",
     "create_entry",
     "delete_entry",
     "entry_list_view",
     "get_entries_for_transaction",
     "pct_complete",
+    "purchase_amount",
     "removal_refusal",
     "resolve_owner_id",
     "update_entry",

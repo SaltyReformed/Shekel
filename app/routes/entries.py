@@ -450,6 +450,14 @@ def create_entry(txn_id):
         )
 
     data = _create_schema.load(request.form)
+    # **The sign is COMPOSED, never typed** (developer ruling 2026-09-01, plan
+    # step ``bank_import:X-gj-2b-3``).  The form posts a MAGNITUDE and a
+    # direction; ``purchase_amount`` is the one place the pair becomes a stored
+    # figure, so ``EntryDetails.amount`` stays the signed value the column
+    # holds and no caller of this value object had to change.
+    data["amount"] = entry_service.purchase_amount(
+        data["amount"], records_a_refund=data.pop("direction") == entry_service.REFUND,
+    )
     try:
         entry_service.create_entry(
             transaction_id=txn.id,
@@ -549,8 +557,58 @@ def update_entry(txn_id, entry_id):
         )
         return _stale_entry_response(txn, host)
 
+    refusal = _compose_the_amount(data)
+    if refusal is not None:
+        return _error_entry_response(txn, refusal, host, status=422)
+
     _pair_the_posting_day(data, entry)
     return _execute_entry_update(entry_id, txn, data, host)
+
+
+def _compose_the_amount(data: dict[str, Any]) -> "str | None":
+    """Turn a submitted magnitude and direction into the stored figure.
+
+    :func:`_pair_the_posting_day`'s sibling, and it exists for the same reason:
+    the service takes ONE value where the form posts TWO controls, and the
+    route is where a submission becomes what the door accepts.
+
+    **The pair travels together -- both, or neither** (developer ruling
+    2026-09-01, plan step ``bank_import:X-gj-2b-3``).  The edit form renders
+    the amount box and the Charge/Refund control side by side and submits every
+    control it holds, so a browser sends both or (on a settled parent, where
+    neither is rendered) sends neither.  A submission carrying one without the
+    other is hand-made or stale, and it cannot be composed: an amount with no
+    direction has no sign, and guessing one either way writes money the owner
+    did not state.  It is REFUSED rather than defaulted, which is the same
+    choice ``_reject_incomplete_new_envelope`` makes about a new envelope
+    stated by halves.
+
+    ``direction`` is removed either way -- the service's ``_UPDATABLE_FIELDS``
+    names the columns an entry has, and direction is not one of them: it is
+    how a human says what the sign should be.
+
+    Args:
+        data: The loaded update payload, MUTATED in place.
+
+    Returns:
+        ``None`` when the payload is coherent, else the sentence to refuse it
+        with.
+    """
+    has_amount = "amount" in data
+    has_direction = "direction" in data
+    if has_amount != has_direction:
+        data.pop("direction", None)
+        return (
+            "An amount and whether it is a charge or a refund are one answer, "
+            "and this submission carried only one of them. Reopen the purchase "
+            "and save it again."
+        )
+    if has_amount:
+        data["amount"] = entry_service.purchase_amount(
+            data["amount"],
+            records_a_refund=data.pop("direction") == entry_service.REFUND,
+        )
+    return None
 
 
 def _pair_the_posting_day(
