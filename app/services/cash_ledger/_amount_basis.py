@@ -32,7 +32,6 @@ defer and the import is stated at the top like any other.*
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
 from typing import TYPE_CHECKING
 
 from ._loan_pricing import LoanPricing, loan_pricing
@@ -137,13 +136,18 @@ def amount_basis(user_id, scenario_id) -> AmountBasis:
     object forced a CROSS-ACCOUNT reader -- the calendar, the spending report, a
     dashboard -- to group its rows by account and pay for one basis per group.
 
-    **The loan derivation's clock is ``date.today()`` and DELIBERATELY not a
-    caller's as-of.**  Resolving a loan's rate-period P&I against the wall clock
-    is finding **N-40**, owned by plan step **X-au-g-2b**, and handing this a
-    read pass's own ``as_of`` instead is plan step **X-i2**, which MOVES MONEY
-    (``$3,631.74`` today against ``$3,722.53`` at a 2027 read).  Taking it here
-    would ship that move inside a refactor whose gate is byte-identity, so the
-    read stays where it was and is disclosed rather than quietly relocated.
+    **NEITHER derivation reads a clock, and plan step X-au-g-2b is what made
+    that true of the loan half.**  It was built as
+    ``loan_pricing(scenario_id, date.today())`` and resolved every loan-payment
+    shadow's P&I against that one date -- finding **N-40**, and the last
+    ``date.today()`` call anywhere in this package (a control asserts the
+    absence: ``test_amount_source.TestTheAmountModelReadsNoClock``).  Ruling
+    **R-IJ** closed it STRUCTURALLY rather than by threading a different date: a
+    loan's contractual terms resolve on the installment they govern, so
+    :class:`._loan_pricing.LoanPricing` has no date to take.  Plan step
+    **X-i2**, which hands each memoized loader the read pass's own ``as_of``,
+    therefore no longer has this derivation as a subject -- there is nothing
+    left here for a pass-level clock to correct.
 
     Args:
         user_id: The owner whose rows are being priced; scopes the salary
@@ -165,7 +169,7 @@ def amount_basis(user_id, scenario_id) -> AmountBasis:
         user_id=user_id,
         scenario_id=scenario_id,
         salary=income_service.salary_pricing(user_id, scenario_id),
-        loans=loan_pricing(scenario_id, date.today()),
+        loans=loan_pricing(scenario_id),
     )
 
 

@@ -53,10 +53,23 @@ class LoanContext:
             no RateHistory rows at all, which the origination-row
             invariant forbids in production.
         escrow_components: The loan's escrow lines resolved to their in-effect
-            version on today (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`),
-            for display and escrow calculation.
-        monthly_escrow: Aggregated monthly escrow Decimal.
-        contractual_pi: Standard monthly P&I payment (no escrow).
+            version on today (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
+            The loan CARD's escrow set: what the owner pays this month.  It is
+            NOT an installment's escrow -- every tier that prices one resolves
+            its own on that installment's due date (ruling **R-IJ**) -- and the
+            amortization schedule stopped reading it at plan step X-au-g-2b
+            (finding **N-410**).
+        monthly_escrow: The sum of ``escrow_components``: the card's monthly
+            escrow figure, on the same footing and with the same limit.
+        contractual_pi: Standard monthly P&I payment (no escrow), resolved at
+            ``date.today()``.  **The escrow-subtraction threshold, and it is a
+            fence rather than a figure** -- see
+            :func:`._engine_prep.prepare_payments_for_engine`, whose floor
+            cannot tell a payment carrying no escrow from an underpaying PITI
+            payment.  Finding **N-409** is re-pointed to plan step
+            ``balance:X-au-g-2c``, which makes the floor a provable no-op and
+            deletes it; re-keying this to the installment was tried at
+            X-au-g-2b and MEASURED as a regression.
         rate_history: RateHistory ORM objects for rate display.  Carries
             the origination row for every loan plus any ARM adjustments;
             the loan dashboard shows the table only for ARM loans.
@@ -102,9 +115,13 @@ def load_loan_context(
     Returns:
         LoanContext with all data needed for amortization projection.
     """
-    # Escrow -- loaded first because payment preparation needs it.  Resolve the
-    # lines to their in-effect versions on today ONCE: ``escrow_components`` is
-    # that resolved-today display/calc set and ``monthly_escrow`` its sum, which
+    # Escrow -- loaded first because payment preparation needs the LINES.
+    # ``escrow_components`` / ``monthly_escrow`` are a separate, CARD-only
+    # resolution of those same lines on today, and the distinction is ruling
+    # R-IJ's: what the owner pays this month is a today question, what an
+    # installment costs is not.  Every consumer that prices an installment
+    # takes ``escrow_lines`` and resolves its own (``prepare_payments_for_engine``
+    # per payment, ``build_schedule_context`` per row).  ``monthly_escrow``
     # equals ``escrow_monthly_as_of(escrow_lines, today)`` by construction.
     escrow_lines = load_escrow_lines(account_id)
     escrow_components = escrow_calculator.resolve_active_lines(
@@ -134,19 +151,28 @@ def load_loan_context(
     )
 
     # Prepare: subtract escrow and fix biweekly month overlaps.  The
-    # ARM-aware contractual_pi makes the escrow-subtraction threshold
-    # match LoanState.monthly_payment -- the SSOT property the user
-    # called out (P&I, escrow, and monthly payment numbers must be the
-    # same across the loan card, the schedule's projected rows, and
-    # the prepared-payment net amount).  ``raw_payments`` is passed
-    # so the baseline does a conservative anchor-walk over the raw
-    # (gross-of-escrow) amounts -- guarantees the threshold is at-
-    # or-below ``state.monthly_payment``, which guarantees the
-    # escrow-subtraction min() in :func:`prepare_payments_for_engine`
-    # picks the FULL escrow amount.  Without this, the threshold is
-    # an anchor-based approximation that slightly overestimates the
-    # true P&I, under-subtracts escrow, and leaks a few cents per
-    # row into the schedule's "Payment" column.
+    # ARM-aware contractual_pi makes the escrow-subtraction threshold match
+    # LoanState.monthly_payment -- the SSOT property the user called out (P&I,
+    # escrow, and monthly payment numbers must be the same across the loan
+    # card, the schedule's projected rows, and the prepared-payment net
+    # amount).
+    #
+    # **This resolves at the READ DATE while the escrow beside it resolves per
+    # installment, and plan step X-au-g-2b MEASURED that re-keying it is a
+    # REGRESSION rather than the fix finding N-409 assumed** (2026-09-01).  The
+    # subtraction is ``amount - min(escrow, amount - contractual_pi)``, whose
+    # answer equals the truth ``amount - escrow`` only while
+    # ``contractual_pi <= amount - escrow``.  Raising the threshold to the
+    # installment's own period pushes it ABOVE that after an upward ARM recast
+    # the owner has not yet matched, and the escrow subtraction is then skipped
+    # entirely: measured on the production Mortgage with one recorded recast,
+    # ``$216.37`` a month of escrow booked as PRINCIPAL and ``$10,162.94`` of
+    # lifetime interest understated -- the optimistic direction.  The floor is
+    # the defect, not its date: it cannot tell a payment carrying NO escrow
+    # from an underpaying PITI payment, and no choice of date can.  N-409 is
+    # re-pointed to ``balance:X-au-g-2c``, which routes this feed through the
+    # amount resolver so ``amount - escrow == period_pi(due)`` is an identity
+    # and the floor can be DELETED rather than re-dated.
     contractual_pi = compute_contractual_pi(
         loan_params, rate_changes, date.today(),
     )

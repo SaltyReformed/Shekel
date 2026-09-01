@@ -323,7 +323,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
 **What this phase is about, in one sentence: the app stores five amounts it also computes, and each
 one grew its own private repair mechanism.** Salary income is repaired at READ time by
 `income_service.live_projected_net`, which writes nothing back (**N-224**); a loan-payment shadow by
-`loan_payment_service.live_loan_transfer_amounts`, which also reads the wall clock (**N-40**); a
+`cash_ledger.LoanPricing.live_cash`, which also read the wall clock until `X-au-g-2b` (**N-40**); a
 transfer shadow by a two-line copy in `transfer_service.update_transfer` beside a drift corrector
 that logs `"Correcting shadow %d estimated_amount drift"`; an ordinary template row by
 `regenerate_for_template`, which DELETES and recreates every non-override row from a date the form

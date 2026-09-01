@@ -316,14 +316,16 @@ def standing_installment_cash(
       a projection substituting the servicer's figure would model a loan the
       owner is not paying.
 
-    **The DERIVE arm's residue is TWO differences from what
+    **The DERIVE arm's residue is now ONE difference from what
     :meth:`~app.services.cash_ledger.LoanPricing.live_cash` prices the
-    same installment at, and both are named rather than absorbed.**  Finding
-    **N-40**: that producer pins its P&I at the READ PASS's ``as_of`` while this
-    reads the contract's P&I for the installment's OWN date, which differ only
-    for an ARM -- and the per-installment figure is the correct one, so this
-    keeps it rather than adopting the pin.  Plan step ``balance:X-au-g`` closes
-    it on the row side.  And the LAST contractual installment is a residual
+    same installment at, and it is named rather than absorbed.**  It was TWO
+    until plan step ``balance:X-au-g-2b``: that producer pinned its P&I at the
+    READ PASS's ``as_of`` while this read the contract's P&I for the
+    installment's OWN date, which differ for an ARM (finding **N-40**).  This
+    tier's per-installment figure was the correct one, which is why it kept it
+    rather than adopting the pin; ruling **R-IJ** made that the rule for every
+    tier, so the two producers now key on the same date and the difference is
+    gone.  What remains: the LAST contractual installment is a residual
     rather than the level payment
     (``amortization_engine`` forces the final month to absorb the remainder), so
     the two differ there for a reason that is not a rate effect at all; the fold

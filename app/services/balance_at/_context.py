@@ -527,12 +527,16 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         :class:`~app.services.cash_ledger.AmountBasis` are lazy, and each
         answers ``None`` from a row's own columns before it touches them.
 
-        **It pins no as-of, deliberately.**  The basis reads ``date.today()``
-        for the loan half rather than this pass's :attr:`as_of`, which is
-        finding **N-40** and plan step **X-i2** -- and X-i2 MOVES MONEY, so
-        handing it ``self.as_of`` here would ship that move inside a refactor
-        whose gate is byte-identity.  The read is disclosed rather than quietly
-        relocated; X-i2 is where a pass's one clock reaches this derivation too.
+        **It pins no as-of, and since plan step X-au-g-2b there is nothing
+        left for one to correct.**  The basis read ``date.today()`` for the
+        loan half rather than this pass's :attr:`as_of` -- finding **N-40** --
+        and the remedy was expected to be plan step **X-i2**, handing every
+        memoized loader this pass's clock.  Ruling **R-IJ** closed it a tier
+        DOWN instead: a loan's contractual terms resolve on the installment
+        they govern, so the derivation takes no date at all and
+        ``cash_ledger`` makes no clock call anywhere
+        (``test_amount_source.TestTheAmountModelReadsNoClock``).  X-i2 keeps
+        every other loader; this derivation is no longer among its subjects.
 
         **The derivation is imported outright**, so like :meth:`calendar` beside
         it this memo is filled here rather than by the seam:
