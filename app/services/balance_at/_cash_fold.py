@@ -344,11 +344,15 @@ def assembled_fold(
             (:meth:`~app.services.pay_calendar.PayCalendar.require_period`), so a cash fold
             rests on the same derivation every per-period entry beside it
             already did.
-            In practice this needs a cadence outside 1..365, which
-            ``resolve_cadence``'s legacy fallback can infer for an owner with no
-            ``budget.pay_schedule`` row -- plan findings **P8** / **P35**, and
-            ``C4-b`` deletes that fallback.  Zero such owners on either
-            database, measured at that step.
+            **The route that made this reachable from a PAGE is closed** (plan
+            step C4-b-2, ledger rows **P8** / **P35**).  It needed a cadence
+            outside 1..365, which ``resolve_cadence``'s fallback could infer
+            for an owner with no ``budget.pay_schedule`` row; that owner is
+            unstorable under ``fk_pay_periods_schedule`` and the fallback is
+            deleted, so the only cadence there is comes from a column bounded
+            to the same 1..365 the derivation enforces.  Declared still,
+            because ``derive_periods`` refuses payday SETS it cannot derive
+            from and this pass does not enumerate its callers' inputs.
         RuntimeError: When a planned row names a pay period this pass's
             calendar does not hold -- see
             :meth:`~app.services.pay_calendar.PayCalendar.require_period`.

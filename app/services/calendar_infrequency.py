@@ -49,8 +49,11 @@ def badge_cadence(
 
     **The absence is provably not a missing value.** ``budget.transactions``
     carries ``pay_period_id NOT NULL``, so a transaction implies a pay period,
-    which implies ``pay_schedule_service.resolve_cadence`` answers (from the
-    stored row, or by inferring from that period's own length).  An owner with
+    which since plan step C4-b-2 implies a ``budget.pay_schedule`` row
+    (``fk_pay_periods_schedule``) and therefore a stored cadence.  *That second
+    link used to be "or by inferring from that period's own length", the arm
+    findings **P8** and **P35** were about; the key replaced an inference with
+    a guarantee.*  An owner with
     no transactions therefore cannot reach :func:`is_infrequent` at all, and
     is the only owner for whom this answers ``None``.  The type says
     "unreadable BECAUSE unread" rather than "unknown".
@@ -65,11 +68,16 @@ def badge_cadence(
 
     Raises:
         PayCalendarError: The owner has a repeating row and no resolvable
-            cadence.  Reachable only through plan finding **P8**: a
-            schedule-row-less owner's cadence is INFERRED from their last
-            period's stored length, which nothing bounds above.  The NOT NULL
-            ``pay_period_id`` guarantees a period exists, not that the value
-            derived from it is in range.
+            cadence.  *Its one named route was plan finding **P8** -- a
+            schedule-row-less owner's cadence INFERRED from their last period's
+            stored length, which nothing bounded above -- and plan step C4-b-2
+            closed it: ``fk_pay_periods_schedule`` forbids that owner and the
+            inference is deleted, so a repeating row's NOT NULL
+            ``pay_period_id`` now guarantees a schedule row behind it as well
+            as a period.*  Declared still, because this function RESOLVES the
+            cadence itself (:func:`~app.services.pay_calendar.cadence_for`
+            below) rather than reading one a caller hands it -- so the refusal
+            is its own to make and belongs in its own signature.
     """
     if not any(
         txn.template is not None and txn.template.recurrence_rule is not None

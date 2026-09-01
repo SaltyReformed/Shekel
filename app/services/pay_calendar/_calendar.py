@@ -217,9 +217,10 @@ class PayCalendar:
             it; validated by :func:`~._derive.derive_periods`.
             **``None`` ONLY when :attr:`paydays` is empty** (plan step C2-b1),
             and that pairing is enforced rather than documented: an owner with
-            no schedule row and no period to infer one from has no last period,
-            so the value is provably unread, while the same absence beside a
-            payday is plan finding **P8**'s broken state and is refused at
+            no ``budget.pay_schedule`` row has no pay periods either since plan
+            step C4-b-2 (``fk_pay_periods_schedule``), so they have no last
+            period and the value is provably unread, while the same absence
+            beside a payday is a broken invariant and is refused at
             construction.  Every method that reads it is reachable only from a
             non-empty calendar, so none of them tests it.
         history_opens_on: How far back this owner's PAYCHECKS reach, from
@@ -304,9 +305,9 @@ class PayCalendar:
                 marks a period no foreign key can point at.  **The whole set,
                 never a window** -- see the class docstring.
             cadence_days: Days between paydays, from ``budget.pay_schedule``,
-                or ``None`` for an owner who has neither a schedule row nor a
-                period to infer one from.  ``None`` beside a non-empty
-                *paydays* is refused.
+                or ``None`` for an owner with no row there -- which since plan
+                step C4-b-2 is an owner with no pay periods.  ``None`` beside a
+                non-empty *paydays* is refused.
             user_id: The owner these paydays belong to.
             history_opens_on: How far back the owner's paychecks reach, or
                 ``None`` -- see the class docstring.  **Required rather than
@@ -358,16 +359,20 @@ class PayCalendar:
                 to paper over, and a silently assumed biweekly rhythm would
                 render a weekly-paid owner every figure at half its true value.
                 Unreachable through a registered owner since plan step X-ad-a,
-                which made registration write the ``budget.pay_schedule`` row.
+                which made registration write the ``budget.pay_schedule`` row,
+                and since plan step C4-b-2 the two halves of that owner are one
+                fact rather than two: ``fk_pay_periods_schedule`` means no
+                schedule row IS no paydays.
         """
         if self.cadence_days is None:
             raise PayCalendarError(
                 f"user {self.user_id} has no pay cadence, so how many "
-                f"paychecks they receive in a year is unanswerable.  Their "
-                f"calendar holds {len(self.periods)} payday(s) and no "
-                f"budget.pay_schedule row to read a cadence from; since plan "
-                f"step X-ad-a registration writes one, so this is legacy or "
-                f"companion data rather than a state to default.  Assuming "
+                f"paychecks they receive in a year is unanswerable.  They "
+                f"hold no budget.pay_schedule row, and since "
+                f"fk_pay_periods_schedule that means no paydays either; since "
+                f"plan step X-ad-a registration writes both, so this is "
+                f"companion data or an owner before their first batch rather "
+                f"than a state to default.  Assuming "
                 f"biweekly would report a weekly-paid owner's commitments at "
                 f"half their true monthly value."
             )
@@ -540,16 +545,15 @@ class PayCalendar:
         change which period most recently OPENED.  *The METHOD is end-free; the
         composition a caller reaches it through is not, and saying only the
         first is how the exemption gets over-read.*
-        :func:`~._loader.calendar_for` resolves the cadence through
-        ``pay_schedule_service.resolve_cadence``, which for an owner with no
-        ``budget.pay_schedule`` row INFERS it from the last period's stored
-        length -- plan finding **P8**.  *This sentence read "and the state
-        every freshly-registered owner is in" until plan step X-ad-a, which
-        made registration write the schedule row; the inference now serves
-        only owners created before that step.*  It moves no filing answer
-        (only the last period's derived end, which this never reads), but it
-        does mean a value outside 1..365 would REFUSE the calendar rather than
-        mis-file a record.
+        *A paragraph stood here about ``resolve_cadence`` INFERRING a cadence
+        from the last period's stored length for an owner with no
+        ``budget.pay_schedule`` row -- plan finding **P8** -- and about a value
+        outside 1..365 therefore refusing the calendar rather than mis-filing a
+        record.  Plan step C4-b-2 deleted that inference and
+        ``fk_pay_periods_schedule`` deleted the owner it served, so the cadence
+        is now the stored column and nothing else.  The exemption this method
+        claims never depended on it: the cadence moves only the last period's
+        derived end, which this never reads.*
 
         **Always a MATERIALISED period**, and that is enforced rather than
         assumed.  A first cut searched all of :attr:`periods` and claimed the

@@ -835,7 +835,7 @@ class TestInvariantChecker:
             )
 
     def test_raises_when_index_order_differs_from_dates(
-        self, app, db, bare_user,
+        self, app, db, bare_user_with_cadence,
     ):
         """Index order not matching calendar order is caught.
 
@@ -843,7 +843,7 @@ class TestInvariantChecker:
         date -- the exact corruption that makes the balance resolver walk
         periods out of order and silently drop transactions.
         """
-        user_id = bare_user["user"].id
+        user_id = bare_user_with_cadence["user"].id
         with app.app_context():
             db.session.add_all([
                 PayPeriod(
@@ -859,9 +859,9 @@ class TestInvariantChecker:
             with pytest.raises(AssertionError, match="calendar order"):
                 assert_pay_period_invariants(db.session, user_id)
 
-    def test_raises_on_index_gap(self, app, db, bare_user):
+    def test_raises_on_index_gap(self, app, db, bare_user_with_cadence):
         """A non-contiguous period_index sequence is caught."""
-        user_id = bare_user["user"].id
+        user_id = bare_user_with_cadence["user"].id
         with app.app_context():
             db.session.add_all([
                 PayPeriod(
@@ -877,9 +877,9 @@ class TestInvariantChecker:
             with pytest.raises(AssertionError, match="gap"):
                 assert_pay_period_invariants(db.session, user_id)
 
-    def test_raises_on_date_overlap(self, app, db, bare_user):
+    def test_raises_on_date_overlap(self, app, db, bare_user_with_cadence):
         """Two periods whose date spans overlap is caught."""
-        user_id = bare_user["user"].id
+        user_id = bare_user_with_cadence["user"].id
         with app.app_context():
             db.session.add_all([
                 PayPeriod(

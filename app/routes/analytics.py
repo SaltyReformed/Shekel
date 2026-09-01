@@ -461,9 +461,10 @@ def income_statement_tab():
     # auto-loaded partial derived it again.  That is the shape
     # ``pay_calendar._loader.cadence_for``'s docstring already records as a
     # defect: resolving BEFORE a producer's early return.  It also moved a
-    # ``PayCalendarError`` (ledger row **P35**) off the shell render, where a
-    # legacy owner would have met a 500 on a page that reads no pay-period
-    # data at all.
+    # ``PayCalendarError`` (ledger row **P35**, closed at plan step C4-b-2)
+    # off the shell render, where a legacy owner would have met a 500 on a page
+    # that reads no pay-period data at all.  The ORDER is kept on its first
+    # reason -- the wasted derivation -- which never depended on that row.
     today = display_today()
     calendar = calendar_for(current_user.id)
 

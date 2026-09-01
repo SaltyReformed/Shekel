@@ -187,7 +187,8 @@ def load_gap_inputs(balance_ctx):
 
     Raises:
         PayCalendarError: The owner has no resolvable pay cadence -- no
-            ``budget.pay_schedule`` row and no pay period to infer one from.
+            ``budget.pay_schedule`` row, which since plan step C4-b-2 IMPLIES no
+            pay periods (``fk_pay_periods_schedule``).
             The gap's pre-retirement income is their paycheck converted to a
             month, so there is no honest figure without it (plan step
             R7a-2a; see
