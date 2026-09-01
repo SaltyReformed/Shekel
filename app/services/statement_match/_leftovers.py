@@ -17,9 +17,17 @@ review:
   whose merchant carries a spending answer** -- such a credit is a REFUND, a
   negative purchase back into that container (ruling **R-HT(a)**, plan step
   ``bank_import:X-gj-2b-2``);
-* an outflow whose merchant is barred becomes nothing, and is PARKED with the
-  reason (:class:`~._bars.ParkedLine`, ruling **R-GJ**).  An INFLOW is never
-  barred: both arms of the bar are claims about money leaving;
+* a line whose merchant is barred becomes nothing, and is PARKED with the
+  reason (:class:`~._bars.ParkedLine`, ruling **R-GJ**).  **In BOTH
+  directions**, and this paragraph said *an inflow is never barred: both arms
+  of the bar are claims about money leaving* until plan step
+  ``bank_import:X-gj-2b-3``.  That is true of *never a purchase* and FALSE of
+  *your bank files this merchant as a payment to an account you hold*, which
+  is a claim about the MERCHANT -- so a credit from a card-payment merchant is
+  barred exactly as its debits are.  The retraction was written into
+  :func:`_creatable_lines` one commit later and this paragraph, which a reader
+  reaches FIRST, was left asserting the argument that had just been measured
+  false;
 * every OTHER inflow becomes an uncategorized INCOME row
   (:class:`RecordableInflow`, ruling **bank_import:R-GW**);
 * **an outflow the bank dates MADE after it POSTED reaches none of the three.**
@@ -92,7 +100,7 @@ if TYPE_CHECKING:  # pragma: no cover -- the edge back would be a cycle
 
 @dataclass(frozen=True)
 class CreatableLine:
-    """One bank OUTFLOW the app has no row for, and where it could go.
+    """One bank line the app has no row for, in EITHER direction, and where it could go.
 
     Plan step ``bank_import:X-f6a-3b``, ruling **R-FS**'s third shape.  These
     are the lines the matcher can never explain, because the app records a
@@ -228,7 +236,13 @@ def _creatable_lines(
     view: RuleView,
     bars: CreationBars,
 ) -> "tuple[tuple[CreatableLine, ...], tuple[ParkedLine, ...], int]":
-    """Split the unmatched OUTFLOWS into what may be recorded and what may not.
+    """Split the unmatched lines it is GIVEN into what may be recorded and what may not.
+
+    *It said OUTFLOWS until plan step ``bank_import:X-gj-2b-3``*, which its own
+    ``Returns`` section 45 lines below already contradicted (*"All three counts
+    reach the INFLOW direction"*): since ruling **bank_import:R-II** the caller
+    hands it every line ``pipeline_for`` routes to PURCHASE, and that includes
+    a container-answered credit.
 
     **A line the bank dates MADE after it POSTED is not one of them** (finding
     **N-325**, developer ruling 2026-08-19).  ``entry_service.create_entry``

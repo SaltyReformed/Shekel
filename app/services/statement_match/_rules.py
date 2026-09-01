@@ -256,9 +256,16 @@ def pipeline_for(
     ``None``            PURCHASE, no rule    INCOME, no rule
     ==================  ===================  ==========================
 
-    **ELEVEN of those twelve cells RESTATE what the code already did, and ONE
-    changes.**  An earlier draft of this docstring claimed two of them "had
-    never been decided", and adversarial review measured that FALSE: at
+    **TEN of those twelve cells RESTATE what the code already did, and TWO
+    change** -- the money-IN row of ``TEMPLATE`` and of ``NEW_ENVELOPE``, both
+    of which routed to INCOME at ``04980186`` and route to PURCHASE here.
+    *This paragraph said ELEVEN and ONE until plan step
+    ``bank_import:X-gj-2b-3``*, which collapsed a two-answer class to one cell:
+    at ``04980186`` ``_creatable_lines`` selected on ``line.amount < 0``, so
+    EVERY inflow reached ``_recordable_inflows`` whatever its answer, and both
+    container answers changed together.  It is the third generation of one
+    counting error -- the first draft claimed two cells "had never been
+    decided", and adversarial review measured THAT false: at
     ``04980186`` ``_creatable_lines`` took EVERY outflow and ``placements_for``
     fell through to ``None`` for ``INCOME_CATEGORY``, and ``_recordable_inflows``
     took EVERY inflow including ``NEVER`` with ``inflow_placement_for``

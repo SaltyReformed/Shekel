@@ -263,7 +263,10 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             here** -- it is in :attr:`parked` -- so this
             list is exactly the lines a create control may be rendered for,
             and the screen cannot render one for a line the door would refuse.
-        parked: The unmatched OUTFLOW lines that may NOT become purchases, with
+        parked: The unmatched lines that may NOT become purchases, IN BOTH
+            DIRECTIONS (it said OUTFLOW until plan step
+            ``bank_import:X-gj-2b-3``; see :attr:`~._leftovers.Leftovers.parked`,
+            which this is assigned from verbatim), with
             the reason each may not (:class:`~._bars.ParkedLine`, ruling
             **R-GJ**).  Its two arms are a merchant the owner answered *never a
             purchase* and a merchant a source files as a payment to a credit
@@ -280,13 +283,23 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             Like ``creatable`` this is a SUBSET of ``unmatched`` and not a
             partition: the same deposit is offered here as something to RECORD
             and in the hand-build form as something to MATCH, because those are
-            different acts on one fact.  **Nothing is BARRED out of it**:
-            ruling **R-GJ**'s bars are about SPENDING the budget already holds
-            in another shape, and neither arm has anything that could be true
-            of money arriving.  What DOES leave this list is a deposit a
-            container answer claims -- it is a refund, and it is in
-            ``creatable`` (ruling **bank_import:R-II**) -- which is a routing
-            decision and not a bar: the owner has an act for it either way.
+            different acts on one fact.  **An inflow CAN be barred out of it, and
+            that is a behaviour change plan step ``bank_import:X-gj-2b-3``
+            states rather than leaves to be discovered.**  This read *nothing
+            is barred out of it: neither arm has anything that could be true of
+            money arriving* -- the argument ``bf500943`` measured FALSE for
+            ``PAYS_AN_ACCOUNT_YOU_HOLD``, which is a claim about the MERCHANT.
+            A credit from a card-payment merchant that ALSO carries a stored
+            spending answer routes to PURCHASE, meets
+            :func:`~._bars.reject_barred_line`, and is PARKED -- so it reaches
+            neither this list nor a create control, and the hand-build match is
+            its only act.  **That is the intended outcome** (recording it as
+            income is the double count against the card transfer ruling
+            **R-GJ** exists to stop), and the sentence *the owner has an act
+            for it either way* was false of exactly that line.  What leaves
+            this list WITHOUT being barred is a deposit a container answer
+            claims: it is a refund, it is in ``creatable``, and that is a
+            routing decision.
         merchants: The queue's rule control
             (:class:`~._section.MerchantSection`) -- the merchants this pass
             has an unexplained outflow for and the owner has NEVER answered

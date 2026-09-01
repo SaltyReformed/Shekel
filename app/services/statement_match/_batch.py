@@ -347,8 +347,15 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             uncategorized income row (ruling **bank_import:R-GW**).  **Its own count and
             not folded into** :attr:`recorded_count`, whose sentence on the
             receipt is *recorded as a purchase your records did not have* --
-            false of a deposit, and a count whose caption is false of half its
-            members is what this arc has now corrected three times.  **No
+            false of a deposit.  **A count whose caption is false of half its
+            members** is this arc's recurring defect, and the instances are
+            NAMED rather than counted (plan step ``bank_import:X-gj-2b-3``):
+            ``repriced_count`` split out 2026-08-22, ``deposited_count`` at
+            ruling **R-GW**, ``residual_count`` at **R-FN**, and
+            :attr:`refunded_count` at **R-II**.  Three separate docstrings
+            carried a running tally of these, all reading *three times* or
+            *twice*, and none was incremented when the fourth landed -- which
+            is what a counter written as prose does.  **No
             TOTAL beside it, unlike the residual pair**, and the asymmetry is
             the netting: a residual is signed either way, so seven at
             `+$0.05` against one at `-$0.35` net to a figure that says
@@ -517,12 +524,18 @@ def _created_summary(recorded) -> str:
     swipe day on half of every statement, which is the exact substitution R-FW
     rejected.
 
-    **It reads the SIGN for both the figure and the verb** (ruling **R-II**).
-    ``CreatedPurchase.amount`` is the purchase's own signed figure, so a refund
-    is negative; the statement states the same movement the other way round.
-    Negating once and choosing *took* or *gave back* off that one value is what
-    keeps this sentence and the ``AppliedItem.amount`` beside it from
-    disagreeing about which way the money went.
+    **The FIGURE is negated once; the VERB reads the field the door stated**
+    (ruling **R-II**).  ``CreatedPurchase.amount`` is the purchase's own signed
+    figure, so a refund is negative and the statement states the same movement
+    the other way round -- one negation, so this sentence and the
+    ``AppliedItem.amount`` beside it cannot disagree about which way the money
+    went.  **The verb asks** :attr:`~._creations.CreatedPurchase.records_a_refund`
+    **rather than the sign of that figure** (plan step
+    ``bank_import:X-gj-2b-3``): that field exists so nothing downstream
+    re-derives a direction, and this function was the first consumer written
+    after it and re-derived one anyway.  The two agree by construction today --
+    ``_born_purchase`` sets both from one line -- which is exactly why a second
+    spelling here would be invisible until it was not.
 
     Args:
         recorded: The :class:`~._create.CreatedPurchase`.
@@ -539,15 +552,19 @@ def _created_summary(recorded) -> str:
         f", made {recorded.made_on}" if recorded.made_on != recorded.posts_on
         else ""
     )
-    # **The BANK's convention and the bank's VERB, both derived from the sign**
-    # (plan step ``bank_import:X-gj-2b``, ruling **R-II**).  A refund is a
-    # NEGATIVE purchase, and this sentence printed ``$-42.00 your bank took`` --
-    # the wrong sign AND the wrong direction, in the one notice the owner gets
-    # for money a rule moved without a press (**R-GH**).  It also contradicted
-    # ``AppliedItem.amount`` on the same item, which negates onto the bank's
-    # convention; the negation is done ONCE here so the two cannot disagree.
+    # **The BANK's convention** (plan step ``bank_import:X-gj-2b``, ruling
+    # **R-II**).  A refund is a NEGATIVE purchase, and this sentence printed
+    # ``$-42.00 your bank took`` -- the wrong sign AND the wrong direction, in
+    # the one notice the owner gets for money a rule moved without a press
+    # (**R-GH**).  It also contradicted ``AppliedItem.amount`` on the same
+    # item, which negates onto the bank's convention; the negation is done
+    # ONCE here so the two cannot disagree.
     on_the_statement = -recorded.amount
-    took_or_gave = "took" if on_the_statement < 0 else "gave back"
+    # **The VERB is the DOOR's answer, not this figure's sign** (plan step
+    # ``bank_import:X-gj-2b-3``): ``records_a_refund`` is set by
+    # ``_born_purchase`` from ``_rules.is_inflow``, which is this package's one
+    # statement of the bank's sign convention.
+    took_or_gave = "gave back" if recorded.records_a_refund else "took"
     return (
         f"Recorded ${abs(on_the_statement):,.2f} your bank {took_or_gave} on "
         f"{recorded.posts_on}{made} as a purchase in {where}."

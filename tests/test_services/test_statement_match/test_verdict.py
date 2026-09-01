@@ -661,6 +661,11 @@ class TestARefundIsWithheldWhenTheBooksMayAlreadyHoldIt:
             already_held={7: _held("2473.38")},
         )
 
+        # **BOTH halves** (plan step ``bank_import:X-gj-2b-3``).  This
+        # asserted only the ABSENCE of the losing sentence, which a producer
+        # that withheld NOTHING also satisfies; the gap is what must be
+        # chosen, so the gap is asserted too.
+        assert "a day too crowded to search" in line.verdict.withheld
         assert "count the same money twice" not in line.verdict.withheld
 
     def test_a_COLLISION_is_reported_before_the_double_count(self):

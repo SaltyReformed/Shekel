@@ -333,8 +333,9 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
             one statement of the bank's sign convention, so nothing downstream
             re-derives a direction from :attr:`amount`.  The receipt is what
             needs it -- *recorded as a purchase your records did not have* is
-            false of a refund, and a count whose caption is false of half its
-            members is what this arc has now corrected three times.
+            false of a refund.  It is this arc's recurring defect, and
+            :attr:`~._batch.BatchOutcome.deposited_count` names every instance
+            in one place rather than each site carrying its own tally.
         posts_on: The day the bank took it.
         made_on: The day the bank says it was made, which is the purchase's own
             budget clock and is the posting day where the source states none.

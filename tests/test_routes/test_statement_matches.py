@@ -3602,6 +3602,37 @@ class TestThePageAndTheReceiptSayWhichDIRECTIONApplyRecorded:
         assert "becomes <strong>income you did not have" in page
         assert "becomes <strong>a purchase your records did not have" not in page
 
+    def test_a_queue_holding_BOTH_directions_prints_BOTH_sentences(
+        self, auth_client, db, seed_user,
+    ):
+        """The case every other one in this class cannot see.
+
+        Plan step ``bank_import:X-gj-2b-3``, found by adversarial test-quality
+        review.  The three bullets render with **no** ``else`` -- that is the
+        whole design -- but every case here and in
+        ``TestTheADDSentenceSaysWhichWayTheMoneyWENT`` held the queue to ONE
+        direction, so **converting the block to ``{% if %}{% elif %}{% elif %}``
+        left them all green** while a mixed statement silently lost a bullet.
+
+        A refund and a swipe in one pass is the ORDINARY shape, not a corner:
+        ``test_a_CREDIT_and_a_SWIPE_from_ONE_merchant_file_with_opposite_signs``
+        stages exactly it against one merchant's single rule.
+        """
+        envelope = an_envelope(seed_user)
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="42.00")
+        an_unexplained_outflow(
+            seed_user, merchant="Food Lion", amount="-10.89", sequence=1,
+        )
+        db.session.commit()
+
+        page = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "becomes <strong>a purchase your records did not have" in page
+        assert "becomes <strong>a refund against the budget line you name" in page
+
     def test_the_RECEIPT_says_a_refund_was_recorded_as_a_refund(
         self, auth_client, db, seed_user,
     ):

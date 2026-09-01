@@ -405,6 +405,10 @@ class TestNoSweptCardCarriesASentenceOrMoneyAtRisk:
                 add=AddTab(
                     act=AddAct.PURCHASE,
                     destinations=(_a_destination(),), placement=None,
+                    # Required since plan step ``bank_import:X-gj-2b-3``: a
+                    # defaulted direction silently means CHARGE, which is the
+                    # sentence the field exists to stop printing over a refund.
+                    records_a_refund=False,
                 ),
                 proposal=None,
             ),

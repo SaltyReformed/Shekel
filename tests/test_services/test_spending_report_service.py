@@ -1602,6 +1602,43 @@ class TestTheShareIsASliceOfWhatMoved:
             "-0.4545",
         )
 
+    def test_a_MIXED_SIGN_group_divides_by_the_same_base_as_its_items(self):
+        """The case the bound's own argument turns on, and none staged it.
+
+        Plan step ``bank_import:X-gj-2b-3``, found by adversarial test-quality
+        review.  Every other case here gives each category its own group, so
+        ``group_amount == items[0].amount`` and the group-level ``_share`` is
+        never distinguished from the item-level one -- the four assertions
+        above are two numbers asserted twice.
+
+        A mixed-sign group is where ``|group| < sum of its items' magnitudes``
+        is a STRICT inequality, which is exactly what makes the ``[-1, 1]``
+        bound hold for groups: ``Food`` sums to ``100.00`` while holding
+        ``600.00`` and ``-500.00``, so its share is ``100/1100`` and its items
+        are ``600/1100`` and ``-500/1100``.  Nothing here would notice if
+        ``_group_row`` divided by something else.
+        """
+        rows = _build_breakdown(
+            self._totals(
+                ("Food", "Groceries", "600.00"),
+                ("Food", "Electronics", "-500.00"),
+            ),
+            {},
+        )
+        cents = Decimal("0.0001")
+
+        assert len(rows) == 1, "both categories belong to ONE group"
+        assert rows[0].amount == Decimal("100.00")
+        assert rows[0].share.quantize(cents) == Decimal("0.0909")
+        by_item = {item.item_name: item for item in rows[0].items}
+        assert by_item["Groceries"].share.quantize(cents) == Decimal("0.5455")
+        assert by_item["Electronics"].share.quantize(cents) == Decimal("-0.4545")
+        # THE BOUND, over every row this window renders.
+        assert all(
+            abs(share) <= 1
+            for share in [rows[0].share] + [i.share for i in rows[0].items]
+        )
+
     def test_a_window_with_no_refunds_is_unchanged(self):
         """The control the ruling turned on: magnitudes ARE the net there.
 

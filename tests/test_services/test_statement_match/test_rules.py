@@ -2578,16 +2578,25 @@ class TestWhichPipelineALineEnters:
         """The whole content of the change, stated as one property.
 
         An inflow is a purchase exactly when its merchant's answer names a
-        SPENDING CONTAINER.  Asserted against
-        :data:`~app.services.statement_match._rules.CONTAINER_ANSWERS` rather
-        than against a literal pair, so the property and the constant the
-        dispatcher reads cannot drift apart.
+        SPENDING CONTAINER.
+
+        **Asserted against a LITERAL pair, not against ``CONTAINER_ANSWERS``**
+        (plan step ``bank_import:X-gj-2b-3``, found by adversarial test-quality
+        review).  It read ``answer in CONTAINER_ANSWERS`` -- the same constant
+        ``pipeline_for`` branches on -- so both sides of the assertion came
+        from one place and adding ``INCOME_CATEGORY`` to that constant left the
+        case GREEN while every unclaimed deposit became a purchase.  Its own
+        docstring claimed the opposite: that the property and the constant
+        "cannot drift apart".  They cannot, because the case could not see
+        drift.
         """
         for answer in list(RuleAnswer) + [None]:
             files_a_purchase = pipeline_for(
                 amount=self.AMOUNTS[True], answer=answer,
             ) is LinePipeline.PURCHASE
-            assert files_a_purchase is (answer in CONTAINER_ANSWERS)
+            assert files_a_purchase is (
+                answer in (RuleAnswer.TEMPLATE, RuleAnswer.NEW_ENVELOPE)
+            )
 
     def test_an_OUTFLOW_is_always_a_purchase_candidate(self):
         """Whatever the answer -- the rule only decides what is SUGGESTED.

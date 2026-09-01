@@ -532,7 +532,14 @@ def _inflow_card(
             # **R-GW** states that emptiness as the whole difference between
             # the two ADD doors, and :class:`~._panel.AddAct` is what says
             # which one this is instead of a template reading the sign.
-            add=AddTab(act=AddAct.INCOME, destinations=(), placement=None),
+            # ``records_a_refund=False`` is STATED rather than defaulted
+            # (plan step ``bank_import:X-gj-2b-3``): an income row is filed
+            # against no container, so it is not a refund -- and a default
+            # would have meant that silently for every future builder too.
+            add=AddTab(
+                act=AddAct.INCOME, destinations=(), placement=None,
+                records_a_refund=False,
+            ),
             proposal=None,
         ),
     )

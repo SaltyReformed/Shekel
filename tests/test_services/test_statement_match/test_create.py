@@ -56,7 +56,6 @@ from tests._test_helpers import open_books_before_the_first_assertion
 
 from ._builders import (
     a_bank_line,
-    a_bars,
     a_basis,
     a_later_period,
     a_purchase,

@@ -364,8 +364,14 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
     purchase is worth and when the app believes it moved, on the two sides of a
     single match.
 
-    A purchase's cash is always money LEAVING, so its amount is the negated
-    stored figure -- the sign convention stated once in
+    A purchase's cash is the NEGATION of its stored figure, and stating it as
+    a conversion rather than as a direction is the correction plan step
+    ``bank_import:X-gj-2b-3`` made here: this read *"a purchase's cash is
+    always money LEAVING"*, which ruling **bank_import:R-II** ended.  The
+    negation is TOTAL over both signs -- a stored refund of ``-28.29`` is a
+    ``+28.29`` cash candidate -- and this function is exactly why a
+    positive-cash row in ``unmatched_rows`` need not be income, which is the
+    fact :mod:`._already_held` cites back to here -- the sign convention stated once in
     :mod:`app.models.statement_import`.
 
     Args:

@@ -362,7 +362,12 @@ class CreationBars:
 
 @dataclass(frozen=True)
 class ParkedLine:
-    """One unexplained OUTFLOW that may not become a purchase.
+    """One unexplained line that may not become a purchase, EITHER DIRECTION.
+
+    *It said OUTFLOW until plan step ``bank_import:X-gj-2b-3``.*
+    :func:`bar_for` is sign-blind and :func:`~._leftovers._creatable_lines`
+    asks it of every line, so a credit from a merchant a source files as a
+    payment to an account the owner holds is parked exactly as its debits are.
 
     Ruling **R-GJ**'s other arm: a line the create door is closed for is not
     hidden, it is PARKED -- listed with the reason, and still tickable on the

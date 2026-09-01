@@ -23,7 +23,7 @@ from app import ref_cache
 from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services import account_service, pay_period_write
+from app.services import account_service, pay_period_write, status_seam
 
 from app.utils.dates import display_today
 
@@ -33,6 +33,11 @@ from tests._test_helpers import (
     settlement_columns,
 )
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
+from tests._test_helpers import (
+    add_entry,
+    create_envelope_txn,
+    settlement_if_settling,
+)
 from app.routes.analytics_view import (  # pylint: disable=protected-access
     _bar_pct,
     _history_note,
@@ -2368,6 +2373,173 @@ class TestARefundedCategoryDrawsNoBar:
     def test_an_ordinary_positive_row_still_scales(self):
         """The control: the floor is on the sign, not on every row."""
         assert _bar_pct(Decimal("50.00"), Decimal("200.00")) == 25.0
+
+    @staticmethod
+    def _group_of(name, items):
+        """One group row whose amount is the SIGNED sum of its items."""
+        total = sum((Decimal(a) for _, a in items), Decimal("0.00"))
+        return SpendingGroupRow(
+            group_name=name, amount=total, share=Decimal("0"),
+            delta=Decimal("0.00"), is_new=False,
+            items=[
+                SpendingItemRow(
+                    category_id=index, item_name=item_name,
+                    amount=Decimal(amount), share=Decimal("0"),
+                    delta=Decimal("0.00"), is_new=False,
+                )
+                for index, (item_name, amount) in enumerate(items, start=1)
+            ],
+        )
+
+    def test_an_ITEM_bar_cannot_exceed_its_own_track(self):
+        """A mixed-sign group holds an item BIGGER than any group total.
+
+        Plan step ``bank_import:X-gj-2b-3``, found by adversarial financial
+        review.  The denominator was ``max(group.amount ...)``, and every bar
+        was bounded at 100% only because an item could not exceed its group:
+        while every category total was non-negative, ``item <= group <= max``.
+        Ruling **bank_import:R-II** ended that.
+
+        ``Food`` = ``Groceries +600.00`` and ``Restaurants -500.00`` sums to
+        ``+100.00`` while holding a ``+600.00`` item; against ``Housing``'s
+        ``+300.00`` that item rendered **200.0** -- off its own track, and
+        clamped only by ``progress_bar.js``, which is the tier ``_bar_pct``
+        says in as many words a money-shaped decision may not be left to.
+
+        Asserts the BOUND over every rendered bar rather than one number, so a
+        denominator that merely moves the overflow somewhere else still fails.
+        """
+        rows = _size_lens_rows([
+            self._group_of("Food", [
+                ("Groceries", "600.00"), ("Restaurants", "-500.00"),
+            ]),
+            self._group_of("Housing", [("Rent", "300.00")]),
+        ])
+
+        every_bar = [row["bar_pct"] for row in rows] + [
+            item["bar_pct"] for row in rows for item in row["item_rows"]
+        ]
+        assert every_bar, "the case staged no bars, so it graded nothing"
+        assert max(every_bar) <= 100.0, (
+            f"a bar overflowed its track: {every_bar}"
+        )
+        # ...and the largest RENDERED row is what fills it, which is the
+        # contract the docstring states.
+        assert max(every_bar) == 100.0
+
+    def test_a_window_with_no_refunds_scales_exactly_as_before(self):
+        """The control the fix turns on: nothing moves without a refund.
+
+        An item cannot exceed its own group while every category is
+        non-negative, so the maximum over groups and the maximum over
+        everything rendered are the SAME figure -- and this case fails if the
+        denominator were changed in a way that moved an ordinary window.
+        """
+        rows = _size_lens_rows([
+            self._group_of("Food", [
+                ("Groceries", "600.00"), ("Restaurants", "200.00"),
+            ]),
+            self._group_of("Housing", [("Rent", "400.00")]),
+        ])
+        by_name = {row["name"]: row for row in rows}
+
+        # max over groups is Food's 800.00, and no item exceeds it.
+        assert by_name["Food"]["bar_pct"] == 100.0
+        assert by_name["Housing"]["bar_pct"] == 50.0
+        assert [item["bar_pct"] for item in by_name["Food"]["item_rows"]] == [
+            75.0, 25.0,
+        ]
+
+
+class TestTheHeroStatesBOTHBasesWhenTheyDiffer:
+    """The card carried two undisclosed bases the moment a refund landed.
+
+    Developer ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``, found by
+    adversarial design review.  The hero is the NET (``_spent_total``) and
+    every breakdown row's percent is a slice of what MOVED
+    (``_breakdown._share_base``).  Ruling **bank_import:R-II** separated the
+    two: `Groceries $600.00` beside `Electronics -$500.00` gave a hero of
+    `$100.00` over rows reading `55%` and `-45%` -- percentages summing to
+    about 9%, and a row six times its own hero.  The second figure is stated
+    where they differ so a reader can multiply a row by a number on the card.
+    """
+
+    @staticmethod
+    def _settled_envelope(db, seed_user, period, name, category_key, amounts):
+        """Settle an envelope worth exactly the purchases handed to it.
+
+        A negative CATEGORY total cannot come from a negative transaction --
+        ``ck_transactions_estimated_amount`` is ``>= 0`` -- so the refunded
+        shape is an ENVELOPE whose entries net below zero, which is the shape
+        ruling **bank_import:R-II** actually creates.
+        """
+        txn = create_envelope_txn(
+            seed_user, db.session, period, name, Decimal("0.00"),
+        )
+        txn.category_id = seed_user["categories"][category_key].id
+        for amount in amounts:
+            add_entry(
+                db.session, seed_user, txn, Decimal(amount),
+                period.start_date,
+            )
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.DONE),
+            settlement=settlement_if_settling(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            ),
+        )
+        db.session.flush()
+        return txn
+
+    def test_a_refunded_month_states_what_MOVED_beside_the_net(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """`$600.00` out and `$500.00` back: hero `$100.00`, moved `$1,100.00`."""
+        with app.app_context():
+            self._settled_envelope(
+                db, seed_user, seed_periods[0], "Shop", "Groceries",
+                ["600.00"],
+            )
+            self._settled_envelope(
+                db, seed_user, seed_periods[0], "Return", "Rent",
+                ["-500.00"],
+            )
+            db.session.commit()
+
+            html = auth_client.get(
+                "/analytics/spending?year=2026&month=1",
+                headers={"HX-Request": "true"},
+            ).data.decode()
+            said = " ".join(html.split())
+
+            assert "$100.00" in said, "the hero is still the NET"
+            assert "$1,100.00 moved" in said
+            assert "net of refunds above" in said
+
+    def test_an_ORDINARY_month_states_ONE_figure(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """The control: the two bases are the same figure without a refund.
+
+        Printing one number twice would be noise, and this is what makes the
+        second line a disclosure rather than decoration -- it fails if the
+        line were rendered unconditionally.
+        """
+        with app.app_context():
+            self._settled_envelope(
+                db, seed_user, seed_periods[0], "Shop", "Groceries",
+                ["600.00"],
+            )
+            db.session.commit()
+
+            said = " ".join(auth_client.get(
+                "/analytics/spending?year=2026&month=1",
+                headers={"HX-Request": "true"},
+            ).data.decode().split())
+
+            assert "$600.00" in said
+            assert "moved" not in said
+            assert "net of refunds above" not in said
 
 
 class TestTheHistoryNoteAgreesWithTheBarsBesideIt:

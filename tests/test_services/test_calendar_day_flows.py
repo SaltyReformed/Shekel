@@ -160,12 +160,23 @@ class TestTheResidualAgreesWithTheFold:
         assert day_overflow(entries).net == Decimal("500.00")
 
     def test_only_the_rows_past_the_cap_are_counted(self):
-        """The cap itself, so the two cases above are about the tail."""
+        """The cap itself, so the two cases above are about the tail.
+
+        **The LITERAL, not the constant** (plan step
+        ``bank_import:X-gj-2b-3``, found by adversarial test-quality review).
+        It read ``len(entries) - MAX_VISIBLE_DAY_FLOWS`` while ``day_overflow``
+        computes ``len(entries[MAX_VISIBLE_DAY_FLOWS:])`` -- both sides of the
+        assertion came from one constant, so raising the cap from 3 to 4 left
+        this green while the calendar cell drew a fourth row and the "+N more"
+        chip beside it under-counted by one.  The module's own header says the
+        locked calendar anatomy fixes it at three; three is what grades it.
+        """
         entries = self._five_and_one(_entry("9.00", name="Sixth"))
 
-        assert day_overflow(entries).count == len(entries) - (
-            MAX_VISIBLE_DAY_FLOWS
+        assert MAX_VISIBLE_DAY_FLOWS == 3, (
+            "the locked anatomy fixes the visible row count at three"
         )
+        assert day_overflow(entries).count == len(entries) - 3
 
 
 class TestTheDISPLAYORDERKeepsItsMagnitude:

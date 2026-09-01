@@ -17,7 +17,6 @@ from decimal import Decimal
 
 from app.services import spending_analysis
 from app.services.pay_calendar import PayCalendar
-from app.utils.money import ZERO
 
 
 @dataclass(frozen=True)
@@ -109,10 +108,12 @@ class Comparison:
         return cls(
             baseline=baseline,
             delta=delta,
-            pct=(
-                spending_analysis.signed_pct(delta, baseline)
-                if baseline > ZERO else None
-            ),
+            # **The non-positive-base rule is `signed_pct`'s, not this
+            # value's** (plan step ``bank_import:X-gj-2b-3``).  A
+            # ``baseline > ZERO`` test stood here and strictly subsumed that
+            # function's own ``base == ZERO``, so one fact had two guards and
+            # the inner one was dead for its only caller.
+            pct=spending_analysis.signed_pct(delta, baseline),
         )
 
 
@@ -121,7 +122,21 @@ class HeroFigures:
     """The Spending hero band.
 
     Attributes:
-        spent_total: Total settled spend in the chosen window.
+        spent_total: Total settled spend in the chosen window, NET -- refunds
+            reduce it (ruling **bank_import:R-II**).
+        moved_total: What the window MOVED through its categories, ignoring
+            direction (:func:`~._breakdown._share_base`).  **It is here because
+            the card would otherwise carry two undisclosed bases** (developer
+            ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``): every
+            breakdown row's ``share`` is a fraction of THIS figure while the
+            hero printed only the NET, so on ``Groceries 600.00`` beside
+            ``Electronics -500.00`` the card read a hero of `$100.00` over rows
+            of `$600.00 / 55%` and `-$500.00 / -45%` -- percentages summing to
+            about 9%, and a row six times its own hero.  Stating both is what
+            lets a reader multiply a row by a figure on the card again.  It is
+            EQUAL to :attr:`spent_total` for any window holding no refund, so
+            an ordinary month shows one number twice and the screen prints it
+            once.
         vs_prior: Comparison against the immediately preceding window of the
             same type.
         vs_average: Comparison against the trailing same-type window average.
@@ -132,6 +147,7 @@ class HeroFigures:
     """
 
     spent_total: Decimal
+    moved_total: Decimal
     vs_prior: Comparison
     vs_average: Comparison
     payment_timing: dict | None

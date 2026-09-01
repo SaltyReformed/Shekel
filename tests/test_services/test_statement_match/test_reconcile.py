@@ -42,7 +42,6 @@ from .test_reads_lineless import _planted_lineless
 
 from ._builders import (
     a_bank_line,
-    a_bars,
     a_purchase,
     a_rule,
     a_scope,

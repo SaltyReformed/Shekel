@@ -70,7 +70,6 @@ from app.services.statement_match._release import (  # pylint: disable=protected
 
 from ._builders import (
     a_bank_line,
-    a_bars,
     a_later_period,
     a_purchase,
     a_scope,

@@ -218,12 +218,18 @@ def day_overflow(entries: list[DayEntry]) -> DayOverflow:
     ``Decimal("0")`` so it stays a ``Decimal``.  Called only for days whose
     flow count exceeds the cap.
 
-    **The expense term is a NEGATION and no longer ``-abs()``** (plan step
-    ``bank_import:X-gj-2b-3``), for the reason :func:`fold_income_expense`
-    states above: a hidden REFUND raises the residual, and ``-abs()`` reported
-    it lowering by the same amount.  The two had to be corrected together --
-    the "+N more" chip is what the day cell shows INSTEAD of the rows it hides,
-    so a disagreement between them is one cell contradicting itself.
+    **The net is :func:`fold_income_expense`'s own answer, not a second
+    reduction of the same rule** (plan step ``bank_import:X-gj-2b-3``, found by
+    adversarial design review).  This restated it as
+    ``sum(amount if is_income else -amount)`` -- which is exactly
+    ``income - expense`` over the hidden tail -- and the two spellings then
+    had to be corrected TOGETHER when the ``abs()`` came out, which this
+    docstring recorded as a fact rather than reading as the argument for
+    collapsing them.  The module exists because those two readings drifted: a
+    day cell and the "+N more" chip it hides rows behind reported a refund in
+    opposite directions, and the chip is what the cell shows INSTEAD of those
+    rows, so a disagreement is one cell contradicting itself.  One expression
+    now, and the next sign question is asked in one place.
 
     Args:
         entries: One day's ordered :class:`DayEntry` list (length greater than
@@ -233,8 +239,5 @@ def day_overflow(entries: list[DayEntry]) -> DayOverflow:
         The :class:`DayOverflow` for the hidden tail.
     """
     hidden = entries[MAX_VISIBLE_DAY_FLOWS:]
-    net = sum(
-        (e.amount if e.is_income else -e.amount for e in hidden),
-        Decimal("0"),
-    )
-    return DayOverflow(count=len(hidden), net=net)
+    income, expense = fold_income_expense(hidden)
+    return DayOverflow(count=len(hidden), net=income - expense)

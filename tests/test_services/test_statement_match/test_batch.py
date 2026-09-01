@@ -55,7 +55,6 @@ from tests._test_helpers import count_amount_bases
 
 from ._builders import (
     a_bank_line,
-    a_bars,
     a_later_period,
     a_purchase,
     a_rule,

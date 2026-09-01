@@ -137,7 +137,13 @@ class AddTab:
     #: ``card.line.amount > 0`` would be a SECOND spelling of the partition
     #: :func:`~._rules.pipeline_for` owns, which the paragraph above forbids.
     #: Always ``False`` for :attr:`AddAct.INCOME`, which files no purchase.
-    records_a_refund: bool = False
+    # **No DEFAULT** (plan step ``bank_import:X-gj-2b-3``).  It carried
+    # ``= False``, and a defaulted direction flag silently means CHARGE --
+    # which is the sentence this field was added to stop printing over a
+    # refund.  ``CreatedPurchase.records_a_refund`` is required for the same
+    # reason, and ``create_purchase_from_line``'s own arguments record the
+    # rule: a default would silently mean something.
+    records_a_refund: bool
 
     @property
     def records_a_purchase(self) -> bool:

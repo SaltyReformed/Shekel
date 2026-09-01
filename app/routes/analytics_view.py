@@ -235,7 +235,27 @@ def _size_lens_rows(breakdown):
     """
     if not breakdown:
         return []
-    max_amount = max(group.amount for group in breakdown)
+    # **The largest RENDERED row, groups and items alike** (plan step
+    # ``bank_import:X-gj-2b-3``, found by adversarial financial review).  It
+    # was `max(group.amount ...)`, which bounded every bar at 100% only
+    # because an item's amount could not exceed its group's: every category
+    # total was non-negative, so `item <= group <= max`.  Ruling
+    # **bank_import:R-II** ended that -- a group of `Groceries +600.00` and
+    # `Restaurants -500.00` sums to `+100.00` while holding a `+600.00` item --
+    # and against a `300.00` maximum that item rendered a bar of **200.0**,
+    # off its own track and clamped only by `progress_bar.js`, which is the
+    # tier :func:`_bar_pct` says in as many words a money-shaped decision may
+    # not be left to.
+    #
+    # Taking the maximum over what is actually DRAWN restores the docstring's
+    # stated contract -- the largest row is full width and every other is
+    # proportional to it -- by construction rather than by a clamp, and it is
+    # the SAME figure on any window holding no refund, since an item cannot
+    # then exceed its own group.
+    max_amount = max(
+        [group.amount for group in breakdown]
+        + [item.amount for group in breakdown for item in group.items],
+    )
     rows = []
     for group in breakdown:
         singleton = len(group.items) == 1
