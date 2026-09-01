@@ -27,7 +27,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, TxnTypeEnum
+from app.enums import AmountSourceEnum, SettlementBasisEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
@@ -35,6 +35,7 @@ from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import posting_service
+from app.services.amount_ownership import declare_derived
 from app.services import status_seam
 from app.services.settle_day import SettleDay
 from app.services.status_seam import reject_settle_day_without_settled_status
@@ -120,9 +121,28 @@ def _build_shadow(
 
     Both shadows are transfer-generated (``template_id=None``,
     ``credit_payback_for_id=None``, no independent ``notes``) and inherit
-    period / scenario / status / category / amount / due_date from the
-    just-created ``xfer`` so the three rows stay equal (Transfer
-    Invariants 1 and 3).  Only the per-side fields vary.
+    period / scenario / status / category / due_date from the just-created
+    ``xfer`` so the three rows stay equal (Transfer Invariants 1 and 5).  Only
+    the per-side fields vary.
+
+    **A shadow is BORN DERIVED and stores no figure at all, which is what makes
+    Transfer Invariant 3 STRUCTURAL rather than maintained** (plan step
+    X-au-g-2c-2, ruling **R-FI**).  It copied ``xfer.amount`` into
+    ``estimated_amount`` until this step, and two hand-written repairs existed
+    to keep that copy true -- ``_update``'s propagation and ``_restore``'s drift
+    corrector, which logged and rewrote the copies that got away.  A row that
+    READS its parent cannot drift from it, so both are gone and the invariant is
+    a property of the schema: ``ck_transactions_amount_ownership`` pairs the
+    empty figure with the declaration one-to-one.
+
+    **It declares the RELATION, not the rule, so a loan payment needs no special
+    case here** (ruling **R-FK**).  Every shadow names ``PARENT_TRANSFER``;
+    whether that parent is a loan payment -- and so whether the amount model
+    prices this row from the loan's own installment or from the parent's figure
+    -- is read live off the transfer's template at price time.  That is why
+    flipping a payment to auto-track
+    (``routes/loan/payment_transfer.track_payment``) rewrites no row: the
+    declaration it would otherwise have had to add is already there.
 
     Args:
         xfer: The parent :class:`Transfer`, already flushed so
@@ -137,7 +157,7 @@ def _build_shadow(
         An unsaved :class:`Transaction`; the caller adds it to the
         session.
     """
-    return Transaction(
+    shadow = Transaction(
         account_id=account_id,
         template_id=None,       # Shadows are transfer-generated, not template-generated.
         transfer_id=xfer.id,
@@ -147,7 +167,6 @@ def _build_shadow(
         name=name,
         category_id=xfer.category_id,
         transaction_type_id=transaction_type_id,
-        estimated_amount=xfer.amount,
         settled_amount=None,
         settled_basis_id=None,
         # The settle DAY and its basis are the ASSERTION, and a shadow is
@@ -162,6 +181,8 @@ def _build_shadow(
         notes=None,
         due_date=xfer.due_date,
     )
+    declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
+    return shadow
 
 
 @dataclass(frozen=True)

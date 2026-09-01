@@ -14,7 +14,7 @@ what happened, when?            :mod:`._events`           ``loan_ledger._events`
 where do books open?            :mod:`._books`            (no loan analog)
 what IS the amount?             :mod:`._amount_source`    (see below)
 what does a pass derive live?   :mod:`._amount_basis`     (no loan analog)
-which transfers are payments?   :mod:`._loan_pricing`     (no loan analog)
+what does a loan resolve to?    :mod:`._loan_pricing`     (no loan analog)
 what does an installment cost?  :mod:`._loan_installment` ``loan_resolver``
 what was it worth?              :mod:`._amounts`          ``loan_ledger._split``
 did the bank show it?           :mod:`._clearing`         (no loan analog)
@@ -55,22 +55,25 @@ names the loan TERM primitives (``loan_loaders``, ``loan_resolver``,
 and the loan READING tier may import this package, which plan step X-au-g-2c-1
 SPENT: ``loan_payment_service.get_payment_history`` prices its feed through
 :func:`contributions_by_id` rather than through
-``row_valuation.owned_contribution``.  **One reader of an unsettled row
-remains** -- ``balance_at._plan._planned_from_shadows`` -- and it moves at plan
-step X-au-f, not here.
+``row_valuation.owned_contribution``.  ``balance_at._plan._planned_from_shadows``
+-- the SECOND unrouted reader, which a census at that step found where the
+finding had named one -- went through in the same commit, so no reader of an
+unsettled loan-payment row is left outside the model.
 
-**IT BROUGHT A ``budget.transfers`` QUERY WITH IT, and that is disclosed here
-because the package it left disclosed it.**  :mod:`._events` invokes Transfer
-Invariant 5 as a principle of this package ("the same reason the projection
-engine never queries ``Transfer`` directly"), and
-``_loan_pricing._load_live_payment_configs`` is now the ONE statement against
-``budget.transfers`` in these thirteen modules -- transfers INNER-joined
-through their template to ``loan_payment_settings``.  It must be: discovering
-WHICH transfers are loan payments is a question about that table.  Invariant 5
-binds the BALANCE CALCULATOR rather than every reader, so nothing is violated;
-what would be wrong is the query arriving silently, which is exactly how
-``loan_payment_service``'s own "queries ONLY budget.transactions" sentence came
-to be false at the top of its file for months.
+**IT BROUGHT A ``budget.transfers`` QUERY WITH IT, AND PLAN STEP X-au-g-2c-2
+TOOK IT BACK OUT.**  :mod:`._events` invokes Transfer Invariant 5 as a
+principle of this package ("the same reason the projection engine never queries
+``Transfer`` directly"), and ``_loan_pricing._load_live_payment_configs`` was
+the ONE statement against ``budget.transfers`` in these thirteen modules --
+the scenario's transfers INNER-joined through their template to
+``loan_payment_settings``, to discover which of them were loan payments.  That
+question is asked per ROW off the parent it was handed now (ruling **R-FK**'s
+live refinement), because the read-time repair the map fired for is gone, so
+the package makes no statement against that table at all.  Invariant 5 binds
+the BALANCE CALCULATOR rather than every reader, so nothing was violated while
+the query stood; what would have been wrong is its arriving silently, which is
+exactly how ``loan_payment_service``'s own "queries ONLY budget.transactions"
+sentence came to be false at the top of its file for months.
 
 **The books row has no loan analog because a loan has no books to open.**  Its
 origination is ``LoanParams.original_principal``, synthesized rather than
@@ -136,6 +139,15 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 from app.services.row_valuation import (
     recorded_amounts_by_id,
     settled_amounts_by_id,
+)
+# Re-exported so a caller ABOVE the amount model asks the MODEL for the
+# model's own eager load and never has to know the relationship graph (plan
+# step X-au-g-2c-2).  It is DEFINED a tier down, in ``app.utils``, because
+# ``loan_loaders`` -- which this package imports for its loan term primitives --
+# is the loader that most needs it and cannot import this package back.
+from app.utils.amount_relationships import (
+    pricing_load_options,
+    valuation_load_options,
 )
 # The loan-pricing pair FIRST, because it is the bottom of this package's
 # pricing line: ``_loan_installment`` -> ``_loan_pricing`` -> ``_amount_basis``
@@ -267,6 +279,8 @@ __all__ = [
     "reject_books_open_after_an_assertion",
     "reject_books_open_on_or_after_matched_lines",
     "reject_books_open_on_or_after_movements",
+    "pricing_load_options",
+    "valuation_load_options",
     "reject_line_before_books_open",
     "reject_movement_before_books_open",
     "settled_amounts_by_id",

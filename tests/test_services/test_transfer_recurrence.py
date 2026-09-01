@@ -22,7 +22,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.account import Account, AccountAnchorHistory
 from app.models.ref import TransactionType
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum
+from app.enums import AmountSourceEnum, SettlementBasisEnum, StatusEnum
 from app.services import (
     pay_period_write, transfer_recurrence, transfer_service,
 )
@@ -44,6 +44,7 @@ from tests._test_helpers import (
     make_cadence_rule,
     open_calendar_hole,
     settlement_basis_id,
+    shadow_amount,
 )
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
@@ -53,7 +54,21 @@ from app.services.settle_day import record_settle_day
 
 
 def _assert_shadows_valid(xfer):
-    """Assert a transfer has exactly 2 correct shadow transactions."""
+    """Assert a transfer has exactly 2 correct shadow transactions.
+
+    **Only valid for a transfer that is NOT a loan payment**, and the amount
+    assertion is why: a leg reads its parent through amount rule 5, so
+    ``shadow_amount(leg) == xfer.amount`` holds by construction -- but rule 4
+    prices a loan payment's leg from the LOAN's installment, which is
+    deliberately not the parent's figure.  Every caller here generates plain
+    transfers; a loan payment reaching this helper would fail on a rule working
+    correctly.
+
+    The amount line therefore carries little on its own, so the DECLARATION is
+    asserted beside it: since plan step X-au-g-2c-2 a leg stores no figure and
+    names ``PARENT_TRANSFER``, and that pair is the invariant this used to check
+    by comparing two stored columns.
+    """
     shadows = (
         db.session.query(Transaction)
         .filter_by(transfer_id=xfer.id)
@@ -68,8 +83,13 @@ def _assert_shadows_valid(xfer):
     types = {s.transaction_type_id for s in shadows}
     assert types == {expense_type.id, income_type.id}
 
+    parent_transfer_id = ref_cache.amount_source_id(
+        AmountSourceEnum.PARENT_TRANSFER,
+    )
     for s in shadows:
-        assert s.estimated_amount == xfer.amount
+        assert s.estimated_amount is None
+        assert s.amount_source_id == parent_transfer_id
+        assert shadow_amount(s) == xfer.amount
         assert s.status_id == xfer.status_id
         assert s.pay_period_id == xfer.pay_period_id
         # due_date mirrors the parent (Transfer Invariant 3).
@@ -797,7 +817,7 @@ class TestTransferResolveConflicts:
             for s in shadows:
                 assert s.is_override is False
                 assert s.is_deleted is False
-                assert s.estimated_amount == Decimal("200.00")
+                assert shadow_amount(s) == Decimal("200.00")
 
     def test_cross_user_update_blocked(
         self, app, db, seed_user, seed_periods, second_user
@@ -1313,7 +1333,7 @@ class TestShadowTransactionCreation:
                 assert shadow is not None, (
                     f"Shadow {sid} was destroyed by a maintain pass."
                 )
-                assert shadow.estimated_amount == Decimal("300.00")
+                assert shadow_amount(shadow) == Decimal("300.00")
 
             for xid in old_ids:
                 xfer = db.session.get(Transfer, xid)
@@ -1385,7 +1405,7 @@ class TestShadowTransactionCreation:
             ).all()
             assert len(shadows) == 2
             for s in shadows:
-                assert s.estimated_amount == Decimal("175.00")
+                assert shadow_amount(s) == Decimal("175.00")
                 assert s.is_override is False
 
 
@@ -1446,11 +1466,12 @@ class TestResolveConflictsServiceRouting:
             xfer = created[0]
             xfer.is_override = True
             xfer.amount = Decimal("999.99")
-            # Also drift one shadow to prove the service corrects it.
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id
-            ).all()
-            shadows[0].estimated_amount = Decimal("888.88")
+            # A shadow cannot be drifted to prove the service corrects it:
+            # since plan step X-au-g-2c-2 it stores no figure and reads its
+            # parent, so ``ck_transactions_amount_ownership`` refuses the
+            # write.  What the case still grades is the parent's own figure
+            # going through the SERVICE rather than being assigned, and both
+            # legs following it -- which the assertions below do.
             db.session.flush()
 
             transfer_recurrence.resolve_conflicts(
@@ -1471,7 +1492,7 @@ class TestResolveConflictsServiceRouting:
             ).all()
             assert len(shadows) == 2
             for s in shadows:
-                assert s.estimated_amount == Decimal("200.00")
+                assert shadow_amount(s) == Decimal("200.00")
                 assert s.is_override is False
                 assert s.is_deleted is False
 
@@ -1524,7 +1545,7 @@ class TestResolveConflictsServiceRouting:
             assert len(shadows) == 2
             for s in shadows:
                 assert s.is_deleted is False
-                assert s.estimated_amount == Decimal("300.00")
+                assert shadow_amount(s) == Decimal("300.00")
 
     def test_keep_action_preserves_user_override(
         self, app, db, seed_user, seed_periods
@@ -1650,7 +1671,7 @@ class TestResolveConflictsServiceRouting:
                 for s in shadows:
                     assert s.is_deleted is False
                     assert s.is_override is False
-                    assert s.estimated_amount == Decimal("250.00")
+                    assert shadow_amount(s) == Decimal("250.00")
 
 
 class _LogCapture:
@@ -2353,7 +2374,7 @@ class TestTransferMaintain:
                 Decimal("58.00"), Decimal("58.00"),
             ]
             assert all(
-                leg.estimated_amount == Decimal("175.00") for leg in legs
+                shadow_amount(leg) == Decimal("175.00") for leg in legs
             )
 
     def test_a_pass_that_changes_nothing_writes_nothing(

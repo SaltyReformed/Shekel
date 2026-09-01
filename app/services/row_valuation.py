@@ -349,10 +349,13 @@ def fixed_contribution(txn) -> "Decimal | None":
     **The first arm is why the status gate sits ABOVE the resolver** (plan step
     X-au-c2).  ``Transaction.effective_amount`` answered ``$0.00`` for an
     excluded row from inside the valuation, where the resolver would REFUSE the
-    same row: both live producers filter to Projected rows
-    (``income_service.live_projected_net``,
-    ``cash_ledger.LoanPricing.live_cash``), so a Cancelled salary
-    row is absent from their maps and has no derived answer at all.  Asking what
+    same row: the live producer filters to Projected rows
+    (``income_service.live_projected_net``), so a Cancelled salary row is absent
+    from its map and has no derived answer at all.  *There were TWO producers
+    until plan step X-au-g-2c-2, the second being
+    ``cash_ledger.LoanPricing.live_cash``; a loan payment's shadow is DERIVED
+    now and rule 4 prices it whatever its status, which is the same
+    ask-what-it-is-priced-at-second ordering stated from the other side.*  Asking what
     a row is worth before asking what it is priced at is what keeps that from
     being a 500 on a row nobody is counting.
 
@@ -494,16 +497,38 @@ def owned_contribution(txn) -> Decimal:
     :func:`~app.services.cash_ledger.contributions_by_id` now, so nothing left
     in ``app/`` asks this accessor about a row that might be derived.
 
-    **The SECOND is still here, and saying so is the point of counting them.**
-    ``balance_at._plan._planned_from_shadows`` values PROJECTED loan-side
+    **The SECOND is GONE TOO, and this paragraph is corrected rather than
+    deleted because it is a REASON a later step would otherwise cite.**  It
+    read: ``balance_at._plan._planned_from_shadows`` values PROJECTED loan-side
     shadows at ``owned_contribution(shadow)`` where the live-cash map has no
-    entry (``_plan.py``), which is the same row class and the same refusal.  It
-    is not this step's: that call site moves when plan step **X-au-f** stamps
-    the transfer shadows, and that step's own specification says so.  *A first
-    draft of this paragraph said "every caller is now settled-only" -- written
-    in the same commit as the ``_plan.py`` docstring that names this survivor,
-    which is the shape ``lessons.md`` records as a fix describing itself
-    ungraded.*
+    entry, so one caller still asks this accessor about a row that might be
+    derived.  That was true when written and false from plan step
+    **X-au-g-2c-1**, which routed that reader through
+    ``cash_ledger.display_amounts_by_id`` -- the census at that step found TWO
+    unrouted readers where the finding had named one, and moved both.  Plan step
+    **X-au-g-2c-2** then declared every transfer shadow derived, so the state
+    this paragraph warned about is not merely unvisited but unreachable: the
+    accessor would refuse, and no caller reaches it.
+
+    *Both drafts of this paragraph were wrong in opposite directions -- the
+    first said "every caller is now settled-only" while a survivor stood, the
+    second kept naming that survivor after it had moved. An undated claim quoted
+    as a REASON decays invisibly, because nobody re-checks a premise; the
+    re-census that corrected it is recorded at the foot of this docstring.*
+
+    **Re-censused at plan step X-au-g-2c-2, because widening the derived class
+    from loan payments to EVERY transfer shadow widens what this accessor can be
+    handed.**  All seven live call sites are settled-only or guarded:
+    ``cash_ledger.settled_cash_leg``, ``loan_ledger._split.split_one_payment``,
+    ``loan_posting_service._sync`` and ``._display``,
+    ``savings_dashboard_service._metrics`` (settled statuses in SQL), and the
+    spending report's ``_window`` and ``_breakdown``.  ``statement_match`` and
+    ``_release`` catch :class:`~app.exceptions.AmountUnresolvable` explicitly.
+    **``cash_ledger._cash_leg`` guards only on ``is_balance_contributing``,
+    which does NOT exclude Projected**, and is safe today only because both of
+    its callers pre-filter -- a contract its own docstring already admits is
+    invisible.  Widening the derived class makes that the tripwire for the next
+    caller, and it is named here rather than left to be found.
 
     **The refusal below is what makes routing them safe to defer**, and that is
     worth keeping rather than treating as an accident: a reader handed a

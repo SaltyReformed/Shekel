@@ -71,6 +71,9 @@ from app.services.cash_ledger import resolve_transfer_amount
 from app.services.row_valuation import owned_contribution
 
 _MIGRATION = load_migration_module("b3f7c2a9d514_amount_ownership.py")
+_SHADOW_CUTOVER = load_migration_module(
+    "c9a4e7b21d58_a_transfer_shadow_is_derived.py",
+)
 
 
 def _make_transaction(seed_user, seed_periods, **overrides):
@@ -711,3 +714,131 @@ class TestTheDowngradeRefusesToInventAFigure:
 
             with pytest.raises(RuntimeError, match="budget.transfers.amount"):
                 _MIGRATION.refuse_rows_without_a_figure(db.session.connection())
+
+
+class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
+    """Migration ``c9a4e7b21d58``'s only non-DDL logic, driven directly.
+
+    Plan step **X-au-g-2c-2** declares every transfer SHADOW derived; its
+    downgrade restores each shadow's figure from the parent transfer's own
+    ``amount``.  ``refuse_a_shadow_whose_parent_states_no_figure`` is
+    module-level for the reason ``b3f7c2a9d514``'s guard is: a guard nothing
+    exercises is a guard nobody has seen work.
+
+    **The DDL-free halves were driven against a copy of PRODUCTION before this
+    leaf shipped** (2026-09-01, stamp ``a4c6f1d92b73`` restored into a throwaway
+    database and migrated to ``dev``'s head): the upgrade declared 350 shadows
+    and touched no other row, and the downgrade was BYTE-IDENTICAL over all
+    1,028 transactions.  What no replay can reach is this refusal, because the
+    chain never leaves a parent transfer without a figure -- plan step X-au-f is
+    what creates that state, and it does not exist yet.
+    """
+
+    def test_it_passes_when_every_parent_states_a_figure(
+        self, app, db, seed_full_user_data,
+    ):
+        """The state the chain leaves: every parent owns an amount.
+
+        Returns ``None`` rather than raising, so the negative controls below
+        are what give this meaning.
+        """
+        with app.app_context():
+            td = seed_full_user_data
+            xfer = _make_transfer(td)
+            db.session.add(xfer)
+            db.session.flush()
+            txn = _make_transaction(
+                td, td["periods"],
+                estimated_amount=None,
+                amount_source_id=ref_cache.amount_source_id(
+                    AmountSourceEnum.PARENT_TRANSFER,
+                ),
+                transfer_id=xfer.id,
+                template_id=None,
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            assert _SHADOW_CUTOVER.refuse_a_shadow_whose_parent_states_no_figure(
+                db.session.connection(),
+            ) is None
+
+    def test_it_refuses_and_names_the_shadow_whose_parent_is_derived(
+        self, app, db, seed_full_user_data,
+    ):
+        """A parent with no figure stops the downgrade, and the SHADOW is named.
+
+        The id matters: the operator's next act is to downgrade the cutover
+        that emptied the parent's column (plan step X-au-f), and a refusal that
+        does not say which rows are stranded cannot tell them where to look.
+        """
+        with app.app_context():
+            td = seed_full_user_data
+            xfer = _make_transfer(
+                td,
+                amount=None,
+                amount_source_id=ref_cache.amount_source_id(
+                    AmountSourceEnum.TEMPLATE,
+                ),
+            )
+            db.session.add(xfer)
+            db.session.flush()
+            txn = _make_transaction(
+                td, td["periods"],
+                estimated_amount=None,
+                amount_source_id=ref_cache.amount_source_id(
+                    AmountSourceEnum.PARENT_TRANSFER,
+                ),
+                transfer_id=xfer.id,
+                template_id=None,
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            # Anchored on the ids LIST rather than the bare digits.  The
+            # message also carries the revision id ``c9a4e7b21d58``, whose
+            # digits include 9, 4, 7, 2, 1, 5 and 8 -- so ``match=str(txn.id)``
+            # is ``re.search`` over a string that already contains most small
+            # ids, and would pass on a guard that named the TRANSFER instead of
+            # the shadow.  That is the exact property this case exists for.
+            with pytest.raises(
+                RuntimeError, match=rf"\(ids [^)]*\b{txn.id}\b",
+            ):
+                _SHADOW_CUTOVER.refuse_a_shadow_whose_parent_states_no_figure(
+                    db.session.connection(),
+                )
+
+    def test_a_derived_parent_with_no_declared_shadow_does_not_refuse(
+        self, app, db, seed_full_user_data,
+    ):
+        """The probe is scoped to DECLARED shadows, not to derived parents.
+
+        The mutation this rules out is a guard written as "any transfer with no
+        amount", which would refuse a downgrade that had nothing to restore --
+        turning a safe round trip into a dead end. The parent here is derived
+        and its shadow owns its own figure, so there is no restore to attempt.
+        """
+        with app.app_context():
+            td = seed_full_user_data
+            xfer = _make_transfer(
+                td,
+                amount=None,
+                amount_source_id=ref_cache.amount_source_id(
+                    AmountSourceEnum.TEMPLATE,
+                ),
+            )
+            db.session.add(xfer)
+            db.session.flush()
+            txn = _make_transaction(
+                td, td["periods"],
+                estimated_amount=Decimal("25.00"),
+                amount_source_id=None,
+                transfer_id=xfer.id,
+                template_id=None,
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            assert _SHADOW_CUTOVER.refuse_a_shadow_whose_parent_states_no_figure(
+                db.session.connection(),
+            ) is None

@@ -6649,59 +6649,86 @@ class PlantedPricing:
     reduction return") need to plant an answer without seeding a salary profile
     or a loan, and this is what they plant it with.
 
-    It satisfies both halves of the seam: :meth:`net_for` is what
-    ``income_service.salary_net_for`` asks, and :meth:`live_cash` is what
-    ``cash_ledger.LoanPricing`` answers with.  Planting by
-    TRANSACTION id therefore lands on the loan half, which
-    ``cash_ledger.live_override`` asks first.
+    It satisfies the seam: :meth:`net_for` is what
+    ``income_service.salary_net_for`` asks.
+
+    **It answered a LOAN half too until plan step X-au-g-2c-2**, and planting
+    was keyed by TRANSACTION id because that half (``LoanPricing.live_cash``)
+    took a row.  That method is deleted -- a transfer shadow is DERIVED and has
+    no stored figure for a read-time override to supersede -- so the seam is
+    salary alone and the key is the pair the salary derivation is keyed on.
+    Answering the old key would have been worse than failing: the loan half was
+    asked FIRST, so every planted figure landed there, and a helper that kept
+    answering by row id after the arm was deleted would have gone quietly inert.
 
     Use it ONLY where the derivation is an input to the rule under test.  A test
     OF the amount model builds a real basis (``amount_basis``) and seeds the
-    profile or the loan, because a planted map cannot grade a derivation.
+    profile, because a planted map cannot grade a derivation.
     """
 
     def __init__(self, overrides=None):
-        """Plant ``{transaction_id: Decimal}`` as this derivation's answers.
+        """Plant ``{(template_id, pay_period_id): Decimal}`` as the answers.
 
         Args:
-            overrides: The live figures to answer with, or ``None`` for a
-                derivation that answers for nothing -- the common case, and
-                what a row set with no salary row and no loan payment gets.
+            overrides: The live figures to answer with, keyed the way the
+                salary derivation is keyed, or ``None`` for a derivation that
+                answers for nothing -- the common case, and what a row set with
+                no salary row gets.
         """
         self._overrides = dict(overrides or {})
 
     def net_for(self, template_id, pay_period_id):
-        """Answer nothing: a planted figure lands on the LOAN half.
+        """Return the planted net for one template and period, or ``None``.
 
         Args:
-            template_id: Ignored.
-            pay_period_id: Ignored.
-
-        Returns:
-            ``None`` always -- a test that needs a real paycheck seeds a
-            profile and builds a real basis.
-        """
-        return None
-
-    def live_cash(self, txn):
-        """Return the planted figure for *txn*, or ``None``.
-
-        Args:
-            txn: The row being asked about; only its ``id`` is read.
+            template_id: The row's definition.
+            pay_period_id: The row's pay period.
 
         Returns:
             The planted ``Decimal``, or ``None`` when nothing was planted for
-            this row.
+            that pair.
         """
-        return self._overrides.get(getattr(txn, "id", None))
+        return self._overrides.get((template_id, pay_period_id))
+
+    def derive_cash(self, shadow, loan_account_id, extra_principal):
+        """REFUSE: a planted basis cannot price a loan.
+
+        :func:`planted_basis` puts this same object in ``AmountBasis.loans``,
+        where the amount model's rule 4 calls ``derive_cash``.  Without this the
+        call is an ``AttributeError`` on a class that simply has no such method
+        -- a failure that names the DOUBLE rather than the mistake, and one an
+        adversarial review of plan step X-au-g-2c-2 asked to be made legible.
+
+        The class docstring's "use it ONLY where the derivation is an input to
+        the rule under test" was the whole of the guarantee before this; a
+        promise a test can break silently is not one.
+
+        Args:
+            shadow: Ignored.
+            loan_account_id: Ignored.
+            extra_principal: Ignored.
+
+        Raises:
+            AssertionError: Always.
+        """
+        raise AssertionError(
+            "A planted basis cannot price a loan payment: PlantedPricing "
+            "stands in for the SALARY derivation only. This row reached "
+            "AmountRule.LOAN_PAYMENT, so the case needs a real basis "
+            "(amount_basis) over a seeded loan -- a planted map cannot grade "
+            "a derivation."
+        )
 
 
 def planted_basis(*rows, overrides=None):
     """An :class:`~app.services.cash_ledger.AmountBasis` answering *overrides*.
 
-    The basis a producer would hand a valuation rule, with both live
-    derivations planted (:class:`PlantedPricing`) so no test of a reduction
-    needs a salary profile or a configured loan to reach the override seam.
+    The basis a producer would hand a valuation rule, with the live salary
+    derivation planted (:class:`PlantedPricing`) so no test of a reduction needs
+    a salary profile to reach the override seam.  The ``loans`` field is planted
+    with the same object, which answers nothing there: since plan step
+    X-au-g-2c-2 the only thing a caller asks it is ``derive_cash``, and a
+    reduction under test never does.
 
     Args:
         rows: The rows this basis will price.  A basis was built OVER a row set
@@ -6710,7 +6737,8 @@ def planted_basis(*rows, overrides=None):
             SCENARIO the basis declares.  ``resolve_transaction_amount`` refuses
             a row from another scenario, so a double that named the wrong one
             would grade that refusal instead of the rule under test.
-        overrides: ``{transaction_id: Decimal}`` live figures to plant.
+        overrides: ``{(template_id, pay_period_id): Decimal}`` live figures to
+            plant on the salary derivation.
 
     Returns:
         The :class:`~app.services.cash_ledger.AmountBasis`.
@@ -6725,6 +6753,42 @@ def planted_basis(*rows, overrides=None):
         scenario_id=getattr(rows[0], "scenario_id", 0) if rows else 0,
         salary=planted,
         loans=planted,
+    )
+
+
+def shadow_amount(shadow):
+    """What one transfer SHADOW is worth -- Transfer Invariant 3, read.
+
+    **The invariant moved from a COLUMN to a VALUE at plan step X-au-g-2c-2**,
+    and this is what a test asserts it with.  A shadow used to hold a COPY of
+    its parent's ``amount``, kept true by ``update_transfer``'s propagation and
+    by ``restore_transfer``'s drift corrector, so every case could assert
+    ``shadow.estimated_amount == xfer.amount`` and was really asserting that the
+    two repairs had run.  A shadow declares ``PARENT_TRANSFER`` and stores
+    nothing now, so that assertion would compare ``None`` against a figure; what
+    it was ABOUT -- both legs being worth what the transfer is -- is asked of
+    the amount model here.
+
+    A FRESH basis per call: a case that edits a transfer and re-reads must see
+    the new figure, and a basis memoizes for the length of the read pass.
+
+    Args:
+        shadow: A transfer shadow, with its ``account`` reachable.
+
+    Returns:
+        The ``Decimal`` the shadow resolves to.
+
+    Raises:
+        AmountUnresolvable: When the row's rule cannot price it -- which for a
+            shadow means its parent is gone (Transfer Invariant 2 broken).
+    """
+    from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
+        amount_basis,
+        resolve_transaction_amount,
+    )
+
+    return resolve_transaction_amount(
+        shadow, amount_basis(shadow.account.user_id, shadow.scenario_id),
     )
 
 
