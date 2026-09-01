@@ -38,6 +38,7 @@ from app.services.savings_dashboard_service._types import AccountProjection
 
 from tests._test_helpers import (
     all_periods,
+    amount_basis_for_scenario,
     current_pay_period,
     open_books_before_the_first_assertion,
     settle_day_columns,
@@ -1116,7 +1117,9 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
         from app.utils.money import round_money
 
         params = load_loan_params(acct.id)
-        loan_ctx = load_loan_context(acct.id, scenario_id, params)
+        loan_ctx = load_loan_context(
+            acct.id, amount_basis_for_scenario(scenario_id), params,
+        )
         inputs = loan_resolver.LoanInputs(
             params, load_loan_anchor_facts(params),
             loan_ctx.payments, loan_ctx.rate_changes,

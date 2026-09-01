@@ -17,7 +17,11 @@ from app.models.transfer_template import TransferTemplate
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.loan_payment_service import get_payment_history
-from tests._test_helpers import create_loan_account, loan_params_for
+from tests._test_helpers import (
+    amount_basis_for_scenario,
+    create_loan_account,
+    loan_params_for,
+)
 
 
 class TestLoanPaymentPipeline:
@@ -138,7 +142,8 @@ class TestLoanPaymentPipeline:
             # Step 5: Verify get_payment_history returns the payments.
             params = loan_params_for(db.session, mortgage.id)
             payments = get_payment_history(
-                mortgage.id, scenario.id, params.payment_day,
+                mortgage.id, amount_basis_for_scenario(scenario.id),
+                params.payment_day,
             )
             assert len(payments) > 0, "No payments returned from history"
             for payment in payments:

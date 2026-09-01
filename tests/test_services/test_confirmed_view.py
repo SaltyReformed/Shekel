@@ -66,6 +66,8 @@ from app.services import (
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
+    SPLIT_LOAN,
+    amount_basis_for_scenario,
     clear_loan_ledger,
     create_loan_account,
     create_loan_with_trueup,
@@ -76,7 +78,6 @@ from tests._test_helpers import (
     insert_trueup_event,
     posted_loan_balance_at,
     seam_confirmed_view,
-    SPLIT_LOAN,
 )
 
 (_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
@@ -345,7 +346,8 @@ class TestAWithheldViewResolvesExactlyAsTheUnseededResolver:
 
             params = _loan_params(loan)
             loan_ctx = loan_payment_service.load_loan_context(
-                loan.id, seed_user["scenario"].id, params,
+                loan.id, amount_basis_for_scenario(seed_user["scenario"].id),
+                params,
             )
             loan_inputs = loan_resolver.LoanInputs(
                 params, loan_loaders.load_loan_anchor_facts(params),
@@ -416,7 +418,8 @@ class TestConfirmedViewRowEconomics:
             # of the on-schedule shape.
             params = _loan_params(loan)
             loan_ctx = loan_payment_service.load_loan_context(
-                loan.id, seed_user["scenario"].id, params,
+                loan.id, amount_basis_for_scenario(seed_user["scenario"].id),
+                params,
             )
             replay = loan_resolver.resolve_loan(
                 loan_resolver.LoanInputs(

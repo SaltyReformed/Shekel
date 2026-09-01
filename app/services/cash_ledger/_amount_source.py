@@ -386,12 +386,22 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
         AmountUnresolvable: When *txn* belongs to another scenario than *basis*,
             or when the rule that owns this row cannot answer for it.  See the
             module docstring: a refusal is never a fallback.
-        UndatedSettleError: Propagated from the DERIVE-mode loan arm, whose
-            producer loads the loan's payment history and refuses a settled
-            payment carrying no settle day
-            (``balance_predicates.settled_day``).  Named here because a caller
-            catching only :class:`~app.exceptions.AmountUnresolvable` would
-            otherwise meet it unannounced.
+
+            **No OTHER exception this arc defines reaches a caller here**
+            -- ``amount_rule`` can still raise ``KeyError`` for a ref member
+            added without a rule beside it, which is documented at that
+            dispatch -- **and a second clause here said otherwise until plan
+            step X-au-g-2c-1 re-took it.**  That clause named
+            ``UndatedSettleError``, "propagated from the DERIVE-mode loan arm,
+            whose producer loads the loan's payment history" -- true when it was
+            written and false since plan step **X-au-g-1** deleted that load.
+            The derive arm reaches ``_shadow_live_amount``, which derives a due
+            date (``loan_loaders.loan_payment_due_date`` ->
+            ``installment_for``, total: a stored ``due_date`` or one computed
+            from the period start) and reads a rate period and an escrow
+            version on it.  No settle day is consulted on any of the five
+            rules' paths.  A stale ``Raises:`` is the quietest kind of false
+            claim: nothing executes it, so nothing contradicts it.
     """
     if txn.scenario_id != basis.scenario_id:
         raise AmountUnresolvable(

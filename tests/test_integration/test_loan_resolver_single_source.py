@@ -46,6 +46,7 @@ from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    amount_basis_for_scenario,
     create_loan_account,
     create_settled_transfer,
     loan_params_for,
@@ -274,7 +275,8 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
         )
 
         ctx = loan_payment_service.load_loan_context(
-            account.id, seed_user["scenario"].id, loan_params,
+            account.id, amount_basis_for_scenario(seed_user["scenario"].id),
+            loan_params,
         )
         replayed = _replay_window(account.id, loan_params, ctx)
         assert replayed == FIXED_PRINCIPAL, (
@@ -322,7 +324,7 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
 
         scenario_id = seed_user["scenario"].id
         ctx = loan_payment_service.load_loan_context(
-            account.id, scenario_id, loan_params,
+            account.id, amount_basis_for_scenario(scenario_id), loan_params,
         )
         assert _replay_window(
             account.id, loan_params, ctx,
@@ -381,7 +383,8 @@ def test_arm_monthly_payment_card_equals_resolver_constant(  # C15-2
         )
 
         ctx = loan_payment_service.load_loan_context(
-            account.id, seed_user["scenario"].id, loan_params,
+            account.id, amount_basis_for_scenario(seed_user["scenario"].id),
+            loan_params,
         )
         resolver_state = loan_resolver.resolve_loan(
             loan_resolver.LoanInputs(
