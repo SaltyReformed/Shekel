@@ -282,9 +282,11 @@ that column. **`C4-a-3` and `C4-a-4` have each taken one** -- the purchase-date 
 merchant-destination picker -- and what is LEFT is NAMED rather than counted, which is
 `period_by_id`'s own lesson applied to this paragraph: the recurrence conflict chooser
 (`routes/_recurrence_conflict_chooser.py`, Python) and the grid's full-edit popover
-(`grid/_transaction_full_edit.html`, Jinja) at `C4-a-5`. `pay_schedule_service.resolve_schedule` is
-`C4-b`'s. **The PREDICATE cannot go stale where a count can**, and it is what re-finds them: a read
-of `end_date` or `period_index` reached through a `budget.pay_periods` ROW -- in query position,
+(`grid/_transaction_full_edit.html`, Jinja), both TAKEN at `C4-a-5` -- which also found a THIRD
+reader in `tests/` that this paragraph and a fresh grep both missed, because deleting the accessor
+censuses the class where a search cannot. `pay_schedule_service.resolve_schedule` is `C4-b`'s.
+**The PREDICATE cannot go stale where a count can**, and it is what re-finds them: a read of
+`end_date` or `period_index` reached through a `budget.pay_periods` ROW -- in query position,
 through `.pay_period`, or through a local bound from it -- which includes `PayPeriod.label`, the
 accessor `C4-a-5` deletes with the column it reads.
 
@@ -310,12 +312,12 @@ accessor `C4-a-5` deletes with the column it reads.
       `PurchaseDestination` carries the `DerivedPeriod` where it held three copies of its facts,
       DELETING a pylint disable (**R-PC37**), and orders by PAYDAY. `_calendar.py` met the
       1,000-line cap, so the identity section's arguments moved to `_searches.py` (**R-PC38**).
-- [ ] **C4-a-5 -- the two LABEL readers, and the model accessor goes.**
-      `routes/_recurrence_conflict_chooser` (`:193`) renders `period.label` off the ORM row and
-      `grid/_transaction_full_edit.html` (`:42`) renders `txn.pay_period.label`. Both move onto
-      `DerivedPeriod.label`, which is the SAME rule through `utils.dates.pay_period_label`, and the
-      leaf ENDS by deleting `PayPeriod.label` -- so one paycheck can no longer be labelled two ways
-      on two screens.
+- [x] **C4-a-5 -- the two LABEL readers, and the model accessor goes.** `95b2dc67` (+ `ce96887a`).
+      `PayPeriod.label` DELETED; the COLUMN is `C4-c`'s. `require_period` takes ONE `FiledRow`
+      (**R-PC39**), `period_move_options` takes the CALENDAR. Opened **N-413**.
+      **What a later leaf must obey**: DELETING the accessor is what censused its class, finding a
+      reader this document's own paragraph and a fresh grep both missed -- see the census note
+      above, which `C4-c` must read before running one.
 - [ ] **C4-b -- an owner with paydays HAS a recorded cadence.** One additive migration: backfill a
       `budget.pay_schedule` row for every owner holding paydays (0 rows on both databases, measured
       2026-08-25), then
