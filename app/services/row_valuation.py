@@ -42,8 +42,9 @@ rule 4's producer DOWN into ``cash_ledger`` (``_loan_installment`` /
 service to price a row.  What that package names now are loan TERM primitives
 -- ``loan_loaders``, ``loan_resolver``, ``escrow_calculator``,
 ``recurring_transfer_query`` -- none of which names ``cash_ledger``, so the
-loan READING stack is free to import it and plan step X-au-g-2c routes
-``get_payment_history`` through the resolver on exactly that freedom.
+loan READING stack is free to import it, and plan step X-au-g-2c SPENT that
+freedom: ``loan_payment_service.get_payment_history`` prices its feed through
+``cash_ledger.contributions_by_id`` now, not through the accessor below.
 
 **So this module's split is no longer FORCED, and saying so is the point of
 keeping the history.  What survives is the SEAM; its ADDRESS is now
@@ -482,23 +483,33 @@ def owned_contribution(txn) -> Decimal:
     LOUDLY here instead of publishing a wrong number, which is what makes the
     per-kind cutovers (X-au-d..X-au-i) safe to ship one at a time.
 
-    **One reader takes it for a different reason, and the CYCLE this paragraph
-    used to name is gone**: ``loan_payment_service.get_payment_history`` is NOT
-    settled-only -- its query admits Projected shadows -- and the rule that
-    would price one used to route back through it (rule 4 ->
-    ``LoanPricing.derive_cash`` -> ``_resolve_loan_basis`` ->
-    ``load_loan_context`` -> that function).  ``_resolve_loan_basis`` reads the
-    loan's terms alone now and loads no payment history, so that path does not
-    exist.
+    **TWO readers were not settled-only, and plan step X-au-g-2c-1 routed the
+    first of them.**  ``loan_payment_service.get_payment_history`` admits
+    Projected shadows and priced them here, so a derived loan-side income
+    shadow broke the feed the amortization engine replays -- which is why the
+    rule-4 controls declared only the checking-side EXPENSE leg, and which
+    finding **N-266**(a) recorded
+    (first as an irreducible CYCLE, then, once plan step X-au-g-1 deleted the
+    path it named, as ONE UNROUTED READER).  That reader takes
+    :func:`~app.services.cash_ledger.contributions_by_id` now, so nothing left
+    in ``app/`` asks this accessor about a row that might be derived.
 
-    **What survives is the CONCLUSION, not the cause**: ``get_payment_history``
-    prices its rows through this very accessor, so a derived loan-side income
-    shadow still breaks it and the rule-4 controls still declare only the
-    checking-side EXPENSE leg.  Finding **N-266** (a) is therefore
-    MISDIAGNOSED rather than closed -- one unrouted reader where it recorded an
-    irreducible cycle -- and routing this one call site is the first move of
-    plan step **X-au-g**.  The argument is written once, at
-    :func:`app.services.balance_at._plan._planned_from_shadows`.
+    **The SECOND is still here, and saying so is the point of counting them.**
+    ``balance_at._plan._planned_from_shadows`` values PROJECTED loan-side
+    shadows at ``owned_contribution(shadow)`` where the live-cash map has no
+    entry (``_plan.py``), which is the same row class and the same refusal.  It
+    is not this step's: that call site moves when plan step **X-au-f** stamps
+    the transfer shadows, and that step's own specification says so.  *A first
+    draft of this paragraph said "every caller is now settled-only" -- written
+    in the same commit as the ``_plan.py`` docstring that names this survivor,
+    which is the shape ``lessons.md`` records as a fix describing itself
+    ungraded.*
+
+    **The refusal below is what makes routing them safe to defer**, and that is
+    worth keeping rather than treating as an accident: a reader handed a
+    derived row fails LOUDLY here instead of feeding a ``None`` into a money
+    path, so the per-kind cutovers ship one at a time and each reader they would
+    break announces itself.
 
     Args:
         txn: The row being valued, whose ``estimated_amount`` is its own.

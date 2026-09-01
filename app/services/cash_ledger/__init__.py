@@ -52,8 +52,12 @@ rather than the readers routing around it, so the arrow runs one way again --
 this package
 names the loan TERM primitives (``loan_loaders``, ``loan_resolver``,
 ``escrow_calculator``, ``recurring_transfer_query``), none of which names it --
-and the loan READING tier may import this package, which is what plan step
-X-au-g-2c needs to route ``get_payment_history`` through the resolver.
+and the loan READING tier may import this package, which plan step X-au-g-2c-1
+SPENT: ``loan_payment_service.get_payment_history`` prices its feed through
+:func:`contributions_by_id` rather than through
+``row_valuation.owned_contribution``.  **One reader of an unsettled row
+remains** -- ``balance_at._plan._planned_from_shadows`` -- and it moves at plan
+step X-au-f, not here.
 
 **IT BROUGHT A ``budget.transfers`` QUERY WITH IT, and that is disclosed here
 because the package it left disclosed it.**  :mod:`._events` invokes Transfer

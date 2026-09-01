@@ -25,9 +25,10 @@ that reach.  Moving the producer DOWN deletes it rather than routing around
 it: this module names only loan TERM primitives (``loan_loaders``,
 ``loan_resolver``, ``escrow_calculator``), none of which names the cash ledger,
 so the arrow runs one way and the loan READING tier is free to import this
-package -- which is what plan step X-au-g-2c needs in order to route
-``get_payment_history`` through the resolver.  The unwind is the one
-:mod:`app.services.row_valuation` says plan step ``X-au-g`` owes.
+package -- which plan step X-au-g-2c SPENT, routing
+``loan_payment_service.get_payment_history`` through the amount model.  The
+unwind is the one :mod:`app.services.row_valuation` says plan step ``X-au-g``
+owes.
 
 **THE CYCLE WAS REAL AND THE GATE COULD NOT SEE IT, which is why the number
 this argument used to quote has been replaced by a measurement with a date on
