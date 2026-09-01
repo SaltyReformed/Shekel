@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 from ._creations import (
     NEW_ENVELOPE,
+    IncomeCreation,
     NewEnvelope,
     PurchaseCreation,
     PurchaseDestination,
@@ -422,3 +423,177 @@ def placements_for(
     if rule.answer is RuleAnswer.NEW_ENVELOPE:
         return _new_envelope_placement(rule, offered, view)
     return None
+
+
+@dataclass(frozen=True)
+class InflowPlacement:
+    """What the owner's rule comes to for one unexplained DEPOSIT.
+
+    Ruling **bank_import:R-HT(a)**, plan step ``bank_import:X-gj-2a``.
+    :class:`Placement`'s twin for the other direction, and deliberately a
+    SEPARATE value rather than a fourth :class:`PlacementKind`: the two resolve
+    against different things and produce different acts.  An outflow placement
+    picks from the pass's own offer set of budget lines and yields a
+    :class:`~._creations.PurchaseCreation`; this names a CATEGORY -- which is
+    not a container, reserves nothing and is not drawn from any offer set --
+    and yields a :class:`~._creations.IncomeCreation`.  A value carrying both
+    shapes would be one Jinja condition away from rendering a destination
+    select beside a deposit, which is exactly what ruling **bank_import:R-GW**
+    states the emptiness of :class:`~._leftovers.RecordableInflow` to prevent.
+
+    **There is no CREATE_NEW arm and there cannot be one.**  An income row is
+    filed against nothing, so there is no container for an answer to mint --
+    which is why this has two states where :class:`Placement` has three.
+
+    Attributes:
+        merchant: The line's merchant, which is the rule's key.
+        category_id: The income category the answer names, or ``None`` when
+            this pass will not act on it.
+        category: What that category is CALLED, carried beside its id for the
+            reason :attr:`~._rules.StandingRule.merchant` is: the card's
+            sentence prints it, and the read that resolved the answer already
+            had it (:attr:`~._rules.RuleView.active_categories`).  Reading it
+            back separately would be a redundant producer call, and worse, the
+            label a card prints could then come from a different instant than
+            the answer it describes.
+        unresolved_reason: One sentence saying why the rule does not reach this
+            line, or ``None`` when it does.  **Exactly one of the two is set**,
+            which is :attr:`~._bars.ParkedLine.answer_door`'s own idiom: a
+            value that could carry a destination AND a reason not to use it is
+            two answers to one question.
+    """
+
+    merchant: str
+    category_id: "int | None" = None
+    category: "str | None" = None
+    unresolved_reason: "str | None" = None
+
+    @property
+    def records(self) -> bool:
+        """Return whether this places the deposit under a category."""
+        return self.category_id is not None
+
+    def creation_for(self, line_id: int) -> "IncomeCreation | None":
+        """Return this placement as the act the income door performs.
+
+        The inflow twin of :meth:`Placement.creation_for`, and it exists for
+        the same reason: what a rule files WITHOUT a press and what the owner's
+        own OK submits have to be one derivation, or the automatic door and the
+        card are two answers to *what is this deposit* on the door that moves
+        money.
+
+        Args:
+            line_id: The bank line this placement is for.
+
+        Returns:
+            The :class:`~._creations.IncomeCreation`, or ``None`` for an
+            unresolved placement -- a rule that does not reach this line names
+            no category, so there is no act to perform.
+
+            **The act carries the LINE and not the category**, and this method
+            is what DECIDES there is an act rather than what says what it
+            files under: :func:`~._income.record_income_from_line` re-derives
+            the classification from the same stored rule, so the automatic
+            door and the owner's own OK cannot answer *what is this deposit*
+            differently (adversarial code review 2026-08-31, which measured
+            them doing exactly that).
+        """
+        if self.category_id is None:
+            return None
+        return IncomeCreation(line_id=line_id)
+
+
+def inflow_placement_for(
+    merchant_id: "int | None", view: RuleView,
+) -> "InflowPlacement | None":
+    """Return what the owner's rule comes to for ONE unexplained deposit.
+
+    Ruling **bank_import:R-HT(a)**, plan step ``bank_import:X-gj-2a``.  The
+    inflow twin of :func:`placements_for`, and it takes NO offer set because
+    there is nothing to pick from: a deposit is filed against a category rather
+    than against a budget line, so the answer is resolvable from the rule and
+    the owner's live categories alone.
+
+    **The dispatch names the answers that RESOLVE and falls through to
+    nothing**, which is the direction :func:`placements_for`'s own docstring
+    argues for: written the other way round, a sixth answer would be one edit
+    away from being read as an income category with a ``NULL`` id.
+
+    Args:
+        merchant_id: The line's merchant row, or ``None`` where the source
+            names none -- which keys no rule, so the answer is ``None``.
+        view: What the owner has said and what it can resolve against.
+
+    Returns:
+        The :class:`InflowPlacement`, or ``None`` when nothing is placed --
+        which is three facts deliberately not distinguished, exactly as
+        :func:`placements_for` does not distinguish its own three: the owner
+        has said nothing about this merchant, or said *ask me every time*, or
+        said *never a purchase*.  None of the three is this pass withholding
+        anything, so none is reported as one.
+
+    **A merchant with a SPENDING answer resolves to a REASON here, not to
+    nothing**, and that is the one asymmetry with the outflow side.  Ruling
+    **R-HT(a)** says a credit from such a merchant is a refund -- a NEGATIVE
+    purchase back into the container that answer names -- and that act is
+    unwritable until plan step ``bank_import:X-gj-2b`` relaxes
+    ``ck_transaction_entries_positive_amount``.  Reporting it is what keeps the
+    owner from reading *your rules did nothing* about a merchant they have
+    answered for; substituting income for it would be the misfiling ruling
+    **R-HX** measured and refused.
+    """
+    if merchant_id is None:
+        return None
+    rule = view.rules.get(merchant_id)
+    if rule is None:
+        return None
+    if rule.answer is RuleAnswer.INCOME_CATEGORY:
+        return _income_placement(rule, view)
+    if rule.answer in (RuleAnswer.TEMPLATE, RuleAnswer.NEW_ENVELOPE):
+        return InflowPlacement(
+            merchant=rule.merchant,
+            unresolved_reason=(
+                f"Money came IN from {rule.merchant}, and you have said where "
+                f"that merchant's SPENDING goes -- so this is a refund rather "
+                f"than income.  Recording a refund back into that budget line "
+                f"is not built yet, so nothing was filed."
+            ),
+        )
+    return None
+
+
+def _income_placement(rule: StandingRule, view: RuleView) -> InflowPlacement:
+    """Resolve the INCOME-CATEGORY answer for one deposit.
+
+    **One way to fail and it is REPORTED**, which is the rule this whole module
+    keeps: the category the answer names may have been archived since, and
+    filing new money into a category the owner has retired would resurrect it
+    silently.  Substituting -- falling back to no category at all, which is
+    what the un-ruled inflow door writes -- is refused for the reason
+    :func:`_template_placement` refuses its own substitution: it files money
+    somewhere the owner did not name, and here it would do so under a receipt
+    saying their rule ran.
+
+    Args:
+        rule: The stated answer, whose ``answer`` is
+            :attr:`~._rules.RuleAnswer.INCOME_CATEGORY`.
+        view: What the owner has said and what it can resolve against.
+
+    Returns:
+        The :class:`InflowPlacement`.
+    """
+    if rule.income_category_id not in view.active_categories:
+        return InflowPlacement(
+            merchant=rule.merchant,
+            unresolved_reason=(
+                f"You file deposits from {rule.merchant} under "
+                f"{view.category_label_for(rule.income_category_id)}, and you "
+                f"have archived it -- so nothing can be recorded under it "
+                f"until you answer for {rule.merchant} again."
+            ),
+        )
+    return InflowPlacement(
+        merchant=rule.merchant,
+        category_id=rule.income_category_id,
+        category=view.category_label_for(rule.income_category_id),
+    )

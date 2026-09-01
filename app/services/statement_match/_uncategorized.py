@@ -12,10 +12,16 @@ root cause is a money rule spelled twice.
 is decided by the same fact, which is that a BANK STATEMENT is why the row
 exists at all:
 
-* it carries **NO category**, so ``posting_service._settled_target`` books its
-  counter leg to the per-(owner, class) Uncategorized fallback -- the app does
-  not know what this money was, and saying so is what makes it categorisable
-  later rather than misfiled now (**R-FN**);
+* it carries **NO category by default**, so
+  ``posting_service._settled_target`` books its counter leg to the
+  per-(owner, class) Uncategorized fallback -- the app does not know what this
+  money was, and saying so is what makes it categorisable later rather than
+  misfiled now (**R-FN**).  **The one exception is a deposit a standing INCOME
+  rule answers for** (**R-HT(a)**, plan step ``bank_import:X-gj-2a``), where
+  the owner HAS said what it is: that caller states the category and the
+  counter leg books there instead.  The exception does not weaken the rule --
+  it is the same rule, which is that this row carries what is KNOWN about the
+  money and never a guess;
 * it is **born Projected and settled through the app's own verb**, never
   assigned a settled status directly: ``status_seam.apply_status_change`` is
   the one door into the settled band and a row may not be born in one, which
@@ -44,6 +50,7 @@ commit -- the route owns the unit of work.
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import dataclass
 from decimal import Decimal
 
 from app import ref_cache
@@ -64,37 +71,72 @@ from ._scope import ReviewScope
 NAME_LIMIT: int = 200
 
 
-def mint_uncategorized(
-    name: str,
-    signed_amount: Decimal,
-    pay_period_id: int,
-    posts_on: date,
-    scope: ReviewScope,
-) -> CandidateRow:
-    """Create and settle the uncategorized row a bank line's money requires.
+@dataclass(frozen=True)
+class MovementToRecord:
+    """The row one bank observation requires, before it is written.
 
-    Does NOT commit -- the caller owns the session boundary.
+    **A parameter object because the writer crossed pylint's argument bound at
+    plan step ``bank_import:X-gj-2a``**, and this project's remedy for a PUBLIC
+    function that does is the object rather than a keyword-only shuffle:
+    :func:`mint_uncategorized` is reached from two modules, so a signature that
+    cannot be read at a call site is read wrong at two of them.
 
-    Args:
-        name: What to call the row.  Cut to :data:`NAME_LIMIT` here, because
-            ``budget.transactions.name`` is NOT NULL and this writer sets it
-            directly.
+    **What makes it ONE object rather than a bag is that every field is the
+    same fact**: what the bank observed.  The pass is deliberately NOT here --
+    it is whose account and whose scenario this belongs to, which is the
+    caller's one proved statement and not a property of the movement.
+
+    Attributes:
+        name: What to call the row.  Cut to :data:`NAME_LIMIT` by the writer,
+            because ``budget.transactions.name`` is NOT NULL and that writer
+            sets it directly.
         signed_amount: The money, in the BANK's own direction -- positive for
             money arriving, negative for money leaving.  **The sign is what
             picks the transaction TYPE** and the magnitude is what is stored,
             because the column is non-negative by check constraint.  It must
             not be zero: a row worth nothing is not offerable and
             :func:`~._candidates.transaction_candidate` answers ``None`` for
-            one, which this function treats as a broken contract rather than an
+            one, which the writer treats as a broken contract rather than an
             outcome.
         pay_period_id: The paycheck this movement belongs to, resolved by the
             caller through :meth:`~._scope.ReviewScope.period_holding`.
-            **Resolved THERE rather than here, and that is a correctness change
-            rather than tidying**: that lookup can refuse, and a refusal raised
-            here would leave written work behind for the caller that had
-            already moved rows -- which :mod:`._accept` explicitly declines to
-            lean on its SAVEPOINT for.
+            **Resolved THERE rather than in the writer, and that is a
+            correctness property rather than tidying**: that lookup can refuse,
+            and a refusal raised mid-write would leave written work behind for
+            a caller that had already moved rows -- which :mod:`._accept`
+            explicitly declines to lean on its SAVEPOINT for.
         posts_on: The day the bank posted the money, which this row settles on.
+        category_id: What the money IS, where something can say so, else
+            ``None`` -- which is what BOTH original callers pass and what the
+            writer's name is still about (plan step ``bank_import:X-gj-2a``).
+            Only one caller ever states it: a deposit a standing INCOME rule
+            answers for (**R-HT(a)**), where the owner HAS said what this money
+            is, so writing it uncategorized would discard an answer they gave.
+
+            **The caller proves it, not the writer.**  The id reaches here from
+            a stored ``merchant_rules`` row whose
+            ``fk_merchant_rules_income_category_owner`` holds it to this owner,
+            and the placement that read it refused an ARCHIVED one -- so a
+            check in the writer would restate a constraint and a refusal that
+            have both already fired.
+    """
+
+    name: str
+    signed_amount: Decimal
+    pay_period_id: int
+    posts_on: date
+    category_id: "int | None" = None
+
+
+def mint_uncategorized(
+    movement: MovementToRecord, scope: ReviewScope,
+) -> CandidateRow:
+    """Create and settle the uncategorized row a bank line's money requires.
+
+    Does NOT commit -- the caller owns the session boundary.
+
+    Args:
+        movement: What the bank observed (:class:`MovementToRecord`).
         scope: The pass, which is the ONE statement of whose account and whose
             baseline scenario this row belongs to.
 
@@ -121,17 +163,29 @@ def mint_uncategorized(
             :func:`~._variance.mint` because a match's day comes from lines the
             offer set already bounded.
     """
+    # **The name still says UNCATEGORIZED and the default still IS**, which is
+    # the honest reading of what changed at plan step ``bank_import:X-gj-2a``:
+    # two of the three callers pass nothing and get exactly the row this
+    # module's header describes, booked to the per-(owner, class) Uncategorized
+    # fallback.  What the third has is an ANSWER -- the owner said what
+    # deposits from that signature are -- and the clause in that header is
+    # *the app does not know what this money was*, which for that caller is
+    # false.  A separate minting function for it would be a second spelling of
+    # every other clause here: born Projected and settled through the app's own
+    # verb, the bank's posting day on the ``observed`` basis, owning its
+    # amount, on the baseline scenario.
     row = Transaction(
         account_id=scope.account_id,
-        pay_period_id=pay_period_id,
+        pay_period_id=movement.pay_period_id,
         scenario_id=require_baseline_scenario(scope.owner_id).id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        name=name[:NAME_LIMIT],
-        category_id=None,
+        name=movement.name[:NAME_LIMIT],
+        category_id=movement.category_id,
         transaction_type_id=ref_cache.txn_type_id(
-            TxnTypeEnum.INCOME if signed_amount > 0 else TxnTypeEnum.EXPENSE,
+            TxnTypeEnum.INCOME if movement.signed_amount > 0
+            else TxnTypeEnum.EXPENSE,
         ),
-        estimated_amount=abs(signed_amount),
+        estimated_amount=abs(movement.signed_amount),
         is_envelope=False,
     )
     db.session.add(row)
@@ -141,7 +195,7 @@ def mint_uncategorized(
         row,
         transaction_service.settled_status_id(row),
         settle_day=SettleDay(
-            day=posts_on, basis=SettledDayBasisEnum.OBSERVED,
+            day=movement.posts_on, basis=SettledDayBasisEnum.OBSERVED,
         ),
     )
     # **The settle's UPDATE is FLUSHED before the candidate is read**, and the
@@ -155,7 +209,9 @@ def mint_uncategorized(
     # path querying would have broken every undo on this door, failing closed
     # to *you have edited that row since*.
     db.session.flush()
-    candidate = transaction_candidate(row, scope.calendar, signed_amount)
+    candidate = transaction_candidate(
+        row, scope.calendar, movement.signed_amount,
+    )
     if candidate is None:  # pragma: no cover - defended, not reachable
         # ``transaction_candidate`` answers ``None`` for a row worth nothing or
         # one whose period this calendar does not carry.  Neither can happen

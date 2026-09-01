@@ -54,7 +54,9 @@ from app.models.transaction import Transaction
 from app.services import statement_match
 from app.services.statement_match import (
     Consent,
+    RuleView,
     IncomeCreation,
+    MatchSubmission,
     ReviewedBatch,
     apply_reviewed,
     record_income_from_line,
@@ -64,6 +66,7 @@ from app.services.statement_match import (
 from ._builders import (
     a_bank_line,
     a_later_period,
+    a_rule,
     a_scope,
     a_transaction,
     an_import,
@@ -91,6 +94,12 @@ def _a_deposit(seed_user, amount="0.15", **kwargs):
 def _record(seed_user, line, account=None):
     """Run the door for one line, through a scope derived at the point of use.
 
+    **The RULE VIEW is derived at the point of use too**, for the reason the
+    scope is (:func:`a_scope`): the door reads it to decide what the deposit is
+    filed under (**R-HT(a)**), and a stale one would answer with rules a case
+    had just replaced.  ``apply_reviewed`` derives it once per batch and
+    threads it; a case calling this door directly stands in for that caller.
+
     Args:
         seed_user: The seeded user bundle.
         line: The bank line to record.
@@ -99,8 +108,10 @@ def _record(seed_user, line, account=None):
     Returns:
         The :class:`~app.services.statement_match.RecordedIncome`.
     """
+    scope = a_scope(seed_user, account)
     return record_income_from_line(
-        IncomeCreation(line_id=line.id), a_scope(seed_user, account),
+        IncomeCreation(line_id=line.id), scope,
+        RuleView.build(scope.owner_id, scope.account_id),
     )
 
 
@@ -447,8 +458,10 @@ class TestWhatItRefuses:
         )
 
         with pytest.raises(ValidationError):
+            scope = a_scope(seed_user)
             record_income_from_line(
-                IncomeCreation(line_id=theirs.id), a_scope(seed_user),
+                IncomeCreation(line_id=theirs.id), scope,
+                RuleView.build(scope.owner_id, scope.account_id),
             )
 
         assert _rows(seed_user) == []
@@ -645,23 +658,63 @@ class TestThePassReportsIt:
         assert "money ARRIVING" in outcome.refused[0].reason
 
 
-class TestNoRuleReachesThisDoor:
-    """bank_import:R-GW: a merchant answer says where SPENDING goes."""
+class TestWhichConsentReachesThisDoor:
+    """Which act classes a STANDING RULE may perform here (**R-GH**).
 
-    def test_a_rule_consented_batch_carrying_an_INCOME_is_unconstructible(
+    **This class asserted the opposite until plan step
+    ``bank_import:X-gj-2a``**, under the name ``TestNoRuleReachesThisDoor`` and
+    ruling **bank_import:R-GW**'s reading that *a merchant answer says where
+    SPENDING goes*, so no rule could mean *record this deposit*.  Ruling
+    **R-HT(a)** amended the answer set with a member that says exactly what a
+    deposit from a signature IS, so the boundary moved -- and the boundary that
+    did NOT move is the one still asserted below.
+    """
+
+    def test_a_rule_consented_batch_MAY_carry_an_income(self, app, db, seed_user):
+        """R-HT(a): filing a deposit is an act R-GH consents to once.
+
+        It CREATES a row from a new bank line and modifies nothing the owner
+        made by hand, which is the act class the ruling splits on -- so the
+        batch is constructible where it used to raise.
+        """
+        batch = ReviewedBatch(
+            consent=Consent.STANDING_RULE, matches=(), creations=(),
+            incomes=(IncomeCreation(line_id=1),),
+        )
+
+        assert batch.item_count == 1
+
+    def test_a_rule_consented_batch_carrying_a_MATCH_is_still_unconstructible(
         self, app, db, seed_user,
     ):
-        """Made unrepresentable rather than maintained, like the match arm."""
-        with pytest.raises(ValueError, match="cannot carry an income"):
+        """The boundary R-HT(a) did NOT move, and the reason it did not.
+
+        **R-HT(b)'s group rule names a ROW SET**, which modifies rows the owner
+        made by hand, so it applies only on their OK -- and that is exactly the
+        act reaching ``accept_match``.  Kept unrepresentable rather than
+        maintained, which is what the income arm's removal must not be read as
+        weakening.
+        """
+        with pytest.raises(ValueError, match="cannot carry a match"):
             ReviewedBatch(
-                consent=Consent.STANDING_RULE, matches=(), creations=(),
-                incomes=(IncomeCreation(line_id=1),),
+                consent=Consent.STANDING_RULE,
+                # The submission's CONTENT is irrelevant here: the refusal is
+                # about the act CLASS a rule may consent to, and it fires in
+                # ``__post_init__`` before anything reads the item.
+                matches=(
+                    MatchSubmission(line_ids=frozenset({1}), rows=frozenset()),
+                ),
+                creations=(), incomes=(),
             )
 
-    def test_a_recorded_deposit_is_never_marked_applied_by_a_rule(
+    def test_a_TICKED_deposit_is_never_marked_applied_by_a_rule(
         self, app, db, seed_user,
     ):
-        """R-GT's fact, on the door that can only ever be ticked."""
+        """R-GT's fact: the door records the consent it was GIVEN.
+
+        The default is the one that claims less, so a caller that says nothing
+        records a tick -- and this is the path an owner's own OK takes.
+        """
         line = _a_deposit(seed_user)
 
         recorded = _record(seed_user, line)
@@ -894,3 +947,84 @@ class TestWhichLinesGetAnActAndWhichSTILLDoNot:
             _a_deposit(seed_user, amount="0.00")
 
         db.session.rollback()
+
+
+class TestTheCARDsOKFilesUnderTheSameAnswerTheCARDSTATES:
+    """The automatic door and the press are ONE derivation (**R-HT(a)**).
+
+    **This class exists because they were two** (adversarial code review
+    2026-08-31).  The category rode on :class:`IncomeCreation`, set only by
+    :meth:`~._placement.InflowPlacement.creation_for`, which the import-time
+    rule pass reaches and no route does -- so the Reconcile card rendered *Add
+    as Interest income*, the owner pressed OK, and an UNCATEGORIZED row was
+    written.  The figure, the day and the period were right; what was wrong is
+    that the card asserted something the door did not do.
+
+    **It is reachable on the ordinary sequence**, not a corner: import, then
+    state the rule on the merchants page, then return to Reconcile.  The line
+    was never `fresh` by then, so the card is what the owner acts on.
+    """
+
+    def test_a_TICKED_deposit_is_filed_under_the_rule_the_card_names(
+        self, app, db, seed_user,
+    ):
+        """The whole point: what the card says and what the door writes agree.
+
+        Driven through ``apply_reviewed`` with ``Consent.TICKED`` -- the door
+        the page's Apply reaches -- rather than through the rule pass, because
+        the rule pass was never the broken half.
+        """
+        category = seed_user["categories"]["Salary"]
+        a_rule(
+            seed_user, "Dividend Earned", income_category_id=category.id,
+        )
+        line = _a_deposit(seed_user, merchant="Dividend Earned")
+        db.session.commit()
+
+        outcome = apply_reviewed(
+            ReviewedBatch(
+                consent=Consent.TICKED, matches=(), creations=(),
+                incomes=(IncomeCreation(line_id=line.id),),
+            ),
+            a_scope(seed_user),
+        )
+        db.session.flush()
+
+        assert outcome.deposited_count == 1, outcome.refused
+        recorded = (
+            db.session.query(Transaction)
+            .filter(Transaction.account_id == seed_user["account"].id)
+            .order_by(Transaction.id.desc())
+            .first()
+        )
+        assert recorded.category_id == category.id
+
+    def test_a_TICKED_deposit_with_NO_rule_is_still_uncategorized(
+        self, app, db, seed_user,
+    ):
+        """The pairing, so the case above cannot pass by always categorising.
+
+        A deposit no rule answers is what this door has always written and
+        must keep writing: the app does not know what it is, and inventing an
+        answer is the misfiling ruling **R-FN** refused.
+        """
+        line = _a_deposit(seed_user, merchant="Someone New")
+        db.session.commit()
+
+        outcome = apply_reviewed(
+            ReviewedBatch(
+                consent=Consent.TICKED, matches=(), creations=(),
+                incomes=(IncomeCreation(line_id=line.id),),
+            ),
+            a_scope(seed_user),
+        )
+        db.session.flush()
+
+        assert outcome.deposited_count == 1, outcome.refused
+        recorded = (
+            db.session.query(Transaction)
+            .filter(Transaction.account_id == seed_user["account"].id)
+            .order_by(Transaction.id.desc())
+            .first()
+        )
+        assert recorded.category_id is None

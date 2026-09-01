@@ -24,7 +24,8 @@ from marshmallow import ValidationError, fields
 from app.schemas.validation import _helpers, _recurrence
 from app.schemas.validation._helpers import RowId
 from app.schemas.validation.transactions import TransactionCreateSchema
-from app.services.statement_match import ReviewedRow, RowKind
+from app.schemas.validation.merchant_rules import SubmittedAnswer
+from app.services.statement_match import ReviewedRow, RowKind, RuleAnswer
 
 
 #: Field types that CONTAIN another field rather than declaring one
@@ -699,14 +700,34 @@ class TestNoIdFieldWasMissed:
         # from a browser one leaf earlier.
         with pytest.raises(ValidationError):
             field.deserialize("12")
-        # ...and the FIVE things it DOES accept.  ``ALWAYS_ASK`` joined them
-        # at plan step ``bank_import:X-gd-2`` and this list is one of the two
-        # places a member missing from the grader is caught.
-        assert field.deserialize("t:12") == 12
+        # ...and the SIX things it DOES accept.  ``ALWAYS_ASK`` joined them at
+        # plan step ``bank_import:X-gd-2`` and the INCOME answer at
+        # ``bank_import:X-gj-2a``; this list is one of the two places a member
+        # missing from the grader is caught.
+        #
+        # **Everything but "I have not said" comes back DISCRIMINATED**, which
+        # is the change that made a second id-bearing answer safe: the field
+        # returned a bare int for a template and a bare string for the rest, so
+        # the route read *anything that is not a sentinel* as a template id.
+        assert field.deserialize("t:12") == SubmittedAnswer(
+            kind=RuleAnswer.TEMPLATE, row_id=12,
+        )
+        assert field.deserialize("i:12") == SubmittedAnswer(
+            kind=RuleAnswer.INCOME_CATEGORY, row_id=12,
+        )
         assert field.deserialize(NOT_SAID) == NOT_SAID
-        assert field.deserialize(NEVER) == NEVER
-        assert field.deserialize(NEW_ENVELOPE) == NEW_ENVELOPE
-        assert field.deserialize(ALWAYS_ASK) == ALWAYS_ASK
+        assert field.deserialize(NEVER) == SubmittedAnswer(
+            kind=RuleAnswer.NEVER,
+        )
+        assert field.deserialize(NEW_ENVELOPE) == SubmittedAnswer(
+            kind=RuleAnswer.NEW_ENVELOPE,
+        )
+        assert field.deserialize(ALWAYS_ASK) == SubmittedAnswer(
+            kind=RuleAnswer.ALWAYS_ASK,
+        )
+        # **The two id-bearing answers are not each other**, which the bare-int
+        # return could not express and is the whole reason this value exists.
+        assert field.deserialize("i:12") != field.deserialize("t:12")
 
     def test_the_non_integer_spellings_are_all_declared(self):
         """No field type is waved through that the package does not declare.

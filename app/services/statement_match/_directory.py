@@ -423,7 +423,7 @@ def says_of(
 ) -> str:
     """Return what this merchant's stored answer says, in words.
 
-    **TOTAL over the four answers and their absence**, and told apart by
+    **TOTAL over the five answers and their absence**, and told apart by
     :class:`~._rules.RuleAnswer` identity rather than by a truth test on a
     column: inferring the arm from ``envelope_name`` being set is the shape
     that made the existing-envelope destination unreachable from a browser at
@@ -436,6 +436,14 @@ def says_of(
 
     Returns:
         The phrase the row prints, or :data:`NOT_SAID`.
+
+    Raises:
+        ValueError: When the stored answer is a member this function has no
+            phrase for.  **A programming error rather than a designed
+            refusal**: every value here is read off a row by
+            :meth:`~._rules.RuleAnswer.of`, so it fires only if a member is
+            added to the enum and not to this chain -- which is exactly what
+            ruling **R-HT(a)**'s member did before this arm existed.
     """
     rule = summary.rule
     if rule is None:
@@ -444,9 +452,55 @@ def says_of(
         return _template_phrase(summary, view)
     if rule.answer is RuleAnswer.NEW_ENVELOPE:
         return _new_envelope_phrase(summary, categories)
+    if rule.answer is RuleAnswer.INCOME_CATEGORY:
+        return _income_phrase(rule, view)
     if rule.answer is RuleAnswer.NEVER:
         return "Never a purchase"
-    return "Ask me every time"
+    if rule.answer is RuleAnswer.ALWAYS_ASK:
+        return "Ask me every time"
+    # **NAMED rather than reached by falling through.**  This chain ended on a
+    # bare ``return "Ask me every time"``, so ruling **R-HT(a)**'s income
+    # answer -- stored correctly, filing money correctly -- would have been
+    # DESCRIBED on the merchants page as the answer the owner did not give.
+    # Caught by ``TestWhatARowSays``, which walks every enum member, and it is
+    # the third chain of this shape plan step ``bank_import:X-gj-2a`` had to
+    # close (the route's submission dispatch and the receipt's sentence were
+    # the others).
+    raise ValueError(
+        f"{rule.answer} is a rule answer the merchants directory cannot "
+        f"describe; give it a phrase rather than letting it print another "
+        f"answer's.",
+    )
+
+
+def _income_phrase(rule, view: RuleView) -> str:
+    """Return what an INCOME-CATEGORY answer says, in words.
+
+    Ruling **R-HT(a)**, plan step ``bank_import:X-gj-2a``.  The row states what
+    a DEPOSIT from this merchant is, which is a different sentence from the
+    three about spending -- *deposits are* rather than *goes in*.
+
+    **The ARCHIVED case is marked, exactly as the new-envelope phrase marks
+    its own** (:func:`_new_envelope_phrase`): a stored answer naming a category
+    the owner has since retired still has to render, or the row cannot show the
+    answer it holds -- and it is the state
+    :func:`~._placement._income_placement` reports rather than acts on, so the
+    directory must not present it as working.
+
+    Args:
+        rule: The stored answer, whose ``answer`` is
+            :attr:`~._rules.RuleAnswer.INCOME_CATEGORY`.
+        view: What the owner has said and what it can resolve against, which
+            names an active category and a stale one alike
+            (:meth:`~._rules.RuleView.category_label_for`).
+
+    Returns:
+        The phrase the row prints.
+    """
+    named = view.category_label_for(rule.income_category_id)
+    if rule.income_category_id in view.active_categories:
+        return f"Deposits are income under {named}"
+    return f"Deposits are income under {named} -- archived"
 
 
 @dataclass(frozen=True)
@@ -565,7 +619,7 @@ def merchant_directory(
 
     **SIX reads, not three**, and this said three until an adversarial review
     counted them (2026-08-31): ``rules_for``, ``offerable_templates`` and
-    ``active_category_ids`` inside :meth:`~._rules.RuleView.build` (eight when
+    ``active_category_names`` inside :meth:`~._rules.RuleView.build` (eight when
     a stored answer names something no longer offerable),
     ``account_payment_merchants`` inside
     :meth:`~._bars.CreationBars.build`, then :func:`merchant_activity` and

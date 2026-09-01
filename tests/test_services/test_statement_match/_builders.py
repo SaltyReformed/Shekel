@@ -467,7 +467,7 @@ def a_statement(seed_user, merchant, answer, *, account=None, **fields):
 
 def a_rule(
     seed_user, merchant, *, template_id=None, envelope_name=None,
-    category_id=None, always_ask=False, account=None,
+    category_id=None, income_category_id=None, always_ask=False, account=None,
 ):
     """Stage and return one stated merchant rule.
 
@@ -488,6 +488,12 @@ def a_rule(
         envelope_name: What to call the envelope to create, for the
             NEW ENVELOPE answer.
         category_id: The category to create it under, likewise.
+        income_category_id: What a DEPOSIT from this merchant is, for the
+            INCOME CATEGORY answer (ruling **R-HT(a)**, plan step
+            ``bank_import:X-gj-2a``).  **Its own parameter and not a second use
+            of ``category_id``**, for the reason the COLUMN is its own: the two
+            answer different questions, and a fixture that shared one field
+            could stage a row the CHECK refuses while looking correct.
         always_ask: Which of the two CONTAINER-LESS answers this is
             (ruling **R-GS**) -- ``False`` for *never a purchase*, ``True`` for
             *ask me every time*.  **Read only when no container arm is given**,
@@ -500,8 +506,18 @@ def a_rule(
         The staged :class:`~app.models.merchant_rule.MerchantRule`.  With no
         arm given at all it is the NEVER answer, which is what every caller
         written before ``always_ask`` existed meant by it.
+
+        **The five columns are spelled out here rather than taken from
+        ``_stating._columns_of``**, which is this builder's founding rule and
+        matters more now there are five: a mistake in that mapping cannot
+        arrive here and agree with itself.  What DOES grade the pair is the
+        round trip over ``RuleAnswer.of``.
     """
-    names_a_container = template_id is not None or envelope_name is not None
+    names_something = (
+        template_id is not None
+        or envelope_name is not None
+        or income_category_id is not None
+    )
     row = MerchantRule(
         user_id=seed_user["user"].id,
         account_id=(account or seed_user["account"]).id,
@@ -509,7 +525,8 @@ def a_rule(
         template_id=template_id,
         envelope_name=envelope_name,
         category_id=category_id,
-        never_a_purchase=not names_a_container and not always_ask,
+        income_category_id=income_category_id,
+        never_a_purchase=not names_something and not always_ask,
     )
     db.session.add(row)
     db.session.flush()

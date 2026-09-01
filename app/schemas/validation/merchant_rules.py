@@ -29,6 +29,8 @@ submitted strings may be read as numbers*, in the module that already holds
 this package's shared primitives.
 """
 
+from dataclasses import dataclass
+
 from marshmallow import (
     RAISE,
     Schema,
@@ -45,34 +47,73 @@ from app.schemas.validation._helpers import (
     _normalize_empty_inputs,
     order_token_key,
 )
-from app.services.statement_match import NEW_ENVELOPE
+from app.services.statement_match import NEW_ENVELOPE, RuleAnswer
 from app.utils.digit_strings import parse_row_id
 
 
+@dataclass(frozen=True)
+class SubmittedAnswer:
+    """One answer the rule control submitted, with WHICH KIND it is.
+
+    Plan step ``bank_import:X-gj-2a``.  **The discriminator is carried, not
+    inferred**, and that is the whole reason this type exists.
+    :class:`RuleAnswerField` returned a sentinel string or a BARE ``int``
+    until this step, and the one reader --
+    ``_statement_rules._rule_statements`` -- dispatched by naming the sentinels
+    and FALLING THROUGH to *it must be a template id*.  That fall-through is
+    safe with exactly one id-bearing answer and unsafe the moment there are
+    two: ruling **R-HT(a)**'s income answer carries a category id, and reaching
+    that dispatch as a bare int would have recorded it as a TEMPLATE rule --
+    filing the merchant's SPENDING into a budget line the owner never named,
+    from an answer they gave about DEPOSITS.
+
+    **So the dispatch stops having a default arm.**  A reader asks
+    :attr:`kind`, and a sixth answer added to the enum without an arm in the
+    route is a value that matches nothing rather than one silently read as a
+    template.
+
+    Attributes:
+        kind: Which answer this is (:class:`~app.services.statement_match
+            .RuleAnswer`), for every answer that names something.
+        row_id: The id it names -- a template for
+            :attr:`~app.services.statement_match.RuleAnswer.TEMPLATE`, a
+            category for
+            :attr:`~app.services.statement_match.RuleAnswer.INCOME_CATEGORY`
+            -- or ``None`` for the answers that name nothing.
+    """
+
+    kind: RuleAnswer
+    row_id: "int | None" = None
+
+
 class RuleAnswerField(fields.Field):
-    """Which of the five things the rule control's one select can say.
+    """Which of the six things the rule control's one select can say.
 
     **One field because the owner makes one choice**, exactly as
     :class:`PurchaseDestination` is one field: the control is a single
     ``<select>`` whose options are each recurring envelope on the account, *a
-    new envelope*, *ask me every time*, *never a purchase*, and -- on a
+    new envelope*, each category a DEPOSIT from this merchant could be income
+    under (**R-HT(a)**), *ask me every time*, *never a purchase*, and -- on a
     merchant with no rule only -- *I have not said*.  Splitting it into an id
     plus an implied arm is what let a form name two destinations at once one
     leaf earlier.
 
-    **Four of the five are ANSWERS and the fifth is the absence of one**
-    (ruling **R-GI**).  This field grades the wire and does not know the
-    difference; the route is where :data:`NOT_SAID` stops being a value and
-    becomes an item that is simply not submitted to the door.
+    **Five of the six are ANSWERS and the last is the absence of one**
+    (rulings **R-GI**, **R-HT(a)**).  This field grades the wire and does not
+    know the difference; the route is where :data:`NOT_SAID` stops being a
+    value and becomes an item that is simply not submitted to the door.
 
     **The id half is exactly as strict as :class:`RowId`**, through the same
-    :func:`~app.utils.digit_strings.parse_row_id`: after the ``t:`` prefix,
+    :func:`~app.utils.digit_strings.parse_row_id`: after either prefix,
     ``'٧'``, ``' 7 '``, ``'+7'``, ``'0_7'``, ``'007'``, ``'-7'`` and ``'0'``
-    name no template here either.
+    name no row here either.
+
+    **What it RETURNS is a :class:`SubmittedAnswer` and no longer a bare id**,
+    so the two id-bearing answers cannot be confused for one another.
     """
 
     default_error_messages = {
-        "invalid": "That is not somewhere a merchant's spending can go.",
+        "invalid": "That is not somewhere a merchant's money can go.",
     }
 
     def _deserialize(self, value, attr, data, **kwargs):
@@ -85,22 +126,27 @@ class RuleAnswerField(fields.Field):
             **kwargs: Marshmallow's contract, unused.
 
         Returns:
-            :data:`NOT_SAID`, :data:`NEVER`, :data:`ALWAYS_ASK`,
-            :data:`NEW_ENVELOPE`, or the ``int`` id of a recurring definition.
+            :data:`NOT_SAID` for the one option that is not an answer, else a
+            :class:`SubmittedAnswer` naming which answer it is and the row it
+            names.
 
         Raises:
             ValidationError: When *value* is none of those.
         """
-        if value in (NOT_SAID, NEVER, ALWAYS_ASK, NEW_ENVELOPE):
+        if value == NOT_SAID:
             return value
-        if not isinstance(value, str) or not value.startswith(
-            _TEMPLATE_VALUE_PREFIX,
-        ):
+        named = _NAMES_NOTHING.get(value)
+        if named is not None:
+            return SubmittedAnswer(kind=named)
+        if not isinstance(value, str):
             raise self.make_error("invalid")
-        row_id = parse_row_id(value[len(_TEMPLATE_VALUE_PREFIX):])
-        if row_id is None:
-            raise self.make_error("invalid")
-        return row_id
+        for prefix, kind in _PREFIXED_ANSWERS:
+            if value.startswith(prefix):
+                row_id = parse_row_id(value[len(prefix):])
+                if row_id is None:
+                    raise self.make_error("invalid")
+                return SubmittedAnswer(kind=kind, row_id=row_id)
+        raise self.make_error("invalid")
 
 
 class MerchantRuleSchema(BaseSchema):
@@ -246,10 +292,53 @@ _RULE_NAME_PREFIX = "rule_name-"
 _RULE_CATEGORY_PREFIX = "rule_category-"
 
 #: What a TEMPLATE answer's value is prefixed with, so one control can carry
-#: three kinds of answer without a second field saying which kind it is.  The
+#: several kinds of answer without a second field saying which kind it is.  The
 #: id half is read through the same :func:`~app.utils.digit_strings.parse_row_id`
 #: every other row id on this screen goes through.
 _TEMPLATE_VALUE_PREFIX = "t:"
+
+#: What an INCOME-CATEGORY answer's value is prefixed with (**R-HT(a)**, plan
+#: step ``bank_import:X-gj-2a``): *a deposit from this signature is income under
+#: that category*.
+#:
+#: **Its arrival is what forced :class:`RuleAnswerField` to stop returning a
+#: BARE int**, and that is a money fix rather than a typing preference.  The
+#: field returned a sentinel string or the template's id, and
+#: ``_statement_rules._rule_statements`` read *anything that is not one of the
+#: sentinels* as a template id -- a fall-through.  A second id-bearing answer
+#: reaching that dispatch as a bare int would have been recorded as a TEMPLATE
+#: rule, so a deposit answer would file the merchant's SPENDING into a budget
+#: line the owner never named for it.  It is the same shape
+#: ``_placement.placements_for`` was corrected into naming its answers
+#: explicitly for -- *a fifth answer one edit away from being resolved as a
+#: template with a NULL template id* -- caught there at ruling **R-GS** and
+#: still live here.
+_INCOME_VALUE_PREFIX = "i:"
+
+#: The answers whose wire value NAMES no row, by that value.
+#:
+#: **A table rather than a chain of comparisons**, for the reason
+#: ``_verbs._WORDS`` is one: it is one fact per answer, and a membership test
+#: followed by a separate mapping is two places for the set to disagree with
+#: itself.
+_NAMES_NOTHING: "dict[str, RuleAnswer]" = {
+    NEVER: RuleAnswer.NEVER,
+    ALWAYS_ASK: RuleAnswer.ALWAYS_ASK,
+    NEW_ENVELOPE: RuleAnswer.NEW_ENVELOPE,
+}
+
+#: The answers whose wire value carries a ROW ID, by their prefix.
+#:
+#: **The pair is what makes the field's reading TOTAL over the answer set**:
+#: every member of :class:`~app.services.statement_match.RuleAnswer` appears in
+#: exactly one of these two tables, which is graded as a round trip rather than
+#: by two independent cases -- the same discipline ``RuleAnswer.of`` and
+#: ``_stating._columns_of`` are held to, and for the same reason: an answer
+#: added to the enum and to neither table is one this control can never submit.
+_PREFIXED_ANSWERS: "tuple[tuple[str, RuleAnswer], ...]" = (
+    (_TEMPLATE_VALUE_PREFIX, RuleAnswer.TEMPLATE),
+    (_INCOME_VALUE_PREFIX, RuleAnswer.INCOME_CATEGORY),
+)
 
 #: The most merchants one submission of the rule section may answer for.
 #: **A separate ceiling from :data:`_MAX_BATCH_ITEMS`, and the distinction is
