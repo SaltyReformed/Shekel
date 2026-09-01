@@ -50,7 +50,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.cash_ledger import baseline_amount_basis
-from app.services.pay_calendar import DerivedPeriod
+from app.services.pay_calendar import DerivedPeriod, FiledRow
 
 from . import _purchases, _rows, _transactions, _transfers
 from ._offers import (
@@ -70,7 +70,20 @@ def _block_headings(
 
     The two things a block's heading needs, over the ids the arms have already
     established -- not a relationship walk.  See :func:`outstanding_set` for why
-    the ``joinedload`` alternative costs 13 joins to fetch one name.
+    hydrating the parent costs nine joins and 89 columns to fetch one name.
+
+    **This is the one place in ``app/`` that builds a
+    :class:`~app.services.pay_calendar.FiledRow` by hand**, and it is why that
+    value's fields are keyword-only (plan step ``pay_calendar:C4-a-5``).  Every
+    other caller holds the mapped row and uses
+    :meth:`~app.services.pay_calendar.FiledRow.for_row`, which cannot pair one
+    row's id with another's period; this one holds a query TUPLE, because
+    selecting the entity to get a name back is what the paragraph above
+    refuses.  Unpacking that tuple into named locals and naming both fields at
+    the constructor is what replaces the guarantee ``for_row`` gives the
+    others: the old spelling was ``require_period(row[2], row[0])``, two
+    positional indexes into a three-column tuple, and crossing them returns the
+    WRONG period rather than raising.
 
     It is keyed on the ids the caller HOLDS rather than re-deriving any arm's
     offers, so it cannot answer about a different set than the one being
@@ -134,12 +147,14 @@ def _block_headings(
         )
         .all()
     )
-    return {
-        row[0]: (
-            row[1], statement.calendar.require_period(row[2], row[0]),
-        )
-        for row in rows
-    }
+    headings: "dict[int, tuple[str, DerivedPeriod]]" = {}
+    for row_id, name, period_id in rows:
+        headings[row_id] = (name, statement.calendar.require_period(FiledRow(
+            table=Transaction.__table__.fullname,
+            row_id=row_id,
+            period_id=period_id,
+        )))
+    return headings
 
 
 def _block_order(group: OutstandingGroup) -> "tuple[int, date, int, int]":
@@ -299,11 +314,25 @@ def outstanding_set(statement: _rows.Statement) -> OutstandingSet:
     :class:`~app.models.transaction_entry.TransactionEntry` rows and the
     template reached ``entry.transaction.name`` per line -- a SELECT per
     distinct parent on a ``lazy="select"`` relationship.  A ``joinedload`` of
-    that relationship would fix the count and cost a statement carrying **13
-    LEFT OUTER JOINs and around a hundred columns**, because ``Transaction``
-    eager-joins its account, status, category and type and ``Account`` eager-
-    joins four parameter tables -- all to fetch one name.  The grouping needs
-    two scalars and a period id per parent, so it asks for three columns.
+    that relationship would fix the count and cost a statement carrying **12
+    LEFT OUTER JOINs and 121 selected columns**, because ``Transaction``
+    eager-joins its account, status, category and type; ``Account`` eager-joins
+    its TYPE and three parameter tables; and one of those parameter tables
+    eager-joins a fourth -- nine in all, on the entity alone, to fetch one
+    name.  *The enumeration accounted for eight of the nine until an
+    adversarial review summed it against the measurement:
+    ``Account.account_type`` was the one it did not name.*
+
+    Hydrating the parent DIRECTLY, which is what would let ``_block_headings``
+    use :meth:`~app.services.pay_calendar.FiledRow.for_row`, is **9 joins and
+    89 columns** against the current **0 and 3**.  The grouping needs two scalars
+    and a period id per parent, so it asks for three columns.
+
+    *Re-measured 2026-08-31 at plan step ``pay_calendar:C4-a-5`` by compiling
+    both statements against the postgres dialect with no database, because this
+    paragraph is quoted as a REASON and it had drifted: it said "13 LEFT OUTER
+    JOINs and around a hundred columns" undated, where the mappers now produce
+    12 and 121.  The conclusion is unchanged and the figure was not.*
 
     Reads only (no writes, no commit).
 

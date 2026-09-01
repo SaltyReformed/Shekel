@@ -41,6 +41,7 @@ from app.exceptions import RecurrenceConflict
 from app.extensions import db
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import FiledRow, PayCalendar
 from app.utils.digit_strings import parse_row_id
 
 
@@ -66,8 +67,11 @@ class ConflictChoice:
         row_id: The Transaction / Transfer id the decision applies to.
         due_date: The instance's due date (``None`` if unset), used to
             order and label the row chronologically.
-        period_label: The owning pay period's ``label`` (e.g.
-            ``"02/21 - 03/06"``).
+        period_label: The owning pay period's DERIVED label (e.g.
+            ``"02/21 - 03/06"``) -- ``DerivedPeriod.label``, off the pass's own
+            calendar, since pay-calendar plan step C4-a-5.  It was
+            ``row.pay_period.label``, the ORM accessor that formats the STORED
+            ``end_date``, which no other screen in the application reads.
         your_amount: The instance's current (hand-edited) amount -- the
             "Keep" side of the toggle.
         is_deleted_conflict: ``True`` when the conflict is a soft-deleted
@@ -159,10 +163,12 @@ def flash_retained_notice(retained) -> None:
     )
 
 
-def _build_conflict_choices(conflict, model, resolve_amount) -> list[ConflictChoice]:
+def _build_conflict_choices(
+    conflict, kind: "RecurrenceConflictKind", calendar: PayCalendar,
+) -> list[ConflictChoice]:
     """Load the conflicted rows and shape them for the chooser.
 
-    ``conflict.overridden`` / ``conflict.deleted`` are ids of ``model`` (a
+    ``conflict.overridden`` / ``conflict.deleted`` are ids of ``kind.model`` (a
     Transaction or Transfer).
     Rows are returned chronologically (undated last) so the chooser reads
     top-to-bottom in time order.  A vanished id (deleted between the raise
@@ -179,6 +185,46 @@ def _build_conflict_choices(conflict, model, resolve_amount) -> list[ConflictCho
     transfer), which is why ``amount_attr`` is gone: the column NAME was only
     ever a way to spell "ask this kind what it is worth", and the amount model
     answers that question per kind already.
+
+    **The period LABEL comes off the CALENDAR** (pay-calendar plan step
+    C4-a-5).  It was ``row.pay_period.label`` -- the ORM accessor, which formats
+    the STORED ``end_date`` while every other screen formats the derived one,
+    so on a period whose stored end has gone stale (findings **P12** / **P28**)
+    this page and the grid named one paycheck two ways.  ``PayPeriod.label`` is
+    deleted with this step, so the wrong source is unreachable rather than
+    merely unused.
+
+    **``require_period`` cannot refuse here, and it is the right twin anyway.**
+    ``overridden_ids`` and ``deleted_ids`` are appended in ONE place --
+    ``_recurrence_common.classify_maintain_work``'s ``for row in existing``
+    loop -- and BOTH engines build ``existing`` through
+    ``_recurrence_common.rows_this_pass_may_maintain``
+    (``recurrence_engine._maintain:167``, ``transfer_recurrence:455``), which
+    filters ``pay_period_id`` to ``[p.period_id for p in
+    schedule.calendar.saved()]``.  *calendar* below is that same calendar off
+    the same read pass, so a conflicted row naming a period it does not hold is
+    unconstructible: the precondition is carried by the QUERY, which is what
+    ``require_period``'s own docstring says makes a total form honest.  The
+    raising twin is still what this call site owes -- the id is read off a
+    STORED row -- and it is what a future caller assembling the id set some
+    other way would run into.
+
+    **It also takes the KIND rather than two of its fields**, which is one
+    fewer pairing for a caller to get wrong: the model a row is loaded from and
+    the rule that prices it are per-kind facts that
+    :class:`RecurrenceConflictKind` already bundles.
+
+    Args:
+        conflict: The raised :class:`~app.exceptions.RecurrenceConflict`.
+        kind: The per-kind config (:class:`RecurrenceConflictKind`); its
+            ``model`` and ``resolve_amount`` are read here.
+        calendar: The pass's :class:`~app.services.pay_calendar.PayCalendar` --
+            the one ``kind.regenerate_fn`` resolved against, never a second
+            derivation.
+
+    Returns:
+        One :class:`ConflictChoice` per surviving conflicted row, oldest due
+        date first with undated rows last.
     """
     choices = []
     for ids, is_deleted_conflict in (
@@ -186,15 +232,15 @@ def _build_conflict_choices(conflict, model, resolve_amount) -> list[ConflictCho
         (conflict.deleted, True),
     ):
         for row_id in ids:
-            row = db.session.get(model, row_id)
+            row = db.session.get(kind.model, row_id)
             if row is None:
                 continue
-            period = row.pay_period
+            period = calendar.require_period(FiledRow.for_row(row))
             choices.append(ConflictChoice(
                 row_id=row_id,
                 due_date=row.due_date,
-                period_label=period.label if period else "",
-                your_amount=resolve_amount(row),
+                period_label=period.label,
+                your_amount=kind.resolve_amount(row),
                 is_deleted_conflict=is_deleted_conflict,
             ))
     choices.sort(key=lambda choice: (choice.due_date is None, choice.due_date or date.min))
@@ -243,14 +289,24 @@ class ConflictChooserContext:
     """Everything the recurrence-conflict chooser page renders from.
 
     Bundled because :func:`render_recurrence_conflict_chooser` is a public
-    route helper whose inputs are one cohesive concept: the pending edit,
-    its kind, and where Apply / Cancel go.
+    route helper whose inputs are one cohesive concept: the pending edit, the
+    rows it collided with, and where Apply / Cancel go.
+
+    **It carries the CHOICES rather than the conflict and the kind it used to**
+    (pay-calendar plan step C4-a-5).  Those two fields were on it for one
+    reason -- ``render_recurrence_conflict_chooser`` turned them into a
+    ``list[ConflictChoice]`` -- so the class named "everything the page renders
+    from" carried two values the page renders nothing from, and building the
+    rows was work hidden inside a function called ``render_``.  What forced the
+    question was this step adding an EIGHTH field for the pay calendar and
+    tripping ``too-many-instance-attributes`` at 8/7; the honest answer to that
+    gate was not a smaller field but the TWO that should never have been here,
+    and with them the calendar goes too -- the caller that HOLDS the read pass
+    now builds the rows, which is where the pass's calendar already is.
 
     Attributes:
-        conflict: The caught :class:`RecurrenceConflict` (the conflicted
-            row ids).
-        kind: The row model / amount / resolver bundle
-            (:class:`RecurrenceConflictKind`).
+        choices: The conflicted rows, already shaped and ordered
+            (:func:`_build_conflict_choices`).
         template_name: The edited template's new name (framing sentence).
         new_amount: The template's new amount (the "Use" figure).
         effective_from: The edit's effective date (framing sentence).
@@ -258,8 +314,7 @@ class ConflictChooserContext:
         cancel_url: Where Cancel returns (the list), abandoning the edit.
     """
 
-    conflict: RecurrenceConflict
-    kind: RecurrenceConflictKind
+    choices: "list[ConflictChoice]"
     template_name: str
     new_amount: Decimal
     effective_from: date
@@ -270,11 +325,11 @@ class ConflictChooserContext:
 def render_recurrence_conflict_chooser(ctx: ConflictChooserContext, form) -> str:
     """Render the full-page conflict chooser for a pending template edit.
 
-    Loads the conflicted instances into chooser rows and echoes the
-    submitted edit ``form`` as hidden inputs (minus the CSRF token, which
-    the chooser re-issues) so Apply re-runs the identical edit before
-    resolving.  Renders and returns HTML only -- no mutation and no commit
-    happen here; the caller rolls back the pending edit after this returns.
+    Echoes the submitted edit ``form`` as hidden inputs (minus the CSRF token,
+    which the chooser re-issues) so Apply re-runs the identical edit before
+    resolving.  Renders and returns HTML only -- no query, no mutation and no
+    commit happen here; the caller loads the rows (:func:`_build_conflict_choices`)
+    and rolls the pending edit back after this returns.
 
     Args:
         ctx: The pending-edit conflict context (see
@@ -288,9 +343,7 @@ def render_recurrence_conflict_chooser(ctx: ConflictChooserContext, form) -> str
     echo.pop("csrf_token", None)
     return render_template(
         "recurrence_conflict_chooser.html",
-        choices=_build_conflict_choices(
-            ctx.conflict, ctx.kind.model, ctx.kind.resolve_amount,
-        ),
+        choices=ctx.choices,
         template_name=ctx.template_name,
         new_amount=ctx.new_amount,
         effective_from=ctx.effective_from,
@@ -528,8 +581,15 @@ def regenerate_or_conflict_chooser(
         ):
             chooser = render_recurrence_conflict_chooser(
                 ConflictChooserContext(
-                    conflict=conflict,
-                    kind=kind,
+                    # Built HERE, before the rollback below, because this is
+                    # where the read pass is: the rows are dated off
+                    # ``ctx.calendar()`` -- the SAME calendar
+                    # ``kind.regenerate_fn`` just resolved against, never a
+                    # second derivation of it (the shape of ledger row
+                    # **P68**, closed by C2-f3c; **P69** is its open sibling).
+                    choices=_build_conflict_choices(
+                        conflict, kind, ctx.calendar(),
+                    ),
                     template_name=template.name,
                     new_amount=template.default_amount,
                     effective_from=effective_from,

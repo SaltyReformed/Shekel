@@ -1473,13 +1473,24 @@ class TestTransactionCRUD:
             assert 'name="pay_period_id"' in html
             sel_start = html.index('name="pay_period_id"')
             period_select = html[sel_start:html.index("</select>", sel_start)]
-            # Own past period present and selected.
-            assert source_period.label in period_select
+            # Own past period present and selected.  The labels come off the
+            # CALENDAR since pay-calendar plan step C4-a-5, which deleted
+            # ``PayPeriod.label``: the ``<option>`` renders
+            # ``DerivedPeriod.label``, so that is what an assertion about the
+            # markup may be built from.
+            calendar = calendar_for(seed_user["user"].id)
+            assert calendar.period_by_id(
+                source_period.id,
+            ).label in period_select
             assert f'value="{source_period.id}" selected' in period_select
             # Future period offered.
-            assert target_period.label in period_select
+            assert calendar.period_by_id(
+                target_period.id,
+            ).label in period_select
             # A past period that is not the row's own is excluded.
-            assert excluded_past.label not in period_select
+            assert calendar.period_by_id(
+                excluded_past.id,
+            ).label not in period_select
 
             # Saving a future period reassigns the transaction and asks
             # the client for a full grid refresh so the row relocates to
@@ -6751,7 +6762,18 @@ class TestMobileThisPeriodPartial:
             # The partial's header div is followed by the period
             # label inside a fw-bold div.  Encode the label so non-ASCII
             # whitespace and quoting are byte-stable.
-            assert current.label.encode("utf-8") in response.data
+            #
+            # The label comes off the CALENDAR since pay-calendar plan step
+            # C4-a-5 deleted ``PayPeriod.label``: the partial renders
+            # ``DerivedPeriod.label`` (``grid/_mobile_this_period.html``), and
+            # ``current_pay_period`` returns the ORM ROW on purpose because the
+            # factories take one.  The two name the same paycheck by
+            # construction -- that helper resolves the row FROM the derivation
+            # -- so this reads the derived value for the id it just resolved.
+            derived = calendar_for(
+                seed_user["user"].id,
+            ).period_by_id(current.id)
+            assert derived.label.encode("utf-8") in response.data
             # The partial-specific collapse IDs prefix with mobile-tp-
             # to avoid colliding with the Plan tab's mobile-income-/mobile-expense-.
             assert f"mobile-tp-income-{current.id}".encode("utf-8") in response.data

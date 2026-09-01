@@ -11,7 +11,7 @@ Tests for transaction template CRUD and recurrence preview:
 """
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -25,6 +25,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.loan_payment_settings import LoanPaymentSettings
+from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
     AccountType, Status, TransactionType,
@@ -46,7 +47,7 @@ from app.services.recurrence import (
     EndsOnDate,
     NeverEnds,
 )
-from app.utils.dates import display_today
+from app.utils.dates import display_today, pay_period_label
 from tests._test_helpers import (
     all_periods,
     cadence_payload,
@@ -666,6 +667,58 @@ class TestTemplateUpdate:
             assert db.session.get(
                 TransactionTemplate, tid,
             ).default_amount == Decimal("1200.00")
+
+    def test_the_chooser_names_the_DERIVED_paycheck(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Each chooser row is dated off the pass's calendar, not the column.
+
+        Pay-calendar plan step **C4-a-5**.  ``_build_conflict_choices`` read
+        ``row.pay_period.label`` -- the ORM accessor, which formats the STORED
+        ``budget.pay_periods.end_date`` -- while the grid beside it formats the
+        DERIVED end, so a period whose stored end had gone stale (plan findings
+        **P12** / **P28**) was named one way on this page and another on the
+        grid the owner had just come from.  Deciding "keep or move" from a row
+        labelled with a paycheck the grid does not show is the harm.
+
+        **The stale stored end is what makes this fail on the old code.**  Every
+        schedule the suite builds stores an end that AGREES with the derivation,
+        so the two readers are indistinguishable on an untouched fixture; the
+        write below breaks that agreement in the one place the application
+        still read it.
+
+        Absence is what grades it: the DERIVED label is asserted present and
+        the STALE one absent, because a page that rendered neither would pass a
+        presence-only assertion on some other row's label.
+        """
+        with app.app_context():
+            template = _create_template(
+                seed_user, cadence=EVERY_PERIOD, amount="1200.00",
+            )
+            txn = _future_override_txn(seed_user, template, amount="1500.00")
+            own = db.session.get(PayPeriod, txn.pay_period_id)
+            derived = calendar_for(seed_user["user"].id).period_by_id(own.id)
+            # The legacy state no writer produces any more: the stored column
+            # is a copy of ``lead(start_date) - 1`` with nothing reconciling
+            # the two.  It still satisfies ``ck_pay_periods_date_order``; what
+            # it violates is the functional dependency, which no constraint
+            # expresses and which plan step C4 removes by dropping the column.
+            own.end_date = derived.end_date + timedelta(days=12)
+            db.session.commit()
+            stale = pay_period_label(own.start_date, own.end_date)
+            assert stale != derived.label
+            tid = template.id
+
+            resp = auth_client.post(f"/templates/{tid}", data={
+                "default_amount": "1400.00",
+                **cadence_payload(),
+            })
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert b"hand-edited" in resp.data
+            assert derived.label in html
+            assert stale not in html
 
     def test_chooser_apply_use_realigns_override(
         self, app, auth_client, seed_user, seed_periods_today,

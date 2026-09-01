@@ -13,6 +13,7 @@ from app.extensions import db
 from app.models.ref import Status
 from app.services import category_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
+from app.services.pay_calendar import calendar_for
 from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
@@ -74,7 +75,9 @@ def get_full_edit(xfer_id):
     # always including the transfer's own period so a transfer sitting in
     # a past period stays selected.  The service re-validates ownership of
     # the submitted id and moves the transfer plus both shadows together.
-    periods = period_move_options(current_user.id, xfer.pay_period_id)
+    periods = period_move_options(
+        calendar_for(current_user.id), xfer.pay_period_id,
+    )
     # What the pair RECORDED and what a re-settle would RE-BOOK (plan step
     # X-au-c3).  Both render sites for this template call the one helper, so the
     # popover opened from the transfers page and the one opened from a grid
