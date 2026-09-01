@@ -30,7 +30,6 @@ from decimal import Decimal
 import pytest
 
 from app.exceptions import ValidationError
-from app.models.pay_schedule import PaySchedule
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.routes._period_population import populate_new_periods
@@ -253,30 +252,16 @@ class TestExtendPayPeriods:
             db.session.commit()
             assert _period_length(new_periods[0]) == 7
 
-    def test_infers_cadence_for_legacy_user(self, app, db, seed_user):
-        """With no schedule row, cadence is inferred from the last period.
-
-        **The row is deleted here, and until plan step C3-b it did not exist
-        to delete.**  The cadence rule makes every batch that records a payday
-        store one, so the state finding **P8** is about -- paydays with no
-        cadence beside them -- can no longer be produced by any door and has to
-        be constructed on purpose.  That is the finding narrowing, and this is
-        what the extend path does with the legacy data that still carries it.
-        """
-        with app.app_context():
-            _future_periods(db.session, seed_user, count=2)  # 14-day periods
-            db.session.query(PaySchedule).filter_by(
-                user_id=seed_user["user"].id,
-            ).delete(synchronize_session=False)
-            db.session.commit()
-            assert pay_schedule_service.get_schedule(
-                seed_user["user"].id,
-            ) is None
-            new_periods = pay_period_admin.extend_pay_periods(
-                seed_user["user"].id, num_periods=1,
-            )
-            db.session.commit()
-            assert _period_length(new_periods[0]) == 14
+    # ``test_infers_cadence_for_legacy_user`` stood here until plan step
+    # **C4-b-2**.  It deleted the owner's ``budget.pay_schedule`` row, left
+    # their 14-day periods standing, and asserted the extend path still
+    # produced 14 -- from ``resolve_cadence``'s inference off the last
+    # period's stored length.  That state is what ``fk_pay_periods_schedule``
+    # now forbids (ledger rows **P8** and **P35**), so the case was deleted
+    # with its subject rather than reworded.  What extend actually does with
+    # the cadence is unchanged and covered by
+    # ``test_stored_schedule_cadence_used_when_unspecified`` directly above,
+    # which is the only source there is now.
 
     def test_the_door_leaves_the_new_periods_EMPTY(self, app, db, seed_user):
         """The door RECORDS and stops; nothing recurring is generated.

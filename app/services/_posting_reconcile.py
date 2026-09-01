@@ -164,17 +164,18 @@ def filing_calendar_for(account_id: int) -> tuple[int, PayCalendar] | None:
             forbids a repeated payday -- but it is declared because this door
             put a DERIVATION in front of a money write where a plain query
             stood, and the composition is what a caller has to reason about.
-            **In particular the cadence is INFERRED from the last period's
-            stored length for an owner with no ``budget.pay_schedule`` row**
+            *This clause used to carry a third hazard and plan step C4-b-2
+            deleted it.*  The cadence was INFERRED from the last period's
+            stored length for an owner with no ``budget.pay_schedule`` row
             (``pay_schedule_service.resolve_cadence``), which is plan finding
-            **P8**'s state.  *That fallback was called load-bearing here on
+            **P8**'s state, and that inference was called load-bearing here on
             the ground that it "is exactly what a freshly-registered owner
-            has"; plan step X-ad-a falsified the ground -- registration now
-            writes the schedule row beside the paydays.*  It survives for
-            owners created before that step and for the schedule-extension
-            routes that always read it, so the composition is still what a
-            caller has to reason about; what changed is that the common case
-            no longer walks through it.
+            has".  Plan step X-ad-a falsified the ground -- registration writes
+            the schedule row beside the paydays -- and C4-b-2 removed the state
+            itself: ``fk_pay_periods_schedule`` makes an owner with paydays and
+            no cadence row unstorable, so the cadence this door reads is the
+            stored column and nothing derived.  The composition is still what
+            a caller has to reason about; what it composes is now one read.
     """
     owner_id = account_owner_id(account_id)
     if owner_id is None:

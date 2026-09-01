@@ -164,10 +164,11 @@ def get_visible_transactions(
     Raises:
         NotFoundError: User is not a companion, has no linked owner,
             period not found, or period belongs to a different owner.
-        PayCalendarError: The owner's paydays cannot define a calendar -- in
-            practice a cadence outside 1..365 inferred for an owner with no
-            ``budget.pay_schedule`` row (plan findings **P8** / **P35**).
-            Loud rather than defaulted, for the reason
+        PayCalendarError: The owner's paydays cannot define a calendar.  *The
+            practical route was a cadence outside 1..365 inferred for an owner
+            with no ``budget.pay_schedule`` row (plan findings **P8** /
+            **P35**); plan step C4-b-2 made that owner unstorable and deleted
+            the inference.*  Loud rather than defaulted, for the reason
             :func:`~app.services.pay_calendar.calendar_for` gives.
     """
     user = _validate_companion(companion_user_id)

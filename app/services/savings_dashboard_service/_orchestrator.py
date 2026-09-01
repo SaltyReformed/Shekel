@@ -123,6 +123,15 @@ def _build_projection_context(
         # carries no anchor PERIOD since rulings R-EH / R-EO dropped both
         # columns, so an owner can hold accounts and no pay periods, and with
         # no ``budget.pay_schedule`` row their cadence is genuinely unstated.
+        #
+        # **``fk_pay_periods_schedule`` (plan step C4-b-2) does NOT narrow this
+        # guard, and an adversarial review caught a first draft claiming it
+        # did.**  The key says a pay period REQUIRES a schedule row; its
+        # contrapositive is "no schedule row implies no paydays", and it says
+        # nothing in the other direction.  An owner with a cadence row and zero
+        # periods is ordinary -- ``pay_period_admin.reset_pay_periods`` passes
+        # through exactly that state -- so "no paydays" still leaves the
+        # cadence question open and this guard still has to ask it.
         # What the guard protects is the THREE NARROW producers that share this
         # builder -- ``compute_debt_summary``, ``compute_goal_progress`` and
         # ``compute_account_balance_cell`` -- none of which publishes a

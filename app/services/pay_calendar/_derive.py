@@ -114,17 +114,22 @@ class PayCalendarError(ShekelError, ValueError):
     What this class refuses is different -- a payday SET or a cadence that
     cannot define a calendar in the first place.
 
-    **One of those refusals is reachable from a PAGE rather than from a
-    caller**, which the deleted class had no equivalent of and which plan step
-    C2-b2 therefore introduced.  :func:`~._loader.calendar_for` resolves the
-    cadence through ``pay_schedule_service.resolve_cadence``, whose legacy
-    fallback infers it from the last period's stored length -- bounded below by
-    ``ck_pay_periods_date_order`` and NOT bounded above.  A hand-written period
-    spanning more than a year therefore refuses the calendar, which now means a
-    500 on every page that reads the owner's recurrences.  Failing loud is
-    still right (the alternative is projecting a horizon off a value no write
-    door could have produced), and plan step C4 removes the fallback with the
-    column it reads.
+    **One of those refusals WAS reachable from a page, and plan step C4-b-2
+    closed that route rather than handling it** (ledger row **P35**).
+    :func:`~._loader.calendar_for` resolves the cadence through
+    ``pay_schedule_service.resolve_cadence``, which until that step fell back to
+    inferring it from the last period's stored length -- bounded below by
+    ``ck_pay_periods_date_order`` and NOT bounded above -- so a hand-written
+    period spanning more than a year refused the calendar, and since C2-c that
+    meant a 500 on every balance page.  ``fk_pay_periods_schedule`` makes the
+    schedule-row-less owner unstorable, so the only source of a cadence is the
+    column, bounded to 1..365 by ``ck_pay_schedule_cadence_range`` -- the same
+    range this class enforces, which is why the two cannot now disagree.  What
+    the refusal still covers is a CALLER, not a page.  Failing loud remains
+    right (the alternative is projecting a horizon off a value no write
+    door could have produced).  *The paragraph this replaces said C4 would
+    remove the fallback "with the column it reads"; the key removed it one leaf
+    earlier, and ``end_date`` is still C4-c's to drop.*
     """
 
 
@@ -435,13 +440,16 @@ def derive_periods(
             a user records their first payday.
             **``None`` is legal, and ONLY beside an empty payday set** (plan
             step C2-b1).  ``pay_schedule_service.resolve_cadence`` answers
-            ``None`` for an owner who has neither a schedule row nor a period
-            to infer one from, and such an owner has no last period, so the
-            value is provably unread.  The same answer BESIDE a payday is a
-            broken invariant and is refused -- see the refusal's own message
-            for which callers can reach it, and note it is NOT plan finding
-            **P8**'s state: that owner's cadence is inferred, not absent, and
-            **P8 stays unpoliced by anything here**.
+            ``None`` for an owner with no ``budget.pay_schedule`` row, and
+            since plan step C4-b-2 ``fk_pay_periods_schedule`` makes that
+            IMPLY no pay periods -- so such an owner has no last
+            period and the value is provably unread.  The same answer BESIDE a
+            payday is a broken invariant and is refused; see the refusal's own
+            message for which callers can still reach it.  *That refusal used
+            to carry a careful note that it was NOT plan finding P8's state --
+            P8's owner had an INFERRED cadence rather than an absent one, and
+            nothing here policed them.  The key polices them now, at the only
+            tier that can.*
 
     Returns:
         The owner's periods, ``start_date`` ascending, ``period_index`` running
@@ -484,14 +492,17 @@ def derive_periods(
             f"no other source for it, so a calendar cannot be derived.  A "
             f"broken invariant rather than an input to clamp: every cadence "
             f"this could invent would project a horizon the owner never "
-            f"chose.  Two callers can produce this pair -- one assembling a "
-            f"payday set by hand (plan step C3's writer does exactly that, "
-            f"from a form batch plus the existing rows), and _loader.py, if a "
-            f"concurrent truncate lands between its payday read and its "
-            f"cadence read.  A fresh signup is NOT one of them: since plan "
-            f"step X-ad-a, registration writes a budget.pay_schedule row "
-            f"beside the owner's paydays, so resolve_cadence answers from the "
-            f"stored value rather than inferring one."
+            f"chose.  What can produce this pair is a caller assembling a "
+            f"payday set BY HAND and pairing it with a cadence it did not "
+            f"read.  No door in app/ is one, since plan step C4-b-2: "
+            f"fk_pay_periods_schedule means an owner with paydays has a "
+            f"budget.pay_schedule row, so resolve_cadence answers for every "
+            f"owner who has any payday to hand in.  That closes both routes "
+            f"this message used to name -- pay_period_write._apply, which "
+            f"passes the cadence it is recording or the stored one, and "
+            f"_loader.calendar_for, which reads the schedule FIRST so its "
+            f"losing interleaving is a cadence with fewer paydays rather "
+            f"than paydays with no cadence."
         )
 
     last_position = len(ordered) - 1

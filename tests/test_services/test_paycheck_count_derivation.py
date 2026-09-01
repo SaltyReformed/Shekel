@@ -46,15 +46,23 @@ def _strip_every_payday(db, user_id):
     """Leave *user_id* with no payday and no persisted cadence, committed.
 
     The ONLY state in which
-    :func:`app.services.pay_schedule_service.resolve_cadence` answers ``None``:
-    it falls back to inferring the cadence from the last period, so a single
+    :func:`app.services.pay_schedule_service.resolve_cadence` answers ``None``,
+    and since plan step ``pay_calendar:C4-b-2`` the two halves are one fact
+    rather than two: ``fk_pay_periods_schedule`` holds a payday's owner to
+    having a schedule row, so an owner with no row has no paydays either.
+    Before that step the cadence was INFERRED from the last period, so a single
     surviving payday would still answer and the control would not fire.
+
+    **The order is forced and is not stylistic.**  That key is
+    ``ON DELETE RESTRICT``, so removing the schedule row while a payday still
+    references it is refused by the database.  Children before parents, which
+    is the order this helper always meant.
     """
     db.session.commit()
     db.session.execute(text(
-        "DELETE FROM budget.pay_schedule WHERE user_id = :u"), {"u": user_id})
-    db.session.execute(text(
         "DELETE FROM budget.pay_periods WHERE user_id = :u"), {"u": user_id})
+    db.session.execute(text(
+        "DELETE FROM budget.pay_schedule WHERE user_id = :u"), {"u": user_id})
     db.session.commit()
 
 #: Every cadence whose derived count the dropped dropdown could express, plus

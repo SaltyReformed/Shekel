@@ -150,9 +150,18 @@ class CalendarComparison:
         cadence_days: The cadence the derivation was driven with.
         cadence_is_stored: Whether *cadence_days* came from the owner's
             ``budget.pay_schedule`` row.  ``False`` means it was INFERRED from
-            the last period's length (``pay_schedule_service.resolve_cadence``'s
-            fallback), and then that row's end comparison is CIRCULAR -- the
-            derivation is reading back the value it produced (plan finding P8).
+            the last period's length, and then that row's end comparison is
+            CIRCULAR -- the derivation is reading back the value it produced
+            (plan finding **P8**).
+            **No live producer supplies ``False`` any longer** (plan step
+            ``pay_calendar:C4-b-2``): ``fk_pay_periods_schedule`` makes an
+            owner with paydays and no cadence row unstorable and
+            ``pay_schedule_service.resolve_schedule``'s inferring arm is
+            deleted, so ``tests/manual/verify_pay_calendar_derivation.py``
+            now reads the stored row or nothing.  This oracle keeps the
+            parameter and stays TOTAL over both values, because it is a pure
+            function graded on its own terms -- a harness driving a database
+            below that revision may still hand it ``False``.
         rows: One :class:`RowComparison` per payday, ``start_date`` ascending.
     """
 

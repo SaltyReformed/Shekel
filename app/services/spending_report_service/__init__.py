@@ -155,7 +155,10 @@ def compute_spending_report(
     Raises:
         ValueError: An invalid window (``validate_window``), or -- as its
             ``PayCalendarError`` subclass, newly reachable at plan step C2-f1
-            -- an owner whose paydays cannot define a calendar (finding **P8**).
+            -- an owner whose paydays cannot define a calendar.  *Finding
+            **P8** named the route that made that reachable from a page, and
+            plan step C4-b-2 closed it: the inferred cadence is gone and the
+            stored one is bounded to the range the derivation enforces.*
     """
     spending_analysis.validate_window(
         window.window_type, window.period_id, window.month, window.year,

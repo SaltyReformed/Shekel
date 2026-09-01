@@ -249,6 +249,16 @@ EVT_BASELINE_MISSING = _register(
     "resolving the wrong user -- alert on it.",
 )
 
+EVT_PAY_CALENDAR_UNDERIVABLE = _register(
+    "pay_calendar_underivable", ERROR,
+    "A request needed a user's pay calendar and it could not be derived; the "
+    "recovery page (or 204 for a fragment) was returned instead of a bare "
+    "500.  Two states reach it and the message says which: an owner with no "
+    "budget.pay_schedule row -- ordinary, and repaired by generating a "
+    "schedule -- or a payday set that cannot define a calendar, which is a "
+    "broken invariant no write door produces.  Alert on the second.",
+)
+
 
 # ── Business events: existing call sites ───────────────────────────
 

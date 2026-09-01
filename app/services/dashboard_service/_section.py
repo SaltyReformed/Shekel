@@ -91,8 +91,11 @@ class DashboardSection:
         whose own docstring records it).  Deriving the current period inside
         the loader made a producer that returns early RAISE ``PayCalendarError``
         for a legacy owner -- a period stored before ``budget.pay_schedule``
-        existed, whose span ``resolve_cadence``'s fallback reads back as a
-        cadence outside 1..365.  A page must not fail for a fact it never uses,
+        existed, whose span ``resolve_cadence``'s fallback read back as a
+        cadence outside 1..365.  *That owner is unstorable since plan step
+        C4-b-2, which closed ledger rows **P8** and **P35**; the SHAPE is what
+        this property is about and it does not need that particular refusal to
+        recur.*  A page must not fail for a fact it never uses,
         so this is derived where it is ASKED and :func:`resolve_section` touches
         no calendar.
 

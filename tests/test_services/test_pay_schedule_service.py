@@ -7,9 +7,11 @@ behaviours matter:
   * ``get_schedule`` returns the row or ``None``.
   * ``upsert_schedule`` creates a row on first call and updates only
     ``cadence_days`` on later calls, never disturbing rolling config.
-  * ``resolve_cadence`` prefers the stored cadence and falls back to
-    inferring it from the last period's length for a legacy user with
-    periods but no schedule row.
+  * ``resolve_cadence`` answers the STORED cadence and nothing else.  It
+    used to fall back to inferring one from the last period's length for an
+    owner with periods but no schedule row; plan step **C4-b-2** made that
+    owner unrepresentable (``fk_pay_periods_schedule``) and deleted the arm
+    with them, closing findings **P8** and **P35**.
   * ``resolve_schedule`` answers BOTH calendar facts from that one read
     (plan step **balance:X-bh-2**), and ``set_history_opening`` is the one
     writer of the second.
@@ -21,6 +23,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.exceptions import ValidationError
 from app.models.pay_period import PayPeriod
@@ -212,36 +215,44 @@ class TestSetRolling:
 
 
 class TestResolveCadence:
-    """``resolve_cadence`` prefers the stored cadence, else infers it."""
+    """``resolve_cadence`` answers the STORED cadence and nothing else."""
 
-    def test_prefers_stored_cadence_over_period_length(
+    def test_the_answer_is_the_stored_row_and_not_the_period_length(
         self, app, bare_periods,
     ):
-        """A stored cadence wins even when it differs from the periods.
+        """The stored cadence answers even where the periods say otherwise.
 
-        ``bare_periods`` are 14-day periods; storing a cadence of 10 must
-        make ``resolve_cadence`` return 10 (the persisted value), not the
-        14 it would infer from the period length.  This proves the
-        stored row takes precedence over inference.
+        ``bare_periods`` are 14-day periods; storing 10 must make
+        ``resolve_cadence`` return 10.  The two values are kept DIFFERENT on
+        purpose: an owner whose stored cadence happened to match their period
+        lengths could not distinguish a reader of the column from a reader of
+        the rows, which is exactly how ``test_pay_calendar_loader``'s own
+        adversarial review found a case passing against a loader that never
+        touched the table.
         """
         user_id = bare_periods[0].user_id
         with app.app_context():
             pay_schedule_service.upsert_schedule(user_id, cadence_days=10)
             assert pay_schedule_service.resolve_cadence(user_id) == 10
 
-    def test_infers_from_last_period_when_no_schedule(self, app, db, bare_user):
-        """A legacy user with periods but no row infers cadence from length.
+    def test_an_owner_with_paydays_cannot_lose_their_cadence(
+        self, app, db, bare_user,
+    ):
+        """Plan step **C4-b-2**: the inferring arm's input is unstorable now.
 
-        The LAST period's end is ``start + (cadence - 1)``, so a 9-day
-        cadence yields ``(end - start).days + 1 == 9``.  Using 9 -- distinct
-        from both the 14-day default and the 52 horizon -- proves the value
-        comes from the period length, not a default.
+        This case REPLACES ``test_infers_from_last_period_when_no_schedule``,
+        which asserted that an owner with 9-day periods and no schedule row
+        resolved to 9.  That answer was circular -- since plan step C3-b
+        ``record_paydays`` derives the last period's end FROM the stored
+        cadence, so inverting it read back the value that produced it -- and
+        the whole point of ``fk_pay_periods_schedule`` is that the owner it
+        answered for can no longer exist.
 
-        **The schedule row is deleted to reach this at all**, and plan step
-        C3-b is why: the cadence rule makes every batch that records a payday
-        store one, so no door can now leave an owner with paydays and no
-        cadence.  Finding **P8**'s state is legacy data from here on, and this
-        is the fallback that reads it.
+        **It grades the constraint through the door the old case used**, a
+        bulk ORM delete of the schedule row, so a future edit that drops the
+        key fails HERE rather than silently restoring an unanswerable state.
+        The refusal is the database's: ``ON DELETE RESTRICT`` (ruling
+        **R-PC41**).
         """
         user_id = bare_user["user"].id
         with app.app_context():
@@ -251,17 +262,28 @@ class TestResolveCadence:
                 num_periods=4,
                 cadence_days=9,
             )
-            db.session.query(PaySchedule).filter_by(user_id=user_id).delete(
-                synchronize_session=False,
-            )
             db.session.flush()
-            assert pay_schedule_service.get_schedule(user_id) is None
-            assert pay_schedule_service.resolve_cadence(user_id) == 9
+            assert pay_schedule_service.get_schedule(user_id).cadence_days == 9
 
-    def test_returns_none_with_no_schedule_and_no_periods(
+            with pytest.raises(IntegrityError) as excinfo:
+                db.session.query(PaySchedule).filter_by(
+                    user_id=user_id,
+                ).delete(synchronize_session=False)
+                db.session.flush()
+
+            assert "fk_pay_periods_schedule" in str(excinfo.value)
+            db.session.rollback()
+
+    def test_returns_none_when_the_owner_has_no_schedule_row(
         self, app, bare_user,
     ):
-        """No schedule row and no periods leaves nothing to infer from."""
+        """No schedule row is no cadence, and it is an ordinary owner.
+
+        Since ``fk_pay_periods_schedule`` this is the same statement as "no
+        pay periods": a companion account, or any owner before their first
+        recorded batch.  ``None`` is what the extend path reads as "generate
+        your first schedule first".
+        """
         with app.app_context():
             assert (
                 pay_schedule_service.resolve_cadence(bare_user["user"].id)
@@ -310,17 +332,27 @@ class TestResolveSchedule:
                 == 7
             )
 
-    def test_the_legacy_fallback_covers_the_cadence_and_NOT_the_history(
+    def test_both_facts_come_from_the_row_and_neither_is_derived(
         self, app, db, bare_user,
     ):
-        """The asymmetry, asserted rather than described.
+        """Both fields read the stored row, and the pay history is why.
 
-        A legacy owner with paydays and no schedule row has a cadence that can
-        be INFERRED -- the last period's length -- and a pay history that
-        cannot: nothing in ``budget.pay_periods`` says when the job began, and
-        the first recorded payday is a record boundary rather than an answer.
-        So the fallback fills one field and leaves the other ``None``, which
-        reads as "run the rhythm back to the app's calendar floor".
+        This case REPLACES
+        ``test_the_legacy_fallback_covers_the_cadence_and_NOT_the_history``,
+        which pinned an ASYMMETRY that plan step **C4-b-2** removed: the
+        cadence used to be inferable for a row-less owner and
+        ``history_opens_on`` never was, so one field guessed and the other did
+        not.  Deleting the guess makes the two agree about what an absent row
+        means.
+
+        What survives, and is asserted here, is the reason the second field
+        never had a fallback: nothing in ``budget.pay_periods`` says when a
+        job began.  So the recorded paydays are set up to be *maximally*
+        suggestive -- four of them, opening 2026-03-01 -- and the answer is
+        still ``None``, because the first RECORDED payday is a boundary of the
+        app's record and not a statement about the owner's history (ruling
+        **balance:R-IA**, whose amendment priced the wrong reading at
+        ``$1,437.91`` of Social Security tax not withheld).
         """
         user_id = bare_user["user"].id
         with app.app_context():
@@ -330,21 +362,17 @@ class TestResolveSchedule:
                 num_periods=4,
                 cadence_days=9,
             )
-            db.session.query(PaySchedule).filter_by(user_id=user_id).delete(
-                synchronize_session=False,
-            )
             db.session.flush()
 
             facts = pay_schedule_service.resolve_schedule(user_id)
 
-            assert pay_schedule_service.get_schedule(user_id) is None
             assert facts.cadence_days == 9
             assert facts.history_opens_on is None
 
     def test_no_row_and_no_periods_answers_a_pair_of_nones(
         self, app, bare_user,
     ):
-        """The companion's shape: nothing stored, nothing inferable."""
+        """The companion's shape: nothing stored, and nothing to state."""
         with app.app_context():
             facts = pay_schedule_service.resolve_schedule(
                 bare_user["user"].id,

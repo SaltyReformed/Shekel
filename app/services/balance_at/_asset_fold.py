@@ -759,10 +759,10 @@ def _assemble(
             above, nine already reach the calendar in the same request or take
             the ``positions`` arm; the ONE that does not is
             ``investment_dashboard_service._orchestrator.compute_balance_hero_cell``,
-            which is ``C2-f2c``'s module.  The STATE needs an owner with
+            which is ``C2-f2c``'s module.  The STATE needed an owner with
             paydays, no ``budget.pay_schedule`` row and a cadence inferred
-            outside 1..365 -- unreachable through registration since plan step
-            X-ad-a, absent from the production clone, deleted at ``C4``.
+            outside 1..365 -- **UNSTORABLE since plan step C4-b-2**, which
+            pointed the column at that table and deleted the inference (**P8** / **P35**).
     """
     return resolve(
         account,
