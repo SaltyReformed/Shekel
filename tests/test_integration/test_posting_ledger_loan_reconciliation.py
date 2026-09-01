@@ -137,6 +137,7 @@ from decimal import Decimal
 
 import pytest
 
+import app.services
 from app import ref_cache
 from app.enums import (
     LedgerAccountKindEnum,
@@ -1698,12 +1699,28 @@ def _resolver_stack_modules() -> list:
     allowlist went with it -- so the exemption is closed by STRUCTURE, and a
     ledger import added anywhere in the module (top-level or in-function) is
     caught.
+
+    **A PACKAGE is expanded to its leaves, and that is generic rather than a
+    per-package special case.**  ``inspect.getsource`` on a package returns its
+    ``__init__.py`` ALONE, so a fenced module that becomes a package takes its
+    leaves out of scope silently -- the fence keeps passing while scanning a
+    re-export list.  This list held ``loan_resolver``'s leaves by an explicit
+    ``iter_modules`` walk for exactly that reason; when
+    ``loan_payment_service`` was split into four leaves the same hazard
+    appeared for it, and a second hand-written walk would only have deferred
+    the third instance.  Expanding whatever is a package covers every module
+    here, and any added later, by construction.
     """
-    modules = [loan_loaders, loan_payment_service, loan_resolver]
-    for info in pkgutil.iter_modules(loan_resolver.__path__):
-        modules.append(
-            importlib.import_module(f"app.services.loan_resolver.{info.name}")
-        )
+    roots = [loan_loaders, loan_payment_service, loan_resolver]
+    modules = []
+    for root in roots:
+        modules.append(root)
+        if not hasattr(root, "__path__"):
+            continue
+        for info in pkgutil.iter_modules(root.__path__):
+            modules.append(
+                importlib.import_module(f"{root.__name__}.{info.name}")
+            )
     return modules
 
 
@@ -1744,7 +1761,17 @@ def _ledger_model_importer_names() -> set:
     asserts :data:`_LEDGER_IMPORT_TOKENS` matches every one, so a NEW ledger reader
     cannot silently evade the resolver fence (review M-2).
     """
-    services_dir = os.path.dirname(loan_payment_service.__file__)
+    # The package's OWN directory, taken from ``app.services`` rather than from
+    # a module inside it.  It used to read
+    # ``os.path.dirname(loan_payment_service.__file__)``, which silently walks
+    # the WRONG tree the moment that module becomes a package -- and five
+    # ``app/services`` modules have already made that move at pylint's
+    # 1000-line cap (``transfer_service``, ``pay_period_locks``,
+    # ``anchor_service``, ``pay_period_write``, ``transaction_service``).  The
+    # anti-vacuity assertion below would catch the empty case, but not a walk
+    # that found a handful of a package's own leaves, so the fix is to name the
+    # package this guard is actually about.
+    services_dir = os.path.dirname(app.services.__file__)
     names: set = set()
     for root, _dirs, files in os.walk(services_dir):
         for fname in files:
@@ -1853,8 +1880,18 @@ class TestResolverIsLedgerFree:
           is caught -- so the green result above means "ledger-free", not "not
           looking".
         """
-        assert loan_payment_service in _resolver_stack_modules()
-        source = inspect.getsource(loan_payment_service)
+        fenced = _resolver_stack_modules()
+        assert loan_payment_service in fenced
+        # The package WHOLE, not its ``__init__``.  ``inspect.getsource`` on a
+        # package returns the re-export list alone, and asserting against that
+        # would grade a file containing none of the loaders this fence exists
+        # to cover -- the same emptied-target shape the docstring above warns
+        # about, arriving through the module becoming a package rather than
+        # through an allowlist.
+        source = "\n".join(
+            inspect.getsource(module) for module in fenced
+            if module.__name__.startswith(loan_payment_service.__name__)
+        )
         # The resolver-feeding loaders are in scope, whole-module.
         assert "def load_loan_context" in source
         assert "def get_payment_history" in source
