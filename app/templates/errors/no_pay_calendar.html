@@ -1,0 +1,56 @@
+{#
+  The ONE answer to "this owner's pay calendar cannot be derived" (plan step
+  ``pay_calendar:C4-b-2``, the handler ledger row **P35** deferred).  Rendered
+  by the application-level ``PayCalendarError`` handler for every full-page
+  request and for every MUTATING htmx request, whichever of the fourteen raise
+  sites fired.  A SAFE-method htmx request gets 204 instead and never this
+  card, so a poll cannot replace a live balance region with a setup page.
+
+  Before this it had no answer at all: the bare 500 page on a money screen,
+  and inside a fragment nothing whatsoever, because htmx does not swap a 500.
+
+  It carries the REPAIR, which is why the handler renders a page rather than
+  an apology: the state an owner can actually act on is "no pay schedule yet",
+  and ``pay_periods.generate_form`` is where that is fixed.  The OTHER state
+  that lands here -- a payday set that cannot define a calendar -- is a broken
+  invariant the owner can do nothing about, so the page says what is true for
+  both and the structured log carries which one fired.  Deliberately no
+  figures: every per-period number on this owner's screens is exactly what is
+  unanswerable right now, so showing one would be inventing it.
+#}
+{% extends "base.html" %}
+{% block title %}Pay Calendar Unavailable -- Shekel{% endblock title %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-6">
+    <div class="card shadow-sm">
+      <div class="card-body text-center">
+        <h3>
+          <i class="bi bi-calendar-x text-warning"></i>
+          Pay Calendar Unavailable
+        </h3>
+        <p class="mt-3">
+          Shekel could not work out your pay calendar, so the amounts on this
+          page cannot be calculated. Every figure here is measured per
+          paycheck, so none of them can be shown until your paydays are set
+          up.
+        </p>
+        <p class="text-muted small">
+          If you have not generated a pay schedule yet, that is what this is.
+        </p>
+        <a href="{{ url_for('pay_periods.generate_form') }}"
+           class="btn btn-primary">
+          <i class="bi bi-calendar-plus"></i> Set up my pay periods
+        </a>
+        <div class="mt-3">
+          <a href="{{ url_for('settings.show', section='pay-periods') }}"
+             class="text-muted">
+            <i class="bi bi-gear"></i> Review my existing pay periods
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}
