@@ -149,7 +149,7 @@ _NUDGE = Decimal("1000.00")
 
 # The rules whose answer must NOT move when the row's own column does.
 # LOAN_PAYMENT is deliberately absent: its MANUAL arm resolves through
-# ``loan_payment_service._manual_shadow_amount``, which reads
+# ``cash_ledger._loan_installment._manual_shadow_amount``, which reads
 # ``estimated_amount`` by design until plan step X-au-g cuts it over, so a
 # manual payment is an expected mover and is reported rather than failed.
 _DERIVED_RULES = frozenset({

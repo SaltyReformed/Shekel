@@ -201,9 +201,11 @@ def get_payment_history(
 
     **This docstring used to blame a CYCLE, and the restriction outlived it.**
     The path it named -- the LOAN_PAYMENT rule ->
-    :meth:`LoanPricing.derive_cash` -> ``_resolve_loan_basis`` ->
-    :func:`load_loan_context` -> this function -- is deleted; see
-    :func:`_resolve_loan_basis`.  What still stops the loan-side INCOME leg
+    :meth:`~app.services.cash_ledger.LoanPricing.derive_cash` ->
+    ``_resolve_loan_basis`` -> :func:`load_loan_context` -> this function -- is
+    deleted; see :func:`app.services.cash_ledger._resolve_loan_basis` (a module
+    of the amount model since plan step X-au-g-2a, which moved rule 4's
+    producer down a tier).  What still stops the loan-side INCOME leg
     being declared derived is this function's own pricing: it reads each row
     through :func:`~app.services.row_valuation.owned_contribution`, which
     REFUSES a row whose plan is derived.  So finding **N-266** (a) is
@@ -278,7 +280,8 @@ def get_payment_history(
             **The mark-paid door no longer reaches this, and that is a
             refusal this step DELETED rather than an edge it kept.**  The
             paragraph here used to record the door arriving through
-            :meth:`LoanPricing.live_cash` -> :func:`load_loan_context`; that
+            :meth:`~app.services.cash_ledger.LoanPricing.live_cash` ->
+            :func:`load_loan_context`; that
             edge is gone with the pricing cycle, so a settle now reaches
             pricing via ``transfer_service._settle`` -> ``amount_basis`` ->
             ``live_cash`` and never loads a payment history.  The three

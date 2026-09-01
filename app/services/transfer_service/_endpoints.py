@@ -214,7 +214,7 @@ def _apply_endpoint_move(rows: TransferRows, endpoints: _Endpoints) -> None:
     **That is the placement's PRINCIPLE, not a measured defect, and the
     difference is stated rather than blurred.**  Moving the apply after the
     dispatch was tried and the suite stayed green: the only reader that would
-    answer differently is ``loan_payment_service.LoanCashBasis.live_cash``, and
+    answer differently is ``cash_ledger.LoanPricing.live_cash``, and
     reaching it needs a TEMPLATE-linked derive-mode loan payment re-pointed
     between two loans while settling in the same call -- which no route sends
     and the recurrence engine's maintain pass never does, because it settles
