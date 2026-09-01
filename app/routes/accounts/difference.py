@@ -139,14 +139,34 @@ DIFF_UNACCOUNTED_MONEY = "unaccounted_money"
 #: module constant are two spellings of one name that drift silently -- the
 #: partial would simply stop matching and fall to its else arm, rendering the
 #: wrong sentence with no error anywhere.
-_DIFF_VERDICT_NAMES = {
+#:
+#: **PUBLIC since plan step balance:X-f3c-3**, with :func:`difference_verdict`
+#: beside it, because a second route module asks the same QUESTION OF A SIGN:
+#: ``accounts.outstanding``'s card names what an account's latest declaration
+#: says its books cannot explain, and "declared above the records" means money
+#: unaccounted for on both surfaces.  A helper with consumers in two modules is
+#: part of this module's interface -- finding **N-33**'s shape stated rather
+#: than fenced by a convention nobody can enforce, exactly as
+#: ``reconcile.panel_id`` says one module over.
+#:
+#: **What is shared is the CLASSIFIER and never the figure**, and a first draft
+#: of this note got that wrong by calling the card's figure "the same
+#: ``declared - records`` sign asked cumulatively rather than per save".  It is
+#: not the same subtraction: this preview measures against
+#: :func:`~app.services.balance_at.records_balance_at`, which is the running
+#: balance just before the day's assertion and therefore contains every EARLIER
+#: assertion's reset, while the card measures against the records alone.  The
+#: two differ by the net of every prior correction, so **each surface writes its
+#: own sentences** -- publishing two money figures under one vocabulary is the
+#: defect this arc has now measured three times.
+DIFF_VERDICT_NAMES = {
     "DIFF_AGREES": DIFF_AGREES,
     "DIFF_UNRECORDED_SPEND": DIFF_UNRECORDED_SPEND,
     "DIFF_UNACCOUNTED_MONEY": DIFF_UNACCOUNTED_MONEY,
 }
 
 
-def _difference_verdict(difference: Decimal) -> str:
+def difference_verdict(difference: Decimal) -> str:
     """Return what *difference* MEANS, as one of the ``DIFF_*`` names.
 
     The sign convention is ``recorded - records``, so:
@@ -251,7 +271,7 @@ def _anchor_difference_context(account: Account) -> dict:
         "records": records,
         "recorded": recorded,
         "difference": difference,
-        "verdict": _difference_verdict(difference),
+        "verdict": difference_verdict(difference),
     }
 
 
@@ -289,6 +309,6 @@ def anchor_difference(account_id):
         return "Account not found", 404
     return render_template(
         "accounts/_anchor_difference.html",
-        **_DIFF_VERDICT_NAMES,
+        **DIFF_VERDICT_NAMES,
         **_anchor_difference_context(account),
     )

@@ -84,6 +84,13 @@ kill.
   It is here rather than on the ``cash_ledger`` leaf because its ``ledger``
   column IS a balance-at-T -- the running total just before an assertion reset
   it -- and no screen reaches one except through this door.
+  :func:`cash_outstanding_difference` is the SIXTH (plan step X-f3c-3, ruling
+  **R-FN**): the owner's latest declared balance beside what the account's
+  books produce for that same day -- opening equity plus every posting through
+  it, with no assertion applied -- which is ONE figure per account rather than
+  the per-assertion plug that telescopes.  It is the post-cutover balance
+  function evaluated today, so what it measures is what plan step X-f3c-5's
+  flip will leave unexplained.  See :mod:`._outstanding`.
 * The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
   owed magnitude at a list of FORWARD calendar dates in one resolution pass --
   the shape a long-horizon liability band needs, which neither the period-keyed
@@ -249,6 +256,11 @@ from ._loan_interest import (
     loan_interest_paid_in_year,
     loan_principal_paid_in_year,
 )
+from ._outstanding import (
+    BooksSpan,
+    CashOutstandingDifference,
+    cash_outstanding_difference,
+)
 from ._positions import (
     loan_payoff_date,
     loan_required_extra,
@@ -295,9 +307,11 @@ from ._secured_debt import (
 __all__ = [
     "ZERO",
     "BalanceContext",
+    "BooksSpan",
     "CashAnchorHistory",
     "CashAnchorRow",
     "CashOpeningRow",
+    "CashOutstandingDifference",
     "CashDayFacts",
     "CashDaySeries",
     "GridBalanceView",
@@ -318,6 +332,7 @@ __all__ = [
     "cash_balance_map",
     "cash_daily_balance_series",
     "cash_daily_facts_series",
+    "cash_outstanding_difference",
     "confirmed_view",
     "debt_schedule_rows",
     "empty_grid_view",
