@@ -113,17 +113,22 @@ class GenerationSchedule:
     reads a stored ordinal or a stored end at all.  What replaced the check is
     the absence of the thing it reconciled.
 
-    One state it refused is therefore no longer refused ANYWHERE, and it is
-    worth naming: an owner with a scrambled stored ``period_index`` AND no
-    ``budget.pay_schedule`` row.  ``pay_schedule_service.resolve_cadence``'s
-    legacy fallback finds "the last period" with ``ORDER BY period_index
-    DESC``, so a scrambled ordinal gives it the wrong row's length and the
-    calendar's projected last end is wrong -- which this class used to make
-    loud and now does not.  Both halves are legacy-only (registration writes
-    the schedule row since ``balance:X-ad-a``; the writer derives the ordinal
-    since ``pay_calendar:C3-b``), and the fallback is ledger rows **P8** and
-    **P70**, owned by plan step **C4**, which deletes it with the column it
-    reads.
+    One state it refused went unrefused anywhere for a span, and it is worth
+    naming because plan step **C4-b-2** is what ended it: an owner with a
+    scrambled stored ``period_index`` AND no ``budget.pay_schedule`` row.
+    ``pay_schedule_service.resolve_cadence``'s legacy fallback found "the last
+    period" with ``ORDER BY period_index DESC``, so a scrambled ordinal gave it
+    the wrong row's length and the calendar's projected last end was wrong --
+    which this class used to make loud and then did not.  Both halves were
+    legacy-only (registration writes the schedule row since
+    ``balance:X-ad-a``; the writer derives the ordinal since
+    ``pay_calendar:C3-b``), and the second half is now unstorable:
+    ``fk_pay_periods_schedule`` requires the row, so no cadence is read off an
+    ordinal any more.  That closes ledger row **P8**, and it retires one of
+    row **P70**'s query-position reads with it -- the fallback's own
+    ``ORDER BY period_index DESC``.  What is left of P70 is the other reads of
+    the two derived columns, which belong to ``C4-c``, the leaf that drops
+    them.
 
     Measured direction of the R4b-1 change, over every contiguous window of the
     production schedule -- 86,986 ``(rule, window)`` pairs: the whole-schedule

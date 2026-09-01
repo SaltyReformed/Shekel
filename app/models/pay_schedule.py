@@ -87,6 +87,17 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
     ``pay_schedule_service.upsert_schedule`` whenever the schedule's
     cadence is established (first generation) or changed (regenerate).
 
+    **Since plan step C4-b-2 it is also a foreign-key TARGET**, and that is
+    what ``uq_pay_schedule_user`` makes legal:
+    ``budget.pay_periods.user_id`` references ``user_id`` here through
+    ``fk_pay_periods_schedule``, ``ON DELETE RESTRICT``.  So a row cannot be
+    deleted while its owner holds a payday, and an owner cannot hold a payday
+    without one -- the invariant ledger rows **P8** and **P35** existed for,
+    moved out of ``resolve_schedule``'s inferring arm and into the schema.
+    A row WITHOUT paydays stays ordinary: ``pay_period_admin.reset_pay_periods``
+    deletes every period and keeps this row, and that is the state it passes
+    through.
+
     Columns:
 
       ``cadence_days`` -- days between consecutive paydays (e.g. 14 for

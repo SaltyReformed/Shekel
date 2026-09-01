@@ -71,6 +71,17 @@ _M_RF16 = _load_migration(
     "f2b7c40d918e_drop_salary_profiles_pay_periods_per_year.py"
 )
 
+#: Plan step ``pay_calendar:C4-b-2``, 84 revisions ABOVE ``f2b7c40d918e``.
+#:
+#: It adds ``fk_pay_periods_schedule``, which makes "paydays with no
+#: ``budget.pay_schedule`` row" unstorable -- the exact input R-F16's own
+#: downgrade backfill exists to handle.  Loaded here so
+#: :func:`without_the_schedule_key` can put the schema where R-F16's downgrade
+#: ACTUALLY runs, rather than where a shortcut would run it.
+_M_C4B2 = _load_migration(
+    "f1c8b3d5e920_an_owner_with_paydays_has_a_cadence.py"
+)
+
 
 def _column_present(session) -> bool:
     """Whether ``salary_profiles.pay_periods_per_year`` exists right now."""
@@ -110,6 +121,36 @@ def restore_dropped_column(db):
             "DROP COLUMN IF EXISTS pay_periods_per_year"
         ))
         db.session.commit()
+
+
+@pytest.fixture
+def without_the_schedule_key(db):
+    """Run the schema DOWN to where R-F16's downgrade actually meets it.
+
+    Plan step ``pay_calendar:C4-b-2`` added ``fk_pay_periods_schedule``, so an
+    owner with paydays and no ``budget.pay_schedule`` row -- the one input
+    R-F16's downgrade backfill has a branch for -- is unstorable at head.  That
+    does NOT make the branch dead: Alembic downgrades run newest-first, so by
+    the time R-F16's own ``downgrade()`` executes, C4-b-2's has already dropped
+    the key, and the state is representable again.
+
+    **It runs C4-b-2's own ``downgrade()`` rather than hand-issuing an
+    ``ALTER TABLE``**, and that is the load-bearing part: a hand-written DROP
+    would be a second statement of what that revision does and could drift from
+    it in silence, where calling the shipped callable turns "the reverse chain
+    order is safe" from an argument in a docstring into something this suite
+    measures.
+
+    **It restores nothing, deliberately.**  The ``db`` fixture drops and
+    re-clones the per-worker database for EVERY test (``setup_drop_db`` ->
+    ``setup_clone_template``), so a schema left short of head cannot reach the
+    next test.  The round trip is worth asserting on its own terms rather than
+    hiding in a teardown, and it is:
+    ``tests/test_models/test_c4b2_pay_period_schedule_key.py`` runs
+    ``downgrade`` then ``upgrade`` and checks the key comes back.
+    """
+    _run(_M_C4B2.downgrade, db.session)
+    yield
 
 
 def _profile(db, seed_user, name="R-F16"):
@@ -182,12 +223,13 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
 
     def test_an_owner_with_periods_but_no_schedule_row_is_reached(
         self, app, db, seed_user, restore_dropped_column,
+        without_the_schedule_key,
     ):
         """The backfill INFERS a cadence from the last period, as the app does.
 
         Input: a legacy owner with 7-day pay periods and no
-        ``budget.pay_schedule`` row -- the state
-        :func:`app.services.pay_schedule_service.resolve_cadence` handles by
+        ``budget.pay_schedule`` row -- the state the pre-C4-b-2
+        :func:`app.services.pay_schedule_service.resolve_cadence` handled by
         reading the last period's stored length.
         Expected: 52, not the column default.
         Why: joining ``budget.pay_schedule`` alone would silently give this
@@ -195,6 +237,17 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
         a downgrade that HALVES their modelled paycheck, which is the exact
         failure the restore exists to prevent. R-F16's adversarial review
         caught the join.
+
+        **``without_the_schedule_key`` is what makes this input constructible,
+        and it is not a workaround** (plan step ``pay_calendar:C4-b-2``).  That
+        step forbids this owner at HEAD, and R-F16's backfill still has to
+        answer for them -- because a database sitting below C4-b-2 can hold
+        one, and because the downgrade chain drops the key 84 revisions before
+        this ``downgrade()`` runs.  The fixture reproduces that order using
+        C4-b-2's own callable, so this case now grades the reverse chain order
+        as well as the backfill.  The alternative -- deleting the case -- would
+        have retired a branch that is still live for exactly the databases a
+        downgrade exists for.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -233,11 +286,17 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
+            # PERIODS FIRST, then the schedule row.  Since plan step
+            # ``pay_calendar:C4-b-2`` that order is the only legal one:
+            # ``fk_pay_periods_schedule`` is ``ON DELETE RESTRICT``, so
+            # removing the parent under live children is refused.  It is also
+            # the order this teardown always meant -- the owner being built is
+            # somebody who has never generated a schedule, and they lose both.
             db.session.execute(
                 text("DELETE FROM budget.pay_periods WHERE user_id = :uid"),
                 {"uid": user_id},
             )
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
             profile = _profile(db, seed_user, name="No schedule")
             db.session.commit()
 

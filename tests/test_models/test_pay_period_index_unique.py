@@ -230,7 +230,7 @@ class TestMigrationPreFlightGuard:
     """
 
     def test_upgrade_raises_when_duplicate_indices_present(
-        self, app, db, bare_user,
+        self, app, db, bare_user_with_cadence,
     ):
         """Pre-flight raises RuntimeError and does NOT create the constraint.
 
@@ -242,7 +242,13 @@ class TestMigrationPreFlightGuard:
         duplicates) is restored in ``finally`` so later tests in this
         worker DB are unaffected.
         """
-        user_id = bare_user["user"].id
+        # ``bare_user_with_cadence`` rather than ``bare_user``: since plan step
+        # ``pay_calendar:C4-b-2``, ``fk_pay_periods_schedule`` refuses a pay
+        # period whose owner holds no ``budget.pay_schedule`` row.  The PERIODS
+        # below stay hand-built -- a duplicate ``period_index`` is exactly what
+        # no door can produce and is this case's whole subject -- and the
+        # fixture supplies the one part of the owner that is not corrupt.
+        user_id = bare_user_with_cadence["user"].id
         with app.app_context():
             # 1. Drop the constraint so duplicate indices can be inserted.
             db.session.execute(text(

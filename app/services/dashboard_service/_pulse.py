@@ -127,13 +127,17 @@ def compute_pulse_section(
     # no grid account, and no period containing today.
     #
     # **The account is checked FIRST and that ORDER is load-bearing.**  Reading
-    # the owner's reported window derives their calendar, which RAISES
-    # ``PayCalendarError`` for an owner whose paydays cannot define one (ledger
-    # row **P35**, a legacy period stored before ``budget.pay_schedule``
-    # existed).  A no-account owner reached no calendar before this step and
-    # must not start reaching one now, so the cheap structural refusal comes
-    # before the derivation -- the opposite of ``/grid``, which derives before
-    # it looks at an account and which P35 records as WIDENED for exactly that.
+    # the owner's reported window derives their calendar, and a no-account
+    # owner reached no calendar before this step; a producer that starts
+    # deriving one for them is how a cheap structural refusal turns into
+    # whatever the derivation decides.  The failure that made the order
+    # URGENT is closed -- ledger row **P35**, a legacy period whose stored span
+    # ``resolve_cadence`` read back as a cadence outside 1..365, which plan
+    # step C4-b-2 made unstorable -- but the ORDER stays, because it is about
+    # not asking a question this owner has no answer for, and that is true
+    # whatever the derivation happens to refuse today.  It is the opposite of
+    # ``/grid``, which derives before it looks at an account and which P35
+    # recorded as WIDENED for exactly that.
     if section is None:
         return None
 

@@ -518,11 +518,14 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
 
         Raises:
             PayCalendarError: The owner has paydays that cannot define a
-                calendar -- in practice a cadence outside 1..365, which
-                ``resolve_cadence``'s legacy fallback can infer for an owner
-                with no ``budget.pay_schedule`` row (plan findings **P8** /
-                **P35**, owned by ``C4``, which deletes the fallback with the
-                column it reads).  Loud rather than defaulted: every projected
+                calendar.  **The route that reached this from a page is
+                closed** (plan step C4-b-2, ledger rows **P8** / **P35**): it
+                needed a cadence outside 1..365, which ``resolve_cadence``'s
+                fallback could infer for an owner with no
+                ``budget.pay_schedule`` row, and ``fk_pay_periods_schedule``
+                makes that owner unstorable.  Declared still, because
+                ``derive_periods`` refuses payday sets it cannot derive from.
+                Loud rather than defaulted: every projected
                 horizon is a function of the cadence, so an invented one
                 reports a whole schedule the owner never chose.
         """

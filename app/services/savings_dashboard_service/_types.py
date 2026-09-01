@@ -84,7 +84,8 @@ class _DashboardCoreData:
         (pay-calendar plan step C2-f2d-3), and deriving it in the loader made
         :func:`~.._orchestrator.compute_debt_summary` RAISE
         ``PayCalendarError`` for a legacy owner -- a 546-day stored period and
-        no ``budget.pay_schedule`` row -- where it had answered ``None``.  That
+        no ``budget.pay_schedule`` row, a pairing plan step C4-b-2 has since
+        made unstorable -- where it had answered ``None``.  That
         owner has no loans, so the producer returns before any period is read:
         exactly the "a page must not fail for a fact it never uses" defect the
         pay cadence made at plan step R7a-2a, on the same bundle, through the

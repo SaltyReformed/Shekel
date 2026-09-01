@@ -6857,8 +6857,8 @@ def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
     **A test that builds a pay period by hand builds a row no owner can
     have**, and that is not a style point.  ``end_date`` and ``period_index``
     are DERIVED from the payday set; a hand-built row sets them to whatever
-    the author typed, and it writes no ``budget.pay_schedule`` row, so
-    ``pay_schedule_service.resolve_schedule`` falls back to INFERRING the
+    the author typed, and it wrote no ``budget.pay_schedule`` row, so
+    ``pay_schedule_service.resolve_schedule`` fell back to INFERRING the
     cadence from that same hand-typed ``end_date``.  Eight cases in
     ``test_recurrence_engine.TestDueDateGeneration`` passed only through that
     loop: they wrote a 28-day February period, the fallback read 28 back as
@@ -6866,6 +6866,26 @@ def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
     Give the owner a real cadence and the same rows derive a 14-day span and
     generate nothing.  Ruling **P54**'s shape: one shared helper here, never a
     ``for_test`` door on the real API.
+
+    **The LOOP is now unbuildable and the reason to come here is stronger for
+    it** (plan step ``pay_calendar:C4-b-2``).  ``fk_pay_periods_schedule``
+    refuses a pay period whose owner has no ``budget.pay_schedule`` row, so a
+    hand-built row for a schedule-less owner is an ``IntegrityError`` rather
+    than a silently self-confirming assertion.
+
+    **What that does NOT do is make every remaining hand-built site wrong, and
+    this paragraph states a PREDICATE rather than a list** -- an adversarial
+    review measured a first draft's list as a set defined by subtraction,
+    naming two categories where there are at least three.  The predicate: a
+    hand-built ``PayPeriod(...)`` is legitimate exactly when the row it needs
+    is one no application door can write -- a corrupt ordinal, a gap, an
+    overlapping span (take ``bare_user_with_cadence``) -- or when nothing
+    reaches a database at all.  A site that merely finds it convenient is one
+    this helper should have.  ``grep -rn 'PayPeriod($' tests/`` answered 38
+    across 19 files on 2026-09-01, and the third category the draft missed is
+    real: rows hand-built for an owner who already carries a schedule row from
+    a fixture, which the key admits and which nothing here classifies.  Re-run
+    the grep; do not trust the number.
 
     Args:
         user_id: The owning user's id.

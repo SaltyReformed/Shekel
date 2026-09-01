@@ -48,7 +48,21 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "b8e4c1f7a903"
-down_revision = "e2d7a94f61c3"
+# **RE-PARENTED at the origin/dev merge, not at authoring time** (2026-09-01).
+# It was authored against ``e2d7a94f61c3``, which was ``dev``'s single head
+# then; ``pay_calendar``'s ``f1c8b3d5e920`` declared the SAME parent, so the
+# two were siblings and a tree holding both had TWO alembic heads and a
+# refused ``flask db upgrade`` -- while git merged them clean, because no gate
+# in this project reads alembic.
+#
+# **WHOEVER MERGES SECOND RE-PARENTS, as the last edit before their PR.**  A
+# ``down_revision`` may only name a revision present in the SAME tree, so
+# pointing at ``f1c8b3d5e920`` any earlier would have broken this branch's own
+# ``flask db upgrade``, its test-template build and its CI while the other
+# branch stayed green.  ``pay_calendar`` merged first (PR #188), so the
+# re-parent is this branch's.  The precedent is ``c9f4b1e78d02``, which
+# carries the same note for the same reason.
+down_revision = "f1c8b3d5e920"
 branch_labels = None
 depends_on = None
 
