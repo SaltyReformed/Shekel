@@ -42,17 +42,18 @@ from .test_reads_lineless import _planted_lineless
 
 from ._builders import (
     a_bank_line,
-    filed_acts,
-    filed_by,
-    a_purchase,
     a_bars,
+    a_purchase,
     a_rule,
+    a_scope,
     a_submission,
     a_transaction,
-    an_import,
-    a_scope,
+    an_answers,
     an_envelope,
+    an_import,
     an_unexplained_outflow,
+    filed_acts,
+    filed_by,
 )
 
 #: What SECU files a card payment under, which ruling **R-GJ** reads: a
@@ -401,7 +402,7 @@ class TestASettledTabNeverPromisesMoreThanItRenders:
             ),
             a_scope(seed_user),
             MintedEnvelopes.none_yet(),
-            a_bars(seed_user),
+            an_answers(seed_user),
             applied_by_rule=by_rule,
         )
 
@@ -489,7 +490,7 @@ class TestASettledActSaysWhichVerbItWas:
             PurchaseCreation(line_id=line.id, transaction_id=envelope.id),
             a_scope(seed_user),
             MintedEnvelopes.none_yet(),
-            a_bars(seed_user),
+            an_answers(seed_user),
             applied_by_rule=False,
         )
         db.session.commit()
@@ -1132,15 +1133,21 @@ class TestAnANSWEREDInflowIsPreFilledByItsRule:
         assert category.display_name in said
         assert card.offers_ok is True
 
-    def test_a_merchant_CREDIT_still_asks_and_says_why(
+    def test_a_merchant_CREDIT_is_PRE_FILLED_as_a_REFUND(
         self, app, db, seed_user,
     ):
-        """A refund is not income, and the card must not offer it as one.
+        """A refund is not income, and the card offers it as the purchase it is.
 
-        The merchant has a SPENDING answer, so R-HT(a) makes this credit its
-        INVERSE -- a negative purchase, which ``bank_import:X-gj-2b`` builds.
-        Until then the card asks, and the panel says why rather than leaving
-        the owner to wonder whether their rule ran.
+        The merchant has a SPENDING answer, so ruling **R-HT(a)** makes this
+        credit its INVERSE -- a negative purchase back into the same container.
+        **This case asserted the card ASKING until plan step
+        ``bank_import:X-gj-2b-2``**, because the act did not exist; the card
+        said *Choose* and the panel explained why nothing was filed.
+
+        It now takes the PURCHASE verb, which is the visible half of the
+        routing this step corrected: what a line becomes is decided by the
+        owner's answer and not by the line's sign, so a claimed credit reaches
+        the same card an outflow from that merchant reaches.
         """
         envelope = an_envelope(seed_user)
         a_rule(seed_user, "Amazon", template_id=envelope.template_id)
@@ -1151,9 +1158,10 @@ class TestAnANSWEREDInflowIsPreFilledByItsRule:
 
         assert len(cards) == 1
         card = cards[0]
-        assert card.sentence[0].text == "Choose"
-        assert card.suggested is None
-        assert any("refund" in note for note in card.panel.notes)
+        # The PURCHASE verb, not the deposit's *Choose what this is*.
+        assert card.sentence[0].text == "Add"
+        # And the rule names WHERE, so the owner is not asked to pick.
+        assert card.suggested is not None
 
     def test_an_ALWAYS_ASK_deposit_is_not_pre_filled(
         self, app, db, seed_user,

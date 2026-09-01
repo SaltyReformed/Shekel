@@ -69,7 +69,6 @@ from app.services.statement_match._release import (  # pylint: disable=protected
 )
 
 from ._builders import (
-    accepted_acts,
     a_bank_line,
     a_bars,
     a_later_period,
@@ -77,6 +76,8 @@ from ._builders import (
     a_scope,
     a_submission,
     a_transaction,
+    accepted_acts,
+    an_answers,
     an_import,
 )
 
@@ -100,7 +101,7 @@ def _record(seed_user, line, minted=None, **destination):
         PurchaseCreation(line_id=line.id, **destination),
         a_scope(seed_user),
         minted if minted is not None else _create.MintedEnvelopes.none_yet(),
-        a_bars(seed_user),
+        an_answers(seed_user),
         applied_by_rule=False,
     )
 

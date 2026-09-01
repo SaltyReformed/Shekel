@@ -532,22 +532,20 @@ def inflow_placement_for(
         said *never a purchase*.  None of the three is this pass withholding
         anything, so none is reported as one.
 
-    **A merchant with a SPENDING answer resolves to a REASON here, not to
-    nothing**, and that is the one asymmetry with the outflow side.  Ruling
-    **R-HT(a)** says a credit from such a merchant is a refund -- a NEGATIVE
-    purchase back into the container that answer names.
+    **A merchant with a SPENDING answer NEVER REACHES HERE**, and that arm's
+    removal is plan step ``bank_import:X-gj-2b-2``.  It used to return an
+    UNRESOLVED placement whose sentence said the refund act was not built.  It
+    now IS built: such a line is a REFUND -- a negative purchase back into the
+    container that answer names -- so :func:`~._rules.pipeline_for` routes it
+    to :func:`placements_for` and the purchase door, and this function is
+    reached only by the lines the income door owns.
 
-    **That purchase is now WRITABLE and this arm still does not file it, which
-    is a deliberate gap rather than an oversight.**  Plan step
-    ``bank_import:X-gj-2b-1`` relaxed
-    ``ck_transaction_entries_positive_amount`` to ``amount <> 0``, so the row a
-    refund needs can exist; what is not built is the RESOLUTION that names its
-    destination -- a refund files against the pass's offer set and yields a
-    ``PurchaseCreation``, where this function yields an ``IncomeCreation``
-    against a category.  Plan step ``bank_import:X-gj-2b-2`` is that work.
-    Until it ships, reporting is what keeps the owner from reading *your rules
-    did nothing* about a merchant they have answered for; substituting income
-    for it would be the misfiling ruling **R-HX** measured and refused.
+    That is what makes this function's return type honest again: it names a
+    CATEGORY and yields an ``IncomeCreation``, and there is no longer a state
+    in which it describes an act it cannot produce.  The refusal that keeps it
+    true is :func:`~._income.record_income_from_line`'s, which turns a
+    container-answer line away at the door for the same reason the screen does
+    not offer one.
     """
     if merchant_id is None:
         return None
@@ -556,16 +554,6 @@ def inflow_placement_for(
         return None
     if rule.answer is RuleAnswer.INCOME_CATEGORY:
         return _income_placement(rule, view)
-    if rule.answer in (RuleAnswer.TEMPLATE, RuleAnswer.NEW_ENVELOPE):
-        return InflowPlacement(
-            merchant=rule.merchant,
-            unresolved_reason=(
-                f"Money came IN from {rule.merchant}, and you have said where "
-                f"that merchant's SPENDING goes -- so this is a refund rather "
-                f"than income.  Recording a refund back into that budget line "
-                f"is not built yet, so nothing was filed."
-            ),
-        )
     return None
 
 

@@ -84,7 +84,7 @@ from app.utils.log_events import (
 )
 
 from ._accept import MatchContent, record_match
-from ._bars import CreationBars, reject_barred_line
+from ._bars import MerchantAnswers, reject_barred_line
 from ._container import (
     MintedEnvelopes,
     close_container,
@@ -104,6 +104,7 @@ from ._creations import (
     PurchaseCreation,
 )
 from ._offers import CandidateRow, RowKind, merchant_label
+from ._rules import LinePipeline, pipeline_for
 from ._scope import ReviewScope
 
 _logger = logging.getLogger(__name__)
@@ -113,6 +114,7 @@ def _load_line(
     creation: PurchaseCreation,
     matched: MatchedSubjects,
     scope: ReviewScope,
+    answers: MerchantAnswers,
 ) -> BankStatementLine:
     """Return the submitted line, refusing one this door may not record.
 
@@ -158,6 +160,9 @@ def _load_line(
             act.
         scope: The pass, which is the ONE statement of which account's lines
             may be reached.
+        answers: What the owner has said about this account's merchants
+            (:class:`~._bars.MerchantAnswers`), which is what decides whether
+            an INFLOW is a refund this door may file -- see the refusal below.
 
     Returns:
         The line.
@@ -168,11 +173,26 @@ def _load_line(
     line = load_lines(
         scope.account_id, frozenset({creation.line_id}), matched,
     )[0]
-    if line.amount >= 0:
+    # **An inflow is a purchase only where the owner's own rule claims it**
+    # (plan step ``bank_import:X-gj-2b-2``, ruling **R-HT(a)**).  A merchant
+    # credit from a merchant whose SPENDING the owner has placed is a refund
+    # back into that same container; a deposit nobody has claimed is not, and
+    # filing one against a budget line would be the guess ruling **R-HX**
+    # refused.  Asked through :func:`~._rules.pipeline_for`, which is the SAME
+    # function :func:`~._leftovers.leftovers` routes by -- so this door refuses
+    # exactly the lines the screen renders no create control for, and the two
+    # cannot come to disagree.
+    rule = answers.view.rules.get(line.merchant_id)
+    pipeline = pipeline_for(
+        is_inflow=line.amount > 0,
+        answer=rule.answer if rule is not None else None,
+    )
+    if pipeline is not LinePipeline.PURCHASE:
         raise ValidationError(
-            "Only money LEAVING the account can be recorded as a purchase, "
-            "and that line is money coming in.  Record it as income, or match "
-            "it to the row it belongs to, instead.  Nothing was changed."
+            "That line is money coming IN, and you have not said where this "
+            "merchant's spending goes -- so it is not a refund this app can "
+            "file. Record it as income, or match it to the row it belongs to, "
+            "instead. Nothing was changed."
         )
     return line
 
@@ -365,7 +385,7 @@ def create_purchase_from_line(
     creation: PurchaseCreation,
     scope: ReviewScope,
     minted: MintedEnvelopes,
-    bars: CreationBars,
+    answers: MerchantAnswers,
     *,
     applied_by_rule: bool,
 ) -> CreatedPurchase:
@@ -405,6 +425,15 @@ def create_purchase_from_line(
         scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
             **Required rather than defaulted**, for the reason
             :func:`~._accept.accept_match`'s is.
+        answers: What the owner has said about this account's merchants
+            (:class:`~._bars.MerchantAnswers`) -- the stated rules and ruling
+            **R-GJ**'s bars, derived ONCE by the pass and read here rather than
+            re-derived, which is the rule :class:`MintedEnvelopes` states
+            beside it.  It replaced a bare ``bars`` argument at plan step
+            ``bank_import:X-gj-2b-2``, when this door also needed the ANSWERS
+            to tell a refund from a deposit: the two come from one read of
+            ``merchant_rules`` and passing them separately let a caller supply
+            them from two instants.
         minted: What this REQUEST has already created
             (:class:`MintedEnvelopes`), so one press mints one envelope per
             answer per pay period rather than one per line (finding
@@ -412,15 +441,6 @@ def create_purchase_from_line(
             *scope* is**: a default would silently mean *converge with
             nothing*, and the caller that forgot it would mint the fragments
             this parameter exists to stop.
-        bars: Which of this account's merchants may not become purchases at
-            all, and why (:class:`~._bars.CreationBars`, ruling **R-GJ**).
-            **Required rather than defaulted for a sharper version of the same
-            reason**: a default would mean *nothing is barred*, so the one
-            caller that forgot it would re-open the exact door this parameter
-            closes -- the one a YTD pass took `$7,412.94` through.  Derived
-            once per REQUEST by :func:`~._batch.apply_reviewed`, beside
-            *minted*, because nothing inside a batch can restate a rule and
-            re-reading it per act would be 90 queries for one statement.
         applied_by_rule: Whether a STANDING RULE performed this act rather than
             a person ticking it (ruling **R-GT**, plan step
             ``bank_import:X-ge``).  **Keyword-only and with no default**, for
@@ -450,12 +470,12 @@ def create_purchase_from_line(
     # the line refusal, the destination refusal and the double-count guard
     # inside ``record_match`` all narrow with it, so they cannot disagree.
     matched = matched_subjects(scope.account_id)
-    line = _load_line(creation, matched, scope)
+    line = _load_line(creation, matched, scope, answers)
     # **Before anything is staged**, and before the destination is even looked
     # at: for a barred line there is no destination that would make it legal,
     # so resolving one first would answer a request that may not be made with a
     # sentence about the answer it gave (ruling **R-GJ**).
-    reject_barred_line(line, bars)
+    reject_barred_line(line, answers.bars)
     # **Before the destination is resolved and before anything is staged**
     # (plan step **balance:X-f3c-2b-2b**, finding **N-383**).  A line the
     # account's books cannot hold is money already inside its opening equity,

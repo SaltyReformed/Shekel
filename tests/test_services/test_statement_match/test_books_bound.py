@@ -63,20 +63,21 @@ from app.services.cash_ledger import (
     earliest_recorded_movement_day,
 )
 from app.services.statement_match import (
-    CreationBars,
-    IncomeCreation,
-    MintedEnvelopes,
-    NewEnvelope,
-    PurchaseCreation,
-    RuleView,
-    Tab,
     accept_match,
     awaiting_review_count,
     create_purchase_from_line,
+    CreationBars,
     file_new_swipes,
+    IncomeCreation,
+    MerchantAnswers,
+    MintedEnvelopes,
+    NewEnvelope,
+    PurchaseCreation,
     reconcile_page,
     record_income_from_line,
     review_set,
+    RuleView,
+    Tab,
 )
 
 from ._builders import (
@@ -584,9 +585,7 @@ class TestTheThreeDoorsRefuseIt:
                 ),
                 scope,
                 MintedEnvelopes.none_yet(),
-                CreationBars.build(
-                    seed_user["user"].id, seed_user["account"].id,
-                ),
+                MerchantAnswers.build(seed_user["user"].id, seed_user["account"].id,),
                 applied_by_rule=False,
             )
 
@@ -636,7 +635,7 @@ class TestTheThreeDoorsRefuseIt:
             ),
             a_scope(seed_user, account=account),
             MintedEnvelopes.none_yet(),
-            CreationBars.build(seed_user["user"].id, account.id),
+            MerchantAnswers.build(seed_user["user"].id, account.id),
             applied_by_rule=False,
         )
 

@@ -410,52 +410,64 @@ class TestAnActThatWouldTouchAHandMadeRowKeepsItsTick:
                 Decimal("10.89"), Decimal("130.11"),
             ]
 
-    def test_an_INFLOW_never_becomes_a_PURCHASE(self, app, db, seed_user):
-        """A purchase is an expense, so money coming IN can never be one.
+    def test_a_CREDIT_and_a_SWIPE_from_ONE_merchant_file_with_opposite_signs(
+        self, app, db, seed_user,
+    ):
+        """One rule, one pass, both directions -- and the signs are mirrors.
 
-        **The money property is unchanged by ruling R-HT(a) and is what this
-        still asserts**: a credit from a merchant whose rule names a SPENDING
-        container does not become a purchase in it.  The refusal is
-        :func:`~._create._load_line`'s and it is reached through the reader
-        rather than the door -- an inflow is not a creatable line at all, so
-        the outflow rule never sees it.
+        **This case asserted that an inflow NEVER becomes a purchase until plan
+        step ``bank_import:X-gj-2b-2``**, which was true only while
+        ``ck_transaction_entries_positive_amount`` forbade a negative one.  A
+        credit from a merchant whose rule names a SPENDING container is that
+        rule's INVERSE -- a refund back into the same container (ruling
+        **R-HT(a)**) -- so the same answer now places both directions.
 
-        **What R-HT(a) changed is that the pass now SAYS so.**  This case
-        asserted ``withheld == []`` until plan step ``bank_import:X-gj-2a``,
-        which was the pass saying nothing at all about a line the owner's own
-        rule reaches.  Such a credit is a REFUND -- the merchant rule's inverse
-        -- and filing it is ``bank_import:X-gj-2b``'s, so 2a reports it.
-        Reporting rather than silence is the same rule
-        :class:`~._filing.WithheldLine` exists for: *a bound that says nothing
-        about what it dropped reads as a clean sweep*.
+        **The strongest form of the sign property available**, because both
+        lines take the identical path: same merchant, same rule, same
+        container, same door, same pass.  Nothing but the bank's own sign
+        differs, so a sign branch anywhere in that path would show up as an
+        asymmetry here.
         """
         with app.app_context():
             envelope = _groceries(seed_user)
             a_rule(seed_user, MERCHANT, template_id=envelope.template_id)
             statement = an_import(seed_user)
-            start = seed_user["bootstrap_period"].start_date
-            _swipe(seed_user, statement, amount="42.00", posted_on=start)
+            # **Both dated AFTER the account's opening assertion**, which is
+            # load-bearing for the balance assertion below.  A movement dated
+            # on the day a balance was asserted for is already inside it, so
+            # the posted self-heal corrects it back out -- for a refund and a
+            # swipe alike.  A first draft put the credit on the period's start
+            # date and measured the refund's `$42.00` vanishing, which is the
+            # ASSERTION doing its job rather than a sign defect.
+            start_day = seed_user["bootstrap_period"].start_date
+            _swipe(
+                seed_user, statement, amount="42.00",
+                posted_on=start_day + timedelta(days=1),
+            )
             _swipe(
                 seed_user, statement, amount="-10.89",
-                posted_on=start + timedelta(days=1),
+                posted_on=start_day + timedelta(days=2),
             )
             db.session.flush()
+            before = _balance_on(seed_user, start_day + timedelta(days=5))
 
             filing = _file(seed_user, statement)
             db.session.flush()
 
-            story = _story(filing)
-
-            assert story["filed"] == 1
-            assert story["refused"] == []
-            # The pass NAMES the credit rather than passing over it, and says
-            # what it is: a refund, not income.
-            assert len(story["withheld"]) == 1
-            assert "refund" in story["withheld"][0]
-            # THE MONEY: the `+$42.00` did not become a purchase.
-            assert [p.amount for p in _purchases_in(envelope)] == [
-                Decimal("10.89"),
+            assert _story(filing) == {
+                "filed": 2, "withheld": [], "refused": [],
+            }
+            # The refund is NEGATIVE and the swipe is POSITIVE -- the bank's
+            # own signs, inverted once by the one expression that converts a
+            # line into a purchase.
+            assert sorted(p.amount for p in _purchases_in(envelope)) == [
+                Decimal("-42.00"), Decimal("10.89"),
             ]
+            # THE MONEY nets the way the statement does: `$42.00` back in,
+            # `$10.89` out.
+            assert _balance_on(seed_user, start_day + timedelta(days=5)) == (
+                before + Decimal("42.00") - Decimal("10.89")
+            )
 
 
 class TestAnAnswerlessMerchantIsLeftForTheOwner:
@@ -1653,60 +1665,81 @@ class TestARuleWithholdsADepositThePassDidNotFinishLookingAt:
             assert _balance_on(seed_user, later.start_date) == before
 
 
-class TestAMerchantCreditIsReportedWhicheverSpendingAnswerItHas:
-    """Ruling **R-HT(a)**: a credit is the merchant rule's INVERSE.
+class TestAMerchantCreditIsFILEDWhicheverSpendingAnswerItHas:
+    """Ruling **R-HT(a)** and **R-II**: a credit is the merchant rule's INVERSE.
 
-    **Both container answers, because only one of them was graded** (mutation
-    review 2026-08-31).  ``inflow_placement_for`` reports a refund for
-    ``rule.answer in (TEMPLATE, NEW_ENVELOPE)``, and every case staged a
+    A merchant credit from a merchant whose SPENDING the owner has placed is a
+    REFUND -- a NEGATIVE purchase back into that same container -- rather than
+    income.  Plan step ``bank_import:X-gj-2b-2`` is what files it; until then
+    this class asserted the same two arms REPORTING and filing nothing.
+
+    **Both container answers, because only one of them was ever graded**
+    (mutation review 2026-08-31).  The refund arm fires for
+    ``rule.answer in (TEMPLATE, NEW_ENVELOPE)`` and every case staged a
     TEMPLATE -- so a mutation giving NEW_ENVELOPE an income arm survived 959
     tests and auto-filed a credit as income, which is exactly the misfiling
-    ruling **R-HX** refused.
+    ruling **R-HX** refused.  **The stakes rose with this step**: that arm now
+    MOVES MONEY where it previously only chose a sentence.
 
     **The untested arm was the developer's own biggest case.**  Measured on a
     clone 2026-08-31: his `Amazon` rule is a NEW ENVELOPE answer and his
-    `Walmart` rule is a TEMPLATE one, so of the three merchant credits in his
-    inbox the largest -- `$28.29`, and `$86.67` across the whole span -- takes
-    the arm nothing exercised.
+    `Walmart` rule is a TEMPLATE one, so of the merchant credits in his inbox
+    the largest -- `$28.29`, and `$86.67` across the whole span -- takes the
+    arm nothing exercised.
     """
 
-    def _credit(self, seed_user, statement, merchant):
+    def _credit(self, seed_user, statement, merchant, *, posted_on=None):
         """Stage one recorded CREDIT from *merchant*."""
         return a_bank_line(
             seed_user, statement, amount="42.00", merchant=merchant,
             description=f"POINT OF SALE CREDIT L340 ({merchant})",
-            posted_on=(
+            posted_on=posted_on or (
                 seed_user["bootstrap_period"].start_date + timedelta(days=3)
             ),
         )
 
-    def test_a_NEW_ENVELOPE_answer_reports_the_refund_and_files_NOTHING(
+    def test_a_NEW_ENVELOPE_answer_files_the_refund_into_the_minted_envelope(
         self, app, db, seed_user,
     ):
-        """The arm the developer's Amazon rule takes."""
+        """The arm the developer's Amazon rule takes -- and the money moves.
+
+        Asserts the SIGN and the BALANCE, not merely that something was filed:
+        a refund booked as a POSITIVE purchase would still report
+        ``filed == 1`` while taking money the bank had just given back.
+        """
         with app.app_context():
             a_rule(
                 seed_user, "Amazon", envelope_name="Amazon",
                 category_id=seed_user["categories"]["Groceries"].id,
             )
             statement = an_import(seed_user)
-            self._credit(seed_user, statement, "Amazon")
+            day = seed_user["bootstrap_period"].start_date + timedelta(days=3)
+            self._credit(seed_user, statement, "Amazon", posted_on=day)
             db.session.flush()
-            day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
-            before = _balance_on(seed_user, day)
+            before = _balance_on(seed_user, day + timedelta(days=2))
 
             filing = _file(seed_user, statement)
             db.session.flush()
 
-            story = _story(filing)
-            assert story["filed"] == 0, story
-            assert len(story["withheld"]) == 1
-            assert "refund" in story["withheld"][0]
-            # THE MONEY: no income row, so the credit is not counted as
-            # earnings -- which is the misfiling R-HX measured and refused.
-            assert _balance_on(seed_user, day) == before
+            assert _story(filing) == {
+                "filed": 1, "withheld": [], "refused": [],
+            }
+            minted = (
+                db.session.query(Transaction)
+                .filter(Transaction.name == "Amazon")
+                .one()
+            )
+            assert [p.amount for p in _purchases_in(minted)] == [
+                Decimal("-42.00"),
+            ]
+            # THE MONEY: the bank gave it back, so the balance RISES by exactly
+            # what the line says -- the opposite direction to a swipe, through
+            # the same door and with no sign branch anywhere in it.
+            assert _balance_on(seed_user, day + timedelta(days=2)) == (
+                before + Decimal("42.00")
+            )
 
-    def test_a_TEMPLATE_answer_reports_it_the_same_way(
+    def test_a_TEMPLATE_answer_files_it_the_same_way(
         self, app, db, seed_user,
     ):
         """The arm his Walmart rule takes, so the pair covers both containers.
@@ -1719,12 +1752,44 @@ class TestAMerchantCreditIsReportedWhicheverSpendingAnswerItHas:
             envelope = _groceries(seed_user)
             a_rule(seed_user, "Walmart", template_id=envelope.template_id)
             statement = an_import(seed_user)
-            self._credit(seed_user, statement, "Walmart")
+            day = seed_user["bootstrap_period"].start_date + timedelta(days=3)
+            self._credit(seed_user, statement, "Walmart", posted_on=day)
+            db.session.flush()
+            before = _balance_on(seed_user, day + timedelta(days=2))
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            assert _story(filing) == {
+                "filed": 1, "withheld": [], "refused": [],
+            }
+            assert [p.amount for p in _purchases_in(envelope)] == [
+                Decimal("-42.00"),
+            ]
+            assert _balance_on(seed_user, day + timedelta(days=2)) == (
+                before + Decimal("42.00")
+            )
+
+    def test_an_UNCLAIMED_deposit_is_still_not_a_purchase(
+        self, app, db, seed_user,
+    ):
+        """The other side of the partition, asserted beside it.
+
+        **This is the case that keeps the refund arm honest.**  What makes a
+        credit a refund is the owner's own SPENDING answer for that merchant;
+        a deposit from a merchant they have said nothing about is not one, and
+        filing it against a budget line would be the guess ruling **R-HX**
+        refused.  Without this case a dispatcher that routed EVERY inflow into
+        the purchase pipeline would pass the two above.
+        """
+        with app.app_context():
+            _groceries(seed_user)
+            statement = an_import(seed_user)
+            self._credit(seed_user, statement, "Some Employer")
             db.session.flush()
 
             filing = _file(seed_user, statement)
             db.session.flush()
 
-            story = _story(filing)
-            assert story["filed"] == 0, story
-            assert "refund" in story["withheld"][0]
+            assert _story(filing)["filed"] == 0
+            assert db.session.query(TransactionEntry).count() == 0

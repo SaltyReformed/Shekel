@@ -55,15 +55,17 @@ from app.services.statement_match import _create  # pylint: disable=protected-ac
 from tests._test_helpers import open_books_before_the_first_assertion
 
 from ._builders import (
-    accepted_acts,
     a_bank_line,
     a_bars,
     a_basis,
     a_later_period,
     a_purchase,
+    a_rule,
     a_scope,
     a_submission,
     a_transaction,
+    accepted_acts,
+    an_answers,
     an_import,
 )
 
@@ -169,7 +171,7 @@ def _record(seed_user, line, minted=None, applied_by_rule=False, **destination):
         # ...and the ANSWERS this test has staged, for the same reason: a
         # helper handing the door an empty ``CreationBars`` would make every
         # case below blind to ruling R-GJ's refusal.
-        a_bars(seed_user),
+        an_answers(seed_user),
         applied_by_rule=applied_by_rule,
     )
 
@@ -537,9 +539,34 @@ class TestWhatTheCreateDoorRefuses:
                 posted_on=seed_user["bootstrap_period"].start_date,
             )
 
-            with pytest.raises(ValidationError, match="money LEAVING"):
+            with pytest.raises(ValidationError, match="not a refund"):
                 _record(seed_user, line, transaction_id=envelope.id)
             assert db.session.query(TransactionEntry).count() == 1
+
+    def test_a_CLAIMED_inflow_is_NOT_refused(self, app, db, seed_user):
+        """The other side of the same refusal, asserted beside it.
+
+        **The refusal is about the ANSWER and not the direction** since plan
+        step ``bank_import:X-gj-2b-2``, so a case asserting only that inflows
+        are refused would stay green if the door went back to refusing every
+        one of them -- which would silently un-build the refund act. A credit
+        whose merchant the owner has placed is a refund and the door takes it.
+        """
+        with app.app_context():
+            envelope = _closed_from_purchases(seed_user)
+            a_rule(
+                seed_user, "Amazon",
+                template_id=envelope.template_id,
+            )
+            statement = an_import(seed_user)
+            line = a_bank_line(
+                seed_user, statement, amount="28.29", merchant="Amazon",
+                posted_on=seed_user["bootstrap_period"].start_date,
+            )
+
+            recorded = _record(seed_user, line, transaction_id=envelope.id)
+
+            assert recorded.amount == Decimal("-28.29")
 
     def test_an_ALREADY_MATCHED_line_is_refused(self, app, db, seed_user):
         """Refused HERE rather than by the unique index after a write.

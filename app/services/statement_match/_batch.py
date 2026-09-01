@@ -79,8 +79,7 @@ from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 
 from ._accept import accept_match
-from ._bars import CreationBars
-from ._rules import RuleView
+from ._bars import MerchantAnswers
 from ._create import MintedEnvelopes, create_purchase_from_line
 from ._creations import IncomeCreation, PurchaseCreation
 from ._income import record_income_from_line
@@ -681,10 +680,8 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
     # builds both from one read; doing the same here means this door still
     # asks ``merchant_rules`` exactly ONCE, as the paragraph above claims,
     # while the income arm below gains the answer it needs.
-    view = RuleView.build(scope.owner_id, scope.account_id)
-    bars = CreationBars.build(
-        scope.owner_id, scope.account_id, rules=view.rules,
-    )
+    answers = MerchantAnswers.build(scope.owner_id, scope.account_id)
+    view = answers.view
 
     for submission in batch.matches:
         line_ids = tuple(sorted(submission.line_ids))
@@ -712,7 +709,7 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         recorded = _run(
             tally, line_ids,
             lambda c=creation: create_purchase_from_line(
-                c, scope, minted, bars,
+                c, scope, minted, answers,
                 # **The PASS's consent, not the item's** (ruling **R-GT**,
                 # plan step ``bank_import:X-ge``).  Which rule fired is
                 # derivable from the matched line; that a rule fired at all is

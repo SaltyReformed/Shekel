@@ -436,6 +436,40 @@ class TestWhatItRefuses:
 
         assert _rows(seed_user) == []
 
+    def test_a_CLAIMED_merchant_CREDIT_is_refused_as_income(
+        self, app, db, seed_user,
+    ):
+        """A refund is not income, and this door says so rather than filing it.
+
+        Plan step ``bank_import:X-gj-2b-2``, ruling **R-II**.  The mirror of
+        :func:`~._create._load_line`'s own refusal, and the pair is what keeps
+        the two doors TOTAL and DISJOINT over the lines the schema allows: a
+        credit whose merchant carries a SPENDING answer is a refund the
+        purchase door owns, and every other inflow is this door's.
+
+        **This is the misfiling R-II exists to prevent.**  Recording it here
+        would book a refund as income -- grossing up both sides of the income
+        statement, and, because ``posting_service._settled_target`` takes its
+        ledger class from the transaction TYPE, minting an INCOME-class ledger
+        account for what is really a contra to a spending category.
+
+        The screen renders no income control for such a line, so this fires on
+        a stale page or a crafted body -- which is exactly when a refusal has
+        to exist: a refusal a browser can walk around is not a refusal.
+        """
+        envelope = a_transaction(
+            seed_user, name="Amazon", amount="100.00", is_envelope=True,
+        )
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        line = _a_deposit(seed_user, amount="28.29", merchant="Amazon")
+
+        with pytest.raises(ValidationError, match="REFUND"):
+            _record(seed_user, line)
+
+        # The envelope staged above is the ONLY row: no income row was minted,
+        # and no purchase either -- this door writes neither, it refuses.
+        assert _rows(seed_user) == [envelope]
+
     def test_a_line_ANOTHER_MATCH_already_claims_is_refused(
         self, app, db, seed_user,
     ):

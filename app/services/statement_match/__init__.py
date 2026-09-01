@@ -65,6 +65,10 @@ The public surface, and what each piece is for:
   writes is the one a matched group's residual already used
   (``_uncategorized.mint_uncategorized``), so there is one writer of *the row
   bank evidence requires and the books do not hold*.
+* :class:`MerchantAnswers` -- what the owner has SAID about this account's
+  merchants, read once: the stated rules and the bars together, because one is
+  built from the other and every write door wants both (plan step
+  ``bank_import:X-gj-2b-2``).
 * :class:`CreationBars` -- which of an account's merchants may NOT become
   purchases at all, and why (ruling **R-GJ**, plan step ``bank_import:X-ga``).
   Two bars: the owner answered *never a purchase*, or a SOURCE files the
@@ -144,7 +148,12 @@ owner has not accepted, and :mod:`._propose` cannot write at all.
 """
 
 from ._accept import AcceptedMatch, accept_match
-from ._bars import CreationBar, CreationBars, ParkedLine
+from ._bars import (
+    CreationBar,
+    CreationBars,
+    MerchantAnswers,
+    ParkedLine,
+)
 from ._release import (
     PlannedRemoval,
     PlannedRemovals,
@@ -217,10 +226,13 @@ from ._accepted_view import (
 from ._placement import Placement, PlacementKind
 from ._preview import HandTotals, preview_hand_build
 from ._rules import (
+    CONTAINER_ANSWERS,
+    LinePipeline,
     StandingRule,
     RuleAnswer,
     RuleView,
     account_merchants,
+    pipeline_for,
 )
 from ._stating import (
     RuleSubmission,
@@ -288,6 +300,7 @@ __all__ = [
     "IncomeCreation",
     "CreationBar",
     "CreationBars",
+    "MerchantAnswers",
     "Consent",
     "HandTotals",
     "DAY_WINDOW",
@@ -307,7 +320,10 @@ __all__ = [
     "PlacementKind",
     "PlannedRemoval",
     "PlannedRemovals",
+    "CONTAINER_ANSWERS",
+    "LinePipeline",
     "RuleAnswer",
+    "pipeline_for",
     "RuleFiling",
     "RuleVerdict",
     "RuleSubmission",

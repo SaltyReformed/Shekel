@@ -61,6 +61,7 @@ from ._builders import (
     a_scope,
     a_submission,
     a_transaction,
+    an_answers,
     an_import,
 )
 
@@ -1218,7 +1219,7 @@ class TestABatchBooksWhatTheSameActsBookOneAtATime:
                 # SUPPOSED to change.
                 singly_did.append(statement_match.create_purchase_from_line(
                     creation, a_scope(seed_user),
-                    _create.MintedEnvelopes.none_yet(), a_bars(seed_user),
+                    _create.MintedEnvelopes.none_yet(), an_answers(seed_user),
                     applied_by_rule=False,
                 ))
                 _db.session.flush()
@@ -1669,7 +1670,7 @@ class TestConvergingMovesTheSameMoneyAsNotConverging:
         for creation in creations:
             statement_match.create_purchase_from_line(
                 creation, a_scope(seed_user),
-                _create.MintedEnvelopes.none_yet(), a_bars(seed_user),
+                _create.MintedEnvelopes.none_yet(), an_answers(seed_user),
                 applied_by_rule=False,
             )
             _db.session.flush()

@@ -34,18 +34,21 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.statement_import import delete_import
 from app.services.statement_match import (
+    account_merchants,
+    answered_merchants,
+    CONTAINER_ANSWERS,
     Evidence,
-    StandingRule,
+    LinePipeline,
+    pipeline_for,
     Placement,
     PlacementKind,
+    PurchaseDestination,
+    register_set,
+    review_set,
     RuleAnswer,
     RuleSubmission,
     RuleView,
-    PurchaseDestination,
-    account_merchants,
-    answered_merchants,
-    register_set,
-    review_set,
+    StandingRule,
     state_rules,
 )
 from app.services.statement_match._placement import (  # pylint: disable=protected-access
@@ -2465,3 +2468,94 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
         )
 
         assert section.merchants[0].unofferable.template is None
+
+
+class TestWhichPipelineALineEnters:
+    """:func:`pipeline_for` -- the ONE place the two acts are told apart.
+
+    Plan step ``bank_import:X-gj-2b-2``.  What an unexplained bank line BECOMES
+    was decided by its SIGN until this step, in two separate sign tests that
+    ran before the owner's rule was consulted at all.  A merchant credit is
+    money ARRIVING that must become a PURCHASE -- a refund back into the
+    container the owner named -- so the sign could not decide it and never
+    could have; it was standing in for the ANSWER.
+
+    **Graded as a whole TABLE rather than as cases**, because the failure this
+    shape invites is an uncovered cell rather than a wrong one: a sixth
+    ``RuleAnswer`` added without a decision here would silently take whatever
+    the fall-through does, and "no suggestion" is a plausible-looking answer
+    that nobody chose.  The round-trip assertion below is the same
+    ``set(...) == set(RuleAnswer)`` guard this module already uses for
+    :meth:`RuleAnswer.of`.
+    """
+
+    #: Every cell of (answer x direction), stated rather than derived, so a new
+    #: answer fails the coverage assertion below instead of inheriting a
+    #: default.  ``None`` is the sixth key: no rule at all.
+    EXPECTED = {
+        (RuleAnswer.TEMPLATE, False): LinePipeline.PURCHASE,
+        (RuleAnswer.TEMPLATE, True): LinePipeline.PURCHASE,
+        (RuleAnswer.NEW_ENVELOPE, False): LinePipeline.PURCHASE,
+        (RuleAnswer.NEW_ENVELOPE, True): LinePipeline.PURCHASE,
+        (RuleAnswer.INCOME_CATEGORY, False): LinePipeline.PURCHASE,
+        (RuleAnswer.INCOME_CATEGORY, True): LinePipeline.INCOME,
+        (RuleAnswer.NEVER, False): LinePipeline.PURCHASE,
+        (RuleAnswer.NEVER, True): LinePipeline.INCOME,
+        (RuleAnswer.ALWAYS_ASK, False): LinePipeline.PURCHASE,
+        (RuleAnswer.ALWAYS_ASK, True): LinePipeline.INCOME,
+        (None, False): LinePipeline.PURCHASE,
+        (None, True): LinePipeline.INCOME,
+    }
+
+    def test_the_table_covers_every_answer_in_both_directions(self):
+        """A new ``RuleAnswer`` fails HERE rather than falling through.
+
+        The guard, and the reason this class states a table at all: the
+        dispatcher's own shape is *name what routes and fall through*, which is
+        right for safety and silent for coverage.  This is what makes the
+        silence visible.
+        """
+        answered = {answer for answer, _ in self.EXPECTED}
+
+        assert answered == set(RuleAnswer) | {None}, (
+            "every RuleAnswer needs a decision in BOTH directions -- a new "
+            "answer must name its pipeline rather than inherit one"
+        )
+        assert len(self.EXPECTED) == (len(RuleAnswer) + 1) * 2
+
+    @pytest.mark.parametrize("answer,is_inflow", sorted(
+        EXPECTED, key=lambda k: (k[0].value if k[0] else "", k[1]),
+    ))
+    def test_each_cell_routes_where_the_table_says(self, answer, is_inflow):
+        """Every cell, one case each."""
+        assert pipeline_for(
+            is_inflow=is_inflow, answer=answer,
+        ) is self.EXPECTED[(answer, is_inflow)]
+
+    def test_a_CONTAINER_answer_is_what_makes_an_inflow_a_purchase(self):
+        """The whole content of the change, stated as one property.
+
+        An inflow is a purchase exactly when its merchant's answer names a
+        SPENDING CONTAINER.  Asserted against
+        :data:`~app.services.statement_match._rules.CONTAINER_ANSWERS` rather
+        than against a literal pair, so the property and the constant the
+        dispatcher reads cannot drift apart.
+        """
+        for answer in list(RuleAnswer) + [None]:
+            files_a_purchase = pipeline_for(
+                is_inflow=True, answer=answer,
+            ) is LinePipeline.PURCHASE
+            assert files_a_purchase is (answer in CONTAINER_ANSWERS)
+
+    def test_an_OUTFLOW_is_always_a_purchase_candidate(self):
+        """Whatever the answer -- the rule only decides what is SUGGESTED.
+
+        ``NEVER`` is answered further down by
+        :class:`~app.services.statement_match.CreationBars`, which is where
+        ruling **R-GJ** put it; routing it away from the purchase pipeline here
+        would be a second statement of that refusal.
+        """
+        for answer in list(RuleAnswer) + [None]:
+            assert pipeline_for(
+                is_inflow=False, answer=answer,
+            ) is LinePipeline.PURCHASE

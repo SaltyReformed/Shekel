@@ -58,7 +58,7 @@ from datetime import date
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 
-from ._bars import CreationBars
+from ._bars import MerchantAnswers
 from ._rules import RuleAnswer, RuleView, account_merchants
 from ._section import MerchantSummary, merchant_summary, offered_answers
 
@@ -653,7 +653,7 @@ def merchant_directory(
         The :class:`MerchantDirectory`.
     """
     view = RuleView.build(owner_id, account_id)
-    bars = CreationBars.build(owner_id, account_id, view.rules)
+    bars = MerchantAnswers.build(owner_id, account_id).bars
     activity = merchant_activity(account_id)
     entries = tuple(
         MerchantEntry(

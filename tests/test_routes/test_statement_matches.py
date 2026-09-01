@@ -1763,7 +1763,13 @@ class TestTheCreateArm:
         )
 
         assert response.status_code == 200
-        assert b"money LEAVING" in response.data
+        # The refusal's WORDING moved at plan step ``bank_import:X-gj-2b-2``:
+        # it used to say only money LEAVING may become a purchase, and an
+        # inflow whose merchant carries a spending answer now may (a refund).
+        # What is refused here is a deposit NO rule claims, which is the case
+        # this test stages -- so the subject is unchanged and only the sentence
+        # is.
+        assert b"not a refund" in response.data
         db.session.expire_all()
         assert db.session.query(Transaction).filter(
             Transaction.name == "Payroll",

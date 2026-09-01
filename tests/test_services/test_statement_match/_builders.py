@@ -31,6 +31,7 @@ from app.services.cash_ledger import amount_basis
 from app.services import statement_match
 from app.services.statement_match import (
     CreationBars,
+    MerchantAnswers,
     MatchSubmission,
     MintedEnvelopes,
     PurchaseCreation,
@@ -574,7 +575,7 @@ def an_unexplained_outflow(
     )
 
 
-def filed_by(seed_user, line, envelope, *, by_rule, scope=None, bars=None):
+def filed_by(seed_user, line, envelope, *, by_rule, scope=None, answers=None):
     """Record one bank *line* as a purchase in *envelope*, and say WHO did it.
 
     **The one fact under test in several places is ``by_rule``** (ruling
@@ -619,7 +620,7 @@ def filed_by(seed_user, line, envelope, *, by_rule, scope=None, bars=None):
         PurchaseCreation(line_id=line.id, transaction_id=envelope.id),
         a_scope(seed_user) if scope is None else scope,
         MintedEnvelopes.none_yet(),
-        a_bars(seed_user) if bars is None else bars,
+        an_answers(seed_user) if answers is None else answers,
         applied_by_rule=by_rule,
     )
 
@@ -684,9 +685,12 @@ def filed_acts(seed_user, how_many, *, by_rule):
     db.session.commit()
     # ONE derivation for all of them, which is what the app does and what
     # keeps this affordable -- see :func:`filed_by`.
-    scope, bars = a_scope(seed_user), a_bars(seed_user)
+    scope, answers = a_scope(seed_user), an_answers(seed_user)
     purchases = [
-        filed_by(seed_user, line, pot, by_rule=by_rule, scope=scope, bars=bars)
+        filed_by(
+            seed_user, line, pot, by_rule=by_rule, scope=scope,
+            answers=answers,
+        )
         for pot, line in zip(pots, lines)
     ]
     db.session.commit()
@@ -798,6 +802,28 @@ def a_bars(seed_user, account=None):
         The :class:`~app.services.statement_match.CreationBars`.
     """
     return CreationBars.build(
+        seed_user["user"].id, (account or seed_user["account"]).id,
+    )
+
+
+def an_answers(seed_user, account=None):
+    """Return what the owner has said about this account's merchants.
+
+    The :class:`~app.services.statement_match.MerchantAnswers` the pass derives
+    once and every act reads -- the stated rules AND ruling **R-GJ**'s bars,
+    from one read.  :func:`a_bars` is still here for the cases that assert on
+    the bars alone; this is what the write doors take (plan step
+    ``bank_import:X-gj-2b-2``).
+
+    Args:
+        seed_user: The seeded user bundle.
+        account: The account being reviewed; the seeded checking one by
+            default.
+
+    Returns:
+        The :class:`~app.services.statement_match.MerchantAnswers`.
+    """
+    return MerchantAnswers.build(
         seed_user["user"].id, (account or seed_user["account"]).id,
     )
 

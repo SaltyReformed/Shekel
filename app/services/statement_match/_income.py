@@ -90,7 +90,7 @@ from ._candidates import MatchedSubjects, matched_subjects
 from ._creations import CreatedSubject, IncomeCreation, RecordedIncome
 from ._offers import merchant_label
 from ._placement import inflow_placement_for
-from ._rules import RuleView
+from ._rules import LinePipeline, RuleView, pipeline_for
 from ._resolve import load_lines
 from ._scope import ReviewScope
 from ._uncategorized import MovementToRecord, mint_uncategorized
@@ -292,6 +292,27 @@ def record_income_from_line(
     # because the paragraph above states the rule as *every refusal this act
     # owes fires before anything is written*, and a derivation that later grew
     # a write would inherit the wrong side of it.
+    # **The mirror of the purchase door's own refusal** (plan step
+    # ``bank_import:X-gj-2b-2``).  A merchant credit whose merchant carries a
+    # container answer is a REFUND, and the purchase door owns it -- so
+    # recording it here would file a refund as income, which is the misfiling
+    # ruling **R-II** measured and the reason that ruling exists.  The screen
+    # renders no income control for such a line
+    # (:func:`~._leftovers._by_pipeline` routes it to the other half), so this
+    # fires on a stale page or a crafted body -- which is exactly when a
+    # refusal has to exist, and it asks the SAME function the screen routed by
+    # so the two cannot disagree.
+    rule = view.rules.get(line.merchant_id)
+    if pipeline_for(
+        is_inflow=line.amount > 0,
+        answer=rule.answer if rule is not None else None,
+    ) is not LinePipeline.INCOME:
+        raise ValidationError(
+            "You have said where this merchant's spending goes, so money "
+            "coming back from them is a REFUND against that budget line "
+            "rather than income. Record it there instead. Nothing was "
+            "changed."
+        )
     placement = inflow_placement_for(line.merchant_id, view)
     # **ONE reading of what the owner said, used by the WRITE and by the LOG.**
     # Two expressions of the same rule are two things that can come to

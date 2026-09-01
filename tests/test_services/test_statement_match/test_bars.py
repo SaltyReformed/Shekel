@@ -66,8 +66,9 @@ from ._builders import (
     a_scope,
     a_submission,
     a_transaction,
-    the_merchant_id,
+    an_answers,
     an_import,
+    the_merchant_id,
 )
 
 #: SECU's own category string for a payment to a credit card, verbatim.  22 of
@@ -387,7 +388,7 @@ class TestTheDoorRefusesABarredLine:
         """Call the create door for *line*, with this pass's real bars."""
         return statement_match.create_purchase_from_line(
             self._creation(seed_user, line), a_scope(seed_user),
-            _create.MintedEnvelopes.none_yet(), a_bars(seed_user),
+            _create.MintedEnvelopes.none_yet(), an_answers(seed_user),
             applied_by_rule=False,
         )
 
@@ -478,7 +479,7 @@ class TestTheDoorRefusesABarredLine:
             statement_match.create_purchase_from_line(
                 PurchaseCreation(line_id=line.id, transaction_id=999_999),
                 a_scope(seed_user),
-                _create.MintedEnvelopes.none_yet(), a_bars(seed_user),
+                _create.MintedEnvelopes.none_yet(), an_answers(seed_user),
                 applied_by_rule=False,
             )
 
