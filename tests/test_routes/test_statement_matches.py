@@ -3561,6 +3561,47 @@ class TestThePageAndTheReceiptSayWhichDIRECTIONApplyRecorded:
         assert "becomes <strong>a purchase your records did not have" in page
         assert "a refund against the budget line you name" not in page
 
+    def test_the_DEPOSIT_sentence_is_withheld_from_an_all_outflow_queue(
+        self, auth_client, db, seed_user,
+    ):
+        """The third arm of the same partition, and it was unbranched.
+
+        Plan step ``bank_import:X-gj-2b-3``.  *A deposit you tick becomes
+        income you did not have* printed on every queue, including one holding
+        no inflow at all -- describing a tick no row on the page renders.  It
+        predates ruling **bank_import:R-II** and is not that ruling's defect;
+        it is fixed here because leaving one bullet of three unconditional
+        beside two that are branched is a worse state than either uniform one,
+        in a block this step had already rewritten.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        db.session.commit()
+
+        page = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "becomes <strong>a purchase your records did not have" in page
+        assert "becomes <strong>income you did not have" not in page
+
+    def test_the_DEPOSIT_sentence_renders_where_a_tick_EXISTS(
+        self, auth_client, db, seed_user,
+    ):
+        """The control: an unclaimed deposit is the row that earns it."""
+        an_envelope(seed_user)
+        an_unexplained_outflow(
+            seed_user, merchant="Some Employer", amount="1200.00",
+        )
+        db.session.commit()
+
+        page = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "becomes <strong>income you did not have" in page
+        assert "becomes <strong>a purchase your records did not have" not in page
+
     def test_the_RECEIPT_says_a_refund_was_recorded_as_a_refund(
         self, auth_client, db, seed_user,
     ):

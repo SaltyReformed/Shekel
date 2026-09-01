@@ -787,6 +787,13 @@
             else.
           </li>
           {% endif %}
+          {# THE THIRD ARM OF THE SAME PARTITION, conditional for the reason
+             the two above are: it describes a control an all-outflow queue
+             does not render.  Made conditional at plan step
+             ``bank_import:X-gj-2b-3`` with its two siblings -- one unbranched
+             bullet left among two branched ones is a worse state than either
+             uniform one, and the queue states all three answers itself. #}
+          {% if review.queue.records_income %}
           <li>
             A deposit you tick becomes <strong>income you did not have</strong>,
             dated the day your bank paid it in, with <strong>no category</strong>
@@ -795,6 +802,7 @@
             case it is your record and the undo says so rather than deleting
             your work.
           </li>
+          {% endif %}
         </ul>
       </div>
     </div>

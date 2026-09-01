@@ -406,6 +406,25 @@ class StatementQueue:
         )
 
     @property
+    def records_income(self) -> bool:
+        """Return whether any row here would record an INCOME row.
+
+        The third answer of the partition :attr:`records_a_charge` and
+        :attr:`records_a_refund` open, and it exists for the same reader: the
+        press-level paragraph owes one sentence per act this press can
+        perform, and the deposit sentence was printed unconditionally -- over
+        a queue holding no inflow, describing a tick no row on the page
+        renders.
+
+        Returns:
+            Whether the press would record at least one income row.
+        """
+        return any(
+            row.records_income
+            for group in self.groups for row in group.rows
+        )
+
+    @property
     def records_a_refund(self) -> bool:
         """Return whether any row here would file a REFUND.
 

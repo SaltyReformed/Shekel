@@ -284,7 +284,8 @@ def ruled(
             (:class:`~._gaps.ReviewBounds`), read for the two limits that
             belong to the PASS rather than to any one line.
         already_held: ``{line_id: ArrivalsAlreadyHeld}`` for the INFLOW lines
-            whose period already holds income no bank line explains
+            whose period already holds money ARRIVING that no bank line
+            explains
             (:func:`~._reads.arrivals_already_held`), computed by the caller
             because it holds the rows.  **Empty for every outflow**, which is
             what makes the arm below a no-op on the outflow side rather than a
