@@ -193,7 +193,16 @@ class EntryDetails:
     routing/ownership context (the parent transaction and the acting user).
 
     Fields:
-        amount:      Positive Decimal for the purchase amount.
+        amount:      What the purchase cost, as a SIGNED ``Decimal`` --
+            POSITIVE for a charge and NEGATIVE for a REFUND (ruling
+            **bank_import:R-II**).  **It said *Positive* until plan step
+            ``bank_import:X-gj-2b-3``, and its own caller contradicted it**:
+            ``statement_match._create._born_purchase`` builds one of these with
+            ``amount=-Decimal(str(line.amount))``, which for a merchant credit
+            is negative.  What refuses a negative is the hand-entry FORM
+            (``EntryCreateSchema``'s ``Range(min=0.01)``), where a typed
+            negative is a typo -- not this value, and not the table, whose only
+            rule is ``<> 0`` (:func:`~._refusals._reject_zero_amount`).
         description: Store name or brief note (1--200 chars).
         purchased_on: Date the purchase HAPPENED.  Backdating is ordinary; a
             date after the user's today is refused (ruling R-M, see
