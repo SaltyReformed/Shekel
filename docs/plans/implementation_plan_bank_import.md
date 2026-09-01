@@ -144,18 +144,10 @@ what it leaves a LATER step is on that step's own entry.
         rule moved off `transaction_entries` (**R-II**). Measured 2026-08-29 and reproduced
         2026-08-31 by running `review_set` on account 1: nine of its sixteen unmatched deposits
         dissolve -- five dividends and one answer under 2a, three refunds under 2b.
-    - [ ] **X-gj-2a** `feat(import): a rule answers a deposit` -- the fifth :class:`RuleAnswer`,
-          `merchant_rules.income_category_id`, auto-applied at import under **R-GH** with `X-ge`'s
-          receipt and undo. **MOVES MONEY, OWN PR.**
-          **A merchant CREDIT is reported and never filed here** (**R-HX**): a merchant with a
-          SPENDING answer resolves to an unresolved placement whose sentence says the refund act is
-          not built, because filing it as income is the misfiling that ruling measured and
-          substituting is how a suggestion becomes a guess.
-          **Two withholdings, and their fail sets are DISJOINT** -- which is why neither can stand
-          in for the other. The pass did not finish LOOKING is **R-GH**'s own first narrowing, and
-          the books may ALREADY HOLD this deposit is the hazard the outflow side does not have:
-          `income_already_recorded_in` tests the ROW's own span so it sees only the deposit's own
-          pay period, while the near tier reaches ACROSS periods by `DAY_WINDOW`.
+    - [x] **X-gj-2a -- a standing rule answers a DEPOSIT.** `751eba5d`. The fifth
+          :class:`RuleAnswer` and `merchant_rules.income_category_id`, auto-applied at import.
+          **A LATER step must obey:** a merchant CREDIT is reported UNRESOLVED and never filed here
+          (**R-HX**) -- `X-gj-2b` is what files it.
     - [ ] **X-gj-2b** `feat(import): a refund is a negative purchase` -- **R-II**:
           `ck_transaction_entries_positive_amount` becomes `amount <> 0` and the positivity rule
           moves to the hand-entry door, where a typed negative is a typo. **MOVES MONEY, OWN PR.**

@@ -400,18 +400,11 @@ hides.
   loan service, the ruling that puts a loan's terms on the installment they govern, and the cutover
   those three unblock.
   * [x] **X-au-g-1** `af61263d` -- a loan's price reads its TERMS, never its own payment rows. Finding **N-266**(a) is MISDIAGNOSED rather than falsified: the PATH is dead, the CONCLUSION stands. Record in `archive/eight_shipped_steps_2026-09-01.md`.
-  * [ ] **X-au-g-2a** `refactor(cash_ledger): rule 4's producer moves below the amount model` --
-    the TIER MOVE, and the unwind `row_valuation.py` has always said this arc owes. Rule 4's
-    producer answers *what does this row's amount resolve to*, which is the amount model's question,
-    so hosting `_basis` / `_pricing` in `loan_payment_service` made `_amount_source` reach UP a tier
-    and stopped any loan-stack module from ever naming `cash_ledger`. They become
-    `cash_ledger._loan_installment` / `._loan_pricing`; the arrow then runs one way and the loan
-    READING tier may import the amount model, which is what X-au-g-2c needs. Byte-identical, and
-    measured that way: both modules AST-compared against HEAD with docstrings stripped, one differing
-    node (its own sibling import). **The cycle was REAL and pylint could not see it** -- a
-    `TYPE_CHECKING` import masked the runtime one, so the "EIGHT R0401s" three docstrings quoted is
-    not a live measurement; the arms and their dates are in `_loan_installment`'s docstring and the
-    masking is filed as **N-416**. Closes **N-266**(b).
+  * [x] **X-au-g-2a -- rule 4's producer moves below the amount model.** `b16908f7`. The
+    tier move `row_valuation.py` has always said this arc owes: `_basis` / `_pricing` become
+    `cash_ledger._loan_installment` / `._loan_pricing`, so the arrow runs one way.
+    **A LATER step must obey:** the loan READING tier may now import the amount model, which
+    is what `X-au-g-2c` needs.  Byte-identical, AST-verified; opened **N-416**.
   * [ ] **X-au-g-2b** `refactor(loans): a loan payment resolves on its own due date` -- ruling
     **R-IJ** applied at all THREE sites that resolve a loan's contractual terms on a read date:
     amount rule 4's P&I (`LoanPricing` pins `date.today()`, **N-40**), the escrow-subtraction
