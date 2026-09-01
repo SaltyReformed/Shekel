@@ -68,10 +68,12 @@ from app.services.statement_match import (
     MintedEnvelopes,
     NewEnvelope,
     PurchaseCreation,
+    RuleView,
     Tab,
     accept_match,
     awaiting_review_count,
     create_purchase_from_line,
+    file_new_swipes,
     reconcile_page,
     record_income_from_line,
     review_set,
@@ -82,6 +84,7 @@ from ._builders import (
     a_scope,
     a_submission,
     a_transaction,
+    a_rule,
     an_import,
 )
 
@@ -551,6 +554,36 @@ class TestTheThreeDoorsRefuseIt:
     A page rendered before a restatement moved the books forward posts line
     ids the current books no longer hold, so every one of these is reachable
     by an ordinary owner rather than only by a crafted request.
+
+    **WHAT THESE CASES CATCH BETWEEN THEM, MEASURED BY MUTATION 2026-08-31**,
+    and it is written here rather than in either arc document because the
+    person it is for is the one deciding whether an EIGHTH case is needed.
+    The CREATE door's refusal must fire before the writes it guards, and
+    "before" is not one position -- there are two writes and the cases have
+    DISJOINT fail sets:
+
+    ==================================== ============ ==============
+    refusal moved below                  MINT case    EXISTING case
+    ==================================== ============ ==============
+    ``resolve_destination``              FAILS        passes
+    ``_born_purchase`` / ``close_``      FAILS        FAILS
+    ==================================== ============ ==============
+
+    So ``test_the_CREATE_door_refuses_and_MINTS_NO_ENVELOPE`` catches a
+    refusal that has slipped past the MINT, and
+    ``test_the_CREATE_door_refuses_an_EXISTING_destination_and_STAGES_NOTHING``
+    catches one that has slipped past the WRITE -- **and the first cannot
+    catch the second's mutation.**  The reason is that on the
+    existing-destination path ``resolve_destination`` mints nothing, so no row
+    is staged between those two positions for that case's assertion to see.
+    Neither case alone pins the placement; the pair brackets it.
+
+    **This was found by disbelieving a docstring rather than by a failure.**
+    The EXISTING case shipped claiming it graded placement "as its siblings
+    do"; the two mutations above measured that false, and a docstring that
+    overstates what a case controls is worse than a missing case, because it
+    retires the question.  An eighth case here should say which mutation it
+    kills that these seven do not.
     """
 
     def test_the_CREATE_door_refuses_and_MINTS_NO_ENVELOPE(
@@ -642,6 +675,150 @@ class TestTheThreeDoorsRefuseIt:
             Transaction.name == "Swiped Early",
         ).count() == 1
 
+    def test_the_CREATE_door_refuses_an_EXISTING_destination_and_STAGES_NOTHING(
+        self, app, db, seed_user,
+    ):
+        """The EXISTING-destination path, which the two cases above do not reach.
+
+        Added by ``pay_calendar:C4-a-4`` after this class merged with it
+        (adversarial coordination, 2026-08-31).  Both CREATE cases beside it
+        pass a :class:`NewEnvelope`, so both exercise the MINT path and
+        neither ever selects an existing destination -- and destination
+        SELECTION is exactly what that step rewrote (``destinations_for``
+        scopes by the calendar's saved period ids where it scoped by
+        ``pay_periods.user_id``).  So this door's placement promise was pinned
+        on one of its two arms.
+
+        **The state could not be built before that merge**, which is why the
+        gap is a property of the harness rather than an oversight: the seeded
+        account's books open on or before its calendar
+        (``open_books_before_the_first_assertion`` takes a minimum that
+        includes the owner's earliest pay period), so "a day a pay period
+        covers AND before the books open" is EMPTY there and the calendar
+        bound fires first.  It needs an account whose books open INSIDE the
+        calendar, which is :func:`_an_account_opening_inside_the_calendar`.
+
+        **What this case controls was MEASURED, and it is NOT what a first
+        draft of this docstring claimed.**  It kills a refusal moved below
+        ``_born_purchase`` -- the first thing this path stages -- and it does
+        NOT kill one moved below ``resolve_destination``, which its mint-path
+        sibling does.  The class docstring carries both mutations and both
+        fail sets; the table is stated once, there.
+        """
+        account, opened_on = _an_account_opening_inside_the_calendar(
+            db, seed_user, days_in=10,
+        )
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="500.00", is_envelope=True,
+            account=account,
+        )
+        line = a_bank_line(
+            seed_user, an_import(seed_user, account=account),
+            posted_on=opened_on,
+        )
+
+        with pytest.raises(
+            ValidationError, match="Your bank posted this line on",
+        ):
+            create_purchase_from_line(
+                PurchaseCreation(
+                    line_id=line.id, transaction_id=envelope.id,
+                ),
+                a_scope(seed_user, account=account),
+                MintedEnvelopes.none_yet(),
+                CreationBars.build(seed_user["user"].id, account.id),
+                applied_by_rule=False,
+            )
+
+        db.session.flush()
+        assert envelope.entries == []
+
+    def test_that_SAME_envelope_takes_a_line_the_books_DO_hold(
+        self, app, db, seed_user,
+    ):
+        """The firing control, and it is also the OVER-refusal check.
+
+        Without it the case above passes for an envelope
+        ``destinations_for`` never offered at all -- which is the failure
+        direction ``pay_calendar:C4-a-4`` could plausibly have introduced,
+        since it narrowed that producer's ownership clause from
+        ``pay_periods.user_id`` to the calendar's own saved period ids.  Same
+        account, same envelope, one day later: offered, and the purchase
+        lands.
+        """
+        account, opened_on = _an_account_opening_inside_the_calendar(
+            db, seed_user, days_in=10,
+        )
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="500.00", is_envelope=True,
+            account=account,
+        )
+        line = a_bank_line(
+            seed_user, an_import(seed_user, account=account),
+            posted_on=opened_on + timedelta(days=1),
+        )
+
+        recorded = create_purchase_from_line(
+            PurchaseCreation(line_id=line.id, transaction_id=envelope.id),
+            a_scope(seed_user, account=account),
+            MintedEnvelopes.none_yet(),
+            CreationBars.build(seed_user["user"].id, account.id),
+            applied_by_rule=False,
+        )
+
+        db.session.flush()
+        assert recorded.transaction_id == envelope.id
+        assert len(envelope.entries) == 1
+    def test_a_STANDING_RULE_cannot_auto_file_a_deposit_before_the_books(
+        self, app, db, seed_user,
+    ):
+        """The no-press path, and WHICH of two mechanisms holds it.
+
+        **Two independent things guard this today and that is not redundancy
+        until their fail sets are known.**  ``_gaps._split_at_books_open``
+        takes a pre-books line OUT of the pass, so a rule never sees it; and
+        this door's own refusal sits above the write, so a line that somehow
+        reached it is refused.  Either alone would hold the line -- which means
+        a regression in either is INVISIBLE until the day the other is also
+        touched, and by then two changes are in flight and neither looks
+        responsible.
+
+        So this case pins the FIRST: it asserts the deposit never reaches
+        ``recordable_inflows`` at all, and therefore that the filing pass files
+        nothing and reports nothing about it.  Break the split and this fails
+        even while the door still refuses.
+
+        Its pair is :meth:`test_the_INCOME_door_refuses_and_WRITES_NO_ROW`,
+        which pins the second by calling the door directly.
+        """
+        a_rule(
+            seed_user, "Dividend Earned",
+            income_category_id=seed_user["categories"]["Salary"].id,
+        )
+        day = _the_calendars_first_day(db, seed_user)
+        statement = an_import(seed_user)
+        a_bank_line(
+            seed_user, statement, amount="0.15", posted_on=day,
+            merchant="Dividend Earned",
+            description="DIVIDEND EARNED (Dividend Earned)",
+        )
+        db.session.commit()
+
+        scope = a_scope(seed_user)
+        review = review_set(scope)
+        filing = file_new_swipes(scope, statement.id)
+        db.session.flush()
+
+        # THE MECHANISM: the line is not in the pass, so no rule can reach it.
+        assert [
+            inflow.line.line_id for inflow in review.recordable_inflows
+        ] == []
+        # ...and therefore nothing is filed and nothing is withheld: a line the
+        # pass does not hold is not this pass declining to act on it.
+        assert filing.filed_count == 0
+        assert filing.withheld == ()
+        assert tuple(filing.outcome.refused) == ()
+
     def test_the_INCOME_door_refuses_and_WRITES_NO_ROW(
         self, app, db, seed_user,
     ):
@@ -670,7 +847,10 @@ class TestTheThreeDoorsRefuseIt:
         with pytest.raises(
             ValidationError, match="Your bank posted this line on",
         ):
-            record_income_from_line(IncomeCreation(line_id=line.id), scope)
+            record_income_from_line(
+                IncomeCreation(line_id=line.id), scope,
+                RuleView.build(scope.owner_id, scope.account_id),
+            )
 
         assert db.session.query(Transaction).filter(
             Transaction.name.like("ACH DEPOSIT TOWN OF CLAYTON%"),

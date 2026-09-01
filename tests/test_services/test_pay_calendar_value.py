@@ -1675,6 +1675,191 @@ class TestPeriodByIdIsIdentityNotASearch:
         assert all(period.period_id is not None for period in cal.periods)
 
 
+#: :data:`SHAPES` plus the one axis it does not vary.  Identity indexing is
+#: blind to payday SPACING, so six of those seven shapes re-measure one thing;
+#: what adds information is a candidate INSIDE the saved set, which
+#: ``WITH_UNSAVED`` puts at the head and :data:`WITH_INTERIOR_UNSAVED` puts in
+#: the middle.  Appended here rather than to :data:`SHAPES`, which three other
+#: classes parametrize over for their own reasons.
+_INDEX_SHAPES = SHAPES + [
+    ("an interior unsaved candidate", WITH_INTERIOR_UNSAVED, 14),
+]
+
+
+class TestTheSavedIndexIsBOTHTheScopeAndTheLookup:
+    """``saved_by_id`` -- ``period_by_id`` in BULK (plan step **C4-a-4**).
+
+    Two callers hold a whole ROW SET rather than one id --
+    ``statement_match._candidates`` and both of
+    ``reconcile_service._rows``'s scope properties -- and each wrote its own
+    ``period_id is not None`` comprehension until this step.  What the one
+    accessor buys is not the comprehension: it is that a caller's query SCOPE
+    and its per-row LOOKUP come from ONE value, so a row the query returns and
+    the mapping cannot place is unconstructible rather than guarded against.
+
+    The cases below grade the value.  **The property that needs a caller is
+    graded at the caller** -- that ``destinations_for`` filters on this
+    mapping and indexes the same one -- in
+    ``test_statement_match/test_create.py``.
+    """
+
+    def test_it_keys_on_the_ID_and_not_on_the_ordinal(self):
+        """The fixture's ids start at 10, so the two cannot be confused.
+
+        An implementation keyed on ``period_index`` would answer the FIRST
+        period for key 0 and hold nothing at 10.
+        """
+        index = calendar().saved_by_id()
+
+        assert sorted(index) == [10, 11, 12, 13]
+        assert index[12].start_date == date(2026, 1, 30)
+        assert index[12].period_index == 2
+
+    def test_every_value_IS_the_period_the_scanning_twin_answers(self):
+        """One derivation behind both, so an indexer and a scanner agree.
+
+        The whole reason the accessor is on the calendar rather than spelled
+        at each caller: two ways of asking "which paycheck is id N" that came
+        from two places could drift, and this asserts they are the same
+        object rather than merely equal.
+        """
+        cal = calendar()
+
+        for period_id, period in cal.saved_by_id().items():
+            assert period is cal.period_by_id(period_id)
+
+    def test_it_answers_over_an_OFF_CADENCE_schedule_too(self):
+        """The end a caller reads is the DERIVED one, on the shape that shows it.
+
+        ``OFF_CADENCE``'s second payday is four days after the first, so
+        ``lead(start) - 1`` and ``start + cadence - 1`` disagree -- which is
+        exactly the divergence ``pay_periods.end_date`` stores and plan step
+        C4-c drops.  On ``BIWEEKLY`` the two rules coincide and this assertion
+        would pass against either.
+        """
+        index = calendar(OFF_CADENCE).saved_by_id()
+
+        assert index[10].end_date == date(2026, 1, 15)
+        assert index[11].end_date == date(2026, 1, 19)
+
+    def test_an_UNSAVED_candidate_is_not_in_it(self):
+        """A projection and a candidate carry no id, so neither may be a key.
+
+        Ledger row **P21**: an ``{p.id: ...}`` map over a set holding more
+        than one of them collapses, because they SHARE that ``None``.  The
+        filter is ``materialised_periods``' -- the package's one "is this
+        period SAVED" rule -- rather than a fourth spelling of it.
+        """
+        cal = calendar(WITH_UNSAVED)
+        index = cal.saved_by_id()
+
+        assert sorted(index) == [11]
+        assert None not in index
+        assert any(period.period_id is None for period in cal.periods)
+
+    def test_an_INTERIOR_unsaved_candidate_is_not_in_it_either(self):
+        """The candidate INSIDE the saved set, which the head case cannot show.
+
+        ``WITH_UNSAVED`` puts the candidate FIRST, so an implementation that
+        dropped ``periods[0]`` rather than filtering would pass it; this one
+        cannot be passed that way, and it is the shape plan step **C6** builds
+        by design.  The key set is asserted EXACTLY rather than by absence:
+        "the candidate is not in it" is also true of an empty mapping.
+
+        **It replaces a case that could not fail** (adversarial test-quality
+        review 2026-08-31): the old one asked whether a period from
+        ``span_containing`` -- a PROJECTION, ``period_id`` ``None`` -- was
+        among the values, which holds for ``return {}`` and for any keying
+        whatever, because ``saved_by_id`` is only ever shown ``self.periods``
+        and a projection is never in those.  That is the same vacuity
+        ``test_the_searchable_id_space_holds_only_saved_periods`` above records
+        a review catching on this very producer pair.
+        """
+        cal = calendar(WITH_INTERIOR_UNSAVED)
+        index = cal.saved_by_id()
+
+        assert sorted(index) == [10, 12]
+        assert index[10].start_date == date(2026, 1, 2)
+        assert index[12].start_date == date(2026, 1, 30)
+        assert any(period.period_id is None for period in cal.periods)
+
+    def test_an_EMPTY_calendar_answers_an_empty_mapping(self):
+        """Which as a SCOPE admits nothing, and that is the right answer.
+
+        An owner with no paydays has no rows to offer, so a filter built from
+        this returns none -- rather than a scope that is missing and reads as
+        unbounded.
+        """
+        assert calendar(paydays=[], cadence=None).saved_by_id() == {}
+
+    def test_the_mapping_is_READ_ONLY_and_the_same_one_every_call(self):
+        """MEMOIZED, and immutable so the sharing cannot be turned against it.
+
+        One review pass asks this twice -- a candidate scope and a destination
+        scope -- and each apply door builds two passes, so a request asks four
+        times; that is what the memo is for, and an adversarial design review
+        measured the "once per pass" claim a first cut rested on as false
+        (2026-08-31).
+
+        **Memoizing and handing out a plain ``dict`` would be worse than not
+        memoizing**: the value is a query SCOPE deciding whose budget rows may
+        be offered money, so one producer clearing or narrowing it would
+        silently narrow the other's. The proxy makes that unconstructible.
+        Both halves are asserted, because a memo that returned a fresh copy
+        would pass the mutation half alone.
+        """
+        cal = calendar()
+        first = cal.saved_by_id()
+
+        assert cal.saved_by_id() is first
+        # The attack this is for is NARROWING, not emptying: dropping one id
+        # from a shared scope removes exactly that paycheck's rows from the
+        # other producer's offer set, and nothing downstream would say so.
+        with pytest.raises(TypeError):
+            del first[10]
+        with pytest.raises(TypeError):
+            first[99] = cal.periods[0]
+        assert sorted(cal.saved_by_id()) == [10, 11, 12, 13]
+
+    def test_the_memo_is_PER_CALENDAR_and_not_shared_between_two(self):
+        """Two owners' calendars answer their own ids, memo or no memo.
+
+        The slot is an instance field, but a memo written wrong -- on the class,
+        or keyed on nothing -- would hand the second calendar the first one's
+        scope, which is one owner's rows offered under another's name.
+        """
+        mine = calendar(paydays=[(1, date(2026, 1, 2))], user_id=1)
+        theirs = calendar(paydays=[(81, date(2026, 1, 9))], user_id=2)
+
+        assert sorted(mine.saved_by_id()) == [1]
+        assert sorted(theirs.saved_by_id()) == [81]
+        assert sorted(mine.saved_by_id()) == [1]
+
+    @pytest.mark.parametrize(
+        "name,paydays,cadence", _INDEX_SHAPES,
+        ids=[s[0][:40] for s in _INDEX_SHAPES],
+    )
+    def test_it_equals_the_comprehension_it_replaced_on_every_shape(
+        self, name, paydays, cadence,
+    ):
+        """The accessor and the open-coded map agree over every payday shape.
+
+        The expectation is the comprehension the three retired sites wrote
+        out, SPELLED HERE, so the two sides come from two places -- the
+        discipline ``TestTheContainmentRuleOnOnePeriod``'s own sweep states,
+        for the same reason: an expectation derived from the producer under
+        test measures nothing.
+        """
+        cal = calendar(paydays, cadence)
+        expected = {
+            period.period_id: period
+            for period in cal.periods
+            if period.period_id is not None
+        }
+
+        assert cal.saved_by_id() == expected, name
+
+
 class TestTheHistoryBoundIsAFactOfTheCALENDAR:
     """Plan step **balance:X-bh-2**: the second bound the rhythm is read to.
 

@@ -32,12 +32,16 @@ from app.services.statement_match import ReviewedRow, RowKind
 
 from app.schemas.validation.merchant_rules import (  # pylint: disable=protected-access
     _MAX_RULE_ITEMS,
+    _NAMES_NOTHING,
+    _PREFIXED_ANSWERS,
     ALWAYS_ASK,
     NEVER,
     NOT_SAID,
     MerchantRuleBatchSchema,
+    SubmittedAnswer,
     rule_payload,
 )
+from app.services.statement_match import RuleAnswer
 from app.schemas.validation.statements import (
     StatementMatchSchema,
     hand_match_payload,
@@ -665,32 +669,63 @@ class TestTheRuleSectionOnTheWire:
             rule_payload(_form(self._row(0, 11, "t:38"))),
         )
 
-        assert loaded["rules"][0]["answer"] == 38
+        assert loaded["rules"][0]["answer"] == SubmittedAnswer(
+            kind=RuleAnswer.TEMPLATE, row_id=38,
+        )
 
-    def test_the_FIVE_wire_values_all_load(self):
+    def test_the_SIX_wire_values_all_load(self):
         """The closed set, so none of them is refused by the grader.
 
-        **It was four and the set became five at ruling R-GS** (plan step
-        ``bank_import:X-gd-2``), which added *ask me every time*.  This class
-        is where a value the grader refuses is caught, so a member missing
-        from it is a member with no grading at THIS tier -- delete
-        ``ALWAYS_ASK`` from ``RuleAnswerField``'s accepted tuple and the class
+        **Four, then five at ruling R-GS, then SIX at R-HT(a)** (plan step
+        ``bank_import:X-gj-2a``, which added *income under a category*).  This
+        class is where a value the grader refuses is caught, so a member
+        missing from it is a member with no grading at THIS tier -- delete
+        ``ALWAYS_ASK`` from ``RuleAnswerField``'s accepted set and the class
         whose whole job is the wire stayed green.  Found by adversarial review
         2026-08-26.
+
+        **The answers are compared as DISCRIMINATED values now.**  They were
+        bare ids and sentinel strings, and the two id-bearing answers were
+        told apart by nothing -- which is what let the route read an income
+        answer as a template one.
         """
         loaded = MerchantRuleBatchSchema().load(rule_payload(_form(
             self._row(0, 11, "t:38")
             + self._row(1, 12, NOT_SAID)
             + self._row(2, 13, NEVER)
             + self._row(3, 14, NEW_ENVELOPE, name="Lowe's", category="4")
-            + self._row(4, 15, ALWAYS_ASK),
+            + self._row(4, 15, ALWAYS_ASK)
+            + self._row(5, 16, "i:7"),
         )))
 
         assert [item["answer"] for item in loaded["rules"]] == [
-            38, NOT_SAID, NEVER, NEW_ENVELOPE, ALWAYS_ASK,
+            SubmittedAnswer(kind=RuleAnswer.TEMPLATE, row_id=38),
+            NOT_SAID,
+            SubmittedAnswer(kind=RuleAnswer.NEVER),
+            SubmittedAnswer(kind=RuleAnswer.NEW_ENVELOPE),
+            SubmittedAnswer(kind=RuleAnswer.ALWAYS_ASK),
+            SubmittedAnswer(kind=RuleAnswer.INCOME_CATEGORY, row_id=7),
         ]
         assert loaded["rules"][3]["envelope_name"] == "Lowe's"
         assert loaded["rules"][3]["category_id"] == 4
+
+    def test_every_RuleAnswer_member_has_a_wire_value(self):
+        """The totality this package's own tables CLAIM and nothing graded.
+
+        ``_NAMES_NOTHING`` and ``_PREFIXED_ANSWERS`` assert in their docstring
+        that every member appears in exactly one of them, *"which is graded as
+        a round trip"* -- and nothing referenced either table (adversarial code
+        review 2026-08-31).  A claimed gate that measures nothing is this
+        project's own recurring defect, so here is the round trip.
+
+        **Exactly one**, not at least one: a member in both tables would be an
+        answer the field could deserialize two ways.
+        """
+        named = set(_NAMES_NOTHING.values())
+        prefixed = {kind for _, kind in _PREFIXED_ANSWERS}
+
+        assert named | prefixed == set(RuleAnswer)
+        assert named & prefixed == set()
 
     def test_an_answer_with_no_merchant_beside_it_names_nothing(self):
         """Unreachable from this screen -- the two fields render together.

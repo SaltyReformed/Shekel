@@ -224,7 +224,7 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
     This is not cosmetic on the forward side.  The escrow figure is what
     :func:`app.services.balance_at._plan_fold.fold_forward` subtracts from the record's
     cash, and the cash itself is now built on the DUE date's escrow
-    (``loan_payment_service._shadow_live_amount``); if the two ends key on
+    (``cash_ledger._loan_installment._shadow_live_amount``); if the two ends key on
     different dates, the difference lands silently in PROJECTED principal and
     propagates to the forward balance, ``plan_payoff_date``,
     ``plan_required_extra``, the projected Schedule A interest, and the property

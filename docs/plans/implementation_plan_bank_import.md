@@ -137,11 +137,44 @@ what it leaves a LATER step is on that step's own entry.
           of two tabs. Shut **N-389** and **N-403**; opened **N-404**, **N-405**.
           **`X-gi` must take the review QUEUE with the register**: that page still links to it three
           times, so deleting one route alone breaks the other's header button.
-  - [ ] **X-gj-2** `feat(import): a rule answers an inflow` -- **R-HT(a)**: a deposit signature
-        files as an income category, a merchant credit as a NEGATIVE purchase in that merchant's
-        envelope; it CREATES, so it auto-applies at import under **R-GH** with `X-ge`'s receipt and
-        undo. **MOVES MONEY, OWN PR.** Measured 2026-08-29 by running `review_set` on account 1:
-        nine of its sixteen unmatched deposits dissolve (five dividends, three refunds, one answer).
+  - [ ] **X-gj-2** `feat(import): a rule answers an inflow` -- the DECOMPOSED parent of
+        **R-HT(a)**'s inflow answer, split 2026-08-31 on the developer's ruling. The two halves
+        differ in what they DO and in what they need: the deposit half REPORTS a merchant credit and
+        ships on the schema the app already has; the refund half FILES one and needs the positivity
+        rule moved off `transaction_entries` (**R-II**). Measured 2026-08-29 and reproduced
+        2026-08-31 by running `review_set` on account 1: nine of its sixteen unmatched deposits
+        dissolve -- five dividends and one answer under 2a, three refunds under 2b.
+    - [ ] **X-gj-2a** `feat(import): a rule answers a deposit` -- the fifth :class:`RuleAnswer`,
+          `merchant_rules.income_category_id`, auto-applied at import under **R-GH** with `X-ge`'s
+          receipt and undo. **MOVES MONEY, OWN PR.**
+          **A merchant CREDIT is reported and never filed here** (**R-HX**): a merchant with a
+          SPENDING answer resolves to an unresolved placement whose sentence says the refund act is
+          not built, because filing it as income is the misfiling that ruling measured and
+          substituting is how a suggestion becomes a guess.
+          **Two withholdings, and their fail sets are DISJOINT** -- which is why neither can stand
+          in for the other. The pass did not finish LOOKING is **R-GH**'s own first narrowing, and
+          the books may ALREADY HOLD this deposit is the hazard the outflow side does not have:
+          `income_already_recorded_in` tests the ROW's own span so it sees only the deposit's own
+          pay period, while the near tier reaches ACROSS periods by `DAY_WINDOW`.
+    - [ ] **X-gj-2b** `feat(import): a refund is a negative purchase` -- **R-II**:
+          `ck_transaction_entries_positive_amount` becomes `amount <> 0` and the positivity rule
+          moves to the hand-entry door, where a typed negative is a typo. **MOVES MONEY, OWN PR.**
+          **IT OPENS WITH A READER CENSUS, AND THE CENSUS HAS A DIRECTION.** What it must establish
+          is that no reader breaks on a negative -- which is an ABSENCE, and a name-keyed grep over
+          `entry.amount` can never establish one. So it ENUMERATES the readers and rules on each.
+          Four are already traced sign-general and are the starting set:
+          `_posting_purchases._purchase_target` (which at `-28.29` emits
+          `{cash: +28.29, category: -28.29}` with no branch), `cash_ledger.settled_cash_leg` (three
+          terms, all sums that net), `entry_service._sums.compute_entry_sums` and
+          `_posting_purchases.purchase_posts`. **Every other reader is UNKNOWN until read.**
+          **It must grade BOTH members of `rule.answer`**, and the reason is measured rather than
+          stylistic: `inflow_placement_for` reports a refund for
+          `rule.answer in (TEMPLATE, NEW_ENVELOPE)`, and until 2026-08-31 every case staged a
+          TEMPLATE -- so a mutation giving NEW_ENVELOPE an income arm survived **959 tests** and
+          auto-filed a credit as income. On the developer's own data his `Amazon` rule is
+          NEW_ENVELOPE and his `Walmart` is TEMPLATE, so the ungraded arm was the one covering his
+          LARGEST refund merchant. **2b makes that arm FILE where 2a only reports**, so the arm that
+          survived is the arm that moves money.
   - [ ] **X-gj-3** `feat(import): a rule names a row set` -- **R-HT(b)**: a payroll signature
         pre-builds the group match (the period's payroll rows, the residue onto the named row per
         **R-GD** or its own row per **R-FN**) as a solid suggestion, with the

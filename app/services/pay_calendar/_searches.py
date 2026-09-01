@@ -280,6 +280,11 @@ def period_by_id(
     period set already, and needs it many times, is exactly the pattern the
     last sentence above says would decide the other way; it decided that way
     at ruling **R-PC34**.
+    **:func:`saved_by_id` below is that index, given a name** (plan step
+    C4-a-4), so the second such caller asks for it rather than spelling a
+    comprehension of its own -- and the choice between the two is made at the
+    call site, by which one the caller can honestly use, rather than inside
+    either.
 
     Args:
         periods: The owner's periods, in any order.  Identity is not a search
@@ -302,6 +307,107 @@ def period_by_id(
         if period.period_id == period_id:
             return period
     return None
+
+
+def require_period(
+    periods: "tuple[DerivedPeriod, ...]",
+    period_id: int,
+    transaction_id: int,
+    user_id: int,
+) -> DerivedPeriod:
+    """Return the period carrying *period_id*, REFUSING one *periods* lacks.
+
+    **The identity lookup for a caller holding a row that is already FILED,
+    rather than an id someone supplied** (pay-calendar plan step C4-a-1), and
+    the difference is which answer is honest.  :func:`period_by_id` answers
+    ``None`` because its callers hold an id a user typed, a URL carried or a
+    nullable column holds -- "no such period of yours" is a real answer there,
+    and each of them renders a 404 or an empty state for it.  A stored
+    ``budget.transactions`` row is not that: its ``pay_period_id`` is NOT NULL
+    and its foreign key is ``ON DELETE CASCADE``, so the period it names exists
+    as long as the row does, and a calendar is one owner's COMPLETE saved
+    payday set.  So a ``None`` here is not "not found" -- it is one of the two
+    states below, and answering it hands a money surface a decision it has no
+    basis to make.
+
+    **Nothing in the type system separates the twins, so the rule is written
+    down: an id read off a STORED row comes here.**  Some call sites look like
+    counter-examples and are not, and they are NAMED rather than counted --
+    counting them is what :func:`period_by_id`'s own docstring records going
+    stale, repeatedly -- so the next reader does not read them as permission.
+    ``statement_match._candidates.transaction_candidate`` asks
+    :func:`period_by_id` of a stored ``pay_period_id`` and treats the ``None``
+    as "not offerable, and not an error";
+    ``statement_match._candidates.destinations_for`` indexes
+    :func:`saved_by_id` with one and cannot miss at all.  Both are right, and
+    for one reason each states at its own scan: those queries are SCOPED BY THE
+    CALENDAR'S OWN period ids, so a row they return names a period the calendar
+    was built from.  **Where the precondition is carried by the QUERY, the
+    total form is honest; where it rests on two reads agreeing, it is not.**
+
+    **TWO states reach the refusal, and neither is coped with.**
+
+    * **A picture assembled from more than one moment** -- balance finding
+      **N-358**, owned by ``balance:X-i5``.  ``balance:X-i3-a`` binds a GET to
+      ``REPEATABLE READ, READ ONLY`` and leaves every other method at
+      ``READ COMMITTED``, which the posting reconciles' lock-then-reread
+      depends on.  **How exposed a caller is depends on the ORDER of its own
+      two reads -- whether it derives its calendar before or after it loads the
+      row -- so each states its own** rather than inheriting a sentence from
+      here.  What is NOT the rule is "a GET is one snapshot": ``/grid`` and
+      ``/dashboard`` open a :func:`~app.db_transaction.write_transaction` block
+      for the rolling top-up, so each runs read-only, then writable, then
+      read-only again over a NEW snapshot.
+    * **A row filed in ANOTHER owner's pay period.**  ``budget.transactions``
+      carries no ``user_id``: its owner IS its pay period's, and nothing
+      requires that owner to be its ACCOUNT's.  0 such rows on production,
+      re-measured 2026-08-31 over all 1,028 rows -- carried across from
+      ``_calendar.py`` with the rest of this argument and RE-TAKEN rather than
+      copied forward, because a measurement quoted as a reason decays
+      invisibly.
+
+    **The three quieter answers were weighed and refused** (the review that
+    parked C4-a-1, 2026-08-25): placing the row against no span hides a
+    contradiction on a money screen, re-deriving and retrying narrows the
+    window without closing it, and dropping the row deletes it from whatever is
+    being computed.  Each copes with an inconsistent picture rather than
+    preventing one, and preventing one is X-i5's work.
+
+    Args:
+        periods: The owner's periods, in any order.
+        period_id: A ``budget.pay_periods.id`` read off a stored row -- never a
+            submitted or nullable one, which is :func:`period_by_id`'s
+            question.
+        transaction_id: The ``budget.transactions.id`` being placed, for the
+            message.  Typed to the one table EVERY caller places -- rather than
+            taken as free text, so the message has ONE spelling;
+            ``budget.transfers`` carries a ``pay_period_id`` too and would
+            widen this rather than add a second format string.
+        user_id: The owner whose calendar *periods* came from, for the message.
+
+    Returns:
+        The :class:`~._derive.DerivedPeriod` carrying *period_id*.
+
+    Raises:
+        RuntimeError: *periods* does not hold that period.  Bare rather than a
+            :class:`~._derive.PayCalendarError`, matching
+            ``balance_at._asset_fold``'s refusal for the same class of state:
+            no door may produce it, so no caller should be catching it and none
+            does.
+    """
+    period = period_by_id(periods, period_id)
+    if period is None:
+        raise RuntimeError(
+            f"transaction id={transaction_id} is filed in pay period "
+            f"id={period_id}, which user {user_id}'s pay calendar "
+            f"does not hold. Either that period belongs to another owner "
+            f"(a row whose account and whose paycheck have different "
+            f"owners, which no constraint refuses), or this calendar and "
+            f"that row were read at two different moments with a "
+            f"concurrent write between them -- balance finding N-358, "
+            f"which needs a transaction that is not one snapshot."
+        )
+    return period
 
 
 def materialised_periods(
@@ -335,6 +441,69 @@ def materialised_periods(
     return tuple(
         period for period in periods if period.period_id is not None
     )
+
+
+def saved_by_id(
+    periods: "tuple[DerivedPeriod, ...]",
+) -> "dict[int, DerivedPeriod]":
+    """Return the MATERIALISED periods of *periods*, keyed by ``period_id``.
+
+    **:func:`period_by_id` in BULK, and the two are different answers to one
+    question on purpose.**  That one SCANS, which is right for a caller holding
+    a single id someone supplied; this builds an INDEX, which is right for a
+    caller holding a whole ROW SET.  Its docstring carries the measurement --
+    the scan against the index against a naive per-call index -- and names this
+    caller pattern as the one that decides this way; ruling **R-PC34** took it
+    at plan step C4-a-3, and plan step C4-a-4 gave the shape this name.
+
+    **The KEYS are meant to be a query SCOPE, and that is the whole point
+    rather than a convenience.**  A caller filters
+    ``pay_period_id IN (<this mapping>)`` and then indexes the SAME mapping per
+    row the query returned, so a row it cannot place is unconstructible rather
+    than guarded against -- which is :func:`require_period`'s own rule above:
+    *where the precondition is carried by the QUERY, the total form is honest;
+    where it rests on two reads agreeing, it is not.*  **That pointer named the
+    METHOD until this step moved the rule off it**, which is the shape a
+    cross-reference fails in: the citation stayed green while its target
+    emptied.  Two derivations -- an id set for
+    the filter and a lookup for the span -- can disagree under a concurrent
+    payday write between them; one value cannot.
+
+    **What a caller owes for that guarantee is that the filter and the lookup
+    read this ONE mapping**, and nothing here can check it.  A caller that
+    filtered on a second derivation and indexed this one would get a
+    ``KeyError`` rather than a wrong figure, which is the failure direction to
+    be in but is still the caller's to avoid.
+
+    **This function is PURE and its caller is the one that memoizes.**
+    :meth:`~._calendar.PayCalendar.saved_by_id` caches what this returns,
+    behind a read-only proxy, because a review pass asks it more than once and
+    a mutable mapping shared between two producers lets one narrow the other's
+    scope.  The rule and the reason are stated there; what belongs here is the
+    derivation, which is what every other function in this module is.
+
+    A PROJECTED period carries no id and is not here, through
+    :func:`materialised_periods` -- this package's single "is this period
+    SAVED" rule, rather than a fourth site spelling ``period_id is not None``
+    for itself, which is what
+    ``statement_match._candidates`` and both of ``reconcile_service._rows``'s
+    scope properties did until plan step C4-a-4.
+
+    Args:
+        periods: The owner's periods, in any order.  Identity is not a search
+            over a sorted key, so unlike the bisects above this carries no
+            ordering precondition.
+
+    Returns:
+        ``{period_id: DerivedPeriod}`` over every materialised period, in the
+        order they were given.  Empty when none is materialised, which for a
+        scope means it admits nothing -- the correct answer for an owner with
+        no paydays.
+    """
+    return {
+        period.period_id: period
+        for period in materialised_periods(periods)
+    }
 
 
 def final_covered_day(periods: "tuple[DerivedPeriod, ...]") -> "date | None":

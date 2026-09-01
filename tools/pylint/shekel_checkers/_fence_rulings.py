@@ -177,11 +177,20 @@ _KIND_CLASSIFIER_MODULES = frozenset({
 
 # The producer-free half of the cash valuation (plan step X-au-c2).  It was
 # defined inside ``cash_ledger`` and moved DOWN a tier because the loan stack
-# needs ``owned_contribution`` and can never import that package: its
-# ``_amount_source`` reaches UP into ``loan_payment_service`` for amount rule
-# 4's producer, so any loan-stack module naming ``cash_ledger`` closes an import
+# needs ``owned_contribution`` and could never import that package: its
+# ``_amount_source`` reached UP into ``loan_payment_service`` for amount rule
+# 4's producer, so any loan-stack module naming ``cash_ledger`` closed an import
 # cycle.  ``cash_ledger`` re-exports ``owned_contribution``, the only one of
 # the three that was ever public, so no consumer moved.
+#
+# **THAT REACH IS GONE as of plan step X-au-g-2a**, which moved rule 4's
+# producer into ``cash_ledger`` -- so the loan stack CAN name that package now,
+# and this module's split is no longer forced by an import cycle.  The scope
+# entry stays for the reason stated below (a fenced module's contents extracted
+# into an unfenced neighbour is the N-28 shape), which never depended on the
+# cycle; whether the module itself should fold back into ``cash_ledger`` is a
+# separate question this step deliberately did not take, and it is not answered
+# by silence here.
 #
 # **It is scoped here the day it is created, and that is the whole N-28
 # lesson applied to its own remedy.**  This module's rationale for keying the
@@ -526,6 +535,35 @@ _FENCED_MODULE_RULINGS = {
         # is empty and stays empty.
         "dated_deltas",
         "walk_cash_ledger",
+        # ``_loan_pricing`` / ``_loan_installment`` (plan step X-au-g-2a) --
+        # amount rule 4's producer, moved DOWN into this package from
+        # ``loan_payment_service`` because the amount model is the lower tier
+        # and should not reach up into a loan service to price a row (the
+        # unwind :mod:`app.services.row_valuation` says ``X-au-g`` owes).  All
+        # four rulings are the ones the ``loan_payment_service`` entry carried,
+        # and their STANDING is unchanged -- but the first one's wording is
+        # TIGHTENED rather than copied, and saying "verbatim" here would be a
+        # claim licensing a reader not to diff.  What changed: "current escrow"
+        # became "that installment's escrow", because ``_shadow_live_amount``
+        # resolves it on the shadow's own due date (ruling D5), never on a
+        # current one.  ``config_by_transfer`` / ``loan_pricing`` below ARE
+        # word for word:
+        #
+        # A projected payment's LIVE cash (P&I + that installment's escrow +
+        # standing extra) -- what a PAYMENT is worth, not what an account owes.
+        # Plan step X-au-c2b collapsed the two functions that answered this
+        # into ``LoanPricing``: ``live_cash`` is the rule both the display and
+        # the settle freeze ask, ``derive_cash`` its derive-mode arm.  Same
+        # standing as the pair they replaced.
+        "live_cash",
+        "derive_cash",
+        # The scenario's loan-payment CONFIG map (which transfers are loan
+        # payments, in which mode, with what standing extra) and the named
+        # constructor for the derivation holding it.  Configuration and
+        # ingredients; no figure at all in the first, and the second resolves
+        # nothing when it is called.
+        "config_by_transfer",
+        "loan_pricing",
         # ``_clearing`` (plan step X-f3a-1, ruling **R-FL**) -- WHICH STATEMENT
         # showed a line, which is the recorded fact that replaced ``covers``'
         # date comparison on the cash side.  Five names, one ruling, because
@@ -739,21 +777,16 @@ _FENCED_MODULE_RULINGS = {
         # PaymentRecord adaptation for the amortization engine -- shaping, no
         # figure of any kind.
         "prepare_payments_for_engine",
-        # A projected payment's LIVE cash (P&I + current escrow + standing
-        # extra) -- what a payment is worth, not what an account owes.  Plan
-        # step X-au-c2b collapsed the two functions that answered this into
-        # ``LoanPricing``: ``live_cash`` is the rule both the display and the
-        # settle freeze ask, ``derive_cash`` its derive-mode arm.  Same
-        # standing as the pair they replaced.
-        "live_cash",
-        "derive_cash",
-        # The scenario's loan-payment CONFIG map (which transfers are loan
-        # payments, in which mode, with what standing extra) and the named
-        # constructor for the derivation holding it.  Configuration and
-        # ingredients; no figure at all in the first, and the second resolves
-        # nothing when it is called.
-        "config_by_transfer",
-        "loan_pricing",
+        # ``live_cash`` / ``derive_cash`` / ``config_by_transfer`` /
+        # ``loan_pricing`` were ruled HERE until plan step X-au-g-2a moved
+        # amount rule 4's producer down into ``cash_ledger``.  Their rulings
+        # moved with them to the ``app.services.cash_ledger`` entry above --
+        # the names did not change STANDING, only address, and the one wording
+        # change is named there rather than passed off as a copy.  Said out
+        # loud because a name silently leaving a fenced module's ruled set is
+        # the failure mode this registry exists to prevent (findings N-28 /
+        # N-31), and a reader who remembers them here needs to be told where
+        # they went rather than concluding they were dropped.
     })),
     # The recurring DEFINITION reader (:data:`_RECURRING_DEFINITION_MODULES`).
     # An EMPTY producer set, and it is a strong claim rather than a weak one:

@@ -141,6 +141,13 @@ class Statement:
         answers, which is two statements of one fact inside one request -- the
         same defect :attr:`owner_id` exists to remove, one clause down.
 
+        **The "is this period SAVED" filter is the CALENDAR's own** since
+        pay-calendar plan step C4-a-4:
+        :meth:`~app.services.pay_calendar.PayCalendar.saved_by_id` states it,
+        and this property and :attr:`offerable_period_ids` beside it each wrote
+        ``period_id is not None`` for themselves until then -- two spellings of
+        one predicate inside one class, in a package that owns neither.
+
         **What it buys is a REFUSAL becoming unconstructible rather than
         merely unlikely.**  A row this scope admits names a period the calendar
         was built from, so :meth:`~app.services.pay_calendar.PayCalendar.require_period`
@@ -171,10 +178,7 @@ class Statement:
             is not here; the empty set for an owner with no paydays, which
             admits nothing and is the correct offer set for them.
         """
-        return frozenset(
-            period.period_id for period in self.calendar.periods
-            if period.period_id is not None
-        )
+        return frozenset(self.calendar.saved_by_id())
 
     @property
     def offerable_period_ids(self) -> "frozenset[int]":
@@ -198,9 +202,9 @@ class Statement:
             The offerable subset, empty when no period had started yet.
         """
         return frozenset(
-            period.period_id for period in self.calendar.periods
-            if period.period_id is not None
-            and period.start_date <= self.observed_on
+            period_id
+            for period_id, period in self.calendar.saved_by_id().items()
+            if period.start_date <= self.observed_on
         )
 
     @property

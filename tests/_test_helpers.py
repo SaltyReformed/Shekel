@@ -6648,7 +6648,7 @@ class PlantedPricing:
 
     It satisfies both halves of the seam: :meth:`net_for` is what
     ``income_service.salary_net_for`` asks, and :meth:`live_cash` is what
-    ``loan_payment_service.LoanPricing`` answers with.  Planting by
+    ``cash_ledger.LoanPricing`` answers with.  Planting by
     TRANSACTION id therefore lands on the loan half, which
     ``cash_ledger.live_override`` asks first.
 

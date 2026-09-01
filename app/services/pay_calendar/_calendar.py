@@ -142,9 +142,10 @@ clock.  Every answer is a pure function of the paydays and the cadence the
 caller supplies.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from types import MappingProxyType
 
 from ._cadence import PayCadence
 from ._derive import (
@@ -161,6 +162,8 @@ from ._searches import (
     materialised_periods,
     opening_payday,
     period_by_id,
+    require_period,
+    saved_by_id,
 )
 from ._views import (
     axis_window,
@@ -234,6 +237,8 @@ class PayCalendar:
         _saved: :meth:`saved`'s memo, filled on first use and excluded from
             equality for the same reason.  A one-element list because a frozen
             dataclass cannot rebind a field.
+        _by_id: :meth:`saved_by_id`'s memo, on the same slot shape and for the
+            same reason.
     """
 
     user_id: int
@@ -244,6 +249,9 @@ class PayCalendar:
         init=False, repr=False, compare=False,
     )
     _saved: "list[PeriodWindow]" = field(
+        init=False, default_factory=list, repr=False, compare=False,
+    )
+    _by_id: "list[Mapping[int, DerivedPeriod]]" = field(
         init=False, default_factory=list, repr=False, compare=False,
     )
 
@@ -705,42 +713,23 @@ class PayCalendar:
     def period_by_id(self, period_id: "int | None") -> "DerivedPeriod | None":
         """Return the SAVED period carrying *period_id*, else ``None``.
 
-        The one question here that is not about a DATE.
+        The one question here that is not about a DATE, and the TOTAL twin of
+        :meth:`require_period` below: this one answers ``None`` because its
+        callers hold an id a user typed, a URL carried or a nullable column
+        holds, and each renders a 404 or an empty state for it.
+        :func:`~._searches.require_period` states which of the twins a call
+        site owes.
 
-        **It has THIRTEEN live callers, and this paragraph has claimed ZERO,
-        FIVE, SEVEN and ELEVEN in turn.**  Plan step R7b-4's note --
-        "nothing in the application asks this" -- was already false then
-        (``grid/partials.py``, ``companion_service.py``); C2-f2d-3 added the
-        salary cockpit's period selector, its anatomy fragment and the
-        recurrence engine's pricing lookup; C2-f3a added both window labels;
-        the statement matcher and the schedule truncate door arrived with their
-        own steps; C2-f3c DELETED the pricing lookup while adding three -- the
-        carry-forward route and both of its service-side period lookups, where
-        this replaced a ``db.session.get`` plus a hand-written ``row.user_id``
-        comparison; and C2-f3e added the grid's cell-fragment resolver, the
-        same replacement one blueprint over.
-
-        **C4-a-1 added NO caller here, and that is the point of the twin**: a
-        site that places a STORED row's paycheck calls :meth:`require_period`
-        below, which REFUSES where this answers ``None``.  One such caller runs
-        PER ROW, and :func:`~._searches.period_by_id` carries what that costs
-        and why the lookup is still a scan.
-
-        **A sentence about the tree goes stale exactly like one about the
-        code**, and this one has now gone stale FOUR times -- the fourth
-        without any step touching it, because ELEVEN was already TWELVE when
-        C2-f3e re-ran the census.  So the predicate is written out here rather
-        than left to be reconstructed: call sites of this method or of
-        :func:`~._searches.period_by_id` that live in ``app/`` OUTSIDE this
-        package, which is ``grep -rn "period_by_id(" app/`` with the
-        definitions, the re-exports and the docstring mentions struck out.
-        **It does NOT match :meth:`require_period`'s callers**, which are
-        counted in that method's own docstring -- a predicate that silently
-        stopped covering a sibling is how this number went stale the last two
-        times.  The TWO calls inside the package -- this method's own
-        delegation on the line below, and :meth:`require_period`'s -- are
-        deliberately not counted, and saying so is the whole difference between
-        a number that can be checked and one that cannot.
+        **No count of its callers is written down, and that is this method's
+        own lesson.**  The sentence here claimed ZERO, FIVE, SEVEN, ELEVEN and
+        THIRTEEN in turn, once without any step touching it at all -- so what
+        survives is the PREDICATE, which cannot go stale: call sites of
+        this method or of :func:`~._searches.period_by_id` that live in
+        ``app/`` OUTSIDE this package, which is
+        ``grep -rn "period_by_id(" app/`` with the definitions, the re-exports
+        and the docstring mentions struck out.  It does NOT match
+        :meth:`require_period`'s callers, and a predicate that silently stopped
+        covering a sibling is how the number went stale twice.
 
         Never answers a projected period, which has no id.
 
@@ -749,7 +738,8 @@ class PayCalendar:
 
         Returns:
             The matching :class:`~._derive.DerivedPeriod`, or ``None`` -- see
-            :func:`period_by_id` for the two distinct ways that happens.
+            :func:`~._searches.period_by_id` for the two distinct ways that
+            happens.
         """
         return period_by_id(self.periods, period_id)
 
@@ -758,94 +748,70 @@ class PayCalendar:
     ) -> DerivedPeriod:
         """Return the SAVED period *period_id*, REFUSING one this calendar lacks.
 
-        **The identity lookup for a caller holding a row that is already
-        FILED, rather than an id someone supplied** (pay-calendar plan step
-        C4-a-1), and the difference is which answer is honest.
-        :meth:`period_by_id` answers ``None`` because its thirteen callers hold
-        an id a user typed, a URL carried or a nullable column holds -- "no such
-        period of yours" is a real answer there, and each of them renders a 404
-        or an empty state for it.  A stored ``budget.transactions`` row is not
-        that: its ``pay_period_id`` is NOT NULL and its foreign key is
-        ``ON DELETE CASCADE``, so the period it names exists as long as the row
-        does, and a calendar is one owner's COMPLETE saved payday set.  So a
-        ``None`` here is not "not found" -- it is one of the two states below,
-        and answering it hands a money surface a decision it has no basis to
-        make.
-
-        **Nothing in the type system separates the twins, so the rule is
-        written down: an id read off a STORED row comes here.**  One site looks
-        like a counter-example and is not, which is worth naming so the next
-        reader does not read it as permission:
-        ``statement_match._candidates.transaction_candidate`` asks
-        :meth:`period_by_id` of a stored ``pay_period_id`` and treats the
-        ``None`` as "not offerable, and not an error".  It is right to, and for
-        a reason it states at ``_transaction_candidates``: that query is SCOPED
-        BY THE CALENDAR'S OWN period ids, so a row it returns names a period
-        the calendar was built from and the lookup cannot answer ``None``
-        there.  Where the precondition is carried by the QUERY, the total form
-        is honest; where it rests on two reads agreeing, it is not.
-
-        **TWO states reach the refusal, and neither is coped with.**
-
-        * **A picture assembled from more than one moment** -- balance finding
-          **N-358**, owned by ``balance:X-i5``.  ``balance:X-i3-a`` binds a GET
-          to ``REPEATABLE READ, READ ONLY`` and leaves every other method at
-          ``READ COMMITTED``, which the posting reconciles' lock-then-reread
-          depends on.  **How exposed a caller is depends on the ORDER of its
-          own two reads -- whether it derives this calendar before or after it
-          loads the row -- so each states its own** rather than inheriting a
-          sentence from here.  What is NOT the rule is "a GET is one snapshot":
-          ``/grid`` and ``/dashboard`` open a
-          :func:`~app.db_transaction.write_transaction` block for the rolling
-          top-up, so each runs read-only, then writable, then read-only again
-          over a NEW snapshot.
-        * **A row filed in ANOTHER owner's pay period.**
-          ``budget.transactions`` carries no ``user_id``: its owner IS its pay
-          period's, and nothing requires that owner to be its ACCOUNT's.  0
-          such rows on production and on both dev clones, measured 2026-08-27.
-
-        **The three quieter answers were weighed and refused** (the review that
-        parked C4-a-1, 2026-08-25): placing the row against no span hides a
-        contradiction on a money screen, re-deriving and retrying narrows the
-        window without closing it, and dropping the row deletes it from
-        whatever is being computed.  Each copes with an inconsistent picture
-        rather than preventing one, and preventing one is X-i5's work.
+        :meth:`period_by_id`'s RAISING twin, for a caller holding a row that is
+        already FILED rather than an id someone supplied.  A stored
+        ``budget.transactions.pay_period_id`` is NOT NULL under an
+        ``ON DELETE CASCADE`` key, so a ``None`` here is not "not found" -- it
+        is a contradiction, and answering it would hand a money surface a
+        decision it has no basis to make.
+        :func:`~._searches.require_period` holds the rule: which of the twins a
+        call site owes, the two states that reach the refusal, and the three
+        quieter answers that were weighed and refused.
 
         Args:
             period_id: A ``budget.pay_periods.id`` read off a stored row --
                 never a submitted or nullable one, which is
                 :meth:`period_by_id`'s question.
             transaction_id: The ``budget.transactions.id`` being placed, for
-                the message.  Typed to the one table EVERY caller places --
-                the PREDICATE, where this cell read "both callers" until plan
-                step ``pay_calendar:C4-a-3`` added two more -- rather than
-                taken as free text, so the message has ONE spelling;
-                ``budget.transfers`` carries a ``pay_period_id`` too and would
-                widen this rather than add a second format string.
+                the message.
 
         Returns:
             The :class:`~._derive.DerivedPeriod` carrying *period_id*.
 
         Raises:
-            RuntimeError: This calendar does not hold that period.  Bare rather
-                than a :class:`~._derive.PayCalendarError`, matching
-                ``balance_at._asset_fold``'s refusal for the same class of
-                state: no door may produce it, so no caller should be catching
-                it and none does.
+            RuntimeError: This calendar does not hold that period.
         """
-        period = period_by_id(self.periods, period_id)
-        if period is None:
-            raise RuntimeError(
-                f"transaction id={transaction_id} is filed in pay period "
-                f"id={period_id}, which user {self.user_id}'s pay calendar "
-                f"does not hold. Either that period belongs to another owner "
-                f"(a row whose account and whose paycheck have different "
-                f"owners, which no constraint refuses), or this calendar and "
-                f"that row were read at two different moments with a "
-                f"concurrent write between them -- balance finding N-358, "
-                f"which needs a transaction that is not one snapshot."
-            )
-        return period
+        return require_period(
+            self.periods, period_id, transaction_id, self.user_id,
+        )
+
+    def saved_by_id(self) -> "Mapping[int, DerivedPeriod]":
+        """Return every MATERIALISED period of this calendar, keyed by its id.
+
+        :meth:`period_by_id` in BULK, for a caller holding a whole ROW SET
+        rather than one id -- and whose KEYS are that caller's query SCOPE, so
+        a row it cannot place is unconstructible rather than guarded against.
+        :func:`~._searches.saved_by_id` holds the rule, the measurement that
+        decides an index against that scan, and what each caller owes.
+
+        **Memoized on the same slot shape** :meth:`saved` **uses, and the
+        reason is this method's own rule applied to itself**: one review pass
+        asks it TWICE -- ``statement_match`` derives its candidate scope and
+        its destination scope from it -- and the two apply doors build two
+        scopes apiece, so a request asks four times.  A first cut declined the
+        memo on a stated "callers run it once per pass", which was measured
+        false by an adversarial design review the same day (2026-08-31).  Two
+        asks in one request is this project's DRY violation rather than a cost,
+        and it is the rule ``_candidates.candidates_for`` quotes three lines
+        above its own call.
+
+        **The memo is returned IMMUTABLE, which the window memo does not have
+        to be.**  A :class:`~._window.PeriodWindow` is frozen; a ``dict`` is
+        not, so a shared one lets a producer narrow the scope another producer
+        in the same pass is holding -- and that scope decides whose budget rows
+        a screen may offer money into.  A read-only proxy makes that
+        unconstructible rather than conventional, and it costs a caller
+        nothing: it is a scope for ``IN``, a key set for ``frozenset`` and an
+        index for a lookup, all of which a proxy answers.
+
+        Returns:
+            A read-only ``{period_id: DerivedPeriod}``; empty for a calendar
+            with no saved period, which admits nothing and is that owner's
+            correct scope.
+        """
+        if not self._by_id:
+            self._by_id.append(MappingProxyType(saved_by_id(self.periods)))
+        return self._by_id[0]
 
     # ---- views, never calendars --------------------------------------
     #

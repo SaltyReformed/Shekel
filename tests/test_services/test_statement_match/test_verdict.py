@@ -18,6 +18,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.services.pay_calendar import DerivedPeriod
 from app.services.statement_match import (
     DAY_WINDOW,
     BankLine,
@@ -62,9 +63,14 @@ def _destination(transaction_id=ENVELOPE_ID):
         transaction_id=transaction_id,
         name="Groceries",
         category_id=3,
-        period_start=date(2026, 8, 6),
-        period_end=date(2026, 8, 19),
-        pay_period_id=31,
+        # The whole paycheck, as ``destinations_for`` reads it off the owner's
+        # calendar (pay-calendar plan step C4-a-4) -- the period this record
+        # used to hold as three loose fields.
+        period=DerivedPeriod(
+            period_id=31, period_index=6,
+            start_date=date(2026, 8, 6), end_date=date(2026, 8, 19),
+            end_is_projected=False,
+        ),
         is_settled=False,
     )
 

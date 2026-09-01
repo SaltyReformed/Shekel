@@ -35,26 +35,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from ._offers import CandidateRow, RowKind
 
+if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from app.services.pay_calendar import DerivedPeriod
+
 
 @dataclass(frozen=True)
-class PurchaseDestination:  # pylint: disable=too-many-instance-attributes
+class PurchaseDestination:
     """One budget line a bank line could BECOME a purchase against.
 
     Plan step ``bank_import:X-f6a-3b``.  The offered set is
-    :func:`~._reads.destinations_for`'s, and it mirrors every guard
+    :func:`~._candidates.destinations_for`'s, and it mirrors every guard
     ``entry_service.create_entry`` and :func:`~._accept.accept_match` apply --
     so the screen cannot render a destination whose submission is refused,
     which is the failure this arc has now fixed three times.
 
-    Pylint: too-many-instance-attributes -- **eight because a destination
-    genuinely states eight things** (8/7), and three of them are what a merchant
-    rule has to MATCH on rather than display: the name, the category, and
-    whether a recurring definition owns the row.  ``StatementLine``,
-    ``CandidateRow`` and ``CreatedPurchase`` carry the same disable for the same
-    reason.
+    **It carried its paycheck as THREE fields until pay-calendar plan step
+    C4-a-4** -- ``period_start``, ``period_end`` and ``pay_period_id`` -- which
+    is one period's facts copied into a record, the same shape that arc removes
+    from ``budget.pay_periods`` one tier down.  Carrying the
+    :class:`~app.services.pay_calendar.DerivedPeriod` instead takes the record
+    from eight fields to six and DELETED this class's
+    ``too-many-instance-attributes`` disable rather than moving it: a fence
+    retired by removing its subject.
 
     Attributes:
         transaction_id: The budget line.
@@ -72,10 +78,15 @@ class PurchaseDestination:  # pylint: disable=too-many-instance-attributes
             of the cross-statement half compared the name alone -- so the two
             halves of one rule disagreed, which is what this column being here
             makes impossible.
-        period_start / period_end: Its pay period's span, from which
-            :attr:`label` is derived.
-        pay_period_id: The period it is budgeted under, so a caller can offer
-            the line's OWN period first without re-reading the calendar.
+        period: The paycheck it is budgeted under, as the calendar DERIVED it
+            -- its identity (``period_id``), which is how a caller offers the
+            line's own period first without re-reading the calendar, and its
+            span, from which :attr:`label` is derived.  Its ``period_id`` is
+            never ``None`` here, and that is carried by the QUERY rather than
+            asserted: :func:`~._candidates.destinations_for` scopes its scan by
+            :meth:`~app.services.pay_calendar.PayCalendar.saved_by_id`'s own
+            keys and indexes that same mapping, so only a MATERIALISED period
+            can reach this field.
         is_settled: Whether it has already closed.  Adding to a closed row
             raises what that row RECORDS as its cost, which is a bigger thing
             to do than filling in an open budget, so the screen says which it
@@ -97,9 +108,7 @@ class PurchaseDestination:  # pylint: disable=too-many-instance-attributes
     transaction_id: int
     name: str
     category_id: int
-    period_start: date
-    period_end: date
-    pay_period_id: int
+    period: "DerivedPeriod"
     is_settled: bool
     template_id: "int | None" = None
 
@@ -114,8 +123,43 @@ class PurchaseDestination:  # pylint: disable=too-many-instance-attributes
         :attr:`~._offers.MatchProposal.posts_on` states one class over: a
         second spelling could let the screen print one row's name while a
         rule matched another's.
+
+        **The span is the paycheck's own, not this record's copy of it**
+        (pay-calendar plan step C4-a-4): both ends come off one
+        :class:`~app.services.pay_calendar.DerivedPeriod`, so the two dates a
+        reviewer reads cannot describe different paychecks.
+
+        **The REGISTER is unchanged by that step; WHICH END is printed is
+        not**, and an earlier draft of this paragraph said the whole string was
+        unchanged, which is false as a property and true only of today's data.
+        The days are ISO as they were, and the period's own
+        :attr:`~app.services.pay_calendar.DerivedPeriod.label` is deliberately
+        not swapped in -- ``MM/DD``, carrying the year only where a period
+        straddles one, is a different register on a control an owner reads
+        before filing money, and changing what a screen says is a decision
+        nobody asked this step to take.  What DID change is that the second day
+        is the DERIVED end rather than ``pay_periods.end_date``.  Those agree
+        on all 63 of production's periods (measured 2026-08-31, 0
+        disagreements), so no label moves today; they are two facts either way,
+        and ``TestTheSpanADestinationCarriesIsDERIVED`` holds the control that
+        fires where they part.
+
+        **The LAST period's end is a cadence PROJECTION**
+        (:attr:`~app.services.pay_calendar.DerivedPeriod.end_is_projected`) and
+        this prints it without saying so -- which is NOT a change this step
+        made, and an adversarial review of it raised the question, so the
+        answer is written down.  ``pay_period_write`` authors that row's
+        ``end_date`` straight off the same derivation ("the payday that was
+        LAST before this write, whose stored end was therefore a cadence
+        PROJECTION rather than a fact", at its own site), so the column this
+        producer used to read WAS the projection, stored.  The two can part
+        only where the owner's cadence has moved since that row was written,
+        and there the derivation is the one that tracks it.
         """
-        return f"{self.name} ({self.period_start} - {self.period_end})"
+        return (
+            f"{self.name} "
+            f"({self.period.start_date} - {self.period.end_date})"
+        )
 
 
 def envelope_answer_key(
@@ -343,19 +387,39 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
 class IncomeCreation:
     """What the owner submitted to record one bank line as an income row.
 
-    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **One id and nothing
-    else**, and the emptiness is the design rather than a stub: a purchase
-    needs a container to be filed against and asks the owner which
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **One id
+    and nothing else**, and the emptiness is the design rather than a stub: a
+    purchase needs a container to be filed against and asks the owner which
     (:class:`PurchaseCreation`), while a deposit reserves nothing, so there is
     no arm to choose between and no name or category to state.  The figure and
-    the day come from the recorded LINE inside the same transaction, so a stale
-    page cannot commit a number the bank did not state.
+    the day come from the recorded LINE inside the same transaction, so a
+    stale page cannot commit a number the bank did not state.
+
+    **It briefly carried a ``category_id`` and that was a defect** (plan step
+    ``bank_import:X-gj-2a``, caught by adversarial code review 2026-08-31).
+    Ruling **R-HT(a)** lets a standing rule say what a DEPOSIT is, and the
+    first build put that answer here -- set by
+    :meth:`~._placement.InflowPlacement.creation_for`, which the import-time
+    rule pass reaches and no route does.  The Reconcile card therefore said
+    *Add as Interest income* and its OK wrote an UNCATEGORIZED row: two
+    answers to one question, on the door that moves money.  The classification
+    is derived by :func:`~._income.record_income_from_line` from the stored
+    rule now, so both consents reach ONE derivation and this value goes back to
+    being the one id it was.
 
     **It is a value rather than a bare id, for the reason its sibling is one**:
     the batch carries two lists of acts, and a list of ints beside a list of
     submissions is a shape a caller can pass to the wrong door.  Whose account
     this is, is the :class:`~._scope.ReviewScope`'s -- one statement, which the
     route proved once.
+
+    **The Reconcile card renders no category picker, and that is a developer
+    ruling of 2026-08-31 rather than an omission.**  The rule is the answer, so
+    the form posts one id and the door reads the rule.  A picker was considered
+    and refused because a category typed at the card is a fact the app does not
+    remember -- next month's deposit from the same signature would ask again,
+    which is the ask-the-same-question-many-times shape ruling **R-GA** exists
+    to remove.
 
     Attributes:
         line_id: The bank line to record.

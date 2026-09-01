@@ -32,7 +32,7 @@ derivation, so ruling **R-FH** says it belongs in the row's OWN amount and
 that it does not.  This leaf BUILT that move and then withdrew it, because two
 adversarial reviews measured it unsafe on today's schema:
 
-* ``loan_payment_service._manual_shadow_amount`` derives a manual payment's cash
+* ``cash_ledger._loan_installment._manual_shadow_amount`` derives a manual payment's cash
   as ``estimated_amount + extra`` and documents that column as *"always the
   generated base"*.  Writing the freeze there makes the derivation read its own
   output, so a settle / revert / settle cycle COMPOUNDS the standing extra --
@@ -160,7 +160,7 @@ def frozen_amount(shadow: Transaction, basis: AmountBasis) -> Decimal | None:
     operator owns that amount), an already-settled shadow, a transfer that is
     not a loan payment (no settings row), a MANUAL payment with no standing
     extra (its stored estimate already IS the cash), or a loan that cannot
-    resolve.  :meth:`~app.services.loan_payment_service.LoanPricing.live_cash`
+    resolve.  :meth:`~app.services.cash_ledger.LoanPricing.live_cash`
     owns that list; this is a named seam over it, not a second copy.
 
     **It asks the pass's OWN loan derivation** (plan step X-au-c2b).  It called

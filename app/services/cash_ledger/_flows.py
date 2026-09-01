@@ -120,12 +120,13 @@ def sum_projected(transactions, basis: AmountBasis):
 
     Scoped honestly, because "no clock" would be a stronger claim than the code
     supports: the *override map* this reduction is HANDED can still be built
-    from a wall-clock read one package over
-    (``loan_payment_service.LoanPricing`` pins ``date.today()`` when the read
+    from a wall-clock read a module over
+    (:class:`._loan_pricing.LoanPricing` pins ``date.today()`` when the read
     pass's basis is built, and resolves a derive-mode loan-payment shadow's P&I
-    against it -- finding **N-40**, recorded and unchanged here).  This function
-    reads no clock; its inputs are not yet guaranteed to have been built without
-    one.
+    against it -- finding **N-40**, recorded and unchanged here; plan step
+    **X-au-g-2b** is what closes it, by resolving that P&I on the installment's
+    own due date so there is no clock left to read).  This function reads no
+    clock; its inputs are not yet guaranteed to have been built without one.
 
     Args:
         transactions: Transaction objects for a single pay period.

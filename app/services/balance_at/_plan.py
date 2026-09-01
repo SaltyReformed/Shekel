@@ -19,7 +19,7 @@ The PAYMENTS come in two tiers:
 
 * **PLANNED** -- the loan's PROJECTED transfer shadows
   (:func:`app.services.loan_loaders.projected_income_shadows`), each at its LIVE
-  D3 cash (:meth:`app.services.loan_payment_service.LoanPricing.live_cash` =
+  D3 cash (:meth:`app.services.cash_ledger.LoanPricing.live_cash` =
   P&I + current escrow + ``extra_principal``, the SAME cash the checking side
   shows leaving).  A record is the evidence a payment will happen; where the
   record's due date has already passed but it has not settled, it is clamped

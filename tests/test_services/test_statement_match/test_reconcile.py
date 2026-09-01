@@ -229,13 +229,19 @@ class TestAStandingNeverAnswerIsAlreadyASkip:
         assert card.offers_ok is False
 
 
-class TestAnUnmatchedInflowIsNeverPreFilled:
+class TestAnUNANSWEREDInflowIsNeverPreFilled:
     """Ruling **bank_import:R-HX**, which bounds **R-HS**.
 
-    The only inflow door records uncategorized INCOME, and being the ONLY act
-    is not a justification: a merchant credit is a refund, and filing one as
-    income is the wrong act ``X-gj-2`` exists to correct.  On the developer's
-    own account 16 of the 18 inbox lines are deposits.
+    Recording a deposit as uncategorized INCOME is one act, and being the ONLY
+    act is not a justification: a merchant credit is a refund, and filing one
+    as income is the wrong act.  On the developer's own account 16 of the 18
+    inbox lines are deposits.
+
+    **What R-HX bounded was an app that could not DEFEND a destination**, and
+    plan step ``bank_import:X-gj-2a`` shipped the one it named -- so this class
+    now grades the half that is unchanged: a deposit no standing rule answers
+    for still asks.  Its sibling
+    :class:`TestAnANSWEREDInflowIsPreFilledByItsRule` grades the other half.
     """
 
     def test_a_deposit_asks_rather_than_proposing(self, app, db, seed_user):
@@ -1087,3 +1093,84 @@ class TestTheChipsNameOnlyATabThatCanRenderThem:
         for chip in page.chips:
             if chip.tab is not None:
                 assert chip.count == counts[chip.tab], chip.label
+
+
+class TestAnANSWEREDInflowIsPreFilledByItsRule:
+    """Ruling **R-HT(a)** meeting **R-HS**, plan step ``bank_import:X-gj-2a``.
+
+    **R-HX set a condition rather than a permanent bar**: every unmatched
+    inflow reads *Choose what this is* "until ``X-gj-2`` ships R-HT(a)'s inflow
+    rule and the destination becomes one the app can defend".  A stated rule is
+    exactly that defence, so a deposit it answers for gets the pre-filled
+    sentence R-HS asks for -- and one it does not still asks.
+    """
+
+    def _deposit(self, seed_user, merchant="Dividend Earned"):
+        """Stage one unexplained deposit from *merchant*."""
+        an_unexplained_outflow(
+            seed_user, merchant=merchant, amount="0.15",
+        )
+
+    def test_a_ruled_deposit_states_what_it_will_be_recorded_as(
+        self, app, db, seed_user,
+    ):
+        """*Add as Income: Salary*, with the verb first (**R-HR**)."""
+        an_envelope(seed_user)
+        category = seed_user["categories"]["Salary"]
+        a_rule(
+            seed_user, "Dividend Earned", income_category_id=category.id,
+        )
+        self._deposit(seed_user)
+        db.session.commit()
+
+        cards = _cards(_page(seed_user, Tab.TO_EXPLAIN))
+
+        assert len(cards) == 1
+        card = cards[0]
+        said = " ".join(span.text or "" for span in card.sentence)
+        assert card.sentence[0].text == "Add"
+        assert category.display_name in said
+        assert card.offers_ok is True
+
+    def test_a_merchant_CREDIT_still_asks_and_says_why(
+        self, app, db, seed_user,
+    ):
+        """A refund is not income, and the card must not offer it as one.
+
+        The merchant has a SPENDING answer, so R-HT(a) makes this credit its
+        INVERSE -- a negative purchase, which ``bank_import:X-gj-2b`` builds.
+        Until then the card asks, and the panel says why rather than leaving
+        the owner to wonder whether their rule ran.
+        """
+        envelope = an_envelope(seed_user)
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        self._deposit(seed_user, merchant="Amazon")
+        db.session.commit()
+
+        cards = _cards(_page(seed_user, Tab.TO_EXPLAIN))
+
+        assert len(cards) == 1
+        card = cards[0]
+        assert card.sentence[0].text == "Choose"
+        assert card.suggested is None
+        assert any("refund" in note for note in card.panel.notes)
+
+    def test_an_ALWAYS_ASK_deposit_is_not_pre_filled(
+        self, app, db, seed_user,
+    ):
+        """The answer whose whole content is *keep asking me*.
+
+        It names no income category, so it must reach the card exactly as
+        having said nothing does -- and it must NOT be reported as a rule this
+        pass withheld, which would be a sentence about a decision the owner
+        made saying the app failed to act on it.
+        """
+        an_envelope(seed_user)
+        a_rule(seed_user, "Dividend Earned", always_ask=True)
+        self._deposit(seed_user)
+        db.session.commit()
+
+        cards = _cards(_page(seed_user, Tab.TO_EXPLAIN))
+
+        assert cards[0].sentence[0].text == "Choose"
+        assert not any("refund" in note for note in cards[0].panel.notes)
