@@ -1,10 +1,18 @@
 """
 Shekel Budget App -- Cash ledger: what one loan INSTALLMENT costs.
 
-Amount rule 4's per-shadow tier: a loan's rate-period P&I and payment day
+Amount rule 4's per-shadow tier: a loan's rate periods and payment day
 (:class:`_LoanCashBasis`), and the two rules that price one shadow against
-them -- the DERIVE arm's P&I plus that installment's own escrow plus any
-standing extra, and the MANUAL arm's operator-owned base plus the extra.
+them -- the DERIVE arm's installment P&I plus that installment's own escrow
+plus any standing extra, and the MANUAL arm's operator-owned base plus the
+extra.
+
+**Every contractual term here resolves on the INSTALLMENT it governs, never on
+a read date** (ruling **R-IJ**, plan step X-au-g-2b).  The basis holds the
+loan's term SET -- a pure function of its params and its rate feed, dated by
+nothing -- and :func:`_shadow_live_amount` derives the shadow's due date once
+and reads both the P&I and the escrow on it.  Nothing in this module, or in
+the package above it, reads a wall clock.
 
 **It lives in THIS package rather than in ``loan_payment_service``, and plan
 step X-au-g-2a is what moved it.  This is the ONE place that argument is
@@ -68,7 +76,6 @@ Imports no sibling, so it is the bottom of this package's pricing line:
 """
 
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 
 from app.models.transaction import Transaction
@@ -78,6 +85,7 @@ from app.services.loan_loaders import (
     load_rate_changes,
     loan_payment_due_date,
 )
+from app.services.rate_period_engine import RatePeriod, period_for_date
 from app.utils.money import round_money
 
 @dataclass(frozen=True)
@@ -85,36 +93,66 @@ class _LoanCashBasis:
     """The two loan-level facts a shadow's live cash is built from.
 
     Both fall out of ONE ``LoanParams`` load (:func:`_resolve_loan_basis`), so
-    they are returned together rather than re-queried per shadow: the P&I is a
-    resolved figure, the payment day the contractual constant that turns a
-    shadow into the installment it satisfies.
+    they are returned together rather than re-queried per shadow: the rate
+    periods are the loan's TERMS over its whole life, the payment day the
+    contractual constant that turns a shadow into the installment it satisfies.
+
+    **It holds the loan's term SET rather than one resolved P&I, and ruling
+    R-IJ is why** (plan step X-au-g-2b).  A loan's contractual terms resolve on
+    the INSTALLMENT they govern, never on a read date, so there is no such
+    thing as "the loan's monthly P&I" for a whole pass to share: an ARM's
+    December and January installments are governed by different periods when a
+    recast falls between them.  What a pass CAN share is the period set, which
+    is a pure function of the loan's params and its rate feed and depends on no
+    date at all -- so it is resolved once per loan per pass here and each
+    shadow reads the period governing its own due date
+    (:func:`_shadow_live_amount`), exactly as its escrow already resolves on
+    that date.
 
     Attributes:
-        monthly_pi: The loan's rate-period monthly P&I, no escrow.
+        periods: The loan's ordered :class:`~app.services.rate_period_engine.RatePeriod`
+            set (:func:`app.services.loan_resolver.resolve_periods`), each
+            carrying the level P&I held constant for its span.  Non-empty for
+            a configured loan: period 0 always starts at origination.
         payment_day: The loan's contractual day-of-month due day, 1-31, from
             :attr:`app.models.loan_params.LoanParams.payment_day` -- the
             fallback basis :func:`app.services.loan_loaders.loan_payment_due_date`
             needs for a shadow carrying no stored ``due_date``.
     """
 
-    monthly_pi: Decimal
+    periods: list[RatePeriod]
     payment_day: int
 
 
-def _resolve_loan_basis(
-    loan_account_id: int, as_of: date
-) -> _LoanCashBasis | None:
-    """Resolve a loan's live monthly P&I and payment day as of ``as_of``, or None.
+def _resolve_loan_basis(loan_account_id: int) -> _LoanCashBasis | None:
+    """Resolve a loan's rate periods and payment day, or ``None``.
 
     Returns ``None`` when the loan has no ``LoanParams`` row (it cannot be
     resolved, so its shadows keep their stored amount); a configured loan is
     always resolvable, since its origination anchor fact is synthesized from
-    the immutable params.  The monthly P&I is the rate-period level payment;
-    the escrow term is deliberately NOT added here because it is
-    per-INSTALLMENT (:func:`_shadow_live_amount`), not one figure per loan --
-    a future-dated escrow version means a December and a January payment carry
-    different escrow, so the escrow must be resolved against each shadow's own
-    due date rather than folded into a single loan-level PITI.
+    the immutable params.
+
+    **It takes no date, and ruling R-IJ is what deleted the one it used to
+    take** (plan step X-au-g-2b).  It resolved
+    ``compute_monthly_payment_baseline(params, rate_changes, as_of)`` into a
+    single ``monthly_pi`` -- one P&I, pinned at the read pass's wall clock,
+    applied to every installment the pass priced (finding **N-40**).  That is
+    the same producer this now calls, DECOMPOSED rather than replaced:
+    ``compute_monthly_payment_baseline`` is by its own definition
+    ``period_for_date(resolve_periods(params, rate_changes), as_of).period_pi``,
+    so resolving the periods here and letting each shadow pick its own period
+    (:func:`_shadow_live_amount`) reads the same figure from the same
+    derivation on a date the pass no longer chooses.  The periods are a pure
+    function of the params and the rate feed, so there is no date left to pin:
+    a resolver reads no wall clock.
+
+    The escrow term is deliberately NOT added here for the reason the P&I is
+    no longer resolved here -- it is per-INSTALLMENT
+    (:func:`_shadow_live_amount`), not one figure per loan.  A future-dated
+    escrow version means a December and a January payment carry different
+    escrow, so the escrow must be resolved against each shadow's own due date
+    rather than folded into a single loan-level PITI; ruling R-IJ is that same
+    rule, stated for the P&I term beside it.
 
     **It reads the loan's TERMS and nothing else, and that is what deletes a
     cycle three docstrings were built around.**  It used to run
@@ -145,11 +183,15 @@ def _resolve_loan_basis(
     :func:`~app.services.loan_resolver.compute_monthly_payment_baseline` is the
     cheap producer documented as returning the same value for the same inputs.
 
-    Measured on a production clone 2026-08-31, both live loans, ``as_of``
-    today, by ``tests/manual/verify_loan_pricing_ignores_payment_feed.py``:
-    the Mortgage answers ``1293.96`` and the Van Loan ``531.94`` from the FULL
-    29-record history, an EMPTY one, the confirmed 5 alone, a DOUBLED 58, and
-    this cheap producer -- five ways, one figure each.
+    Measured on a production clone 2026-08-31, both live loans, at the read
+    date then current, by
+    ``tests/manual/verify_loan_pricing_ignores_payment_feed.py``: the Mortgage
+    answers ``1293.96`` and the Van Loan ``531.94`` from the FULL 29-record
+    history, an EMPTY one, the confirmed 5 alone, a DOUBLED 58, and the cheap
+    producer -- five ways, one figure each.  *That harness pins a DATE because
+    the payment-feed independence it grades is a claim about one figure; this
+    function no longer takes one, so the harness now asks the period set for
+    the P&I governing that date.*
 
     The DOUBLED feed is the arm that grades the CLAIM rather than the number,
     and the harness states why; the suite carries the same distinction as two
@@ -162,7 +204,6 @@ def _resolve_loan_basis(
 
     Args:
         loan_account_id: The destination loan account to resolve.
-        as_of: The evaluation date for the rate-period P&I.
 
     Returns:
         The loan's :class:`_LoanCashBasis`, or ``None`` when the account is
@@ -172,8 +213,8 @@ def _resolve_loan_basis(
     if params is None:
         return None
     return _LoanCashBasis(
-        monthly_pi=loan_resolver.compute_monthly_payment_baseline(
-            params, load_rate_changes(loan_account_id), as_of,
+        periods=loan_resolver.resolve_periods(
+            params, load_rate_changes(loan_account_id),
         ),
         payment_day=params.payment_day,
     )
@@ -185,25 +226,42 @@ def _shadow_live_amount(
     shadow: Transaction,
     extra_principal: Decimal,
 ) -> Decimal:
-    """Derive-mode live cash for a loan-payment shadow: P&I + its INSTALLMENT's escrow + extra.
+    """Derive-mode live cash for a loan-payment shadow: its INSTALLMENT's P&I + escrow + extra.
 
     The single expression both the projected-display override
     (:meth:`LoanPricing.live_cash`) and the settle-time capture (the SAME
     method since plan step X-au-c2b, which collapsed the two functions that
     answered this into one) build an AUTO-DERIVED loan payment's cash from, so
-    they can never disagree.  The escrow term is
-    :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on the shadow's
-    DUE date (:func:`app.services.loan_loaders.loan_payment_due_date`) -- the
-    exact date and function the genesis split reads
-    (``loan_ledger.walk_loan_ledger``) -- so the cash built into a payment and
-    the escrow its split subtracts are the same figure by construction (the
-    cash==split invariant), never by coincidence.
+    they can never disagree.
+
+    **BOTH contractual terms resolve on the shadow's own DUE date, and that is
+    ruling R-IJ** (plan step X-au-g-2b): the due date
+    (:func:`app.services.loan_loaders.loan_payment_due_date`) is derived ONCE
+    here and drives the P&I -- the level payment of the rate period containing
+    it (:func:`~app.services.rate_period_engine.period_for_date`) -- and the
+    escrow -- :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on
+    the same day.  One date for both is what makes them one installment's
+    price rather than two answers about two moments; deriving it once rather
+    than twice is what makes that structural.
+
+    **The genesis split resolves its rate period from the identical date**
+    (``loan_ledger._split.split_one_payment``, ``period_for_date(periods,
+    due_date)``), so the cash built into a payment and the interest and escrow
+    its split backs out of principal read one period and one escrow version,
+    by construction (the cash==split invariant) rather than by coincidence.
+    Until R-IJ that held for the escrow alone: the P&I came from whatever
+    period contained the READ date, so on an ARM whose rate had adjusted
+    between the two the residual ``cash - interest - escrow`` absorbed the
+    recast delta as PRINCIPAL (finding **N-40**).
 
     **Why the DUE date and not the pay-period start** (ruling D5, finding
     N-34): a pay period begins up to ~2 weeks before the installment it pays,
-    so an escrow version effective inside that window would build one figure
-    into the cash and back a different one out of the split, silently moving
-    the difference into principal.  Contract time governs both ends.
+    so a version effective inside that window would build one figure into the
+    cash and back a different one out of the split, silently moving the
+    difference into principal.  Contract time governs both ends.  R-IJ is that
+    same argument for the P&I term, and rejects the read pass's own ``as_of``
+    on the same ground it rejects the period start: one figure for every
+    installment is still the wrong figure for all but one of them.
 
     ``extra_principal`` (the standing overpayment, spec Sec. 6) is added on top
     in BOTH the display and the settle freeze, and the split's residual
@@ -214,23 +272,24 @@ def _shadow_live_amount(
     Args:
         basis: The loan's :class:`_LoanCashBasis` (:func:`_resolve_loan_basis`),
             resolved once per loan.  Taken WHOLE rather than unpacked by every
-            caller: its P&I and its payment day are two halves of one figure --
-            the payment day dates the escrow the P&I is added to -- so passing
-            them separately would let a call site pair one loan's P&I with
-            another's due day.
+            caller: its rate periods and its payment day are two halves of one
+            figure -- the payment day dates the installment whose period is
+            read -- so passing them separately would let a call site pair one
+            loan's terms with another's due day.
         escrow_lines: The loan's escrow lines with their full version history.
-        shadow: The payment shadow whose installment dates the escrow resolution.
+        shadow: The payment shadow whose installment dates BOTH resolutions.
         extra_principal: The recurring payment's standing extra principal
             (``0.00`` when none), from :func:`loan_payment_config`.
 
     Returns:
-        ``round_money(monthly_pi + escrow_monthly_as_of(lines, due date)
-        + extra_principal)``.
+        ``round_money(period_for_date(basis.periods, due).period_pi
+        + escrow_monthly_as_of(lines, due) + extra_principal)``, where ``due``
+        is the shadow's installment date.
     """
-    escrow = escrow_calculator.escrow_monthly_as_of(
-        escrow_lines, loan_payment_due_date(shadow, basis.payment_day),
-    )
-    return round_money(basis.monthly_pi + escrow + extra_principal)
+    due = loan_payment_due_date(shadow, basis.payment_day)
+    monthly_pi = period_for_date(basis.periods, due).period_pi
+    escrow = escrow_calculator.escrow_monthly_as_of(escrow_lines, due)
+    return round_money(monthly_pi + escrow + extra_principal)
 
 
 def _manual_shadow_amount(

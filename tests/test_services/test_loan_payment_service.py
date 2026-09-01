@@ -1117,7 +1117,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
                 )
             db.session.commit()
 
-            before = _resolve_loan_basis(loan.id, date(2026, 6, 1))
+            before = _resolve_loan_basis(loan.id)
             assert before is not None
             assert get_payment_history(
                 loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
@@ -1128,9 +1128,18 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
             ).delete(synchronize_session=False)
             db.session.commit()
 
-            after = _resolve_loan_basis(loan.id, date(2026, 6, 1))
+            after = _resolve_loan_basis(loan.id)
             assert after is not None
-            assert after.monthly_pi == before.monthly_pi
+            # The whole TERM SET, period by period -- not one resolved figure.
+            # A producer that read the feed could agree on the period governing
+            # one date while differing on another; comparing the set closes
+            # that.  (The basis holds periods rather than a scalar since plan
+            # step X-au-g-2b, ruling R-IJ.)
+            assert [
+                (p.start_date, p.annual_rate, p.period_pi) for p in after.periods
+            ] == [
+                (p.start_date, p.annual_rate, p.period_pi) for p in before.periods
+            ]
             assert after.payment_day == before.payment_day
 
     def test_pricing_a_loan_issues_no_statement_against_the_payment_rows(
@@ -1154,7 +1163,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
             db.session.expire_all()
 
             with _statements_issued() as seen:
-                basis = _resolve_loan_basis(loan.id, date(2026, 6, 1))
+                basis = _resolve_loan_basis(loan.id)
 
             assert basis is not None
             assert seen, "the probe recorded nothing, so it graded nothing"

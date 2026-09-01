@@ -746,14 +746,19 @@ def _loan_payment_answer(txn, basis: AmountBasis) -> Decimal:
     **N-262**'s separate question, answered above this rule rather than inside
     it.
 
-    **The derive arm still reads the wall clock, through the derivation it
-    delegates to** -- :class:`._loan_pricing.LoanPricing` pins ``date.today()``
-    when the basis is built, which is finding **N-40**, owned by plan step
-    **X-au-g-2b**: the leaf that rules a shadow's P&I onto its own due date as
-    ruling D5 already put its escrow.  The README states clock-freedom as the
-    amount model's precondition against the SALARY derivation, where plan step
-    X-as closed it; this is the remaining read and it is disclosed rather than
-    claimed absent.
+    **The derive arm reads no wall clock, and plan step X-au-g-2b is what
+    closed the last read.**  :class:`._loan_pricing.LoanPricing` pinned
+    ``date.today()`` when the basis was built and resolved every shadow's P&I
+    against it -- finding **N-40** -- while the escrow beside it in the same
+    sum already resolved on the shadow's own due date.  Ruling **R-IJ** put
+    both on the installment (as ruling D5 had put the escrow), so the
+    derivation takes no date and the whole package makes no clock call --
+    an AST census over all thirteen modules, asserted by
+    ``test_amount_source.TestTheAmountModelReadsNoClock``.  *An earlier draft
+    of this paragraph credited the README with stating clock-freedom as the
+    amount model's precondition; it does not, and the only sentence there
+    joining the two was this step's own specification, which made the appeal
+    circular.  The property is stated here, where the control is.*
     Dormant on production (``budget.loan_payment_settings`` is empty), so this
     rule prices ``$0.00`` there and is graded only on a seeded loan.
 

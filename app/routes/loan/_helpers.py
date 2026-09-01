@@ -697,17 +697,21 @@ def build_loan_band_chart(account, params):
     return build_band_chart(scenarios, len(loan.payments) > 0)
 
 
-def _compute_schedule_totals(schedule, monthly_escrow=Decimal("0.00")):
+def _compute_schedule_totals(schedule, row_escrow):
     """Sum payment, principal, interest, escrow, and extra from a schedule.
 
     The Payment column in the schedule shows P&I + escrow for each month.
     Totals are computed from the actual schedule rows so the footer row
-    matches the individual data rows exactly.
+    matches the individual data rows exactly -- including the escrow column,
+    which is the SUM of the per-row figures rather than one figure times the
+    row count (ruling **R-IJ**, plan step X-au-g-2b, finding **N-410**): once
+    escrow is effective-dated, a schedule spanning a version boundary has no
+    single monthly escrow to multiply.
 
     Args:
         schedule: List of AmortizationRow objects.
-        monthly_escrow: Monthly escrow amount added to each row's
-            payment for display.
+        row_escrow: The index-parallel per-row monthly escrow, each resolved on
+            that row's own installment date (:func:`build_schedule_context`).
 
     Returns:
         dict with keys: total_payment, total_principal, total_interest,
@@ -716,12 +720,11 @@ def _compute_schedule_totals(schedule, monthly_escrow=Decimal("0.00")):
     """
     if not schedule:
         return {}
-    num_months = len(schedule)
     total_pi = sum((row.payment for row in schedule), Decimal("0.00"))
     total_principal = sum((row.principal for row in schedule), Decimal("0.00"))
     total_interest = sum((row.interest for row in schedule), Decimal("0.00"))
     total_extra = sum((row.extra_payment for row in schedule), Decimal("0.00"))
-    total_escrow = monthly_escrow * num_months
+    total_escrow = sum(row_escrow, Decimal("0.00"))
     return {
         "total_payment": total_pi + total_escrow + total_extra,
         "total_principal": total_principal,
@@ -732,44 +735,92 @@ def _compute_schedule_totals(schedule, monthly_escrow=Decimal("0.00")):
     }
 
 
-def build_schedule_context(planned_schedule, monthly_escrow, current_rate, params):
+def build_schedule_context(planned_schedule, escrow_lines, params):
     """Build the amortization-schedule template context.
 
-    Shared by the loan detail page's transitional schedule tab and the
-    standalone schedule route (:mod:`app.routes.loan.schedule`).  The planned
-    schedule shows the user's trajectory with confirmed actuals + projected
-    payments.  Three index-parallel lists are computed server-side (consumed via
-    ``loop.index0``) so the schedule template renders without inline Jinja
-    arithmetic (MED-04 / E-16): per-row total monthly outflow (P&I + escrow +
-    extra), the ARM display rate (storage-domain fraction times 100), and a
-    continuous payment number from origination so a mid-life loan's "#" column
-    keeps counting up instead of restarting at 1.
+    The standalone schedule route's (:mod:`app.routes.loan.schedule`) template
+    context.  The planned schedule shows the user's trajectory with confirmed
+    actuals + projected payments.  Four index-parallel lists are computed
+    server-side (consumed via ``loop.index0``) so the schedule template renders
+    without inline Jinja arithmetic (MED-04 / E-16): the row's own monthly
+    escrow, its total monthly outflow (P&I + that escrow + extra), the ARM
+    display rate (storage-domain fraction times 100), and a continuous payment
+    number from origination so a mid-life loan's "#" column keeps counting up
+    instead of restarting at 1.
+
+    **Every row resolves its OWN escrow, on its own installment date** (ruling
+    **R-IJ**, plan step X-au-g-2b, finding **N-410**).  It took one
+    ``monthly_escrow`` resolved at ``date.today()`` and added it to all 360
+    rows alike, so a future-dated escrow version never reached the rows it
+    governs while every other tier -- the genesis split, the forward plan, the
+    live cash of a materialised payment -- already keyed on the installment.
+    :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on
+    ``row.payment_date`` is that same derivation on that same date.
+
+    **The ARM rate column reads the row's own rate and has no fallback**, which
+    is the same step's deletion of a guard nothing could reach.  It was
+    ``row.interest_rate if row.interest_rate is not None else current_rate``,
+    where ``current_rate`` came from a ``date.today()`` rate lookup in the
+    route.  All THREE constructions of an
+    :class:`~app.services.amortization_engine.AmortizationRow`
+    (``rate_period_engine.confirmed_amortization_row`` / ``._replay_payment_row``,
+    ``amortization_engine._projection.project_forward``) set ``interest_rate``
+    from a rate period's ``annual_rate``; ``ProjectionInputs`` refuses an empty
+    terms schedule at construction; and the one place a row is DERIVED from
+    another rather than built -- ``loan_resolver._payoff``'s
+    ``dataclasses.replace(row, extra_payment=...)`` -- names only that field, so
+    the rate is carried through.  *That fourth site was missing from this
+    census when an adversarial review checked it; the conclusion held and the
+    enumeration did not, which is the half worth recording.*  No rendered row
+    can carry ``None``.  A control asserts it:
+    ``test_loan.TestScheduleRowsResolveTheirOwnTerms``'s
+    ``test_every_rendered_row_carries_its_own_rate``.
+
+    Args:
+        planned_schedule: The rows to render -- confirmed history plus the
+            committed forward projection.
+        escrow_lines: The loan's escrow lines with their full version history
+            (:attr:`~app.services.loan_payment_service.LoanContext.escrow_lines`);
+            each row resolves its own monthly escrow from them.  Empty for a
+            loan with no escrow, which makes every row's escrow ``0.00`` and
+            hides the column.
+        params: The loan's :class:`~app.models.loan_params.LoanParams` -- its
+            ``is_arm`` decides the rate column and its ``origination_date``
+            numbers the rows.
 
     Returns:
         dict of template vars: amortization_schedule, show_rate_column,
-        schedule_totals, schedule_row_totals, schedule_row_rates_pct,
-        schedule_row_numbers.
+        show_escrow_column, schedule_totals, schedule_row_escrow,
+        schedule_row_totals, schedule_row_rates_pct, schedule_row_numbers.
     """
     show_rate_column = bool(params.is_arm)
-    schedule_row_totals = [
-        round_money(row.payment + monthly_escrow + row.extra_payment)
+    schedule_row_escrow = [
+        escrow_calculator.escrow_monthly_as_of(escrow_lines, row.payment_date)
         for row in planned_schedule
     ]
+    schedule_row_totals = [
+        round_money(row.payment + escrow + row.extra_payment)
+        for row, escrow in zip(planned_schedule, schedule_row_escrow)
+    ]
     schedule_row_rates_pct = [
-        (row.interest_rate if row.interest_rate is not None else current_rate)
-        * Decimal("100")
-        for row in planned_schedule
+        row.interest_rate * Decimal("100") for row in planned_schedule
     ] if show_rate_column else None
     schedule_row_numbers = [
         payment_number(params.origination_date, row.payment_date)
         for row in planned_schedule
     ]
+    totals = _compute_schedule_totals(planned_schedule, schedule_row_escrow)
     return {
         "amortization_schedule": planned_schedule,
         "show_rate_column": show_rate_column,
-        "schedule_totals": _compute_schedule_totals(
-            planned_schedule, monthly_escrow,
-        ),
+        # The column is shown when the schedule CHARGES escrow anywhere in it,
+        # not when the loan escrows something TODAY.  A loan whose first escrow
+        # version starts mid-schedule used to render no column at all; one
+        # whose escrow ends part-way through used to render today's figure on
+        # every row after it ended.
+        "show_escrow_column": totals.get("total_escrow", Decimal("0.00")) > 0,
+        "schedule_totals": totals,
+        "schedule_row_escrow": schedule_row_escrow,
         "schedule_row_totals": schedule_row_totals,
         "schedule_row_rates_pct": schedule_row_rates_pct,
         "schedule_row_numbers": schedule_row_numbers,

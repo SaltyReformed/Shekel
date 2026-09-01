@@ -18,6 +18,7 @@ from app import ref_cache
 from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion
+from app.models.loan_features import RateHistory
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -28,6 +29,7 @@ from app.services import (
     loan_posting_service,
     transfer_recurrence,
 )
+from app.services.loan_loaders import loan_payment_due_date
 from app.services.rate_period_engine import monthly_due_date
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
@@ -55,6 +57,10 @@ def _live_overrides(scenario_id, rows):
     and re-read must see the new figure, and a derivation memoizes for the
     length of the read pass it was built for.
 
+    It took ``date.today()`` beside the scenario until plan step X-au-g-2b:
+    ruling **R-IJ** put a loan's contractual terms on the installment they
+    govern, so the derivation takes no date (finding **N-40**).
+
     Args:
         scenario_id: The scenario to resolve each loan against.
         rows: The shadows to ask about.
@@ -62,7 +68,7 @@ def _live_overrides(scenario_id, rows):
     Returns:
         ``{transaction_id: Decimal}`` over the rows that have a live figure.
     """
-    pricing = cash_ledger.loan_pricing(scenario_id, date.today())
+    pricing = cash_ledger.loan_pricing(scenario_id)
     answers = {}
     for row in rows:
         cash = pricing.live_cash(row)
@@ -536,7 +542,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
         # The freeze is one-shot: the derivation returns None for a settled
         # shadow, so the settle capture can never fire a second time.
         assert cash_ledger.loan_pricing(
-            scenario_id, date.today(),
+            scenario_id,
         ).live_cash(settled) is None
 
         # A stale-tab re-settle leaves the frozen figure untouched.
@@ -800,3 +806,79 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         # same 1,599.10 rather than 1,699.10: the derivation must never read
         # its own output.
         assert settled.estimated_amount == Decimal("1499.10")
+
+
+def test_each_shadows_cash_is_its_own_installments_pi(
+    app, db, seed_user, seed_periods,
+):
+    """A shadow's P&I is its INSTALLMENT's, not the read date's (ruling R-IJ).
+
+    Finding **N-40**, closed structurally at plan step X-au-g-2b.  The
+    derivation resolved ONE ``compute_monthly_payment_baseline(..., as_of)``
+    per loan per read pass and added it to every shadow alike, while the escrow
+    in the same sum already resolved on each shadow's own due date.  So a loan
+    whose payment recasts mid-horizon priced every projected installment at the
+    payment in force on the day the page was rendered.
+
+    The loan: $200,000 / 6% / 360 from 2026-01-01, escrow $3,600/yr, plus a
+    recorded recast effective **2026-04-01** stating a $1,500.00 P&I.
+
+        period 0 P&I = amortize(200000, 0.06, 360) = 1,199.10
+        period 1 P&I = 1,500.00 (the lender's recorded recast)
+        escrow       = 3600 / 12 = 300.00
+
+        installment before 2026-04-01 -> 1,199.10 + 300.00 = 1,499.10
+        installment on/after it       -> 1,500.00 + 300.00 = 1,800.00
+
+    Both figures must appear, and the split must fall on the recast date.  A
+    fixture whose shadows all landed on one side of the boundary would assert
+    the same thing about a producer that read one clock, which is why the
+    boundary itself is asserted rather than the figures alone.
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        # The lender's recorded recast: a rate change carrying its own P&I, so
+        # period 1's level payment is stated rather than derived (and the
+        # expectation below is a quoted contract term, not an amortization).
+        db.session.add(RateHistory(
+            account_id=loan.id,
+            effective_date=date(2026, 4, 1),
+            interest_rate=Decimal("0.07000"),
+            monthly_pi=Decimal("1500.00"),
+        ))
+        db.session.flush()
+        transfer_recurrence.generate_for_template(
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            ), scenario_id,
+        )
+        db.session.commit()
+
+        shadows = _loan_transfer_shadows(loan.id, scenario_id)
+        assert shadows, "expected generated shadow transactions"
+        pricing = cash_ledger.loan_pricing(scenario_id)
+
+        priced = {}
+        for shadow in shadows:
+            cash = pricing.live_cash(shadow)
+            if cash is None:
+                continue
+            priced[loan_payment_due_date(shadow, 1)] = cash
+
+        assert priced, "expected live overrides for the derive_from_loan transfer"
+        # The fixture really does straddle the recast -- otherwise a producer
+        # reading one clock would satisfy the mapping below.
+        assert set(priced.values()) == {Decimal("1499.10"), Decimal("1800.00")}, (
+            f"the fixture did not straddle the recast: {sorted(priced.items())}"
+        )
+        for due, cash in priced.items():
+            expected = (
+                Decimal("1800.00") if due >= date(2026, 4, 1)
+                else Decimal("1499.10")
+            )
+            assert cash == expected, (
+                f"installment due {due} priced {cash}, expected {expected}"
+            )

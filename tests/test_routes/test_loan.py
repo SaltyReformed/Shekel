@@ -30,6 +30,7 @@ from app.services.balance_at._resolution import (
 )
 from app.services.transfer_service import TransferSpec, create_transfer
 from app.utils.dates import add_months
+from app.utils.money import round_money
 from app.services import (
     account_service,
     balance_at,
@@ -7833,3 +7834,252 @@ class TestLoanBalanceHeroClickToEdit:
         )
         assert resp.status_code == 404
         assert b"Other Loan" not in resp.data
+
+
+class TestScheduleRowsResolveTheirOwnTerms:
+    """Every schedule row's escrow and rate come from ITS OWN installment.
+
+    Ruling **R-IJ** (plan step X-au-g-2b): a loan's contractual terms resolve
+    on the installment they govern, never on a read date.  The amortization
+    table read a single ``LoanContext.monthly_escrow``, resolved at
+    ``date.today()``, and added it to all 360 rows alike -- finding **N-410**
+    -- while every other tier (the genesis split, the forward plan, a
+    materialised payment's live cash) already keyed on the installment.  Its
+    ARM Rate column carried a second wall-clock read as a per-row fallback for
+    a state no row could be in.
+
+    The context is captured through Flask's ``template_rendered`` signal, so
+    these read exactly what the route handed the template -- the whole wiring,
+    route through builder -- rather than parsing 360 rows of HTML.
+    """
+
+    @staticmethod
+    def _capture_schedule_context(app, auth_client, account_id):
+        """Return the context GET ``/loan/schedule`` handed its template."""
+        # Pylint: import-outside-toplevel -- the file-wide test convention.
+        from flask import template_rendered  # pylint: disable=import-outside-toplevel
+
+        recorded = []
+
+        def _record(sender, template, context, **extra):  # noqa: ARG001
+            recorded.append((template, context))
+
+        template_rendered.connect(_record, app)
+        try:
+            response = auth_client.get(f"/accounts/{account_id}/loan/schedule")
+        finally:
+            template_rendered.disconnect(_record, app)
+        assert response.status_code == 200, (
+            f"the schedule returned {response.status_code}; expected 200"
+        )
+        contexts = [c for t, c in recorded if t.name == "loan/schedule.html"]
+        assert contexts, "loan/schedule.html did not render"
+        return contexts[0], response.data.decode()
+
+    @staticmethod
+    def _mortgage_with_a_future_escrow_step(seed_user, db_session):
+        """A mortgage escrowing $300/mo, stepping to $400/mo on 2027-01-01.
+
+        Today is frozen at 2026-03-20 for this file, so the second version is
+        strictly in the FUTURE: a builder resolving one figure at ``today``
+        cannot see it at all, which is the shape N-410 names.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db_session, origination_date=date(2026, 1, 1),
+        )
+        opening = add_escrow_line(
+            db_session, acct.id, "Property Tax", Decimal("3600.00"),
+            effective_date=date(2026, 1, 1),
+        )
+        db_session.add(EscrowComponentVersion(
+            line_id=opening.line_id,
+            effective_date=date(2027, 1, 1),
+            annual_amount=Decimal("4800.00"),
+        ))
+        db_session.commit()
+        return acct
+
+    def test_each_row_carries_the_escrow_in_force_for_its_installment(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """A future-dated escrow version reaches exactly the rows it governs.
+
+        ``$3,600/yr`` (``$300.00``/month) from origination, superseded by
+        ``$4,800/yr`` (``$400.00``/month) effective 2027-01-01.  Rows due before
+        that date charge the old figure and rows due on or after it the new one;
+        both sets must be non-empty, or the fixture would be satisfied by a
+        builder that read one date.
+        """
+        acct = self._mortgage_with_a_future_escrow_step(seed_user, db.session)
+
+        context, _html = self._capture_schedule_context(
+            app, auth_client, acct.id,
+        )
+        rows = context["amortization_schedule"]
+        escrow = context["schedule_row_escrow"]
+        assert len(escrow) == len(rows)
+
+        before = [
+            e for row, e in zip(rows, escrow)
+            if row.payment_date < date(2027, 1, 1)
+        ]
+        after = [
+            e for row, e in zip(rows, escrow)
+            if row.payment_date >= date(2027, 1, 1)
+        ]
+        assert before and after, (
+            "the schedule did not straddle the escrow version boundary"
+        )
+        assert set(before) == {Decimal("300.00")}
+        assert set(after) == {Decimal("400.00")}
+
+    def test_the_escrow_total_sums_the_rows_rather_than_scaling_one(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """The footer's escrow total is the SUM, not one figure times the count.
+
+        The mutation arm of the test above.  ``monthly_escrow * num_months``
+        was the old total, and on this loan neither figure times the row count
+        reproduces the truth -- so a builder that kept the multiplication is
+        refuted whichever figure it picked.
+        """
+        acct = self._mortgage_with_a_future_escrow_step(seed_user, db.session)
+
+        context, html = self._capture_schedule_context(
+            app, auth_client, acct.id,
+        )
+        rows = context["amortization_schedule"]
+        escrow = context["schedule_row_escrow"]
+        total = context["schedule_totals"]["total_escrow"]
+
+        assert total == sum(escrow, Decimal("0.00"))
+        for scaled in (Decimal("300.00"), Decimal("400.00")):
+            assert total != scaled * len(rows), (
+                f"the escrow total equals ${scaled} x {len(rows)} rows, so "
+                "this fixture cannot tell a sum from a multiplication"
+            )
+        # The column is shown because the schedule CHARGES escrow, and the
+        # per-row cells really render (both figures reach the page).
+        assert context["show_escrow_column"] is True
+        assert "$300.00" in html and "$400.00" in html
+        # And the row totals carry the row's own escrow, not a constant --
+        # through ``round_money``, the boundary the producer applies, so the
+        # assertion cannot pass on a total that skipped it.
+        assert [
+            round_money(row.payment + e + row.extra_payment)
+            for row, e in zip(rows, escrow)
+        ] == context["schedule_row_totals"]
+
+    def test_a_loan_with_no_escrow_hides_the_column(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """No escrow line anywhere in the schedule means no Escrow column.
+
+        The other side of ``show_escrow_column``: the flag is about what the
+        schedule charges, so a loan charging nothing hides the column exactly
+        as the old ``monthly_escrow > 0`` test did.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+
+        context, html = self._capture_schedule_context(
+            app, auth_client, acct.id,
+        )
+        assert set(context["schedule_row_escrow"]) == {Decimal("0.00")}
+        assert context["show_escrow_column"] is False
+        assert ">Escrow</th>" not in html
+
+    def test_a_loan_whose_escrow_STARTS_mid_schedule_shows_the_column(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """The case the OLD predicate got wrong, and the one it was changed for.
+
+        ``show_escrow_column`` was ``monthly_escrow > 0`` -- today's figure --
+        and is now ``total_escrow > 0``, what the schedule actually charges.
+        The two disagree in exactly one direction that a real loan reaches: a
+        loan whose FIRST escrow version is effective in the future escrows
+        ``$0.00`` today, so the old predicate hid the column entirely and with
+        it every dollar of escrow the schedule goes on to charge.
+
+        Today is frozen at 2026-03-20 for this file and the only version is
+        effective 2027-01-01, so ``escrow_monthly_as_of(lines, today)`` is
+        ``0.00`` and the old predicate answers False.  **An adversarial review
+        reverted the flag to that exact expression and every test in this file
+        still passed**, which is why this fixture exists: the change's own
+        stated reason was ungraded.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        add_escrow_line(
+            db.session, acct.id, "Property Tax", Decimal("4800.00"),
+            effective_date=date(2027, 1, 1),
+        )
+        db.session.commit()
+
+        context, html = self._capture_schedule_context(
+            app, auth_client, acct.id,
+        )
+        rows = context["amortization_schedule"]
+        escrow = context["schedule_row_escrow"]
+
+        # The premise: nothing is escrowed TODAY, so the old predicate is False.
+        assert escrow_calculator.escrow_monthly_as_of(
+            loan_loaders.load_escrow_lines(acct.id), date(2026, 3, 20),
+        ) == Decimal("0.00")
+        # The behaviour: the column is shown, and starts at zero.
+        assert context["show_escrow_column"] is True
+        assert ">Escrow</th>" in html
+        assert {
+            e for row, e in zip(rows, escrow)
+            if row.payment_date < date(2027, 1, 1)
+        } == {Decimal("0.00")}
+        assert {
+            e for row, e in zip(rows, escrow)
+            if row.payment_date >= date(2027, 1, 1)
+        } == {Decimal("400.00")}
+
+    def test_every_rendered_row_carries_its_own_rate(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """The Rate column reads each row's rate; there is no fallback to today's.
+
+        ``build_schedule_context`` had
+        ``row.interest_rate if row.interest_rate is not None else current_rate``,
+        where ``current_rate`` was a ``date.today()`` rate lookup.  Every
+        construction of an ``AmortizationRow`` sets ``interest_rate`` from a
+        rate period's ``annual_rate``, so that branch guarded an unconstructible
+        state; plan step X-au-g-2b deleted it and the route's clock read with
+        it.  This pins the premise the deletion rests on -- across a rate
+        BOUNDARY, so the column is genuinely varying rather than trivially
+        constant.
+        """
+        acct = _create_loan_account(
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Own Rate",
+            Decimal("100000.00"), Decimal("0.05000"), 360,
+            date(2024, 1, 1), 1, is_arm=True,
+        )
+        db.session.add(RateHistory(
+            account_id=acct.id,
+            effective_date=date(2027, 2, 1),
+            interest_rate=Decimal("0.07000"),
+        ))
+        db.session.commit()
+
+        context, _html = self._capture_schedule_context(
+            app, auth_client, acct.id,
+        )
+        rows = context["amortization_schedule"]
+        assert rows, "expected a non-empty ARM schedule"
+        assert all(row.interest_rate is not None for row in rows), (
+            "a rendered row carried no rate, so the deleted fallback was live"
+        )
+        assert context["schedule_row_rates_pct"] == [
+            row.interest_rate * Decimal("100") for row in rows
+        ]
+        # Two rates really are rendered, so a column reading ONE date would
+        # differ from this one somewhere.
+        assert {row.interest_rate for row in rows} == {
+            Decimal("0.05000"), Decimal("0.07000"),
+        }

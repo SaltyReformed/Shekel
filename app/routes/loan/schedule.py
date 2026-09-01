@@ -11,8 +11,6 @@ any standing extra since the step-8 seam fix) -- so the table cannot diverge
 from the card.
 """
 
-from datetime import date
-
 from flask import render_template
 from flask_login import login_required
 
@@ -22,7 +20,6 @@ from app.routes.loan._helpers import (
     build_schedule_context,
     load_baseline_scenarios,
 )
-from app.services import loan_resolver
 from app.utils.auth_helpers import require_owner
 
 
@@ -36,27 +33,31 @@ def schedule(account_id):
     seam: it composes its planned trajectory ONCE off the same load-and-compose
     the detail page's band chart shares (:func:`._helpers.load_baseline_scenarios`,
     ``history_rows + committed_forward``) with the loan's standing extra -- the
-    identical committed trajectory the card carries -- and reads the current rate
-    (the ARM rate-column fallback) via the cheap rate-period accessor
-    :func:`loan_resolver.current_rate_baseline` rather than a full resolve, so the
-    schedule is derived exactly once.  Guards via :func:`._require_configured_loan`:
+    identical committed trajectory the card carries -- so the schedule is
+    derived exactly once.  Guards via :func:`._require_configured_loan`:
     a cross-owner / non-loan account 404s, an un-configured loan redirects to its
     detail page (the setup surface).
+
+    **It reads no clock, and plan step X-au-g-2b is what removed the two reads
+    it had** (ruling **R-IJ**).  It resolved
+    ``current_rate_baseline(..., date.today())`` for the ARM rate column's
+    per-row fallback -- a branch no rendered row could reach, since every
+    ``AmortizationRow`` carries its period's rate -- and passed
+    ``loan.monthly_escrow``, one escrow resolved at ``date.today()``, for every
+    row of a 360-month table (finding **N-410**).  Both are the builder's
+    business now, and the builder resolves each row on the installment it
+    renders: the loan's escrow LINES go in, not one figure off them.
     """
     account, params, account_type = _require_configured_loan(account_id)
     loan, scenarios = load_baseline_scenarios(account, params)
     planned_schedule = (
         list(scenarios.history_rows) + list(scenarios.committed_forward)
     )
-    current_rate = loan_resolver.current_rate_baseline(
-        params, loan.rate_changes, date.today(),
-    )
     context = {
         "account": account,
         "account_type": account_type,
-        "monthly_escrow": loan.monthly_escrow,
     }
     context.update(build_schedule_context(
-        planned_schedule, loan.monthly_escrow, current_rate, params,
+        planned_schedule, loan.escrow_lines, params,
     ))
     return render_template("loan/schedule.html", **context)
