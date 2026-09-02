@@ -526,15 +526,70 @@ hides.
       `$0.00`, downgrade byte-identical on a production copy. Closed **N-401**. Record in
       `archive/x_au_g_2c_2_as_built_2026-09-01.md`. **A LATER step must obey:** **R-IO** takes
       ownership only when the figure MOVED, so X-au-h inherits that conflation, not a defect.
-    * [ ] **X-au-g-2c-3** `fix(loans): escrow is charged once per installment` -- **N-409**, and
-      the developer ruled its remedy on 2026-09-01. `prepare_payments_for_engine` floors the escrow
-      subtraction at `amount - contractual_pi` while the fold's `apply_payment_cash` subtracts the
-      full escrow and lets principal go negative (plan D5): TWO allocation rules for one question.
-      The floor is the defect -- on a `$1,700.00` payment against a `$1,910.95` installment it
-      reports `$1,293.96`, exactly the contractual P&I, so a short payment reads as on schedule and
-      the shortfall vanishes in the OPTIMISTIC direction. Escrow becomes a charge against the
-      INSTALLMENT, once, in both producers. **MOVES MONEY**; `$0.00` on production, where every
-      mortgage payment is exactly PITI and one per due month.
+    * [ ] **X-au-g-2c-3** the DECOMPOSED parent of the escrow rule, split 2026-09-02. It ticks
+      with the last of its leaves.
+      **N-409 named ONE floor; the trace found the defect is a CLASS, and the class is a LAYERING
+      one.** Four independent walks fold a loan -- the settled walk, the forward plan, the
+      resolver's replay and its projection -- and the rule each needs sat ABOVE two of them in the
+      import graph, so reaching it was the cycle `loan_ledger._split -> rate_period_engine ->
+      amortization_engine`. Each restated it instead: FOUR statements of the allocation and TWO of
+      the charge calendar. **The duplication was FORCED, not chosen, which is why every remedy here
+      is a MOVE or a DELETION and none is a guard.** Measured on the production Mortgage: a
+      `$1,700.00` payment against its `$1,910.95` installment reports `$1,293.96` -- the contractual
+      P&I to the cent, so the schedule and its 2048-12-01 payoff are byte-identical to an
+      on-schedule month while the seam's fold puts the owner `$210.95` further behind and dates the
+      payoff 2049-01-01. Two answers, one screen.
+      * [x] **X-au-g-2c-3a** `becf76f8` -- the ONE allocation moves to `app/utils/money.py`, beside
+        the accrual, and the three restatements it forced are DELETED. `$0.00`; 0 differences over
+        200,000 trials against `HEAD`. **A LATER step must obey:**
+        `test_loan_allocation_is_one_rule` pins that the leaf reaches NOTHING in `app.services` --
+        the property that makes it callable from every walk, so moving the rule back up re-forces
+        the duplication.
+      * [x] **X-au-g-2c-3c** `cb6469b2` -- `debt_strategy_service._accrue_interest` routes through
+        the ONE accrual primitive, deleting a FIFTH spelling that associated `(b*r)/12` against
+        `b*(r/12)`. **`recurrence:D52`'s "agree on 200,000 randomised draws" is REFUTED**: at
+        500,000 they part, `$565.37` against `$565.36`. `$0.00` on both live loans.
+        **`D52`'s duplicate half dies here; its CONVENTION half stays `recurrence:R16-d`'s.**
+      * [ ] **X-au-g-2c-3b** the DECOMPOSED parent of the CHARGE-CALENDAR half, split 2026-09-02.
+        * [x] **X-au-g-2c-3b-1** `fd3afc59` -- the CHARGE calendar moves to `loan_ledger._charges`,
+          the same inversion one tier up: it sat in `balance_at._plan`, which REACHES the settled
+          walk, so that walk restated it. `$0.00`; 0 mismatches over 20,000 trials.
+          **This is what makes `3b-2` a TAKING rather than a rebuild. A LATER step must obey:**
+          `D53` and `D55` are deliberately NOT taken here and the docstrings say so.
+        * [ ] **X-au-g-2c-3b-2** `fix(loans): the settled walk charges once per installment` --
+          the walk takes the calendar, so ONE interest accrual and ONE escrow stand per
+          INSTALLMENT rather than per PAYMENT, and `split_payment_cash` is DELETED (one caller; its
+          own docstring concedes it is correct only while a loan takes one payment per accrual
+          period). Carries **N-409**'s second half and satisfies **recurrence:D51**, whose remedy
+          `R16-c` states as deletion -- after this the two walks agree on the RULE, so that merge
+          becomes behaviour-neutral. **MOVES POSTED MONEY.** `$0.00` on production: 0 due-month
+          collisions on either live loan, measured on a clone at `b7a41e2c9d63`; `$1,631.05` on one
+          colliding pair (`$616.99` escrow + `$1,014.06` interest).
+          **TWO OBLIGATIONS IT MUST NOT DISCOVER MID-BUILD.** (a) `split_payment_cash` is an
+          ORACLE, not only a producer: `test_loan_payoff_date_oracle._clears_within` and
+          `test_loan_interest_in_year` re-fold through it DELIBERATELY as the retired
+          one-payment-per-month composition, so agreement is *"the equivalence claim itself"*.
+          Deleting it naively leaves the producer grading itself -- move the composition INTO the
+          tests, still calling `accrue_monthly_interest`, since spelling the primitive inline
+          re-creates the association `2c-3c` just deleted. (b) An ANCHOR reset and a standing
+          charge need a ruling: an anchor is an authoritative balance that already includes accrued
+          interest, so a charge standing at one should be DISCARDED rather than carried across it.
+          Order `charge -> payment -> anchor`. **Both are open developer questions.**
+        * [ ] **X-au-g-2c-3b-3** `fix(loans): the engine feed states no allocation` -- the feed
+          passes the CASH and `project_forward` charges the month's escrow, which DELETES the floor
+          rather than re-dating it. Two earlier remedies were measured wrong first: re-keying the
+          threshold to the installment (built at `X-au-g-2b`, a REGRESSION, reverted) and expecting
+          the resolver routing to make `amount - escrow == period_pi(due)` an IDENTITY (`2c-1`
+          showed the feed also carries settled, MANUAL-mode and non-payment rows). Closes
+          **N-409**. **MOVES MONEY.**
+          **What it orphans, AST-verified over all modules in `app/`:** `LoanContext.contractual_pi`
+          has ZERO attribute reads, and `compute_contractual_pi` has ONE call site which exists only
+          to feed the floor -- both are deleted with it, taking a `date.today()` read off the loan
+          context (ruling **R-IJ**'s direction).
+          **The trap it must not walk into:** `PaymentRecord.__post_init__` REFUSES a negative
+          amount, and `cash - escrow` goes negative on a payment below its escrow -- measured live
+          at `-416.99` by typing `$200.00` into a projected mortgage payment. Passing the CASH is
+          what keeps that invariant TRUE rather than relaxing it.
 * [ ] **X-au-f** `refactor(transfers): a generated transfer's amount is its definition's` -- the
   PARENT half of the transfer cutover. `transfers.amount` resolves from the template series for a
   generated transfer.
