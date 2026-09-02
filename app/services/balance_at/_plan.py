@@ -86,6 +86,11 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.services import escrow_calculator, loan_loaders, loan_resolver
+from app.services.loan_ledger import (
+    AccrualCharge,
+    charges_for_due_dates,
+    installment_slot,
+)
 from app.services.cash_ledger import display_amounts_by_id
 from app.services.loan_ledger import confirmed_shadows_through
 from app.services.loan_loaders import loan_payment_due_date
@@ -126,7 +131,7 @@ def _month_slot(due: date) -> tuple[int, int]:
     already occupies its month (the same month-keyed slot the C6c interest merge
     uses, :func:`app.services.balance_at._loan_interest._due_slot`).
     """
-    return (due.year, due.month)
+    return installment_slot(due)
 
 
 @dataclass(frozen=True)
@@ -173,42 +178,6 @@ class PlannedPayment:
     effective_date: date
     cash: Decimal
     is_estimated: bool
-
-
-@dataclass(frozen=True)
-class AccrualCharge:
-    """What one ACCRUAL PERIOD charges a loan -- its interest and its escrow.
-
-    The TIME half of :func:`loan_plan`, and the value that stops the payment
-    count being the clock (plan step **R16-a**).  A loan charges interest because
-    time passed and impounds escrow because a month began; neither is a fact
-    about a payment, and while they rode ON one, N payments inside a month
-    charged N months.
-
-    One charge per accrual period the plan's payments occupy, dated at the
-    EARLIEST payment due in that period -- so for the one-payment-per-month
-    shape every live loan is in, the charge lands on exactly the date the payment
-    used to resolve its own rate and escrow at, and the fold is byte-identical.
-    A second payment inside the same period then clears no fresh charge and pays
-    pure principal.
-
-    Attributes:
-        on_date: The date this period's charge falls, in CONTRACT time -- the
-            date its rate and its escrow are both resolved AS OF (ruling D5), and
-            where it sorts against the payments in the fold's walk.  The charge
-            is applied BEFORE any payment sharing its date, since interest is
-            charged on the balance a payment has not yet reduced.
-        annual_rate: The annual rate governing this period's accrual
-            (:func:`~app.services.rate_period_engine.period_for_date` on
-            ``on_date``).
-        escrow: The monthly escrow in force for this period
-            (:func:`~app.services.escrow_calculator.escrow_monthly_as_of` on
-            ``on_date``), ``0.00`` when the loan escrows nothing.
-    """
-
-    on_date: date
-    annual_rate: Decimal
-    escrow: Decimal
 
 
 @dataclass(frozen=True)
@@ -577,22 +546,11 @@ def _charges_for(
     Returns:
         One :class:`AccrualCharge` per occupied period, ascending by ``on_date``.
     """
-    opens_on: dict[tuple[int, int], date] = {}
-    for payment in payments:
-        slot = _month_slot(payment.due_date)
-        standing = opens_on.get(slot)
-        if standing is None or payment.due_date < standing:
-            opens_on[slot] = payment.due_date
-    return [
-        AccrualCharge(
-            on_date=on_date,
-            annual_rate=period_for_date(fwd.periods, on_date).annual_rate,
-            escrow=escrow_calculator.escrow_monthly_as_of(
-                fwd.escrow_lines, on_date,
-            ),
-        )
-        for on_date in sorted(opens_on.values())
-    ]
+    return charges_for_due_dates(
+        [payment.due_date for payment in payments],
+        fwd.periods,
+        fwd.escrow_lines,
+    )
 
 
 def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:

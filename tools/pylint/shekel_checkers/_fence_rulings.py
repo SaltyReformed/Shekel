@@ -631,6 +631,23 @@ _FENCED_MODULE_RULINGS = {
             # sides take it: the posting writer projects it into corrections, the
             # seam's read pass folds it.
             "walk_loan_ledger",
+            # The CHARGE calendar and its key (plan step X-au-g-2c-3b-1) -- the
+            # TIME half of a walk, and neither answers balance-at-T.
+            #
+            #   * ``installment_slot`` returns a ``(year, month)`` tuple.  It
+            #     carries no money of any kind and cannot be made to.
+            #   * ``charges_for_due_dates`` returns one charge per accrual
+            #     period, and each charge carries a RATE and an escrow AMOUNT --
+            #     deliberately not an interest amount.  Interest accrues on the
+            #     balance standing when the charge falls, and only a WALK knows
+            #     that (an anchor between two payments resets it).  So this
+            #     states what a period COSTS per dollar owed, and a caller
+            #     holding it still cannot reach a balance without the running
+            #     walk the seam owns.  That is the same ruling
+            #     ``walk_loan_ledger`` carries above: dated facts, not a
+            #     balance-at-T.
+            "charges_for_due_dates",
+            "installment_slot",
             # The real principal/interest/escrow split of a payment -- a
             # decomposition of CASH, not an account balance.  The whole-loan list,
             # its per-payment step, and the month-charging composition over the
