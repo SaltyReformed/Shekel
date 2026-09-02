@@ -31,6 +31,7 @@ from app.utils.archive_helpers import (
     template_has_paid_history,
     transfer_template_has_paid_history,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_template_with_status_txn(app, db_, seed_user, period, status_name):
@@ -65,7 +66,7 @@ def _make_template_with_status_txn(app, db_, seed_user, period, status_name):
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=expense_type.id,
         name=f"Txn-{status_name}",
-        estimated_amount=Decimal("500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("500.00")),
         status_id=status.id,
     )
     db_.session.add(txn)
@@ -103,7 +104,7 @@ def _make_income_template_with_status_txn(app, db_, seed_user, period, status_na
         category_id=seed_user["categories"]["Salary"].id,
         transaction_type_id=income_type.id,
         name=f"Paycheck-{status_name}",
-        estimated_amount=Decimal("2000.00"),
+        amount_ownership=AmountOwnership.own(Decimal("2000.00")),
         status_id=status.id,
     )
     db_.session.add(txn)
@@ -150,7 +151,7 @@ def _make_transfer_template_with_status(app, db_, seed_user, period, status_name
         status_id=status.id,
         transfer_template_id=xfer_template.id,
         name=f"Transfer-{status_name}",
-        amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
     )
     db_.session.add(xfer)
     db_.session.commit()

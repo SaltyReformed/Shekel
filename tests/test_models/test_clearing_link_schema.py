@@ -50,6 +50,7 @@ from app.enums import StatusEnum
 from app.extensions import db as _db
 from app.models.account import AccountAnchorHistory
 from app.models.ref import TransactionType
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service, status_seam
@@ -156,6 +157,10 @@ def _make_transaction(data, **overrides) -> Transaction:
     fields.update(
         settlement_columns(fields.get("settled_on"), fields["estimated_amount"])
     )
+    # **The amount-ownership pair is ONE attribute** (plan step X-au-k), so the
+    # figure this builder splats becomes the row's OWNERSHIP at the last
+    # moment -- after every line above that reads it as a column.
+    fields["amount_ownership"] = AmountOwnership.own(fields.pop("estimated_amount"))
     return Transaction(**fields)
 
 

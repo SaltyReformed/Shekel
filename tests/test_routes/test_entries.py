@@ -39,6 +39,7 @@ from app.services.settle_day import (
     recorded_settle_day,
 )
 from app.services.statement_match._candidates import purchase_candidate
+from app.models.amount_ownership import AmountOwnership
 
 # The three days the derived reconciled indicator turns on.  FIXED rather
 # than today-relative: the indicator compares two STORED days, so nothing
@@ -137,7 +138,7 @@ def _create_visible_tracked_txn(seed_user, seed_periods):
         name="Weekly Groceries",
         category_id=category.id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("500.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -245,7 +246,7 @@ def _create_other_user_txn():
         name="Other Groceries",
         category_id=category.id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("300.00"),
+        amount_ownership=AmountOwnership.own(Decimal("300.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -560,7 +561,7 @@ class TestCreateEntry:
                 name="Phone Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("80.00"),
+                amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -1887,7 +1888,7 @@ class TestEntryTransactionMismatch:
             name="Weekly Groceries",
             category_id=seed_entry_template["category"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
         )
         db.session.add(txn2)
         db.session.commit()
@@ -1980,7 +1981,7 @@ class TestEntryTransactionMismatch:
                 name="Secret Groceries",
                 category_id=seed_entry_template["category"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
             db.session.add(txn_hidden)
             db.session.commit()
@@ -2179,7 +2180,7 @@ class TestPopoverIntegration:
                 name="Phone Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("80.00"),
+                amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             db.session.add(txn)
             db.session.commit()

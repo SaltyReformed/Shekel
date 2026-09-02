@@ -140,6 +140,7 @@ from app.services.cash_ledger import (
     live_amounts,
     resolve_transaction_amount,
 )
+from app.services.amount_ownership import state_own_amount
 
 # The perturbation pass 2 applies to each row's own amount column.  Large enough
 # that no real figure could absorb it by coincidence, and positive so
@@ -258,7 +259,7 @@ def _grade_group(account, scenario_id, rows):
         for txn in rows:
             if txn.estimated_amount is None:
                 continue
-            txn.estimated_amount = txn.estimated_amount + _NUDGE
+            state_own_amount(txn, txn.estimated_amount + _NUDGE)
         for txn, record in zip(rows, records):
             nudged, _refusal = _resolved_or_refusal(txn, basis)
             record["nudged"] = _money(nudged)

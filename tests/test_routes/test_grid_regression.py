@@ -45,6 +45,7 @@ from tests._test_helpers import (
     current_pay_period,
     derived_span,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 class TestPaydayWorkflowRegression:
@@ -134,7 +135,7 @@ class TestPaydayWorkflowRegression:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -206,7 +207,7 @@ class TestPaydayWorkflowRegression:
                 name="Rent Payment",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             # Projected expense 2: ad-hoc (no template).
             txn_adhoc = Transaction(
@@ -217,7 +218,7 @@ class TestPaydayWorkflowRegression:
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
             )
             # Done expense: should NOT be carried forward.
             txn_done = Transaction(
@@ -228,7 +229,7 @@ class TestPaydayWorkflowRegression:
                 name="Car Payment",
                 category_id=seed_user["categories"]["Car Payment"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
             db.session.add_all([txn_template, txn_adhoc, txn_done])
             db.session.commit()
@@ -293,7 +294,7 @@ class TestPaydayWorkflowRegression:
                 name="Electric Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -343,7 +344,7 @@ class TestPaydayWorkflowRegression:
                 name="Restaurant",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -414,7 +415,7 @@ class TestPaydayWorkflowRegression:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             expense_txn = Transaction(
                 pay_period_id=current_period.id,
@@ -424,7 +425,7 @@ class TestPaydayWorkflowRegression:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("800.00"),
+                amount_ownership=AmountOwnership.own(Decimal("800.00")),
             )
             db.session.add_all([income_txn, expense_txn])
             db.session.commit()
@@ -563,7 +564,7 @@ class TestPaydayWorkflowRegression:
                 name="Past Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
             # Current period: income ($2,000).
             income_txn = Transaction(
@@ -574,7 +575,7 @@ class TestPaydayWorkflowRegression:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             # Current period: expense to mark done ($500).
             expense_done = Transaction(
@@ -585,7 +586,7 @@ class TestPaydayWorkflowRegression:
                 name="Electric Bill",
                 category_id=seed_user["categories"]["Car Payment"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             # Current period: expense to mark credit ($300).
             expense_credit = Transaction(
@@ -596,7 +597,7 @@ class TestPaydayWorkflowRegression:
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
             db.session.add_all([
                 past_expense, income_txn, expense_done, expense_credit,

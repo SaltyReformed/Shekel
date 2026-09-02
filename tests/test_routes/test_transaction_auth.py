@@ -24,6 +24,7 @@ from app.services.auth_service import hash_password
 from app.services import pay_period_write
 from app.services import account_service
 from tests._test_helpers import pay_periods_hydrated
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_other_user_with_txn(seed_user, seed_periods_today):
@@ -92,7 +93,7 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
         name="Other User Rent",
         category_id=category.id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("1500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("1500.00")),
     )
     db.session.add(txn)
     db.session.commit()

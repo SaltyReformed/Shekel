@@ -52,6 +52,8 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
 from app.utils.dates import display_today
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -127,7 +129,7 @@ def _make_transaction(seed_user, period):
         category_id=cat.id,
         transaction_type_id=expense_type.id,
         name="Test Txn",
-        estimated_amount=Decimal("50.00"),
+        amount_ownership=AmountOwnership.own(Decimal("50.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -165,7 +167,7 @@ def _make_envelope_template_and_txn(seed_user, period):
         category_id=cat.id,
         transaction_type_id=expense_type.id,
         name="Tracked Groceries",
-        estimated_amount=Decimal("400.00"),
+        amount_ownership=AmountOwnership.own(Decimal("400.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -507,7 +509,7 @@ def test_concurrent_update_raises_stale_data_error(
             schema, table, model = "budget", "transfers", Transfer
 
             def mutate(o):
-                o.amount = Decimal("999.99")
+                state_own_amount(o, Decimal("999.99"))
         elif factory_fn == "txn_template":
             cat = seed_user["categories"]["Groceries"]
             obj = _make_template(

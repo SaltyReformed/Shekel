@@ -65,6 +65,7 @@ from tests._test_helpers import (
     restate_account_opening,
     settle_day_columns,
 )
+from app.models.amount_ownership import AmountOwnership
 
 _ONE_DAY = timedelta(days=1)
 
@@ -305,7 +306,7 @@ class TestTheOneOrmWriter:
                 name="seam-probe",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("25.00"),
+                amount_ownership=AmountOwnership.own(Decimal("25.00")),
             )
             db.session.add(row)
             db.session.flush()
@@ -572,7 +573,7 @@ class TestAnUnsettledRowDoesNotRESERVETheTable:
                 transaction_type_id=ref_cache.txn_type_id(
                     TxnTypeEnum.EXPENSE,
                 ),
-                estimated_amount=Decimal("25.00"),
+                amount_ownership=AmountOwnership.own(Decimal("25.00")),
             ))
             db.session.flush()
             # No exception: the WHEN clause kept the row out of the queue.

@@ -98,6 +98,7 @@ from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     MONTHLY_FIRST,
 )
+from app.services.amount_ownership import state_own_amount
 
 #: The one database door every pay-calendar derivation goes through, as
 #: ``tests/test_arch/test_one_read_pass_per_render.py`` names it.  A service
@@ -1027,7 +1028,7 @@ class TestGenerationIsStillGated:
             db.session.flush()
             settled = created[0]
             settled.status_id = ref_cache.status_id(StatusEnum.DONE)
-            settled.estimated_amount = Decimal("77.77")
+            state_own_amount(settled, Decimal("77.77"))
             db.session.flush()
 
             recurrence_engine.generate_for_template(

@@ -55,6 +55,7 @@ from app.services.settle_day import (
     record_settle_day,
     recorded_settle_day,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_savings_account(seed_user):
@@ -2518,7 +2519,7 @@ def _create_second_user_transfer(second_user_data):
         scenario_id=second_user_data["scenario"].id,
         status_id=projected.id,
         name="Other Transfer",
-        amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
     )
     db.session.add(xfer)
     db.session.commit()

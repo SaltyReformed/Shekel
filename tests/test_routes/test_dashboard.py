@@ -44,6 +44,7 @@ from tests._test_helpers import (
     add_txn as _add_txn,
     current_pay_period,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Auth ─────────────────────────────────────────────────────────────
@@ -212,7 +213,7 @@ class TestDashboardPulseRendering:
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 template_id=template.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 due_date=cur.start_date + timedelta(days=3),
             )
             db.session.add(envelope)
@@ -334,7 +335,7 @@ class TestDashboardPulseRendering:
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 template_id=template.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 due_date=cur.start_date + timedelta(days=2),
             )
             db.session.add(tracked)
@@ -444,7 +445,7 @@ class TestDashboardPulseRendering:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Windfall",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             db.session.add(income)
             db.session.commit()

@@ -66,6 +66,7 @@ from app.services.pay_calendar import (
     paydays_in_month_through,
     saved_paydays_in_month_through,
 )
+from app.models.amount_ownership import AmountOwnership
 
 #: The cadence ``seed_periods`` builds: 14 days between paydays, 26 a year.
 #: An explicit input to the infrequent badge since plan step R7a-2b, where the
@@ -141,7 +142,7 @@ def _add_transaction(
         name=name,
         category_id=None,
         transaction_type_id=type_id,
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         **settlement_columns(
             default_settle_day(period, status_id), amount, settled_amount,
         ),
@@ -576,7 +577,7 @@ class TestCategoryInfo:
                 name="Car Payment",
                 category_id=cat.id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("350.00"),
+                amount_ownership=AmountOwnership.own(Decimal("350.00")),
                 due_date=date(2026, 1, 10),
             )
             db.session.add(txn)

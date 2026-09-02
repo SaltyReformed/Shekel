@@ -53,6 +53,7 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     read_pass_over_paydays,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _cards_context(*, limit, ytd, paydays, current_index, as_of, cadence=14,
@@ -2182,7 +2183,7 @@ def _add_envelope_expense_with_cleared_entries_inv(
         name="Investment-side expense",
         category_id=category_id,
         transaction_type_id=expense_type_id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
     )
     db_session.add(txn)
     db_session.flush()

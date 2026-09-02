@@ -49,6 +49,7 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import make_cadence_rule
 from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY_FIRST
+from app.models.amount_ownership import AmountOwnership
 
 
 def _load_script():
@@ -194,7 +195,7 @@ class TestStampOccurrences:
                 name=host.name,
                 category_id=host.category_id,
                 transaction_type_id=host.transaction_type_id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 due_date=date(1990, 1, 1),
                 is_override=True,
                 is_deleted=False,
@@ -287,7 +288,7 @@ class TestStampOccurrences:
                 name=host.name,
                 category_id=host.category_id,
                 transaction_type_id=host.transaction_type_id,
-                estimated_amount=Decimal("12.34"),
+                amount_ownership=AmountOwnership.own(Decimal("12.34")),
                 due_date=None,
                 is_override=True,
                 is_deleted=False,
@@ -474,7 +475,7 @@ class TestStampOccurrences:
                 name=host.name,
                 category_id=host.category_id,
                 transaction_type_id=host.transaction_type_id,
-                estimated_amount=Decimal("12.34"),
+                amount_ownership=AmountOwnership.own(Decimal("12.34")),
                 due_date=date(1990, 1, 1),
                 is_override=True,
                 is_deleted=False,

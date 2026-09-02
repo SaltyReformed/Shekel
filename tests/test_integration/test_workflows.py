@@ -46,6 +46,7 @@ from tests._test_helpers import (
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import owned_contribution
+from app.models.amount_ownership import AmountOwnership
 
 
 class TestSalaryToGrid:
@@ -219,7 +220,7 @@ class TestCreditPaybackBalance:
                 name="Dinner Out",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -274,7 +275,7 @@ class TestAnchorTrueUpBalance:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -348,7 +349,7 @@ class TestCarryForwardWorkflow:
                     name=name,
                     category_id=groceries_cat_id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal(amount),
+                    amount_ownership=AmountOwnership.own(Decimal(amount)),
                 )
                 db.session.add(txn)
             db.session.commit()
@@ -425,7 +426,7 @@ class TestCarryForwardEdgeCases:
                     name=name,
                     category_id=cat_id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=amount,
+                    amount_ownership=AmountOwnership.own(amount),
                 )
                 db.session.add(txn)
             db.session.commit()
@@ -484,7 +485,7 @@ class TestCarryForwardEdgeCases:
                     name=name,
                     category_id=seed_user["categories"]["Rent"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=amount,
+                    amount_ownership=AmountOwnership.own(amount),
                 )
                 db.session.add(txn)
                 db.session.flush()
@@ -504,7 +505,7 @@ class TestCarryForwardEdgeCases:
                     name=name,
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=amount,
+                    amount_ownership=AmountOwnership.own(amount),
                 )
                 db.session.add(txn)
             db.session.commit()
@@ -570,7 +571,7 @@ class TestCarryForwardEdgeCases:
                     name=name,
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=amount,
+                    amount_ownership=AmountOwnership.own(amount),
                 )
                 db.session.add(txn)
             db.session.commit()
@@ -618,7 +619,7 @@ class TestCarryForwardEdgeCases:
                     name=name,
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 )
                 db.session.add(txn)
             db.session.commit()
@@ -664,7 +665,7 @@ class TestCarryForwardEdgeCases:
                 name="SelfCarry",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("99.00"),
+                amount_ownership=AmountOwnership.own(Decimal("99.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -711,7 +712,7 @@ class TestCreditWorkflowEdgeCases:
                 name="Grocery Run",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.43"),
+                amount_ownership=AmountOwnership.own(Decimal("75.43")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -755,7 +756,7 @@ class TestCreditWorkflowEdgeCases:
                 name="Double Credit Test",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -797,7 +798,7 @@ class TestCreditWorkflowEdgeCases:
                 name="Already Paid",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -823,7 +824,7 @@ class TestCreditWorkflowEdgeCases:
                 name="Cancelled Order",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("60.00"),
+                amount_ownership=AmountOwnership.own(Decimal("60.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -853,7 +854,7 @@ class TestCreditWorkflowEdgeCases:
                 name="Last Period Purchase",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("99.99"),
+                amount_ownership=AmountOwnership.own(Decimal("99.99")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -880,7 +881,7 @@ class TestCreditWorkflowEdgeCases:
                 name="Unmark Test",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("45.00"),
+                amount_ownership=AmountOwnership.own(Decimal("45.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -927,7 +928,7 @@ class TestCreditWorkflowEdgeCases:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -972,7 +973,7 @@ class TestFullBudgetWorkflow:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             txn2 = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -982,7 +983,7 @@ class TestFullBudgetWorkflow:
                 name="Dining Out",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             txn3 = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -992,7 +993,7 @@ class TestFullBudgetWorkflow:
                 name="Gas Station",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("45.50"),
+                amount_ownership=AmountOwnership.own(Decimal("45.50")),
             )
             db.session.add_all([txn1, txn2, txn3])
             db.session.commit()

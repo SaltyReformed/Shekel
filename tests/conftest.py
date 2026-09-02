@@ -746,6 +746,7 @@ from tests._test_helpers import (
     rebuild_calendar,
     settle_day_columns,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ---------------------------------------------------------------------------
@@ -2433,7 +2434,7 @@ def seed_cross_page_account(app, db, seed_user):
             name="PT-01 envelope expense",
             category_id=groceries_cat.id,
             transaction_type_id=expense_type.id,
-            estimated_amount=expense_amount,
+            amount_ownership=AmountOwnership.own(expense_amount),
         )
         db.session.add(txn)
         db.session.flush()
@@ -3212,7 +3213,7 @@ def _build_full_user_data(db, seed_user, periods):
         name="Rent Payment",
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("1200.00"),
+        amount_ownership=AmountOwnership.own(Decimal("1200.00")),
     )
     db.session.add(txn)
 
@@ -3370,7 +3371,7 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
         name="Second User Rent",
         category_id=seed_second_user["categories"]["Rent"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("900.00"),
+        amount_ownership=AmountOwnership.own(Decimal("900.00")),
     )
     db.session.add(txn)
 
@@ -3483,7 +3484,7 @@ def seed_entry_template(app, db, seed_user, seed_periods):
         name="Weekly Groceries",
         category_id=category.id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("500.00")),
     )
     db.session.add(txn)
     db.session.commit()

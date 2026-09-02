@@ -46,6 +46,8 @@ from tests._test_helpers import (
     settlement_basis_id,
     settlement_if_settling,
 )
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -119,7 +121,7 @@ def _make_projected_txn(seed_user, period, *, template,
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=Decimal(estimated_amount),
+        amount_ownership=AmountOwnership.own(Decimal(estimated_amount)),
     )
     db.session.add(txn)
     db.session.flush()
@@ -415,7 +417,7 @@ class TestSettleFromEntriesPreconditions:
                 name="Ad-hoc expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -1447,7 +1449,7 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             db.session.flush()
 
             self._revert(txn)
-            txn.estimated_amount = Decimal("610.00")
+            state_own_amount(txn, Decimal("610.00"))
             db.session.flush()
 
             booked_a_human_figure = self._settle(txn)
@@ -1515,7 +1517,7 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
 
             self._revert(txn)
-            txn.estimated_amount = Decimal("610.00")
+            state_own_amount(txn, Decimal("610.00"))
             db.session.flush()
             # Nothing is OFFERED from the retained record either -- the offer
             # and the booking are one expression, so both re-derive.

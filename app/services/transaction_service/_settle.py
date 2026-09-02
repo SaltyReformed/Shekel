@@ -39,6 +39,7 @@ from app.enums import SettlementBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import posting_service
+from app.services.amount_ownership import owns_its_amount, state_own_amount
 from app.services.cash_ledger import (
     AmountBasis,
     amount_basis,
@@ -609,11 +610,19 @@ def _reconcile_cached_amount(txn: Transaction, live: "Decimal | None") -> None:
 
     ``is_override`` is deliberately NOT set: the flag means a human chose this
     figure, and the recurrence engine's own ``resolve_conflicts`` sets it False
-    while rewriting ``estimated_amount`` for the same reason.  Nothing else
-    moves -- the row's template, period and scenario are untouched, so the
-    partial UNIQUE index over those three cannot be disturbed, and
-    ``ck_transactions_estimated_amount`` (``>= 0``) is satisfied by a figure the
-    paycheck engine has already rounded.
+    while rewriting the amount for the same reason.  The row's template, period
+    and scenario are untouched, so the partial UNIQUE index over those three
+    cannot be disturbed, and ``ck_transactions_estimated_amount`` (``>= 0``) is
+    satisfied by a figure the paycheck engine has already rounded.
+
+    **It STATES THE ROW'S OWNERSHIP as well as its figure** (plan step
+    **X-au-k**), which the sentence above called "nothing else moves" while the
+    two were separate columns and a write here touched only one of them.  They
+    are one attribute now, so refreshing the cache also declares the row the
+    owner of what it holds.  That is a no-op for every row this function can
+    reach -- :func:`_freshest_amount` answers ``None`` for a row that owns no
+    figure, which is the conjunct finding **N-437** is about -- and it is
+    stated here because a reader must not have to derive it from the call.
 
     Mutates in place and does NOT flush or commit.
 
@@ -630,7 +639,7 @@ def _reconcile_cached_amount(txn: Transaction, live: "Decimal | None") -> None:
             status flip, for the reason the *txn* argument states.
     """
     if live is not None:
-        txn.estimated_amount = live
+        state_own_amount(txn, live)
 
 
 def _freshest_amount(txn: Transaction, basis) -> Decimal | None:
@@ -698,12 +707,28 @@ def _freshest_amount(txn: Transaction, basis) -> Decimal | None:
             plan.  It is pinned to the row's OWNER and SCENARIO since plan step
             X-au-c2b, not built over this one row.
 
+    **The third conjunct is "the row HAS a cache", and it is not a guard --
+    it completes the predicate** (plan step **X-au-k**, finding **N-437**).
+    This function asks whether anything is fresher than the row's cached
+    figure; a DERIVED row holds no figure at all, so there is nothing for a
+    live answer to supersede and the honest answer is ``None``.  Without it the
+    comparison below goes VACUOUSLY PERMISSIVE the moment plan step X-au-d
+    declares salary rows derived: ``txn.estimated_amount`` becomes ``None`` for
+    exactly the rows ``live_projected_net`` answers for, ``live == None`` is
+    then false for every one of them, and every settle would hand a derived row
+    back to OWN -- silently, since X-au-k made the write one atomic act where
+    it used to be a half-write the CHECK refused at flush.  **That is finding
+    N-436's shape** -- a predicate a later cutover turns vacuously true,
+    failing by always permitting -- and it is written now because the loud
+    failure that would have caught it is the one X-au-k removed.
+
     Returns:
-        The live amount when one exists and disagrees with the cache, else
-        ``None`` -- meaning "nothing fresher than what the row already says".
+        The live amount when one exists, the row holds a cache, and the two
+        disagree; else ``None`` -- meaning "nothing fresher than what the row
+        already says".
     """
     live = live_override(txn, basis)
-    if live is None or live == txn.estimated_amount:
+    if live is None or not owns_its_amount(txn) or live == txn.estimated_amount:
         return None
     return live
 

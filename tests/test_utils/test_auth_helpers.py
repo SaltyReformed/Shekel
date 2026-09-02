@@ -38,6 +38,7 @@ from app.utils.log_events import (
     EVT_RESOURCE_NOT_FOUND,
 )
 from app.utils.session_helpers import FRESH_LOGIN_AT_KEY
+from app.models.amount_ownership import AmountOwnership
 
 
 class TestGetOr404:
@@ -100,7 +101,7 @@ class TestGetOwnedViaParent:
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -148,7 +149,7 @@ class TestGetOwnedViaParent:
                 name="Other User Expense",
                 category_id=second_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("99.00"),
+                amount_ownership=AmountOwnership.own(Decimal("99.00")),
             )
             db.session.add(txn2)
             db.session.flush()
@@ -593,7 +594,7 @@ class TestAccessDeniedLogging:
             name="Other User Expense",
             category_id=second_user["categories"]["Rent"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("99.00"),
+            amount_ownership=AmountOwnership.own(Decimal("99.00")),
         )
         db.session.add(txn2)
         db.session.flush()
@@ -710,7 +711,7 @@ class TestAccessDeniedLogging:
             name="Access-log test expense",
             category_id=next(iter(owner["categories"].values())).id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.flush()

@@ -33,6 +33,7 @@ from tests._test_helpers import (
     open_owner_calendar,
     settlement_if_settling,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -92,7 +93,7 @@ def _make_txn(seed_user, period, template, *, name=None, amount=None):
 
     txn = Transaction(
         name=name or template.name,
-        estimated_amount=amount or template.default_amount,
+        amount_ownership=AmountOwnership.own(amount or template.default_amount),
         transaction_type_id=expense_type.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         pay_period_id=period.id,

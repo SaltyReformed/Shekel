@@ -45,6 +45,7 @@ from app.services.cash_ledger import (
     pricing_load_options,
 )
 from tests._test_helpers import (
+    write_past_the_amount_seam,
     capture_sql_statements,
     create_transfer,
     shadow_amount,
@@ -53,6 +54,7 @@ from tests.test_integration.test_transfer_settle_freeze import (
     _derived_loan_transfer,
     _shadows,
 )
+from app.services.amount_ownership import state_own_amount
 
 #: P&I 1,199.10 + escrow 300.00 on the seeded $200k / 6% / 360mo mortgage.
 _CONTRACT = Decimal("1499.10")
@@ -119,11 +121,18 @@ class TestAShadowIsBornDerived:
         This is the whole of "structural rather than maintained": there is no
         window -- soft-deleted, mid-edit or otherwise -- in which a leg's figure
         can disagree with its transfer, because the pair cannot be written.
+
+        **The rival figure is written past the MAPPING since plan step
+        X-au-k**, and it has to be: the pair is one attribute now, so
+        ``state_own_amount`` would release the leg's declaration and produce a
+        leg that legitimately owns the figure -- a different row, and not the
+        drifted one this case is about. Reaching the private column is the only
+        way left to construct the drift, and the database still refuses it.
         """
         with app.app_context():
             _xfer, legs = _plain_pair(seed_user, seed_periods)
 
-            legs[0].estimated_amount = Decimal("999.00")
+            write_past_the_amount_seam(legs[0], Decimal("999.00"))
             # ``match`` names the constraint, because the constraint IS the
             # claim: a bare ``IntegrityError`` would be satisfied by an FK, a
             # NOT NULL or a unique index just as well.

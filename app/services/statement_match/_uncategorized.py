@@ -56,6 +56,7 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.services import transaction_service
 from app.services.scenario_resolver import require_baseline_scenario
@@ -185,7 +186,7 @@ def mint_uncategorized(
             TxnTypeEnum.INCOME if movement.signed_amount > 0
             else TxnTypeEnum.EXPENSE,
         ),
-        estimated_amount=abs(movement.signed_amount),
+        amount_ownership=AmountOwnership.own(abs(movement.signed_amount)),
         is_envelope=False,
     )
     db.session.add(row)

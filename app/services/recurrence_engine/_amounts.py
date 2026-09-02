@@ -15,9 +15,10 @@ and flags with it (finding **N-292**).
 """
 import logging
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import InvalidOperation
 from typing import NamedTuple
 
+from app.models.amount_ownership import AmountOwnership
 from app.services.payroll_basis import PayrollBasis
 from app.services.recurrence_engine._plan import compute_due_date
 
@@ -53,17 +54,26 @@ class DerivedRowFields(NamedTuple):
     ``status_id`` -- are deliberately absent: they are the classification the
     caller applies BEFORE deciding to write, never something a write restates.
 
-    **``amount_source_id`` is absent too, and that one is a considered
-    omission rather than a category** (adversarial review of plan step R10-a).
-    ``ck_transactions_amount_ownership`` pairs it with ``estimated_amount`` --
-    exactly one of the two is ever set -- so assigning an amount onto a row
-    already in the DERIVED state would violate the CHECK.  No writer sets that
-    column today, so that state is unreachable; plan steps X-au-d..i are the
-    ones that create it.  If they land before this is revisited the failure is
-    a loud ``IntegrityError`` at flush, not a wrong figure, whereas carrying
-    the field here would SILENTLY un-derive such a row.  Loud is the better
-    failure, so the field stays out until the step that owns the semantics
-    arrives.  Ledger row **N-293**.
+    **The amount is carried as OWNERSHIP rather than as a figure, and that
+    settles what used to be a deliberate omission** (plan step **X-au-k**,
+    closing finding **N-293**).  This class carried ``estimated_amount`` and
+    NOT ``amount_source_id``, because the two were separately mapped columns
+    that ``ck_transactions_amount_ownership`` pairs one-to-one: splatting a
+    figure onto a row already DERIVED wrote one half of the pair and aborted
+    the whole template edit at flush.  Carrying both fields would have fixed
+    the abort and introduced a silent un-derive, so the field stayed out and
+    the abort was accepted as the better failure.  Neither is expressible now:
+    :class:`~app.models.amount_ownership.AmountOwnership` is ONE attribute, so
+    this class states the row's whole ownership or none of it.
+
+    **What the splat can still do is hand a DERIVED row back to its owner**,
+    which is ledger row **N-437** and is X-au-e's to answer -- that step stops
+    generation pricing rows at all, at which point this class carries no amount
+    and the question has no site left to ask it at.  It is unreachable today
+    for a reason the DATABASE holds rather than a census: the maintain pass
+    selects on ``template_id``, and ``ck_transactions_one_pricing_link`` makes
+    that column exclusive with ``transfer_id``, which is the only link whose
+    rows are derived before X-au-e runs.
 
     Attributes:
         account_id: The account the row's money moves through, from the
@@ -79,9 +89,12 @@ class DerivedRowFields(NamedTuple):
             touches.
         category_id: The template's category, or ``None``.
         transaction_type_id: Expense or income, from the template.
-        estimated_amount: The period's own figure -- the template's default, or
-            the paycheck calculator's answer for a salary-linked template, via
-            :func:`_get_transaction_amount` against the OWNER's whole schedule.
+        amount_ownership: The period's own figure, stated as the row OWNING it
+            -- the template's default, or the paycheck calculator's answer for
+            a salary-linked template, via :func:`_get_transaction_amount`
+            against the OWNER's whole schedule.  It is ``own`` and never
+            ``derived`` because a generated row still stores what its
+            definition priced it at; plan step X-au-e is what stops that.
         due_date: Derived from the rule and the period by
             :func:`compute_due_date`.
     """
@@ -90,7 +103,7 @@ class DerivedRowFields(NamedTuple):
     name: str
     category_id: int | None
     transaction_type_id: int
-    estimated_amount: Decimal
+    amount_ownership: AmountOwnership
     due_date: date | None
 
 
@@ -136,8 +149,8 @@ def _derive_row_fields(template, rule, salary_profile, period, calendar):
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=_get_transaction_amount(
-            template, salary_profile, period, calendar,
+        amount_ownership=AmountOwnership.own(
+            _get_transaction_amount(template, salary_profile, period, calendar),
         ),
         due_date=compute_due_date(rule, period),
     )

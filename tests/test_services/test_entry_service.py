@@ -40,6 +40,7 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from tests._test_helpers import mark_purchase_settled
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helper ────────────────────────────────────────────────────────
@@ -166,7 +167,7 @@ class TestCreateEntry:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -202,7 +203,7 @@ class TestCreateEntry:
                 name="Ad-hoc expense",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -275,7 +276,7 @@ class TestCreateEntry:
                 user_id=user_id,
                 from_account_id=account_id,
                 to_account_id=second_account.id,
-                amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 pay_period_id=period_id,
                 scenario_id=scenario_id,
                 status_id=projected.id,
@@ -294,7 +295,7 @@ class TestCreateEntry:
                 name="Shadow with tracking on",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 is_envelope=True,
                 transfer_id=transfer.id,
             )
@@ -344,7 +345,7 @@ class TestCreateEntry:
                 name="Salary",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("3000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("3000.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -619,7 +620,7 @@ class TestCompanionAccess:
                 name="Other Groceries",
                 category_id=seed_second_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("400.00"),
+                amount_ownership=AmountOwnership.own(Decimal("400.00")),
             )
             db.session.add(txn)
             db.session.flush()

@@ -103,6 +103,7 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from app.services.settle_day import record_settle_day
+from app.services.amount_ownership import state_own_amount
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +554,7 @@ class TestSyncReversal:
 
             # Mutate the transfer amount to a value a naive reversal would
             # wrongly use; the reversal must still negate the posted 100.
-            transfer.amount = Decimal("999.00")
+            state_own_amount(transfer, Decimal("999.00"))
             _db.session.flush()
 
             [reversal] = posting_service.sync_transfer_postings(

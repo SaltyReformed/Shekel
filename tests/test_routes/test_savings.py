@@ -71,6 +71,7 @@ from app.models.user import User, UserSettings
 from app.services import account_service, obligations_aggregator
 from app.services.pay_calendar import calendar_for
 from app.services.auth_service import hash_password
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -1327,7 +1328,7 @@ class TestEmergencyFundCommittedBaseline:
                     name="Small Expense",
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
-                    estimated_amount=Decimal("10.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("10.00")),
                     # A settled row carries the day its money moved AND the
                     # record of what moved -- one fact in three columns (plan
                     # steps X-f1 / X-au-c3), resolved by the one door a
@@ -1399,7 +1400,7 @@ class TestEmergencyFundCommittedBaseline:
                     name="Checking Expense",
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
-                    estimated_amount=Decimal("120.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("120.00")),
                     **settle_day_columns(period.start_date),
                     **settlement_columns(
                         period.start_date, Decimal("120.00"),
@@ -1413,7 +1414,7 @@ class TestEmergencyFundCommittedBaseline:
                     name="Savings Expense",
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
-                    estimated_amount=Decimal("300.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("300.00")),
                     **settle_day_columns(period.start_date),
                     **settlement_columns(
                         period.start_date, Decimal("300.00"),
