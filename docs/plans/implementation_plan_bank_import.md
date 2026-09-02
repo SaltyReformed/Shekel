@@ -193,6 +193,15 @@ what it leaves a LATER step is on that step's own entry.
           the cards would state CONTRADICTORY answers, where R-IB's measured contradiction rate was
           zero. A rule naming only 2 of the 3, met by a period holding the third, comes up `$39.59`
           short and would re-price the salary row by that much on one OK. **MOVES MONEY, OWN PR.**
+          **It also OWNS a module split it cannot avoid.** `_variance.py` stands at **999** lines on
+          `X-gj-3a`'s tree against pylint's default ceiling of 1,000 (`max-module-lines` is set in
+          no config file) and C0302 fires at 1,001, so the headroom is TWO lines -- which a child
+          table plus the standing-rule machinery will not fit in. Ruling **balance:R-IR** puts the
+          split on the session that BREAKS the module, so plan it as part of this step rather than
+          meeting it as a commit refused for a reason unrelated to what it changed. *(Measured on
+          `53160470`. An earlier handover said 987, a figure read before `R-IV`'s paragraph and
+          before the merge-up -- an undated line count quoted as a reason, which is the shape
+          `docs/plans/lessons.md` already names.)*
   - [ ] **X-gj-4** `feat(import): skip, and the holding state` -- a SKIPPED line's disposition is
         recorded and undoable, which LIGHTS the SKIP verb the panel renders shut and fills the
         Skipped tab `X-gj-1b` draws for lines a standing *never a purchase* answer already disposes
