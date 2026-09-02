@@ -76,6 +76,19 @@ _ROWS_PREFIX = "rows-"
 #: disagree.
 _RESIDUAL_PREFIX = "residual-"
 
+#: What a card's MATCH tab names the member that CARRIES that difference in,
+#: keyed by its BANK LINE (plan step ``bank_import:X-gj-3a``).  Its value is
+#: one of the very ``rows-<line>`` tokens the same body sends, and the empty
+#: string is the select's first option -- *a new row with no category* --
+#: which is the shape every group had before this step.
+#:
+#: **Sent as an EMPTY string rather than omitted when nothing is chosen**,
+#: because a ``<select>`` always submits: the reader below is what turns that
+#: empty value back into an absence, exactly as it does for an untouched
+#: consent box, so the schema's ``load_default`` stays the one statement of
+#: what *nothing was said* means.
+_DIFFERENCE_ON_PREFIX = "difference_on-"
+
 
 def _reconcile_creation(form, key: str, destination: str) -> dict:
     """Return one OK'd ADD card as the creation item the schema loads.
@@ -111,17 +124,21 @@ def reconcile_match_payload(form, key: str) -> dict:
         key: The bank line's id, as submitted.
 
     Returns:
-        The item, carrying ``"residual"`` only where the consent box did.
+        The item, carrying ``"residual"`` only where the consent box did and
+        ``"difference_on"`` only where the attribution select named a member.
         **Omitted rather than sent as ``None``**, so the schema's own
         ``load_default`` is the one statement of what absence means -- and an
-        EMPTY consent is untouched rather than malformed, which is
-        :func:`_match_items`' founding principle.
+        EMPTY consent, or an unchosen member, is untouched rather than
+        malformed, which is :func:`_match_items`' founding principle.
 
     """
     item = {"line_ids": [key], "rows": form.getlist(f"{_ROWS_PREFIX}{key}")}
     residual = form.get(f"{_RESIDUAL_PREFIX}{key}")
     if residual:
         item["residual"] = residual
+    attributed = form.get(f"{_DIFFERENCE_ON_PREFIX}{key}")
+    if attributed:
+        item["difference_on"] = attributed
     return item
 
 

@@ -59,7 +59,7 @@ to :mod:`app.services.statement_match`.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from flask import abort, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -89,6 +89,7 @@ from app.services.category_service import list_active_categories
 from app.services.statement_match import (
     REGISTER_LIMIT,
     MatchCandidates,
+    MatchSubmission,
     ReviewScope,
     RuleDoorAccepts,
     Tab,
@@ -750,9 +751,49 @@ def statement_reconcile_match(account_id, line_id):
             (row.kind, row.row_id) for row in submitted["rows"]
         ),
         query=query,
-        totals=preview_hand_build(submitted_match(submitted), scope),
+        totals=preview_hand_build(_still_ticked(submitted_match(submitted)), scope),
         refusal=None,
     )
+
+
+def _still_ticked(submission: MatchSubmission) -> MatchSubmission:
+    """Return *submission* with an attribution the owner has just unticked gone.
+
+    Plan step ``bank_import:X-gj-3a``, second pass.  **This is a TRANSIENT
+    BROWSER STATE and not a body the door will ever be asked to honour**, so
+    it is normalised here rather than refused.
+
+    The sequence is ordinary.  The owner names a member for the difference,
+    then unticks that member.  The change bubbles to ``.rec-match-picks`` and
+    fires this fragment -- and the select, which has not been re-rendered yet,
+    posts its now-stale value alongside a ``rows-<line>`` list that no longer
+    holds it.  :func:`~app.services.statement_match.resolve_rows` refuses
+    exactly that shape, correctly and by design, so without this the panel
+    would answer *"This match says its difference belongs to a row it does not
+    include.  Reload the page and try again"* -- a sentence written for a
+    crafted body, shown for a legal click, on the one screen whose whole job
+    is to say what the press would do.
+
+    **The swap that follows drops the option**, so the next body carries no
+    attribution and the state is self-correcting; what this removes is the one
+    render in between.  Doing it in the ROUTE and not in
+    :func:`~app.schemas.validation.statement_reconcile.reconcile_match_payload`
+    is deliberate: that reader is shared with APPLY, where dropping a
+    submitted attribution would silently change which of two money acts the
+    press performs.  Here nothing is written at all.
+
+    Args:
+        submission: What this fragment's body said.
+
+    Returns:
+        It unchanged, or without its ``attributed_to`` where that row is not
+        among the rows the same body ticked.
+    """
+    if submission.attributed_to is None:
+        return submission
+    if submission.attributed_to in submission.rows:
+        return submission
+    return replace(submission, attributed_to=None)
 
 
 @accounts_bp.route(

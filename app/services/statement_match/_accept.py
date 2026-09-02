@@ -1,11 +1,15 @@
 """The ONE place a match is recorded, and the only place here that MOVES MONEY.
 
 An accepted match asserts that a set of bank lines and a set of the app's own
-rows are ONE movement.  Two things follow from that assertion and this module
-does both:
+rows are ONE movement.  Two things follow from that assertion, and this module
+now owns the second and ORCHESTRATES the first:
 
 * every member row takes the bank's posted day, which SETTLES a row still
-  Projected and CORRECTS one whose recorded day was wrong;
+  Projected and CORRECTS one whose recorded day was wrong.  **That moved to**
+  :mod:`._moving` **at plan step ``bank_import:X-gj-3a``**, when this module
+  reached pylint's 1,000-line ceiling (ruling **balance:R-IR**); this one
+  decides WHAT to move and calls one function to move it, and no longer
+  touches a settle verb;
 * the correspondence itself is recorded, so a re-import does not re-propose it,
   an undo has something to delete, and plan steps ``balance:X-f3a-2`` and
   ``balance:X-f3c`` have the provenance ruling **R-FT** promised them.
@@ -45,15 +49,19 @@ scope proof (it built the row itself) but the recording, so it now calls the
 recording.  **There is still exactly ONE function that writes a match**, which
 is what rulings **R-FT** and **R-FV** actually ask for.
 
-**RESOLVING, RECORDING and the MONEY GAP are three subjects in three files.**
-:mod:`._resolve` refuses what a submission may not NAME; this module records
-the correspondence and moves the days; and :mod:`._variance` owns everything
-about the two sides disagreeing -- measuring the gap, refusing the gaps that
-cannot be honestly recorded, and the two ways of recording the ones that can
-(write the bank's figure to the one row it names, or mint the member a group
-was missing).  The third file is plan step ``bank_import:X-f6d-4``'s, and the
-seam is a subject rather than a line count: every function there reads the two
-SUMS, and nothing here does.
+**RESOLVING, RECORDING, MOVING and the MONEY GAP are four subjects in four
+files.**  :mod:`._resolve` refuses what a submission may not NAME; this module
+records the correspondence and sequences the act; :mod:`._moving` puts one
+member onto the bank's day and figure through that row's own settle door; and
+:mod:`._variance` owns everything about the two sides disagreeing -- measuring
+the gap, refusing the gaps that cannot be honestly recorded, and deciding
+where a recordable one LANDS (on the member the match attributes it to, or in
+the ordinary row a group with no named member mints).  The gap file is plan
+step ``bank_import:X-f6d-4``'s and the moving file is
+``bank_import:X-gj-3a``'s; **each seam is a subject rather than a line count**,
+which the second one has to say twice because a line count is what FORCED it:
+every function in ``_variance`` reads the two SUMS and nothing here does, and
+every function in ``_moving`` calls a settle verb and nothing here does.
 
 **THREE refusals live in this module.**  Two are about the submission's
 SHAPE -- a side with nothing in it, and an envelope named beside a purchase
@@ -91,14 +99,17 @@ no request can reach a row the screen could not have shown.  Stated because an
 adversarial review read the missing bound as an oversight 2026-08-19, which is
 what an unstated deliberate asymmetry looks like.
 
-**The settle verbs are the app's own, never restated.**  An ordinary row goes
-through ``transaction_service.apply_requested_status``, the route layer's one
-status entry point; a transfer SHADOW through ``transfer_service``, because
-``CLAUDE.md`` transfer invariant 4 admits no direct mutation of one and
-``settle_transaction`` refuses it outright; a purchase through
-``entry_service.update_entry``.  A matcher that stamped ``settled_on`` itself
-would be a fourth settle door, which is exactly what ruling **R-FA** exists to
-prevent.
+**The settle verbs are the app's own, never restated -- and the dispatch that
+chooses between them is** :mod:`._moving` **'s now**, not this module's.  An
+ordinary row goes through ``transaction_service.apply_requested_status``, the
+route layer's one status entry point; a transfer SHADOW through
+``transfer_service``, because ``CLAUDE.md`` transfer invariant 4 admits no
+direct mutation of one and ``settle_transaction`` refuses it outright; a
+purchase through ``entry_service.update_entry``.  A matcher that stamped
+``settled_on`` itself would be a fourth settle door, which is exactly what
+ruling **R-FA** exists to prevent.  It is restated here rather than deleted
+because :func:`record_match` still owns the ORDER those doors run in and the
+refusals that must precede them.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in, a
 frozen dataclass out, no Flask import.  It MUTATES and does NOT commit -- the
@@ -112,7 +123,6 @@ from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 
-from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
@@ -121,14 +131,7 @@ from app.models.statement_match import (
     StatementMatchCreation,
     StatementMatchMember,
 )
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import (
-    entry_service,
-    transaction_service,
-    transfer_service,
-)
-from app.services.settle_day import SettleDay
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_MATCHED,
@@ -137,16 +140,15 @@ from app.utils.log_events import (
 
 from ._candidates import MatchedSubjects, matched_subjects, repriced
 from ._creations import CreatedSubject
+from ._moving import move_members
 from ._offers import (
     CandidateRow,
     MatchDays,
     RowKind,
-    corrected_purchase_day,
 )
 from ._sides import MatchSides
 from ._variance import (
-    bank_cash_for,
-    corrected_figure,
+    DifferenceLanding,
     mint,
     reject_unrecordable,
 )
@@ -326,213 +328,6 @@ def _reject_parent_and_its_own_purchase(
             "its own purchases.  Match the envelope OR its purchases, not "
             "both.  Nothing was changed."
         )
-
-
-def _apply_day(
-    row: CandidateRow, owner_id: int, days: "MatchDays",
-    figure: "Decimal | None" = None,
-) -> str:
-    """Move one member row onto the bank's days AND figure through its own door.
-
-    The dispatch, and every arm is an existing verb rather than a column write:
-
-    * a PURCHASE stamps its posting day through ``entry_service.update_entry``,
-      which refuses a future day and releases the row's clearing link -- and
-      takes the bank's own transaction day in the SAME call where the app's
-      recorded purchase day is refuted (ruling **R-FW**, see
-      :func:`~._offers.corrected_purchase_day`);
-    * a transfer SHADOW goes through ``transfer_service`` -- ``settle_transfer``
-      when it is still Projected, ``update_transfer`` when only the day moves,
-      because a settled transfer is an idempotent no-op for the first;
-    * every other transaction goes through
-      ``transaction_service.apply_requested_status``, with the row's OWN status
-      when it is already settled (an edit that changes only the day is an
-      identity transition) and its type's settled status when it is not.
-
-    Args:
-        row: The member being moved.
-        owner_id: The user the route proved owns the account.
-        days: The days the bank states for this match.
-        figure: What the bank says this row is worth
-            (:func:`corrected_figure`), or ``None`` where the bank's figure
-            names no single row or already agrees.  **It rides the SAME call
-            as the day** for the reason the purchase's two dates already do:
-            each settle door validates the state it is asked to produce, so
-            submitting the figure separately would offer it an intermediate
-            row the door would rightly refuse.
-
-    Returns:
-        ``"settled"`` when the row entered the settled band, ``"corrected"``
-        when it was already settled on a different day, ``"unchanged"`` when it
-        already carried the bank's own day.  **``"unchanged"`` is about the DAY
-        and not about whether anything was written** (plan step X-az): a row
-        already carrying the bank's day on a weaker basis has that basis raised
-        to ``observed``, which moves no day and so is not a correction.
-
-    Raises:
-        ValidationError: From a settle door -- a future day, a posting day
-            before its purchase, an illegal transition.  Surfaced to the owner.
-        PostingError: From a ledger reconcile.  Fails loud.
-    """
-    # **"unchanged" requires the row to be SETTLED as well as correctly
-    # dated.**  Deciding on the day alone would let a Projected row carrying
-    # the bank's own day be recorded as matched and left Projected -- the bank
-    # line would read explained while the money was never booked.  The status
-    # seam should make that state unreachable (it refuses a day on a
-    # non-settled status and clears the column on the way out), but no CHECK
-    # pairs the two columns, so the arm does not rest on that discipline.
-    posts_on = days.posts_on
-    purchase_day = corrected_purchase_day(row, days)
-    outcome = (
-        "unchanged" if row.is_settled and row.settled_on == posts_on
-        and purchase_day is None
-        else "corrected" if row.is_settled
-        else "settled"
-    )
-    # **An "unchanged" row is still written when the bank CONFIRMS a day the app
-    # only had a BOUND for** (plan step **X-az**, finding **N-332**).  The
-    # reconcile panel records the day a BALANCE was asserted for -- the money
-    # moved on or BEFORE it -- and a bank line posted on exactly that day turns
-    # the bound into an observation.  Nothing else in the app can make that
-    # write: no settle door fires when the day does not move, so before this
-    # step such a row kept reporting itself a bound forever.  The DAY is
-    # unchanged, so the outcome the caller counts stays ``"unchanged"`` and
-    # neither the settled nor the corrected tally moves; what changes is the
-    # stored answer to "how is this day known".
-    #
-    # It writes through the row's own settle door rather than assigning the
-    # column, exactly as the other arms do, so the basis keeps the single writer
-    # ``settled_on`` has.  Each door compares the resulting DAY with the stored
-    # one to decide whether to release the clearing link, and the day is equal
-    # here -- so a confirmation strengthens the observation the link records
-    # instead of dropping it.
-    if (
-        outcome == "unchanged"
-        and row.settle_day_basis is SettledDayBasisEnum.OBSERVED
-        and figure is None
-    ):
-        return outcome
-
-    settle_day = SettleDay(day=posts_on, basis=SettledDayBasisEnum.OBSERVED)
-
-    if row.kind is RowKind.PURCHASE:
-        # ONE call, both days, because ``update_entry`` checks the RESULTING
-        # pair: submitting them separately would offer the door an intermediate
-        # state where the posting day precedes the purchase day, and it would
-        # rightly refuse the very correction that fixes it.
-        moves = {"settle_day": settle_day}
-        if purchase_day is not None:
-            moves["purchased_on"] = purchase_day
-        if figure is not None:
-            moves["amount"] = figure
-        entry_service.update_entry(row.row_id, owner_id, **moves)
-        return outcome
-
-    if row.transfer_id is not None:
-        if row.is_settled:
-            transfer_service.update_transfer(
-                row.transfer_id, owner_id, settle_day=settle_day,
-            )
-        else:
-            transfer_service.settle_transfer(
-                row.transfer_id, owner_id, settle_day=settle_day,
-            )
-        return outcome
-
-    txn = db.session.get(Transaction, row.row_id)
-    target_status_id = (
-        txn.status_id if row.is_settled
-        else transaction_service.settled_status_id(txn)
-    )
-    transaction_service.apply_requested_status(
-        txn, target_status_id, settle_day=settle_day, submitted=figure,
-    )
-    return outcome
-
-
-@dataclass(frozen=True)
-class _Moved:
-    """What applying a match's days and figures to its member rows did.
-
-    Three counts derived in one pass over the members, because each of them
-    has to be read BEFORE the writes that make it false and reading them apart
-    would be three passes over one question.
-
-    Attributes:
-        outcomes: One of ``"settled"`` / ``"corrected"`` / ``"unchanged"`` per
-            member, in the order they were moved -- see :func:`_apply_day`.
-        redated_count: How many member purchases had their PURCHASE day
-            corrected (ruling **R-FW**).
-        repriced_count: How many members took the bank's own figure (ruling
-            **R-GD(a)**).
-    """
-
-    outcomes: "list[str]"
-    redated_count: int
-    repriced_count: int
-
-
-def _move_members(
-    scope: ReviewScope,
-    rows: "list[CandidateRow]",
-    bank_cash: "Decimal | None",
-    days: MatchDays,
-) -> _Moved:
-    """Move every member row onto the bank's days and figure, and count it.
-
-    **The purchases move first**, for the reason
-    ``reconcile_service.record_reconciliation`` states for its own order: a
-    purchase's posting day changes what its parent envelope's cash leg is worth
-    (ruling **R-FM**), so settling a parent first and stamping its purchase
-    afterwards would book the parent at a figure the purchase then moves.
-    :func:`_reject_parent_and_its_own_purchase` makes that pairing unreachable
-    in ONE match and across matches alike, so no submission this door accepts
-    can actually hit the interaction today.  **The order is kept anyway and the
-    reason is stated rather than invented**: a first draft justified it by "the
-    parent is in a different match accepted in the same request", which cannot
-    happen -- one POST accepts exactly one match.  What the order really buys
-    is that the rule survives the guard: if a later step widens what a match
-    may name, the sequence is already the safe one rather than something that
-    has to be rediscovered.
-
-    Args:
-        scope: The pass, for the owner every settle door is scoped by.
-        rows: The submitted app rows, already priced.
-        bank_cash: What the bank says the ONE row this match names is worth,
-            or ``None`` where the difference names no single row
-            (:func:`~._variance.bank_cash_for`).  Taken rather than derived,
-            because the caller decides the two remedies by the same answer.
-        days: The days the match writes.
-
-    Returns:
-        Its :class:`_Moved`.
-
-    Raises:
-        ValidationError: From a settle door -- a future day, a posting day
-            before its purchase, an illegal transition.
-        PostingError: From a ledger reconcile.  Fails loud.
-    """
-    ordered = sorted(
-        rows, key=lambda row: (row.kind is not RowKind.PURCHASE, row.row_id),
-    )
-    # Read BEFORE the writes: once `_apply_day` has moved a purchase onto the
-    # bank's day the predicate no longer holds, so counting afterwards would
-    # report zero every time.
-    redated_count = sum(
-        1 for row in ordered if corrected_purchase_day(row, days) is not None
-    )
-    # Read BEFORE the writes, exactly as ``redated_count`` is and for the same
-    # reason: once a settle door has taken the bank's figure the row agrees
-    # with it, so counting afterwards would report zero every time.
-    figures = [corrected_figure(row, bank_cash) for row in ordered]
-    return _Moved(
-        outcomes=[
-            _apply_day(row, scope.owner_id, days, figure)
-            for row, figure in zip(ordered, figures, strict=True)
-        ],
-        redated_count=redated_count,
-        repriced_count=sum(1 for figure in figures if figure is not None),
-    )
 
 
 def _reject_drifted_under_the_act(
@@ -727,12 +522,26 @@ class MatchContent:
             ``None`` -- which is what every caller but the form door passes,
             because a door that BUILT its row built it at the bank's own figure
             and has no difference to explain.
+        attributed: Which member the difference BELONGS to, as a
+            ``(kind, row_id)``, or ``None`` where nothing says (plan step
+            ``bank_import:X-gj-3a``).  It travels beside :attr:`residual`
+            because the two are one decision seen from two sides -- *how much*
+            and *whose* -- and a door given one without the other would be
+            deciding the second itself.
+
+            **The two building doors pass ``None`` and cannot pass anything
+            else**: each names exactly one row, where ruling **R-GD(a)**'s
+            determinacy answers the question.  It is the SUBJECT key rather
+            than the reviewed row :class:`~._submission.MatchSubmission`
+            carries, because by this tier the rows have been resolved and
+            re-priced and the reviewed state has already done its work.
     """
 
     lines: "list[BankStatementLine]"
     rows: "list[CandidateRow]"
     created: "tuple[CreatedSubject, ...]" = ()
     residual: "Decimal | None" = None
+    attributed: "tuple[RowKind, int] | None" = None
 
 
 def record_match(
@@ -760,7 +569,7 @@ def record_match(
     (:meth:`~._scope.ReviewScope.reject_line_before_books_open`, plan step
     **balance:X-f3c-2b-2b**), which is the one refusal a settle door cannot
     make for it; and only then does any settle door run.  The order the
-    MEMBERS move in is :func:`_move_members`'.
+    MEMBERS move in is :func:`~._moving.move_members`'.
 
     **A GROUP's difference is a MEMBER this function mints**, not an exception
     to the balance it checks (plan step ``bank_import:X-f6d-4``, ruling
@@ -772,12 +581,12 @@ def record_match(
     module's own promise that a refused match leaves the database exactly as it
     was is kept without depending on the batch's savepoint.
 
-    **The minted row does NOT go through** :func:`_apply_day`, and that is
+    **The minted row does NOT go through** :func:`~._moving._apply_day`, and that is
     about the RECEIPT rather than about the write.  It is born on the bank's
     own day, so passing it through would report it as one more row "marked as
     having happened" -- claiming the bank's evidence was applied to a record
     the owner already had, when this act is the only reason the record exists.
-    It settles through the same verb ``_apply_day`` uses
+    It settles through the same verb ``_moving._apply_day`` uses
     (:func:`~._variance.mint`), so there is still no fourth settle door, and it
     is reported as its own figure on :attr:`AcceptedMatch.residual`.
 
@@ -828,7 +637,32 @@ def record_match(
     # subtraction, and summing money twice on the two sides of a gate is this
     # arc's own root cause 1.
     sides = MatchSides.of(lines, rows)
-    reject_unrecordable(rows, sides, content.residual)
+    # **DERIVED BEFORE THE REFUSALS AND HANDED TO THEM**, which is the whole
+    # of why it moved up from below :func:`MatchDays.of` (plan step
+    # ``bank_import:X-gj-3a``, second pass).  One of those refusals is about
+    # the landing itself -- a member whose own row cannot hold the figure the
+    # bank leaves it -- and a refusal derived after the first settle verb has
+    # run would be caught, if at all, by an invariant guard reporting a drift
+    # that did not happen.  It writes nothing and reads nothing, so deriving
+    # it first costs a subtraction.
+    #
+    # **It is ALSO what makes the two remedies exclusive.**
+    # :class:`~._variance.DifferenceLanding` names a member exactly where the
+    # difference is attributable to one and names none exactly where it is
+    # not, so correcting a row and minting a member for the same gap is
+    # unrepresentable rather than merely avoided.  A first version of plan step
+    # ``bank_import:X-f6d-4`` gated the mint on the owner's consent alone, and
+    # a one-row match carrying one then did BOTH -- the row corrected to the
+    # bank's figure and the same difference booked again to Uncategorized.
+    #
+    # **It was ``bank_cash_for(sides, rows)`` until plan step
+    # ``bank_import:X-gj-3a``**, which is the same rule over a wider set: that
+    # function answered the bank total for a lone row, and the bank total is
+    # what a lone row is left when nothing else is ticked.  What is new is the
+    # middle arm -- a match naming SEVERAL rows and one member to carry the
+    # gap, which is ruling **R-HT(b)**'s *onto a named row, re-pricing it*.
+    landing = DifferenceLanding.of(sides, rows, content.attributed)
+    reject_unrecordable(rows, sides, content.residual, landing)
 
     # THE LATEST bank day for the posting, the EARLIEST stated day for the
     # purchase -- derived ONCE for the whole act, so no two members can be moved
@@ -839,7 +673,7 @@ def record_match(
     # **The EARLIEST posting day, against the day this account's books open**
     # (plan step **balance:X-f3c-2b-2b**, finding **N-383**).  Asked here
     # because ``posted_first`` is what it needs and this is the first line at
-    # which that exists -- and before ``_move_members``, which is the first
+    # which that exists -- and before ``_moving.move_members``, which is the first
     # thing in this function that writes.
     #
     # **``posted_first`` and never ``posts_on``, and the difference is the
@@ -855,17 +689,6 @@ def record_match(
     # own day, which is an accident of the derivation and not a rule.
     scope.reject_line_before_books_open(days.posted_first, "this match")
 
-    # ONE derivation of what the bank says a single named row is worth, for
-    # the whole act -- and **it is what makes the two remedies exclusive**.
-    # ``bank_cash_for`` answers a figure exactly where the difference is
-    # attributable to one row and ``None`` exactly where it is not, so
-    # correcting a row and minting a member for the same gap is unrepresentable
-    # rather than merely avoided.  A first version of this step gated the mint
-    # on the owner's consent alone, and a one-row match carrying one then did
-    # BOTH -- the row corrected to the bank's figure and the same difference
-    # booked again to Uncategorized.
-    bank_cash = bank_cash_for(sides, rows)
-
     # **The residual's PAY PERIOD is resolved here, before any member moves**,
     # because that lookup can refuse: a line posted past the owner's last SAVED
     # pay period reaches this door (the review screen splits off only the
@@ -877,11 +700,11 @@ def record_match(
     # adversarial financial review 2026-08-23.
     residual_period = (
         scope.period_holding(days.posts_on, "the difference on this match")
-        if bank_cash is None and sides.difference
+        if landing.mints_a_row and sides.difference
         else None
     )
 
-    moved = _move_members(scope, rows, bank_cash, days)
+    moved = move_members(scope, rows, landing, days)
     # **AFTER the member rows have moved, and that ordering is deliberate.**
     # A settle verb can still refuse -- a future day, a posting day before its
     # purchase -- and a row minted before one did would be a record of money
@@ -989,6 +812,12 @@ def accept_match(
             # bring into existence is a GROUP's residual, and
             # :func:`record_match` mints that itself.
             residual=submission.accepted_difference,
+            # ...and where the owner said that residual BELONGS, which is what
+            # decides whether it is minted at all (plan step
+            # ``bank_import:X-gj-3a``).  ``resolve_rows`` above has already
+            # refused a submission whose attribution is not one of its own
+            # rows, so this key names a member of ``rows`` by construction.
+            attributed=submission.attributed_subject,
         ),
         matched,
         # A TICK, always: this door exists because a person reviewed a proposal

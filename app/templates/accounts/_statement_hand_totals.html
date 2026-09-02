@@ -79,7 +79,7 @@
        arithmetic disagrees.  `needs_consent` decides which of three controls
        says so -- asked of the SERVICE, because "is there something here to
        agree to" is a money question and a template comparing `remedy` for it
-       would be a second statement of the rule `bank_cash_for` owns.
+       would be a second statement of the rule `DifferenceLanding` owns.
 
        Three states, and the middle one is what the ruling added:
          * a difference to permit  -- the tick box, carrying the figure;
@@ -100,6 +100,23 @@
         Record the {{ money(totals.difference) }} difference as a row with no
         category that you can categorise later.
         {% elif totals.remedy == 'corrects' %}
+        {# THE SUMS AND NOT THE ROW'S OWN FIGURES, which is the opposite of
+           what the Reconcile pane's twin states since plan step
+           bank_import:X-gj-3a -- and on THIS surface the two are the same two
+           numbers, provably. `hand_match_payload` emits no `difference_on`, so
+           this form can never attribute a group's difference to a member: it
+           reaches 'corrects' only with ONE row, where the match's bank total
+           IS that row's new figure and its app total IS the old one.
+
+           IT WAS LEFT ALONE DELIBERATELY (plan step bank_import:X-gj-3a). An
+           adversarial review recommended switching it for symmetry, and the
+           switch is byte-identical today -- but the sentence is pinned by
+           `test_statement_workbench.TestTheHandBuildForm`, and CLAUDE.md rule
+           5 does not admit editing a test for a cosmetic change the developer
+           did not ask for. The TRAP is real and belongs to whoever owns this
+           surface: the moment this form could attribute, `totals.bank` would
+           name the whole deposit as what gets written to one member of it.
+           `X-gi` retires this page, which is the likeliest moment. #}
         Write your bank's {{ money(totals.bank) }} to the row you ticked, in
         place of the {{ money(totals.app) }} your records hold.
         {% endif %}

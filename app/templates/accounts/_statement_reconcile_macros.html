@@ -115,6 +115,13 @@
     {% endfor %}
     <input type="hidden" name="residual-{{ card.line.line_id }}"
            value="{{ card.panel.proposal | stated_difference }}">
+    {# NO `difference_on-<line>` HERE, and the asymmetry with the residual
+       above is the rule rather than an omission (plan step
+       bank_import:X-gj-3a). The FIGURE always travels, because R-IA requires
+       every match to state the difference it was reviewed against; WHERE that
+       difference lands is a choice, and not making one is a legal answer that
+       means R-FN's ordinary row. So a card OK'd from the summary without the
+       panel ever being opened does exactly what it did before this step. #}
     {% endif %}
     <p class="small text-body-secondary mb-0">
       <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>

@@ -513,7 +513,7 @@ def close_container(
         # by design -- "the seam owns the day, and a caller that genuinely
         # means *this settled on a different day* corrects it on the row
         # afterwards" (ruling **R-ED**) -- so the correction goes through the
-        # same identity transition ``_accept._apply_day`` uses for a settled
+        # same identity transition ``_moving._apply_day`` uses for a settled
         # row a match re-dates: the row's OWN status, a new day.  One verb for
         # "a settled row's day moved", not a second one here.
         transaction_service.apply_requested_status(
