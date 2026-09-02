@@ -83,7 +83,7 @@ from app.services.ledger_report_service import StatementWindow
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.dates import display_today
 from app.services.pay_calendar import calendar_for
-from tests._test_helpers import all_periods
+from app.services.pay_calendar import calendar_for
 
 
 def _money(value):
@@ -200,13 +200,16 @@ def _user_blob(user_id):
         return None
 
     days = _ledger_days(user_id, scenario.id)
-    periods = all_periods(user_id)
+    # The owner's calendar, not the ORM rows: a period's last covered day
+    # is derived from the payday set since plan step ``pay_calendar:C4-c``
+    # dropped the column, and ``saved()`` is where that answer lives.
+    periods = calendar_for(user_id).saved()
 
     income_statements = {}
     for period in periods:
-        income_statements[f"period/{period.id}"] = _income_statement(
+        income_statements[f"period/{period.period_id}"] = _income_statement(
             user_id, StatementWindow(window_type="pay_period",
-                                     period_id=period.id),
+                                     period_id=period.period_id),
         )
     for year, month in sorted({(day.year, day.month) for day in days}):
         income_statements[f"month/{year}-{month:02d}"] = _income_statement(

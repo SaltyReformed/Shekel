@@ -63,7 +63,7 @@ def _lists(rows):
     **The paycheck SPANS come from the owner's own pay calendar** since
     pay-calendar plan step C4-a-3, resolved through ``require_period`` rather
     than assembled from a literal here, so a span read off the stored
-    ``end_date`` column does not have to move again when plan step C4-c drops
+    ``end_date`` column does not have to move again when plan step C4-c dropped
     it.
 
     **It is the same construction TWO of the four call sites use, not four**,

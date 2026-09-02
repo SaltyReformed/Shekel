@@ -122,8 +122,8 @@ SHAPES = [
     ("an unsaved candidate payday", WITH_UNSAVED, 14),
     ("one payday only", [(1, date(2026, 1, 2))], 14),
     (
-        "paydays a day apart -- the one-day period ck_pay_periods_date_order "
-        "forbids and C4 legalises",
+        "paydays a day apart -- the one-day period "
+        "ck_pay_periods_date_order forbade and C4-c legalised",
         [(1, date(2026, 1, 2)), (2, date(2026, 1, 3)), (3, date(2026, 1, 4))],
         14,
     ),
@@ -959,7 +959,7 @@ class TestCurrentAndFuture:
 
     Plan step **C4**, finding **P70**: the rolling top-up compared its target
     against a ``PayPeriod.end_date >= as_of`` count in SQL, which was the last
-    query in ``pay_period_admin`` naming a column plan step C4 drops.  The rule
+    query in ``pay_period_admin`` naming a column plan step C4-c dropped.  The rule
     is this method now, so it is graded here rather than only through the door.
     """
 
@@ -1745,8 +1745,8 @@ class TestTheSavedIndexIsBOTHTheScopeAndTheLookup:
 
         ``OFF_CADENCE``'s second payday is four days after the first, so
         ``lead(start) - 1`` and ``start + cadence - 1`` disagree -- which is
-        exactly the divergence ``pay_periods.end_date`` stores and plan step
-        C4-c drops.  On ``BIWEEKLY`` the two rules coincide and this assertion
+        exactly the divergence ``pay_periods.end_date`` stored and plan step
+        C4-c dropped.  On ``BIWEEKLY`` the two rules coincide and this assertion
         would pass against either.
         """
         index = calendar(OFF_CADENCE).saved_by_id()

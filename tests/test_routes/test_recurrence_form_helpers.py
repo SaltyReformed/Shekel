@@ -58,7 +58,11 @@ from app.services.recurrence import (
 from app.routes._recurrence_form_render import (
     create_form_default_starts_on,
 )
-from tests._test_helpers import transient_cadence_rule, validated_cadence
+from tests._test_helpers import (
+    derived_span,
+    transient_cadence_rule,
+    validated_cadence,
+)
 from tests.oracles.recurrence_baseline import (
     EVERY_N_PERIODS,
     MONTHLY,
@@ -163,7 +167,7 @@ class TestBuildRecurrenceRuleFromForm:
             # arithmetic.  seed_periods_today seeds an indexed range
             # around today; pick one with a non-zero index.
             chosen = next(
-                (p for p in seed_periods_today if p.period_index == 1),
+                (p for p in seed_periods_today if derived_span(p).period_index == 1),
                 None,
             )
             assert chosen is not None, "fixture missing period_index=1"
@@ -261,7 +265,7 @@ class TestBuildRecurrenceRuleFromForm:
         """
         with app.test_request_context():
             own_period = next(
-                (p for p in seed_periods_today if p.period_index == 1),
+                (p for p in seed_periods_today if derived_span(p).period_index == 1),
                 None,
             )
             assert own_period is not None, "fixture missing period_index=1"

@@ -42,7 +42,7 @@ class _DashboardCoreData:
     step C2-f2d-3, following the ruling C2-f2c recorded at
     ``investment_dashboard_service._context._ProjectionContext``).  It was
     ``pay_period_service.get_all_periods(user_id)`` -- ORM rows carrying the
-    two derived columns plan step **C4** drops -- and it is
+    two derived columns plan step **C4-c** dropped -- and it is
     :meth:`~app.services.balance_at.BalanceContext.reported_periods` off
     :attr:`balance_ctx` now, which is the SAME window the balance seam reports
     every per-period figure on this page over.  Two reads of one schedule was

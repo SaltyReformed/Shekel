@@ -28,6 +28,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import text
 
 from app.extensions import db
@@ -35,8 +36,14 @@ from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.services import account_service, cash_ledger
+from app.services.pay_calendar import calendar_for
 from app.utils.dates import display_today
-from tests._test_helpers import load_migration_module
+from tests._test_helpers import (
+    derived_span,
+    last_covered_day,
+    load_migration_module,
+    restore_pay_period_derived_columns,
+)
 from tests.conftest import SEED_USER_BOOTSTRAP_START
 
 _MIGRATION_FILENAME = "c81f0a5b3e27_the_anchor_balance_has_one_home.py"
@@ -50,11 +57,38 @@ def _migration():
 def _resolved_periods():
     """Run the downgrade's own period-resolution SELECT; return it by account.
 
+    **Its caller must have taken** :func:`with_the_pay_period_derived_columns`:
+    the SELECT places an assertion day with
+    ``observed_on BETWEEN p.start_date AND p.end_date``, and plan step
+    ``pay_calendar:C4-c`` dropped ``end_date``.
+
     Returns:
         ``{account_id: pay_period_id}`` as the backfill would write it.
     """
     rows = db.session.execute(text(_migration()._RESOLVED_PERIOD_SQL)).all()
     return {r.account_id: r.pay_period_id for r in rows}
+
+
+@pytest.fixture
+def with_the_pay_period_derived_columns(db):
+    """Run the schema DOWN to where this revision's period SELECT can read.
+
+    ``_RESOLVED_PERIOD_SQL`` places an assertion day inside
+    ``budget.pay_periods.[start_date, end_date]``, and plan step
+    ``pay_calendar:C4-c`` dropped ``end_date``.  Alembic downgrades run
+    newest-first, so at the point in the chain where this revision's
+    ``downgrade()`` executes the column is there; this fixture is that step,
+    driven through C4-c's own shipped callable so no hand-written DDL can
+    drift from it.  Ledger row **P79** owns the general shape -- migration
+    tests here drive their callables at HEAD rather than at the revision's own
+    parent.
+
+    **It is a FIXTURE rather than a call inside the test body**, and that is
+    the lock rather than a style choice: it has to run in the scope that holds
+    the table's locks, which is the app context the test already has and not
+    the nested one its body opens.
+    """
+    restore_pay_period_derived_columns(db.session)
 
 
 def _current_assertions():
@@ -198,6 +232,7 @@ class TestTheDowngradeResolvesTheOwnersOwnPeriod:
 
     def test_a_foreign_period_containing_the_day_is_not_selectable(
         self, app, db, seed_user, seed_second_user, seed_periods_today,
+        with_the_pay_period_derived_columns,
     ):
         """A foreign period that CONTAINS the day loses to the owner's fallback.
 
@@ -239,56 +274,60 @@ class TestTheDowngradeResolvesTheOwnersOwnPeriod:
             owner_periods = db.session.query(PayPeriod).filter_by(
                 user_id=seed_user["user"].id,
             ).all()
+            # ``DerivedPeriod.covers`` rather than a hand-written chain: the
+            # span is derived since plan step ``pay_calendar:C4-c``, and the
+            # chain this replaces short-circuited on its FIRST comparison for
+            # every row here -- so its second half had never once executed.
             assert not any(
-                p.start_date <= off_calendar <= p.end_date
-                for p in owner_periods
+                derived_span(p).covers(off_calendar) for p in owner_periods
             ), "the owner must have NO period containing the day"
-            owner_earliest = min(owner_periods, key=lambda p: p.period_index)
+            owner_earliest = min(owner_periods, key=lambda p: derived_span(p).period_index)
 
-            # ``UNIQUE(user_id, period_index)`` -- the second user already has
-            # a bootstrap period at index 0, so the decoy takes the next free
-            # index.  Its INDEX does not matter here: it wins on being a
-            # CONTAINING period, which the first subquery prefers over any
-            # fallback whatever the ordering.
+            # **The foreign containing period is the second owner's OWN
+            # bootstrap paycheck, and since plan step ``pay_calendar:C4-c`` it
+            # is the only one there can be.**  This case used to ADD a decoy
+            # opening the day before ``off_calendar``; a period now ends the
+            # day before the NEXT payday, so a row inserted immediately before
+            # an existing payday covers exactly that one day and cannot contain
+            # the day after it.  The decoy was constructible only while
+            # ``end_date`` was a column a test could write, and plan step
+            # X-f3c-2c had already recorded it was redundant: ``off_calendar``
+            # is the seeded bootstrap day and the second owner's own bootstrap
+            # period spans it.  So what the decoy added was a SECOND wrong
+            # answer, not the only one.
             #
-            # **It is no longer the ONLY foreign containing period** (plan step
-            # X-f3c-2c).  ``off_calendar`` is the seeded bootstrap day now, and
-            # the second user's own bootstrap period spans it -- so an unscoped
-            # query would pick one of two foreign periods rather than this one.
-            # The control still fires either way: what it grades is that the
-            # OWNER's earliest is chosen over any foreign period at all, and
-            # the owner-has-no-containing-period precondition above is what
-            # makes that the only legal answer.
-            next_index = 1 + max(
-                (p.period_index for p in db.session.query(PayPeriod).filter_by(
-                    user_id=seed_second_user["user"].id,
-                )),
-                default=-1,
+            # Asserted rather than assumed, because it is the whole premise:
+            # an unscoped query must have something strictly better than the
+            # owner's fallback to prefer, or this case passes with both
+            # scoping clauses deleted -- which is exactly how its first version
+            # graded nothing.
+            foreign_containing = [
+                period
+                for period in calendar_for(seed_second_user["user"].id).saved()
+                if period.covers(off_calendar)
+            ]
+            assert foreign_containing, (
+                f"no period of owner {seed_second_user['user'].id} contains "
+                f"{off_calendar}, so an unscoped resolution has no foreign "
+                f"CONTAINING period to prefer over the owner's fallback and "
+                f"this case would pass with the scoping removed"
             )
-            decoy = PayPeriod(
-                user_id=seed_second_user["user"].id,
-                start_date=off_calendar - timedelta(days=1),
-                end_date=off_calendar + timedelta(days=1),
-                period_index=next_index,
-            )
-            db.session.add(decoy)
-            db.session.flush()
-
-            # The preconditions, asserted: the decoy genuinely contains the day
-            # (so an unscoped containing-subquery prefers it over any fallback)
-            # and belongs to someone else.
-            assert decoy.start_date <= off_calendar <= decoy.end_date
-            assert decoy.user_id != stray.user_id
+            assert all(
+                period.period_id not in {p.id for p in owner_periods}
+                for period in foreign_containing
+            ), "the containing periods must belong to the OTHER owner"
 
             resolved = _resolved_periods()
             assert resolved[stray.id] == owner_earliest.id, (
                 f"account {stray.id} (owner {stray.user_id}) resolved period "
                 f"{resolved[stray.id]}; its owner's earliest is "
-                f"{owner_earliest.id} and the foreign decoy is {decoy.id}"
+                f"{owner_earliest.id} and the foreign containing periods are "
+                f"{[p.period_id for p in foreign_containing]}"
             )
 
     def test_every_account_lands_in_its_own_owners_period(
         self, app, db, seed_user, seed_second_user, seed_periods_today,
+        with_the_pay_period_derived_columns,
     ):
         """No account, on either calendar, resolves a period it does not own.
 

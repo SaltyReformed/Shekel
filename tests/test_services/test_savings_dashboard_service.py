@@ -40,6 +40,8 @@ from tests._test_helpers import (
     all_periods,
     amount_basis_for_scenario,
     current_pay_period,
+    derived_span,
+    last_covered_day,
     open_books_before_the_first_assertion,
     settle_day_columns,
 )
@@ -3333,9 +3335,11 @@ class TestNetWorthSeries:
             # the first four points ARE the four elapsed periods, and the fifth
             # IS the current one.
             assert [p.end_date for p in series.periods[:4]] == [
-                seed_periods_today[i].end_date for i in range(4)
+                last_covered_day(seed_periods_today[i]) for i in range(4)
             ]
-            assert series.periods[4].end_date == seed_periods_today[4].end_date
+            assert series.periods[4].end_date == last_covered_day(
+                seed_periods_today[4],
+            )
 
     def test_net_equals_assets_minus_liabilities_each_point(
         self, app, db, seed_user, seed_periods,
@@ -4157,81 +4161,26 @@ class TestNetWorthHorizon:
                 BalanceContext.build(user_id),
             ) is None
 
-    def test_a_stored_span_no_longer_decides_whether_a_calendar_derives(
-        self, app, db, seed_user,
-    ):
-        """Plan step **C4-b-2**: ledger row **P35** closed, asserted here.
-
-        **This case REPLACES
-        ``test_the_narrow_producers_do_not_need_a_CALENDAR_they_never_use``,
-        and it keeps that case's setup while inverting its verdict.**  That
-        case built an owner whose calendar REFUSED -- a period with a 545-day
-        stored span and no ``budget.pay_schedule`` row, so
-        ``resolve_cadence``'s fallback inferred 546, ``derive_periods``
-        refused anything outside 1..365, and every producer touching the
-        calendar raised -- and pinned that the two narrow producers answered
-        anyway.  It was the regression control for a defect plan step
-        C2-f2d-3 introduced and fixed in one commit.
-
-        **That owner cannot exist now**, which is what closing P35 means and
-        is a stronger statement than the old case's.  ``fk_pay_periods_schedule``
-        makes paydays-without-a-cadence-row unstorable, so the only source of
-        a cadence is ``budget.pay_schedule.cadence_days`` -- bounded to 1..365
-        by ``ck_pay_schedule_cadence_range``, the same range
-        ``_derive.validate_cadence`` enforces.  The two bounds cannot disagree,
-        so a stored span, however long, no longer reaches the derivation at
-        all.
-
-        So the SPAN is kept -- the same 545 days on the same seeded owner --
-        and the assertion becomes that the calendar builds.  Deleting the case
-        outright would have removed the only place that span is written down,
-        and a reader would have no way to tell "we stopped testing this" from
-        "this stopped being possible".
-
-        **Two things about the old case are NOT kept, and an adversarial review
-        asked for both to be said rather than implied.**  Its setup ALSO
-        deleted the ``budget.pay_schedule`` row, which is what the key now
-        refuses -- so the span alone cannot reproduce the state, which is the
-        whole point.  And it asserted ``compute_debt_summary(...) is None``
-        beside the goal producer; that assertion is dropped rather than
-        inverted, because it graded a producer RETURNING EARLY past a calendar
-        that refused, and there is no longer a storable owner whose calendar
-        refuses.  What survives of that concern -- a page must not fail for a
-        fact it does not use -- is graded by
-        ``test_the_narrow_producers_do_not_need_a_cadence_they_never_use``
-        directly above, on an owner with no paydays at all.
-        """
-        # pylint: disable=import-outside-toplevel
-        from datetime import timedelta
-
-        from app.models.pay_period import PayPeriod
-        from app.services.pay_schedule_service import resolve_cadence
-        from tests.conftest import SEED_USER_CADENCE_DAYS
-
-        with app.app_context():
-            user_id = seed_user["user"].id
-            # The schedule row STAYS -- deleting it is what the old case did
-            # and what the key now refuses.  The span alone is the variable.
-            period = (
-                db.session.query(PayPeriod).filter_by(user_id=user_id)
-                .order_by(PayPeriod.start_date).first()
-            )
-            period.end_date = period.start_date + timedelta(days=545)
-            db.session.commit()
-
-            # The premise, asserted rather than assumed: the cadence really is
-            # read from the ROW and not from that span, so this case cannot
-            # pass by the span having been reverted.  The EXACT seeded value
-            # rather than a range -- a range would pass for any of 365 numbers
-            # and this passes for one.
-            assert (period.end_date - period.start_date).days + 1 == 546
-            assert resolve_cadence(user_id) == SEED_USER_CADENCE_DAYS
-
-            # What used to raise now answers.
-            assert BalanceContext.build(user_id).calendar() is not None
-            assert savings_dashboard_service.compute_goal_progress(
-                BalanceContext.build(user_id),
-            ) == []
+    # **``test_a_stored_span_no_longer_decides_whether_a_calendar_derives`` was
+    # deleted at plan step ``pay_calendar:C4-c``.**  It stretched one period's
+    # stored span to 546 days and asserted the owner's cadence still came from
+    # ``budget.pay_schedule`` rather than from that span -- the inference plan
+    # step C4-b-2 deleted, whose out-of-range answer used to make every balance
+    # page a 500 (ledger row **P35**).
+    #
+    # **It planted a stored ``budget.pay_periods.end_date`` that disagreed with
+    # the owner's paydays, and plan step ``pay_calendar:C4-c`` dropped that
+    # column.**  The plant is not merely unreachable, it is SILENT: assigning to
+    # an attribute the model no longer maps sets a plain Python attribute, writes
+    # no UPDATE, and survives ``expire_all`` -- so the case and its own premise
+    # assertion both went on passing while measuring nothing.  Deleted rather
+    # than left green.
+    #
+    # There is no span to stretch now: a period's end is the day before the next
+    # payday, computed on every read.  ``resolve_cadence`` reading the schedule
+    # row is graded by ``tests/test_services/test_pay_schedule_service.py`` and
+    # by ``test_c4b2_pay_period_schedule_key.py``, neither of which needs a
+    # doctored column to say it.
 
     def test_publishes_only_the_keys_the_page_reads(
         self, app, db, seed_user, seed_periods_today,
@@ -6564,11 +6513,11 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
         with app.app_context():
             periods = seed_schedule_at_cadence(cadence_days=7, num_periods=120)
             current = current_pay_period(seed_user["user"].id)
-            by_index = {p.period_index: p for p in periods}
+            by_index = {derived_span(p).period_index: p for p in periods}
             for offset, amount in ((10, "100.00"), (20, "200.00"), (40, "300.00")):
                 _make_projected_envelope_expense(
                     db.session, seed_user=seed_user,
-                    pay_period=by_index[current.period_index + offset],
+                    pay_period=by_index[derived_span(current).period_index + offset],
                     estimated=Decimal(amount), name=f"Bill +{offset}",
                 )
             db.session.commit()

@@ -14,18 +14,20 @@ that dependency, written once::
 
 **Its one caller is** :meth:`~._calendar.PayCalendar.__post_init__`, since plan
 step C2-a; at C1 it had none at all, deliberately, because the value had to be
-proven equal to what is stored -- over a clone of production and over irregular
+proven equal to what was stored -- over a clone of production and over irregular
 schedules the live data cannot supply -- before anything read it, wrote it, or
-dropped the columns.  That proof lives in
-``tests/oracles/pay_calendar_derivation.py``,
-``tests/test_services/test_pay_calendar_derivation.py`` and
-``tests/manual/verify_pay_calendar_derivation.py``.
+dropped the columns.  **Plan step C4-c dropped them, so that comparison has no
+second side and the harness that took it is gone**; the proof it was is in
+migration ``b7a41e2c9d63``'s docstring, measured on production itself.  What
+holds this function to its values now is
+``tests/oracles/pay_calendar_derivation.py``'s hand-computed sweep, driven by
+``tests/test_services/test_pay_calendar_derivation.py``.
 
 **Pure, and that is load-bearing.**  No session, no Flask, no clock: the
-derivation is a function of two values, so the harness can drive it over
-production's real 61 rows and over a generated sweep without a database, and
-the two runs exercise the same code.  A derivation reachable only through a
-query could not be diffed against the columns it is meant to replace.
+derivation is a function of two values, so the sweep drives it over a
+catalogue of schedule shapes without a database at all.  That is what let the
+same code be driven over a production clone while a stored column still
+existed to diff it against.
 **The only application imports are ``app.exceptions`` and ``app.utils.dates``,
 neither of which imports anything from this application**, so the module still
 loads with no app stack behind it.  *An earlier draft of this sentence said
@@ -137,11 +139,11 @@ class PayCalendarError(ShekelError, ValueError):
 class DerivedPeriod:
     """One pay period, derived rather than stored.
 
-    The shape of the two columns plan step C4 drops, plus the one thing the
+    The shape of the two columns plan step C4-c dropped, plus the one thing the
     columns could not say.  Ordered ``start_date`` ascending inside a
     :func:`derive_periods` result, with ``period_index`` matching that order by
     construction -- the disagreement between index order and date order that
-    ``uq_pay_periods_user_index`` and three runtime fences exist to catch is
+    ``uq_pay_periods_user_index`` and three runtime fences existed to catch is
     not expressible here.
 
     Attributes:

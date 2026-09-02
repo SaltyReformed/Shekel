@@ -42,6 +42,7 @@ from app.services.statement_match import (
     as_reviewed,
 )
 from tests._test_helpers import (
+    last_covered_day,
     settle_day_columns,
 )
 
@@ -721,9 +722,7 @@ def a_later_period(seed_user):
     bootstrap = seed_user["bootstrap_period"]
     period = PayPeriod(
         user_id=seed_user["user"].id,
-        start_date=bootstrap.end_date + timedelta(days=1),
-        end_date=bootstrap.end_date + timedelta(days=14),
-        period_index=bootstrap.period_index + 1,
+        start_date=last_covered_day(bootstrap) + timedelta(days=1),
     )
     db.session.add(period)
     db.session.flush()
@@ -757,17 +756,7 @@ def a_payday_on(seed_user, start_date):
     Returns:
         The staged :class:`~app.models.pay_period.PayPeriod`.
     """
-    highest = (
-        db.session.query(db.func.max(PayPeriod.period_index))
-        .filter(PayPeriod.user_id == seed_user["user"].id)
-        .scalar()
-    )
-    period = PayPeriod(
-        user_id=seed_user["user"].id,
-        start_date=start_date,
-        end_date=start_date + timedelta(days=13),
-        period_index=(highest or 0) + 1,
-    )
+    period = PayPeriod(user_id=seed_user["user"].id, start_date=start_date)
     db.session.add(period)
     db.session.flush()
     return period

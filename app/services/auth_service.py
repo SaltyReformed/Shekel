@@ -821,9 +821,9 @@ def register_user(spec: RegistrationSpec):
     # civil days when a request straddles midnight in the display zone.
     today = display_today()
     # Both write doors' preconditions, asked HERE rather than where they fire,
-    # so the claim above is true: the schedule's own bound (what
-    # ``budget.pay_schedule`` may store) and the writer's (what
-    # ``record_paydays`` can materialise, and how much of it), then this
+    # so the claim above is true: the schedule's own bounds (what
+    # ``budget.pay_schedule`` may store) and the writer's (how much of one
+    # schedule ``record_paydays`` will materialise in a single call), then this
     # module's own question about the day.  Asking them late would let a bad
     # cadence or a zero horizon refuse several statements after the ``User``
     # row exists, under a message about accounts rather than about the input.
@@ -831,9 +831,7 @@ def register_user(spec: RegistrationSpec):
     pay_schedule_service.reject_out_of_range_history_opening(
         spec.history_opens_on,
     )
-    pay_period_write.reject_unmaterialisable_batch(
-        spec.num_periods, spec.cadence_days,
-    )
+    pay_period_write.reject_out_of_range_batch_size(spec.num_periods)
     _reject_impossible_first_payday(spec.first_payday, spec.cadence_days, today)
     # Against the payday the FORM states rather than the one the schedule will
     # record, which are the same day here and are asked of one shared rule

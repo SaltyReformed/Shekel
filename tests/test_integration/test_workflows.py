@@ -37,9 +37,10 @@ from app.services import (
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
-    make_every_period_rule,
     make_cadence_rule,
+    make_every_period_rule,
     override_anchor,
     settle_instant_on,
 )
@@ -126,11 +127,15 @@ class TestTemplateRecurrenceToGrid:
             #   P9: May 8-21 → May 15
             # = 5 hits
             assert len(txns) == 5
+            calendar = calendar_for(seed_user["user"].id)
             for txn in txns:
                 assert txn.name == "Rent"
                 assert txn.estimated_amount == Decimal("1200.00")
-                # Each transaction's period should contain the 15th of some month.
-                assert txn.pay_period.start_date.day <= 15 or txn.pay_period.end_date.day >= 15
+                # Each transaction's period should contain the 15th of some
+                # month.  The span is the CALENDAR's since plan step
+                # ``pay_calendar:C4-c`` dropped ``pay_periods.end_date``.
+                span = calendar.period_by_id(txn.pay_period_id)
+                assert span.start_date.day <= 15 or span.end_date.day >= 15
 
 
 class TestTransferToBalance:

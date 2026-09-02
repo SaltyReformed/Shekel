@@ -114,12 +114,24 @@ def generate():
         # land BETWEEN two existing ones is rejected.  Surfaced on the
         # start_date field, mirroring the schema 422 -- and that attribution
         # is PROVABLE rather than assumed.  ``record_paydays`` refuses for
-        # three reasons, and ``PayPeriodGenerateSchema`` bounds the cadence and
-        # the batch size to exactly the ranges the writer and the schedule
-        # column accept (``_CADENCE_DAYS_RANGE`` takes the TIGHTER of the two
-        # floors, which is the writer's), so those two cannot reach here and
-        # the date one is what is left.  Widen either field and this line
-        # starts rendering a cadence message under the date box.
+        # FOUR reasons -- an undatable payday, a batch size out of range, a
+        # cadence out of range, and the forward-only floor -- and the first
+        # three cannot reach this line: ``fields.Date`` guarantees a plain
+        # ``date``, and ``PayPeriodGenerateSchema`` bounds the batch size and
+        # the cadence to exactly the ranges the writer and the column accept,
+        # so the schema's own 422 answers them first.  The floor is what is
+        # left.  Widen either field and this line starts rendering a cadence
+        # message under the date box.
+        #
+        # *Both halves of that sentence were false until plan step
+        # ``pay_calendar:C4-c`` corrected them* (adversarial review,
+        # 2026-09-01).  It said THREE reasons, which was right only while the
+        # cadence bound was asked inside ``_apply`` rather than at the door;
+        # and it said ``_CADENCE_DAYS_RANGE`` "takes the TIGHTER of the two
+        # floors, which is the writer's", which C4-c deleted -- there is one
+        # floor now, ``ck_pay_schedule_cadence_range``'s, and the schema reads
+        # it directly.  The conclusion held throughout; the proof of it did
+        # not.
         #
         # The rollback is what makes the 422 clean.  ``record_paydays`` runs
         # every refusal BEFORE its first durable statement, so nothing is
@@ -193,9 +205,7 @@ def truncate():
             current_user.id, data["keep_through_period_id"],
             confirm_discard=data["confirm_discard"],
         )
-    except (
-        PayPeriodLocked, PayPeriodUnresolved, ValidationError,
-    ) as exc:
+    except (PayPeriodLocked, PayPeriodUnresolved) as exc:
         # ``PayPeriodUnresolved`` is the service refusing an id that names no
         # pay period of this user's (plan step C3-a): a forged one, another
         # owner's, or a STALE one -- the confirm panel below re-submits the id
@@ -212,17 +222,27 @@ def truncate():
         # this door is not an existence oracle.  Which case it was is recorded
         # in the ACCESS log instead (``_log_unresolved_period``).
         #
-        # ``ValidationError`` is new to this door at plan step C3-b and was
-        # an unhandled 500 until an adversarial review found it: the writer now
-        # reads the stored cadence to re-project the surviving last period, and
-        # ``budget.pay_schedule.cadence_days`` accepts 1 while no stored
-        # ``end_date`` can express a one-day period.  Only legacy data holds
-        # such a value, and a schedule button is the right place for it to be a
-        # message.
+        # **``ValidationError`` was the THIRD member here until plan step
+        # ``pay_calendar:C4-c``, and removing it is that step's own argument
+        # applied to this door.**  It joined at C3-b because the writer
+        # re-projected the surviving last period from the stored cadence, and
+        # ``budget.pay_schedule.cadence_days`` accepts 1 while a stored
+        # ``end_date`` could not express a one-day period -- so a legacy owner
+        # met an unhandled 500 here.  C4-c dropped that column: a delete now
+        # removes rows and computes nothing, ``retire_paydays`` reaches
+        # ``_apply`` with ``recording=[]`` so ``upsert_schedule`` is never
+        # called, and the whole path below this line raises no
+        # ``ValidationError`` at all.
         #
-        # All three refuse BEFORE the ``DELETE``, so nothing durable is staged;
-        # the rollback is for the page this redirects to, which reads the
-        # owner's schedule back and should read committed state.
+        # Leaving it would be the exact defect the paragraph above rejects for
+        # ``PayPeriodUnresolved``: a business-rule refusal added anywhere under
+        # ``_gate_deletable_tail`` in future would be flashed as advice about a
+        # dropdown and silently rolled back, instead of surfacing.  Found by an
+        # adversarial review of C4-c, 2026-09-01.
+        #
+        # BOTH refuse BEFORE the ``DELETE``, so nothing durable is staged; the
+        # rollback is for the page this redirects to, which reads the owner's
+        # schedule back and should read committed state.
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()

@@ -681,10 +681,7 @@ class TestLoanInterestEscrowInStatements:
                 name="Mortgage", term=360,
                 escrow_annual=Decimal("1200.00"),
             )
-            pay_period = PayPeriod(
-                user_id=user_id, start_date=date(_Y, 2, 1),
-                end_date=date(_Y, 2, 14), period_index=1,
-            )
+            pay_period = PayPeriod(user_id=user_id, start_date=date(_Y, 2, 1))
             db.session.add(pay_period)
             db.session.flush()
 
@@ -942,10 +939,7 @@ class TestPeriodVsCalendarAgreement:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            period = PayPeriod(
-                user_id=user_id, start_date=date(_Y, 3, 2),
-                end_date=date(_Y, 3, 15), period_index=1,
-            )
+            period = PayPeriod(user_id=user_id, start_date=date(_Y, 3, 2))
             db.session.add(period)
             db.session.flush()
 
@@ -1230,10 +1224,7 @@ class TestAttributionEdgeCases:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            period = PayPeriod(
-                user_id=user_id, start_date=date(_Y, 8, 3),
-                end_date=date(_Y, 8, 16), period_index=1,
-            )
+            period = PayPeriod(user_id=user_id, start_date=date(_Y, 8, 3))
             db.session.add(period)
             db.session.flush()
             create_settled_cash_transaction(
@@ -1278,8 +1269,8 @@ class TestAttributionEdgeCases:
         with app.app_context():
             user_id = seed_user["user"].id
             future_period = PayPeriod(
-                user_id=user_id, start_date=date(2100, 1, 5),
-                end_date=date(2100, 1, 18), period_index=1,
+                user_id=user_id,
+                start_date=date(2100, 1, 5),
             )
             db.session.add(future_period)
             db.session.flush()

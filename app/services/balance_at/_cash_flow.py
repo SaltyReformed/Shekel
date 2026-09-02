@@ -179,7 +179,7 @@ def cash_balance_at(
     ``end_date`` is the one its owner's paydays derive -- which plan step C2-c
     made the qualifier it is.  It read "by construction" until then, and the
     map now samples the DERIVED end while a caller reading ``P.end_date`` off
-    an ORM row supplies the stored one; plan step C4 drops that column and
+    an ORM row supplies the stored one; plan step C4-c dropped that column and
     makes the sentence unconditional again.  Measured 0 of 62 and 0 of 61
     disagreements on the two production-shaped databases.
 

@@ -21,7 +21,6 @@ import pytest
 
 from app import ref_cache
 from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import account_service, pay_period_write, status_seam
 
@@ -687,58 +686,27 @@ class TestTheWindowIsAnsweredByTheDerivation:
         assert match is not None, "no selected period option in the rendered window"
         return int(match.group(1)), unescape(match.group(2))
 
-    def test_a_doctored_stored_end_date_does_not_move_the_default_window(
-        self, app, db, auth_client, seed_user, seed_periods,
-    ):
-        """The default period is the one the PAYDAYS name, not the stored span.
-
-        Period 5's stored ``end_date`` is rewritten to 2026-03-19, the day
-        BEFORE the frozen today, leaving every payday untouched -- so the
-        derivation still places 2026-03-20 in period 5 while the column says
-        the period ended yesterday.  That is plan finding **P1**, the
-        disagreement nothing reconciles.
-
-        On the merge base the retired SQL matched ``start_date <= today <=
-        end_date`` against the doctored column, found NO period covering
-        today, and fell through to ``all_p[-1]`` -- period 9, a paycheck three
-        months in the future -- so the reader was shown the wrong statement
-        with no indication anything was wrong.  The assertion below names
-        period 5 and would read period 9 there.
-        """
-        with app.app_context():
-            # Re-loaded into THIS session rather than mutated on the fixture's
-            # own instance: that one belongs to the session the fixture ran in,
-            # and assigning to it wrote nothing.  The first draft of this case
-            # did exactly that and PASSED on the merge base -- an arm that
-            # could not fail, caught by running it there.
-            expected_id = seed_periods[5].id
-            stored = db.session.get(PayPeriod, expected_id)
-            assert stored.start_date == date(2026, 3, 13), (
-                "the fixture moved; this case names period 5 by its payday"
-            )
-            stored.end_date = date(2026, 3, 19)
-            db.session.commit()
-
-            # The premise, re-read from the database rather than assumed.
-            db.session.expire_all()
-            assert db.session.get(PayPeriod, expected_id).end_date == date(
-                2026, 3, 19,
-            ), "the doctored column did not persist, so nothing disagrees"
-
-            resp = auth_client.get(
-                "/analytics/income-statement",
-                headers={"HX-Request": "true"},
-            )
-
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        value, label = self._selected_option(html)
-        assert value == expected_id, (
-            "the default window followed the doctored stored end_date "
-            "instead of the owner's paydays"
-        )
-        assert label == "Mar 13 - Mar 26, 2026"
-        assert "Mar 13 - Mar 26, 2026" in html
+    # **``test_a_doctored_stored_end_date_does_not_move_the_default_window`` was
+    # deleted at plan step ``pay_calendar:C4-c``.**  It rewrote period 5's stored
+    # ``end_date`` to the day before the frozen today and asserted the statement
+    # page still defaulted to period 5 -- the derivation's answer -- where the
+    # retired SQL matched ``start_date <= today <= end_date`` against the
+    # doctored column, found no period covering today, and fell through to the
+    # last one, showing a paycheck three months out with no sign anything was
+    # wrong.
+    #
+    # **It planted a stored ``budget.pay_periods.end_date`` that disagreed with
+    # the owner's paydays, and plan step ``pay_calendar:C4-c`` dropped that
+    # column.**  The plant is not merely unreachable, it is SILENT: assigning to
+    # an attribute the model no longer maps sets a plain Python attribute, writes
+    # no UPDATE, and survives ``expire_all`` -- so the case and its own premise
+    # assertion both went on passing while measuring nothing.  Deleted rather
+    # than left green.
+    #
+    # The two cases that remain in this class grade what outlives the column:
+    # that the default window follows the OWNER's civil day rather than the
+    # container's clock, and that the selected option and the report heading
+    # render one label rule.
 
     def test_the_default_window_follows_the_OWNERS_day_not_the_containers(
         self, app, db, auth_client, seed_user, seed_periods, monkeypatch,

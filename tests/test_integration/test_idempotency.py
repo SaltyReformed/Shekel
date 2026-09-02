@@ -27,7 +27,10 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from tests._test_helpers import make_every_period_rule
+from tests._test_helpers import (
+    last_covered_day,
+    make_every_period_rule,
+)
 from app.services.balance_at import BalanceContext
 
 
@@ -448,14 +451,14 @@ class TestPayPeriodGenerationIdempotency:
             all_periods = (
                 db.session.query(PayPeriod)
                 .filter_by(user_id=user_id)
-                .order_by(PayPeriod.period_index)
+                .order_by(PayPeriod.start_date)
                 .all()
             )
             from datetime import timedelta
             expected_start = dt_date(2026, 6, 1)
             for i, period in enumerate(all_periods):
                 assert period.start_date == expected_start + timedelta(days=14 * i)
-                assert period.end_date == expected_start + timedelta(days=14 * i + 13)
+                assert last_covered_day(period) == expected_start + timedelta(days=14 * i + 13)
 
     def test_double_submit_pay_period_generate_overlapping_range(self, app, db, bare_user):
         """Re-generating with an overlapping ON-GRID tail deduplicates the overlap.

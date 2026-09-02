@@ -327,10 +327,37 @@ def check_balance_anomalies(session):
     per-check form is the one ``check_data_consistency`` already uses, so this
     is the file's own established shape rather than a new one.
 
+    **THREE members were deleted at plan step ``pay_calendar:C4-c``, and none of
+    them was replaced.**  BA-03 (an ordinal GAP), BA-04 (a date OVERLAP) and
+    BA-07 (a day covered by no pay period) were three faces of one defect --
+    ``budget.pay_periods`` storing ``end_date`` and ``period_index`` beside the
+    paydays they derive from, with nothing reconciling them.  That step dropped
+    both columns, so a period's ordinal is its position in payday order and its
+    end is the day before the next payday: an ordinal cannot gap, two periods
+    derived from distinct sorted paydays cannot overlap, and consecutive
+    intervals leave no uncovered day between them.  A query for a state the
+    schema cannot express is not a check, it is a query that always returns
+    nothing.
+
+    **What BA-07 detected, said precisely, because an adversarial review of
+    C4-c found this paragraph claiming more than it should** (2026-09-01).  Its
+    subject was a stored ``end_date`` FALLING SHORT of the next payday -- a
+    hole between two adjacent periods.  It was never a detector for IRREGULAR
+    PAYDAY SPACING: on any schedule the writer produced, the stored end already
+    equalled ``lead(start) - 1``, so a payday six months after its predecessor
+    passed BA-07 before the drop exactly as it passes now.  That state is still
+    constructible (``/pay-periods/generate`` accepts any payday on or after the
+    floor) and still unobserved by this sweep, where it presents as one
+    over-long paycheck rather than as an absent day.  It is recorded as a
+    finding rather than closed here silently: seeing it needs a NEW predicate
+    (``next_payday - payday > cadence_days``), which is a check this sweep has
+    never had and not one C4-c removed.
+
     Returns:
         List of CheckResult for the surviving balance/anchor checks
-        (BA-01 critical; BA-03, BA-04, BA-05, BA-06, BA-07 warnings.  BA-02 was
-        deleted with the anchor cache columns at plan step X-f1c3c).
+        (BA-01 critical; BA-05, BA-06 warnings.  BA-02 was deleted with the
+        anchor cache columns at plan step X-f1c3c; BA-03, BA-04 and BA-07 with
+        the derived columns at ``pay_calendar:C4-c``).
     """
     checks = [
         # BA-01 and BA-02 both keyed on ``accounts.current_anchor_*``, deleted
@@ -346,37 +373,13 @@ def check_balance_anomalies(session):
         # CRITICAL, unlike its siblings: an account with no assertion is not an
         # anomaly to look at later, it is an account ``resolve_anchor`` raises
         # for -- the balance engine has no starting point, so every producer
-        # downstream of it fails.  BA-03/04/05 flag states worth a human's
+        # downstream of it fails.  BA-05 and BA-06 flag states worth a human's
         # attention that still render.
         ("BA-01", "critical", "Accounts with no balance assertion at all", """
             SELECT a.id, a.name
             FROM budget.accounts a
             LEFT JOIN budget.account_anchor_history h ON h.account_id = a.id
             WHERE h.id IS NULL
-        """),
-        ("BA-03", "warning", "Pay period sequence gaps (non-contiguous period_index)", """
-            WITH numbered AS (
-                SELECT user_id, period_index,
-                       LAG(period_index) OVER (
-                           PARTITION BY user_id ORDER BY period_index
-                       ) AS prev_idx
-                FROM budget.pay_periods
-            )
-            SELECT user_id, prev_idx, period_index
-            FROM numbered
-            WHERE prev_idx IS NOT NULL
-              AND period_index - prev_idx > 1
-        """),
-        ("BA-04", "warning", "Pay period date overlap within the same user", """
-            SELECT p1.id AS period_1_id, p2.id AS period_2_id,
-                   p1.user_id, p1.start_date AS p1_start, p1.end_date AS p1_end,
-                   p2.start_date AS p2_start
-            FROM budget.pay_periods p1
-            JOIN budget.pay_periods p2
-              ON p1.user_id = p2.user_id
-             AND p1.id < p2.id
-             AND p2.start_date > p1.start_date
-             AND p2.start_date < p1.end_date
         """),
         # BA-06 is a CHECK and deliberately not a refusal or a log line
         # (developer ruling 2026-08-11, which deleted pay_calendar C3-b's
@@ -390,10 +393,27 @@ def check_balance_anomalies(session):
         # It lives here rather than in the writer for the reason the arc keeps
         # finding: the condition is DERIVABLE from the schedule and the row's
         # own settle day, so recording it at write time would store a computed
-        # claim beside no reconciler -- the same defect dropping ``end_date``
-        # exists to remove -- and it would go stale on the next write.  Asked
-        # as a query it is always current, covers every owner, and reports the
-        # state however it arose, including from data no writer produced.
+        # claim beside no reconciler -- the same defect ``pay_calendar:C4-c``
+        # removed by dropping ``end_date`` -- and it would go stale on the next
+        # write.  Asked as a query it is always current, covers every owner,
+        # and reports the state however it arose, including from data no writer
+        # produced.
+        #
+        # **The predicate became a RANGE test at C4-c, and the collapse is the
+        # normalization rather than a rewrite.**  It used to ask
+        # ``NOT EXISTS (a period whose stored span contains the day)``, because
+        # a stored ``end_date`` could fall short of the next payday and leave an
+        # interior hole a settle day could land in.  Derived, the periods TILE:
+        # each ends the day before the next opens, so the only days outside
+        # every paycheck are the ones before the first payday and after the
+        # horizon.  Two comparisons say that, and BA-07 -- which existed to see
+        # the interior hole this sub-select was also catching -- is deleted.
+        #
+        # The horizon is ``MAX(start_date) + (cadence_days - 1)``, which is the
+        # derivation's own projected end for the last period; joining
+        # ``budget.pay_schedule`` for it is legal for every owner who holds a
+        # payday, because ``fk_pay_periods_schedule`` makes the cadence row
+        # exist (plan step C4-b-2).
         #
         # Soft-deleted rows are excluded: they contribute to no figure on any
         # surface.  An owner with NO periods is excluded by the join rather
@@ -406,22 +426,18 @@ def check_balance_anomalies(session):
             JOIN budget.pay_periods p ON p.id = t.pay_period_id
             JOIN ref.statuses s ON s.id = t.status_id
             JOIN (
-                SELECT user_id,
-                       MIN(start_date) AS first_day,
-                       MAX(end_date) AS last_day
-                FROM budget.pay_periods
-                GROUP BY user_id
+                SELECT pp.user_id,
+                       MIN(pp.start_date) AS first_day,
+                       MAX(pp.start_date) + (sch.cadence_days - 1) AS last_day
+                FROM budget.pay_periods pp
+                JOIN budget.pay_schedule sch ON sch.user_id = pp.user_id
+                GROUP BY pp.user_id, sch.cadence_days
             ) sched ON sched.user_id = p.user_id
             WHERE t.is_deleted = FALSE
               AND s.is_settled = TRUE
               AND t.settled_on IS NOT NULL
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM budget.pay_periods covering
-                  WHERE covering.user_id = p.user_id
-                    AND t.settled_on BETWEEN covering.start_date
-                                         AND covering.end_date
-              )
+              AND (t.settled_on < sched.first_day
+                   OR t.settled_on > sched.last_day)
         """),
         ("BA-05", "warning",
          "Large anchor balance jumps (>50% change between consecutive entries)",
@@ -438,59 +454,6 @@ def check_balance_anomalies(session):
             WHERE prev_balance IS NOT NULL
               AND prev_balance != 0
               AND ABS(anchor_balance - prev_balance) / ABS(prev_balance) > 0.5
-        """),
-        # BA-07 is the visibility plan step C2-b2 took away, asked as a query.
-        # A day covered by no pay period used to surface at GENERATION time:
-        # the recurrence engine answered ``PlacementOutcome.SCHEDULE_GAP`` and
-        # logged ``EVT_RECURRENCE_OCCURRENCE_UNPLACED`` naming the orphaned
-        # dates.  C2-b2 pointed that engine at the DERIVED calendar, in which a
-        # period ends the day before the next payday, so the preceding paycheck
-        # ABSORBS such a day and the engine reports nothing (plan ledger row
-        # **P27**).  The absorption is the ruled model working; what it must
-        # not also do is make the underlying rows unobservable.
-        #
-        # It is a QUERY rather than a write refusal for the reason this arc
-        # keeps reaching, and BA-06 states above: the condition is DERIVABLE
-        # from the schedule, so recording it at write time would store a
-        # computed claim beside no reconciler.  Asked here it is always
-        # current, covers every owner, and reports the state however it arose
-        # -- which since plan step C3-b can only be rows written before it, or
-        # written directly.
-        #
-        # WARNING rather than critical: every surface still renders, the money
-        # is not wrong, and the owner's next schedule write repairs it.  It
-        # sits beside BA-03 (an ordinal gap) and BA-04 (a date overlap) because
-        # it is a third member of that family that neither of them can see -- a
-        # shortened ``end_date`` leaves the ordinals contiguous and nothing
-        # overlapping.  **Plan step C4 deletes all three**, when ``end_date``
-        # stops being stored and a hole has nowhere left to live.
-        #
-        # **It covers ONE of the three ways a stored column can disagree with
-        # the payday derivation, and saying which is the honest form** (an
-        # adversarial review of C2-b2 measured all three; the full statement is
-        # in ``app/services/recurrence/_occurrence.py``'s module docstring).
-        # This sees a hole between two ADJACENT periods -- row **P27**.  It
-        # cannot see row **P28**, the stored cadence disagreeing with the LAST
-        # period's stored end, because the last row has no successor to compare
-        # against; nor row **P26**, a stored ordinal that is dense but not
-        # ``0..n-1``, which BA-03 also passes because it tests for a GAP in the
-        # sequence and not for its origin.  Both remaining classes are owned by
-        # plan step C4, which drops the columns they live in.
-        ("BA-07", "warning",
-         "Pay period date gaps (a day covered by no pay period)", """
-            WITH spans AS (
-                SELECT user_id, end_date,
-                       LEAD(start_date) OVER (
-                           PARTITION BY user_id ORDER BY start_date
-                       ) AS next_start
-                FROM budget.pay_periods
-            )
-            SELECT user_id, end_date AS last_covered_day,
-                   next_start AS next_payday,
-                   next_start - end_date - 1 AS uncovered_days
-            FROM spans
-            WHERE next_start IS NOT NULL
-              AND next_start > end_date + 1
         """),
     ]
     return [

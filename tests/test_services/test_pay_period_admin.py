@@ -17,13 +17,18 @@ column, and an unmaterialised period is refused rather than keyed under
 
 The invariant checker is the load-bearing safety net every later
 mutation test calls.  A checker that always passes is worse than none,
-so its self-tests prove it both PASSES on a healthy schedule and RAISES
-on a corrupted one.  See ``docs/plans/implementation_plan_pay_period_crud.md``.
+so its self-tests prove it passes on a healthy schedule and on a real owner's
+whole data set.  See ``docs/plans/implementation_plan_pay_period_crud.md``.
+
+*Its three RAISES cases went at plan step ``pay_calendar:C4-c`` with the four
+invariants they graded -- an ordinal out of date order, an ordinal gap and a
+span overlap -- because all three states were written by hand into two columns
+that step dropped.*
 """
 from __future__ import annotations
 
 import pathlib
-from datetime import date, timedelta
+from datetime import date
 
 import pytest
 
@@ -35,11 +40,7 @@ from app.services import (
     pay_period_locks,
     pay_period_write,
 )
-from app.services.pay_calendar import (
-    DerivedPeriod,
-    PayCalendarError,
-    calendar_for,
-)
+from app.services.pay_calendar import calendar_for
 from app.services.pay_period_locks import PeriodLockReason
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.utils.dates import display_today
@@ -48,7 +49,6 @@ from tests._test_helpers import (
     assert_pay_period_invariants,
     bare_expense_template,
     freeze_today,
-    open_calendar_hole,
 )
 
 
@@ -356,48 +356,6 @@ class TestClassifyScheduleLocks:
             assert None in locks.values()
 
 
-class TestTheHistoricalTestReadsTheDerivedEnd:
-    """The lock follows the PAYDAYS, not the stored ``end_date`` column.
-
-    Plan step **C2-f3b**.  ``budget.pay_periods.end_date`` is a stored copy of
-    ``lead(start_date) - 1`` that nothing reconciles against the paydays it
-    derives from, and plan step **C4** drops it; the classifier read it until
-    this step.  The two agree on every row this app writes -- the writer
-    materialises the derivation -- so the only way to grade which one is read is
-    to make them DISAGREE, which is what ``open_calendar_hole`` is for: it
-    writes the column directly, the way rows written before plan step C3-b hold
-    it.
-    """
-
-    def test_a_stored_end_in_the_past_does_not_make_a_period_historical(
-        self, app, db, seed_user,
-    ):
-        """Stored end 2026-07-19, derived end 2026-07-30, as_of 2026-07-25.
-
-        The period runs 2026-07-17 .. 2026-07-30, because the next payday is
-        2026-07-31 and a period ends the day before its successor opens.  Its
-        STORED end is shortened to 2026-07-19, which is what a row written by
-        the pre-C3-b writer can hold.  At ``as_of`` 2026-07-25 the two columns
-        answer opposite questions, and the derivation is the one that is right:
-        the owner's paycheck of 2026-07-17 has not ended, so the period is
-        mutable rather than history.
-
-        The three-line preamble is the FIRING CONTROL: it asserts the split
-        exists before asserting which side of it the classifier lands on, so a
-        fixture that silently failed to doctor the column cannot pass this.
-        """
-        as_of = date(2026, 7, 25)
-        with app.app_context():
-            periods = _make_future_periods(db.session, seed_user)
-            open_calendar_hole(db.session, periods[1], date(2026, 7, 19))
-
-            stored = db.session.get(PayPeriod, periods[1].id)
-            derived = _derived(periods[1])
-            assert stored.end_date < as_of <= derived.end_date
-
-            assert _lock(periods[1], as_of) is None
-
-
 class TestTheDoorsDecideOnTheOwnersDay:
     """"Has this paycheck ended" is asked of the OWNER's clock, not the process's.
 
@@ -625,47 +583,35 @@ class TestTruncateResolvesItsFactsOnce:
             assert as_of == display_today()
 
 
-class TestADoorDecidesOnTheDerivationEndToEnd:
-    """A DOOR, not the classifier, driven over a stored/derived disagreement.
+class TestInvariantChecker:
+    """``assert_pay_period_invariants`` passes on a real owner's data.
 
-    The split reached the classifier directly and the settings LABEL, and no
-    case put it under a door that deletes -- which an adversarial review named
-    as the axis no destructive case varies.  This is the money-shaped version:
-    the stored column says the paycheck is history and hard-locked, the paydays
-    say it is current and deletable, and truncate must follow the paydays.
+    **Three "raises" cases went at plan step ``pay_calendar:C4-c``**, with the
+    four invariants the helper no longer holds: an ordinal out of date order,
+    an ordinal GAP and a span OVERLAP.  All three built the corrupt state by
+    hand-writing ``period_index`` and ``end_date``, and both columns are
+    dropped -- the ordinal is a row's position in payday order and the end is
+    the day before the next payday, so none of the three is expressible.  What
+    remains here are the invariants that still have a subject: an account with
+    no balance assertion, a transfer without exactly two shadows in its own
+    period, and a transaction pointing at a deleted period.
     """
 
-    def test_truncate_follows_the_paydays_where_the_column_disagrees(
-        self, app, db, seed_user, monkeypatch,
-    ):
-        """Stored end 2026-08-01, derived end 2026-08-13, owner's day 2026-08-05.
-
-        The DOOMED period is the one doctored, because the lock gate reads the
-        periods a truncate would delete rather than the one it keeps -- a first
-        cut of this case shortened the KEPT period and graded nothing.  On the
-        stored column that paycheck ended four days ago and ``PayPeriodLocked``
-        refuses the whole tail; on the paydays it is the owner's current
-        paycheck and the tail may go.
-
-        The preamble is the firing control: it asserts the two columns really
-        disagree, and that the disagreement straddles the day being asked about,
-        before the door is driven.
-        """
-        owner_day = date(2026, 8, 5)
-        monkeypatch.setattr(
-            pay_period_admin, "display_today", lambda: owner_day,
-        )
+    def test_passes_on_healthy_schedule(self, app, db, bare_periods):
+        """A contiguous, in-order schedule satisfies every invariant."""
         with app.app_context():
-            periods = _make_future_periods(db.session, seed_user)
-            open_calendar_hole(db.session, periods[2], date(2026, 8, 1))
-            db.session.commit()
+            assert_pay_period_invariants(db.session, bare_periods[0].user_id)
 
-            stored = db.session.get(PayPeriod, periods[2].id)
-            assert stored.end_date < owner_day <= _derived(periods[2]).end_date
+    def test_passes_on_full_user_data(self, app, db, seed_full_user_data):
+        """A user with accounts, periods, and transactions passes.
 
-            assert pay_period_admin.truncate_pay_periods(
-                seed_user["user"].id, periods[1].id,
-            ) == 3
+        Exercises the anchor-integrity and orphan invariants on real
+        account + transaction rows, not just bare periods.
+        """
+        with app.app_context():
+            assert_pay_period_invariants(
+                db.session, seed_full_user_data["user"].id,
+            )
 
 
 class TestTheDestructiveDoorsHoldNoDerivedColumn:
@@ -673,11 +619,24 @@ class TestTheDestructiveDoorsHoldNoDerivedColumn:
 
     Each of the four doors reads the owner's schedule through ``calendar_for``
     and decides in ``DerivedPeriod`` values, so ``end_date`` and
-    ``period_index`` -- the two columns plan step **C4** drops -- are read
-    nowhere in this module or in the settings page's period list.  **The one
-    reader that survived C2-f3b, ``_future_period_count`` on the rolling
-    top-up, went at C4's first commit**, so the census below asserts the EMPTY
-    set for both files (finding **P70**).
+    ``period_index`` are read nowhere in this module or in the settings page's
+    period list.  **The one reader that survived C2-f3b,
+    ``_future_period_count`` on the rolling top-up, went at C4's first
+    commit**, so the census below asserts the EMPTY set for both files
+    (finding **P70**).
+
+    **Plan step ``pay_calendar:C4-c`` dropped the two COLUMNS, and that does
+    NOT retire this class -- an adversarial review of that step caught it being
+    deleted as though it did** (2026-09-01).  The predicate matches an
+    attribute NAME on any receiver, and
+    :class:`~app.services.pay_calendar.DerivedPeriod` still HAS both names.  So
+    what this grades is unchanged and is now the only thing holding it: that
+    these three files decide through window and calendar methods --
+    ``current_and_future``, ``period_by_id``, ``covers`` -- rather than by
+    reaching into a period's span and comparing ends by hand.  A file that
+    names neither is a file no future edit can quietly regrow either read in,
+    on a row OR on a derived value.  The import census below never had anything
+    to do with the columns at all.
 
     **Two adversarial reviews of this step measured the FIRST cut of this class
     passing on the defect it names**, and the rewrite is theirs.  That predicate
@@ -813,84 +772,3 @@ class TestTheDestructiveDoorsHoldNoDerivedColumn:
                 or pair[0].endswith("pay_period_service")
             }
             assert offenders == set(), (relative, offenders)
-
-
-class TestInvariantChecker:
-    """``assert_pay_period_invariants`` passes on healthy, raises on corrupt."""
-
-    def test_passes_on_healthy_schedule(self, app, db, bare_periods):
-        """A contiguous, in-order schedule satisfies every invariant."""
-        with app.app_context():
-            assert_pay_period_invariants(db.session, bare_periods[0].user_id)
-
-    def test_passes_on_full_user_data(self, app, db, seed_full_user_data):
-        """A user with accounts, periods, and transactions passes.
-
-        Exercises the anchor-integrity and orphan invariants on real
-        account + transaction rows, not just bare periods.
-        """
-        with app.app_context():
-            assert_pay_period_invariants(
-                db.session, seed_full_user_data["user"].id,
-            )
-
-    def test_raises_when_index_order_differs_from_dates(
-        self, app, db, bare_user_with_cadence,
-    ):
-        """Index order not matching calendar order is caught.
-
-        Two periods are inserted so the lower index has the LATER start
-        date -- the exact corruption that makes the balance resolver walk
-        periods out of order and silently drop transactions.
-        """
-        user_id = bare_user_with_cadence["user"].id
-        with app.app_context():
-            db.session.add_all([
-                PayPeriod(
-                    user_id=user_id, period_index=0,
-                    start_date=date(2026, 6, 1), end_date=date(2026, 6, 14),
-                ),
-                PayPeriod(
-                    user_id=user_id, period_index=1,
-                    start_date=date(2026, 1, 1), end_date=date(2026, 1, 14),
-                ),
-            ])
-            db.session.commit()
-            with pytest.raises(AssertionError, match="calendar order"):
-                assert_pay_period_invariants(db.session, user_id)
-
-    def test_raises_on_index_gap(self, app, db, bare_user_with_cadence):
-        """A non-contiguous period_index sequence is caught."""
-        user_id = bare_user_with_cadence["user"].id
-        with app.app_context():
-            db.session.add_all([
-                PayPeriod(
-                    user_id=user_id, period_index=0,
-                    start_date=date(2026, 1, 1), end_date=date(2026, 1, 14),
-                ),
-                PayPeriod(
-                    user_id=user_id, period_index=2,
-                    start_date=date(2026, 1, 15), end_date=date(2026, 1, 28),
-                ),
-            ])
-            db.session.commit()
-            with pytest.raises(AssertionError, match="gap"):
-                assert_pay_period_invariants(db.session, user_id)
-
-    def test_raises_on_date_overlap(self, app, db, bare_user_with_cadence):
-        """Two periods whose date spans overlap is caught."""
-        user_id = bare_user_with_cadence["user"].id
-        with app.app_context():
-            db.session.add_all([
-                PayPeriod(
-                    user_id=user_id, period_index=0,
-                    start_date=date(2026, 1, 1), end_date=date(2026, 2, 1),
-                ),
-                PayPeriod(
-                    user_id=user_id, period_index=1,
-                    start_date=date(2026, 1, 15), end_date=date(2026, 3, 1),
-                ),
-            ])
-            db.session.commit()
-            with pytest.raises(AssertionError, match="overlaps"):
-                assert_pay_period_invariants(db.session, user_id)

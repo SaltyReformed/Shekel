@@ -191,16 +191,21 @@ class PayCadence:
 
         *An earlier draft of this paragraph cited "the harness that drives the
         derivation over production's paydays" as a caller that constructs one.
-        It does not: ``tests/oracles/pay_calendar_derivation.py`` and
-        ``tests/manual/verify_pay_calendar_derivation.py`` pass a bare ``int``
-        to :func:`~._derive.derive_periods`, which is a different function and
-        a different code path.  An adversarial review measured it.*
+        It did not.  ``derive_periods`` has exactly one caller in ``app/`` --
+        :meth:`~._calendar.PayCalendar.__post_init__` -- and it takes a bare
+        ``int``, which is a different function and a different code path from
+        this constructor.  The harness that draft named was deleted outright at
+        plan step C4-c, since the stored columns it diffed against are gone.
+        An adversarial review measured the first claim; a second measured the
+        correction, which had named ``pay_period_write`` as a caller of
+        ``derive_periods`` and it is not one.*
 
         *Until plan step C4-b-2 the reason was a specific producer:
         ``pay_schedule_service.resolve_cadence`` fell back for a
         schedule-row-less owner to ``(end_date - start_date).days + 1`` off the
-        last period, which ``ck_pay_periods_date_order`` bounds below and
-        nothing bounded above -- ledger rows **P8** and **P35**.  That producer
+        last period, which ``ck_pay_periods_date_order`` bounded below and
+        nothing bounded above -- ledger rows **P8** and **P35**.  (That CHECK
+        went with its column at plan step C4-c.)  That producer
         is gone: ``fk_pay_periods_schedule`` makes the owner unstorable and the
         only source now is the column, bounded to 1..365 by
         ``ck_pay_schedule_cadence_range``.  The check stays because the

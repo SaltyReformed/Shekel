@@ -25,7 +25,7 @@ rediscovered:
 index 1 = Jan 16-29, index 2 = Jan 30 - Feb 12, and so on.
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 import time_machine
@@ -39,8 +39,9 @@ from app.services.pay_calendar import (
     PeriodWindow,
     calendar_for,
 )
-from app.utils.dates import pay_period_label
 from tests._test_helpers import (
+    derived_span,
+    last_covered_day,
     add_txn as _add_txn,
     select_option_values as _select_option_values,
 )
@@ -180,8 +181,8 @@ class TestWhatTheResultIsAndIsNot:
                 # answer: its predicate, on the process clock.
                 process_day = date.today()
                 on_the_process_clock = [
-                    p.period_index for p in bare_periods
-                    if p.end_date >= process_day
+                    derived_span(p).period_index for p in bare_periods
+                    if last_covered_day(p) >= process_day
                 ]
                 assert on_the_process_clock != [2, 3, 4, 5, 6, 7, 8, 9]
 
@@ -337,69 +338,44 @@ class TestTheCardNamesTheDERIVEDPaycheck:
     """The full-edit card's context line reads the calendar, not the column.
 
     Pay-calendar plan step **C4-a-5**.  The card printed
-    ``txn.pay_period.label`` -- the ORM accessor, which formats the STORED
+    ``txn.pay_period.label`` -- an ORM accessor that formatted the STORED
     ``budget.pay_periods.end_date`` -- while the period ``<select>`` two
     sections below it printed ``DerivedPeriod.label`` for the SAME paycheck.
-    Wherever the stored end has gone stale (plan findings **P12** and **P28**
-    both move it), one card named one paycheck two ways.
+    Wherever the stored end had gone stale (plan findings **P12** and **P28**
+    both moved it), one card named one paycheck two ways.
 
-    **These tests fail on the code that shipped before this step**, and the
-    fixture is what makes them fail: every schedule the suite builds stores an
-    end that AGREES with the derivation, so an assertion written on one cannot
-    tell the two readers apart.  ``_stale_stored_end`` breaks that agreement in
-    the one place the application still reads it.
+    **The class lost its FIRING CONTROL at plan step ``pay_calendar:C4-c``,
+    and it is worth saying so rather than leaving the survivor looking
+    stronger than it is.**  Until that step a case could plant a stored end
+    that disagreed with the derivation and assert the stale label appeared
+    NOWHERE on the card -- absence being what distinguished the two readers,
+    since both put a string in the page and only one was wrong.  C4-c dropped
+    the column, ``PayPeriod.label`` went with it at C4-a-5, and there is no
+    second label for a card to print: the plant is unconstructible and the
+    absence has no subject.
+
+    What survives is the positive property, and it is located rather than
+    searched for so it cannot drift onto the ``<select>``'s own option text.
+
+    *A deleted case, named because a gap is worse than a note*:
+    ``test_the_context_line_shows_the_derived_span`` was the absence half.  It
+    ran green after C4-c while measuring nothing -- ``period.end_date = ...``
+    on a model that no longer maps the column sets a plain Python attribute,
+    flushes nothing, and leaves the "stale" string one the page could never
+    have contained.
     """
-
-    @staticmethod
-    def _stale_stored_end(db, period, new_end: date) -> None:
-        """Move a period's STORED ``end_date`` away from its derived one.
-
-        The state legacy rows are in and no writer produces any more: the
-        column is a copy of ``lead(start_date) - 1`` with nothing reconciling
-        the two, which is the whole reason plan step C4 drops it.  Written
-        through the ORM rather than raw SQL, and it satisfies
-        ``ck_pay_periods_date_order`` -- what it violates is the functional
-        dependency, which no constraint expresses.
-        """
-        period.end_date = new_end
-        db.session.flush()
-
-    def test_the_context_line_shows_the_derived_span(
-        self, app, auth_client, seed_user, seed_periods_today, db,
-    ):
-        """The stale STORED label appears nowhere in the card; the derived one does.
-
-        Absence is what grades this.  The derived label is also rendered by the
-        ``<select>``'s own ``<option>`` for this period, so asserting its
-        PRESENCE alone would pass against the defect -- both readers put a
-        string in the page and only one of them is wrong.
-        """
-        with app.app_context():
-            own = db.session.get(PayPeriod, seed_periods_today[1].id)
-            derived = calendar_for(seed_user["user"].id).period_by_id(own.id)
-            txn = _add_txn(db.session, seed_user, own, "Rent", "1200.00")
-            self._stale_stored_end(db, own, derived.end_date + timedelta(days=12))
-            stale = pay_period_label(own.start_date, own.end_date)
-            db.session.commit()
-
-            assert stale != derived.label
-
-            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
-            assert resp.status_code == 200
-            html = resp.data.decode()
-
-            assert stale not in html
-            assert derived.label in html
 
     def test_the_context_line_is_the_region_that_carries_it(
         self, app, auth_client, seed_user, seed_periods_today, db,
     ):
         """Located rather than searched for, so the assertion cannot drift.
 
-        The test above proves the stale label is nowhere on the card; this one
-        proves the DERIVED label is in the context line specifically, rather
-        than only in the ``<select>`` that would still render it if the
-        context line printed nothing at all.  Jinja renders a missing
+        It proves the DERIVED label is in the context line specifically,
+        rather than only in the ``<select>`` that would still render it if the
+        context line printed nothing at all.  *It used to say "the test above
+        proves the stale label is nowhere on the card"; that sibling was
+        deleted at plan step ``pay_calendar:C4-c`` with the plant it rested on,
+        and this class's own docstring records why.*  Jinja renders a missing
         attribute as the empty string, so "nothing at all" is a real outcome
         here and not a hypothetical.
         """
@@ -407,7 +383,6 @@ class TestTheCardNamesTheDERIVEDPaycheck:
             own = db.session.get(PayPeriod, seed_periods_today[1].id)
             derived = calendar_for(seed_user["user"].id).period_by_id(own.id)
             txn = _add_txn(db.session, seed_user, own, "Rent", "1200.00")
-            self._stale_stored_end(db, own, derived.end_date + timedelta(days=12))
             db.session.commit()
 
             resp = auth_client.get(f"/transactions/{txn.id}/full-edit")

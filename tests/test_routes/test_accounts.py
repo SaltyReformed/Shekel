@@ -34,6 +34,7 @@ from tests._test_helpers import (
     create_loan_account,
     create_transfer,
     current_pay_period,
+    derived_span,
     open_books_before_the_first_assertion,
     open_owner_calendar,
     settle_day_columns,
@@ -6408,7 +6409,7 @@ class TestCashDetailContext:
             uid = seed_user["user"].id
             bootstrap = (
                 db.session.query(PayPeriod).filter_by(user_id=uid)
-                .order_by(PayPeriod.period_index).first()
+                .order_by(PayPeriod.start_date).first()
             )
             assert bootstrap.start_date < display_today(), (
                 "this case needs a schedule that no longer reaches today"
@@ -6630,11 +6631,11 @@ class TestCashDetailContext:
             ibp = net_worth_kernel.interest_by_period_for_account(
                 acct, BalanceContext.build(seed_user["user"].id),
             )
-            lo = current.period_index + 1
-            hi = current.period_index + 26  # 26 biweekly periods = 1 year.
+            lo = derived_span(current).period_index + 1
+            hi = derived_span(current).period_index + 26  # 26 biweekly periods = 1 year.
             window_total = sum(
                 (ibp.get(p.id, Decimal("0.00")) for p in periods
-                 if lo <= p.period_index <= hi),
+                 if lo <= derived_span(p).period_index <= hi),
                 Decimal("0.00"),
             )
             grand_total = sum(
@@ -6698,11 +6699,12 @@ class TestCashDetailContext:
             ibp = net_worth_kernel.interest_by_period_for_account(
                 acct, BalanceContext.build(seed_user["user"].id),
             )
-            lo = current.period_index + 1
-            hi = current.period_index + 52  # 52 WEEKLY periods = 1 year.
+            current_index = derived_span(current).period_index
+            lo = current_index + 1
+            hi = current_index + 52  # 52 WEEKLY periods = 1 year.
             window_total = sum(
                 (ibp.get(p.id, Decimal("0.00")) for p in periods
-                 if lo <= p.period_index <= hi),
+                 if lo <= derived_span(p).period_index <= hi),
                 Decimal("0.00"),
             )
             grand_total = sum(
@@ -6711,7 +6713,7 @@ class TestCashDetailContext:
             )
             half_year_total = sum(
                 (ibp.get(p.id, Decimal("0.00")) for p in periods
-                 if lo <= p.period_index <= current.period_index + 26),
+                 if lo <= derived_span(p).period_index <= current_index + 26),
                 Decimal("0.00"),
             )
 

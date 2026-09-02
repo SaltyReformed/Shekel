@@ -46,7 +46,10 @@ from app.models.pay_schedule import PaySchedule
 from app.models.user import User, UserSettings
 from app.services import pay_schedule_service
 from app.services.auth_service import hash_password
-from tests._test_helpers import open_owner_calendar
+from tests._test_helpers import (
+    open_owner_calendar,
+    restore_pay_period_derived_columns,
+)
 
 _MIGRATIONS_DIR = (
     pathlib.Path(__file__).resolve().parents[2] / "migrations" / "versions"
@@ -240,8 +243,6 @@ class TestTheForbiddenOwnerIsUnstorable:
             db.session.add(PayPeriod(
                 user_id=user.id,
                 start_date=date(2026, 3, 2),
-                end_date=date(2026, 3, 15),
-                period_index=0,
             ))
 
             with pytest.raises(IntegrityError) as excinfo:
@@ -349,8 +350,6 @@ class TestTheForbiddenOwnerIsUnstorable:
             db.session.add(PayPeriod(
                 user_id=user.id,
                 start_date=date(2027, 1, 1),
-                end_date=date(2027, 1, 14),
-                period_index=0,
             ))
             db.session.flush()
 
@@ -395,7 +394,20 @@ class TestTheDoubleCascadeIsDrivenRatherThanArgued:
 
 
 class TestTheRevisionRoundTripsAndTheChainOrderHolds:
-    """``downgrade`` then ``upgrade``, and what the downgrade unblocks."""
+    """``downgrade`` then ``upgrade``, and what the downgrade unblocks.
+
+    **Every case here rewinds past plan step ``pay_calendar:C4-c`` first**, and
+    that is not setup noise -- it is this revision's own backfill needing the
+    schema it was written against.  ``_BACKFILL_CADENCE_SQL`` reads
+    ``budget.pay_periods.end_date`` for the single-payday fallback, and C4-c
+    dropped that column, so driving ``upgrade()`` at HEAD meets
+    ``UndefinedColumn`` rather than the state under test.
+    :func:`~tests._test_helpers.restore_pay_period_derived_columns` runs C4-c's
+    own ``downgrade()`` to put the two columns back, with the values that
+    statement rebuilds; it does not claim to place the database at this
+    revision, and its docstring says which claim it does not make (ledger row
+    **P79**).
+    """
 
     def test_down_then_up_restores_the_key_unchanged(self, app, db):
         """The pair is re-runnable, and the action survives the round trip.
@@ -409,6 +421,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
         user = _owner_with_paydays(db, "roundtrip@shekel.local")
 
         with app.app_context():
+            restore_pay_period_derived_columns(db.session)
             _run(_M_C4B2.downgrade, db.session)
             assert _key_row(db.session) is None
 
@@ -440,12 +453,22 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
         user = _owner_with_paydays(db, "disagree@shekel.local", cadence_days=9)
 
         with app.app_context():
+            restore_pay_period_derived_columns(db.session)
             _run(_M_C4B2.downgrade, db.session)
             last = (
                 db.session.query(PayPeriod).filter_by(user_id=user.id)
                 .order_by(PayPeriod.start_date.desc()).first()
             )
-            last.end_date = last.start_date + timedelta(days=28)
+            # Written as SQL rather than through the ORM: the column exists in
+            # the rewound SCHEMA but not on the model, which plan step
+            # ``pay_calendar:C4-c`` deleted it from.  That is the honest
+            # spelling of a legacy value -- a stored end no live writer can
+            # author -- and it is what ledger row **P28** describes.
+            db.session.execute(
+                text("UPDATE budget.pay_periods SET end_date = :end "
+                     "WHERE id = :id"),
+                {"end": last.start_date + timedelta(days=28), "id": last.id},
+            )
             db.session.query(PaySchedule).filter_by(
                 user_id=user.id,
             ).delete(synchronize_session=False)
@@ -454,7 +477,11 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
             # The premise, asserted rather than assumed: the two derivations
             # really do disagree here, so the assertion below distinguishes
             # them rather than agreeing with both.
-            assert (last.end_date - last.start_date).days + 1 == 29
+            stored_end = db.session.execute(
+                text("SELECT end_date FROM budget.pay_periods WHERE id = :id"),
+                {"id": last.id},
+            ).scalar()
+            assert (stored_end - last.start_date).days + 1 == 29
             assert pay_schedule_service.get_schedule(user.id) is None
 
             _run(_M_C4B2.upgrade, db.session)
@@ -479,6 +506,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
         )
 
         with app.app_context():
+            restore_pay_period_derived_columns(db.session)
             _run(_M_C4B2.downgrade, db.session)
             db.session.query(PaySchedule).filter_by(
                 user_id=user.id,
@@ -510,6 +538,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
         no schedule row, and the upgrade must refuse.
         """
         with app.app_context():
+            restore_pay_period_derived_columns(db.session)
             _run(_M_C4B2.downgrade, db.session)
             user = User(
                 email="uninferable@shekel.local",
@@ -518,16 +547,24 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
             )
             db.session.add(user)
             db.session.flush()
-            db.session.add_all([
-                PayPeriod(
-                    user_id=user.id, period_index=0,
-                    start_date=date(2026, 1, 1), end_date=date(2026, 1, 14),
-                ),
-                PayPeriod(
-                    user_id=user.id, period_index=1,
-                    start_date=date(2027, 2, 5), end_date=date(2027, 2, 18),
-                ),
-            ])
+            # Inserted as SQL because the rewound schema still requires the
+            # two derived columns the MODEL no longer declares: an ORM insert
+            # here would fail on ``end_date``'s NOT NULL and say nothing about
+            # this revision.  The ends are the derivation's own -- the day
+            # before the next payday, then the last one's projection at the
+            # 400-day spacing under test -- so the row set is the one an owner
+            # in this state really held.
+            for period_index, (payday, end) in enumerate([
+                (date(2026, 1, 1), date(2027, 2, 4)),
+                (date(2027, 2, 5), date(2028, 3, 10)),
+            ]):
+                db.session.execute(
+                    text("INSERT INTO budget.pay_periods "
+                         "(user_id, start_date, end_date, period_index) "
+                         "VALUES (:uid, :start, :end, :idx)"),
+                    {"uid": user.id, "start": payday, "end": end,
+                     "idx": period_index},
+                )
             db.session.commit()
 
             with pytest.raises(IntegrityError) as excinfo:
@@ -552,6 +589,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
         _owner_with_paydays(db, "droptable@shekel.local")
 
         with app.app_context():
+            restore_pay_period_derived_columns(db.session)
             # Half one: with the key in place, the drop is refused, and the
             # message names this constraint rather than some other dependency.
             # ``InternalError`` is SQLAlchemy's wrapper for PostgreSQL's

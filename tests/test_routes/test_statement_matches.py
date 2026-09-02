@@ -78,6 +78,9 @@ from tests.test_services.test_statement_match._builders import (
     a_transaction,
     an_import,
 )
+from tests._test_helpers import (
+    last_covered_day,
+)
 
 
 def _review_url(account_id):
@@ -1291,7 +1294,7 @@ class TestTheDepositArmOnTheWire:
         instead -- the *chooser whose submission always fails* shape this
         package has closed five times.
         """
-        beyond = seed_user["bootstrap_period"].end_date + timedelta(days=400)
+        beyond = last_covered_day(seed_user["bootstrap_period"]) + timedelta(days=400)
         line = self._a_deposit(seed_user, posted_on=beyond)
         db.session.commit()
 

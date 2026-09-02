@@ -77,14 +77,16 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
-    all_periods,
     add_txn,
+    all_periods,
     assert_pay_period_invariants,
     create_loan_with_trueup,
     create_savings_account,
+    derived_span,
     freeze_today,
-    make_expense_template,
+    last_covered_day,
     make_cadence_rule,
+    make_expense_template,
     make_transfer_template,
     seam_cash_balance_at,
 )
@@ -158,7 +160,7 @@ def _seed_old_schedule(db_session, seed_user, count=5):
 
 def _all_indices(user_id):
     """The set of period_index values the user currently has."""
-    return {p.period_index for p in all_periods(user_id)}
+    return {derived_span(p).period_index for p in all_periods(user_id)}
 
 
 def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
@@ -251,7 +253,7 @@ class TestResetHappyPath:
 
             # Whole schedule rebuilt from index 0; every old period gone.
             assert _all_indices(user_id) == {0, 1, 2, 3, 4, 5}
-            assert [p.period_index for p in new_periods] == [0, 1, 2, 3, 4, 5]
+            assert [derived_span(p).period_index for p in new_periods] == [0, 1, 2, 3, 4, 5]
             for old_id in old_period_ids:
                 assert db.session.get(PayPeriod, old_id) is None
 
@@ -404,11 +406,11 @@ class TestResetHappyPath:
 
             # End of the anchor period (index 0): 1000 - 1*1200.
             assert seam_cash_balance_at(
-                account, scen, new_periods[0].end_date,
+                account, scen, last_covered_day(new_periods[0]),
             ) == Decimal("-200.00")
             # End of index 5: 1000 - 6*1200.
             assert seam_cash_balance_at(
-                account, scen, new_periods[5].end_date,
+                account, scen, last_covered_day(new_periods[5]),
             ) == Decimal("-6200.00")
 
             assert_pay_period_invariants(db.session, user_id)
@@ -545,7 +547,7 @@ class TestResetHappyPath:
             # Generated rows land on indices 0, 2, 4 -- phased to the new
             # first period, not the stale 1, 3, 5.
             counts = {
-                p.period_index: db.session.query(Transaction).filter_by(
+                derived_span(p).period_index: db.session.query(Transaction).filter_by(
                     pay_period_id=p.id, template_id=template.id,
                 ).count()
                 for p in new_periods
@@ -603,7 +605,7 @@ class TestResetHappyPath:
             )
             db.session.commit()
 
-            assert [p.period_index for p in new_periods] == [0, 1, 2]
+            assert [derived_span(p).period_index for p in new_periods] == [0, 1, 2]
             assert _all_indices(user_id) == {0, 1, 2}
             assert_pay_period_invariants(db.session, user_id)
 
@@ -622,7 +624,7 @@ class TestResetHappyPath:
             schedule = pay_schedule_service.get_schedule(user_id)
             assert schedule.cadence_days == 7
             assert (
-                new_periods[0].end_date - new_periods[0].start_date
+                last_covered_day(new_periods[0]) - new_periods[0].start_date
             ).days + 1 == 7
 
 
@@ -688,7 +690,7 @@ class TestResetRefusals:
                 cadence_days=14,
             )
             db.session.commit()
-            assert [p.period_index for p in new_periods] == [0, 1, 2]
+            assert [derived_span(p).period_index for p in new_periods] == [0, 1, 2]
             assert_pay_period_invariants(db.session, user_id)
 
     def test_invalid_cadence_rolls_back_partial_wipe(self, app, db, seed_user):
@@ -980,8 +982,8 @@ class TestResetResyncsAccountOpenings:
                 f"branch; the assertion ({opening_assertion.observed_on}) must "
                 f"precede every rebuilt period"
             )
-            earliest = min(rebuilt, key=lambda p: p.period_index)
-            assert earliest.period_index == 0
+            earliest = min(rebuilt, key=lambda p: derived_span(p).period_index)
+            assert derived_span(earliest).period_index == 0
             assert openings[0].pay_period_id == earliest.id
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,

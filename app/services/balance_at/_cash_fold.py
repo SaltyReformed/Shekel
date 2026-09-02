@@ -664,8 +664,8 @@ def period_balances(
     agree is that column's last (``docs/plans/implementation_plan_pay_calendar.md``
     section 1).  Measured on both production-shaped databases the day this
     shipped: 0 of 62 and 0 of 61 stored ends differ from the derivation, so
-    the class of defect is latent rather than live, and plan step C4 removes
-    the column that could hold it.
+    the class of defect was latent rather than live, and plan step C4-c
+    removed the column that could hold it.
 
     Args:
         folded: The account's :class:`AssembledCashFold`

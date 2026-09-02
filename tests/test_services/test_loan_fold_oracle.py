@@ -61,6 +61,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     freeze_today,
     insert_tracking_start_event,
+    last_covered_day,
     posted_loan_balance_at,
 )
 
@@ -413,7 +414,7 @@ class TestFoldMatchesPostingsAcrossTheShapeMatrix:
             )
             period = seed_periods[1]
             # The defining property of the shape, made explicit.
-            assert not period.start_date <= due <= period.end_date
+            assert not period.start_date <= due <= last_covered_day(period)
             end = seed_periods[4].start_date
             freeze_today(monkeypatch, end + timedelta(days=1))
             _assert_fold_matches_postings_every_day(

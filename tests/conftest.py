@@ -731,6 +731,7 @@ from app.services import (
     pay_schedule_service,
 )
 from app.services.auth_service import hash_password
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     amount_basis_for_scenario,
     bind_db_clock_rewriter,
@@ -2142,11 +2143,13 @@ def _build_cross_page_calendar_periods(db, user):
     full ordered period list and the anchor period (the calendar month
     containing today).
 
-    Monthly (not biweekly) periods are deliberate: the anchor period's
-    ``end_date`` IS a calendar month-end, so the C9-3 boundary invariant of
-    the seam's :func:`app.services.balance_at.cash_balance_at` makes the
-    calendar surface's projected month-end balance equal the anchor-period
-    balance for the same data.  The anchor being the month containing today also
+    Monthly (not biweekly) periods are deliberate: the anchor period's last
+    covered day IS a calendar month-end -- each payday is the 1st, so each
+    period runs to the day before the next 1st -- and the C9-3 boundary
+    invariant of the seam's
+    :func:`app.services.balance_at.cash_balance_at` then makes the calendar
+    surface's projected month-end balance equal the anchor-period balance for
+    the same data.  The anchor being the month containing today also
     lets ``PayCalendar.period_containing`` land on it with no date-mock
     plumbing.
 
@@ -2155,13 +2158,17 @@ def _build_cross_page_calendar_periods(db, user):
     ``pay_calendar:C4-b-1``).  ``pay_period_write.record_paydays`` spaces a
     batch at ONE cadence; calendar months are 28 to 31 days apart, so no door
     produces this schedule and no owner can have one.  Every other periods
-    fixture here goes through :func:`_reset_seed_calendar`.  Plan step
-    ``pay_calendar:C4-c``, which re-bases every hand-written ``PayPeriod(...)``
-    when the two derived columns drop, owns the question of what these cases
-    should assert on instead.
+    fixture here goes through :func:`_reset_seed_calendar`.
 
-    The seeded owner's opening pay period is left in place beneath these, at
-    ``period_index`` 0.  *The reason recorded here was that deleting it would
+    **What plan step ``pay_calendar:C4-c`` changed here is that these rows no
+    longer CLAIM to be monthly, they simply are.**  The fixture typed an
+    ``end_date`` and a ``period_index`` onto each row -- values no writer would
+    have produced -- and the derivation now answers both from the paydays it
+    writes: twelve 1sts a year derive twelve calendar months, because a period
+    ends the day before the next payday.  Only the LAST period's end reads the
+    stored cadence, which is what row **P78** is still about.
+
+    The seeded owner's opening pay period is left in place beneath these.  *The reason recorded here was that deleting it would
     cascade ``AccountAnchorHistory.pay_period_id`` and race an autoflush; that
     column no longer exists -- ruling ``balance:R-EO`` deleted it and its
     CASCADE FK -- so the stated hazard has had no subject for some time.* What
@@ -2177,43 +2184,23 @@ def _build_cross_page_calendar_periods(db, user):
             the periods).
 
     Returns:
-        ``(all_periods, anchor_period)`` -- the user's full period list
-        ordered by ``period_index`` (bootstrap at 0 plus the 36 monthly
-        periods) and the anchor period containing today.
+        ``(all_periods, anchor_period)`` -- the user's full period list in
+        payday order (the bootstrap plus the 36 monthly periods) and the
+        anchor period containing today.
     """
     today = date.today()
     first_year = today.year - 1
-    period_index = 1
     created = []
     for year in range(first_year, first_year + 3):
         for month in range(1, 13):
-            start = date(year, month, 1)
-            # last day of month: subtract one from the first of next month
-            # (December rolls to next year).
-            if month == 12:
-                next_first = date(year + 1, 1, 1)
-            else:
-                next_first = date(year, month + 1, 1)
-            end = next_first - timedelta(days=1)
-            period = PayPeriod(
-                user_id=user.id,
-                start_date=start,
-                end_date=end,
-                period_index=period_index,
-            )
+            # ONE payday per month, on the 1st.  Each period then runs to the
+            # day before the next 1st, which is the calendar month -- the
+            # derivation gives this fixture its months rather than the fixture
+            # typing them onto a column (plan step ``pay_calendar:C4-c``).
+            period = PayPeriod(user_id=user.id, start_date=date(year, month, 1))
             db.session.add(period)
             created.append(period)
-            period_index += 1
     db.session.commit()
-
-    # The anchor period is the calendar month containing today.  The
-    # created list runs chronologically from January of ``first_year``, so
-    # today's month sits at index ``12 + (today.month - 1)``.
-    anchor_period = created[12 + (today.month - 1)]
-    assert anchor_period.start_date <= today <= anchor_period.end_date, (
-        f"anchor_period {anchor_period.start_date}..{anchor_period.end_date} "
-        f"does not contain today={today}; fixture invariant broken"
-    )
 
     # **The owner's STORED cadence is set to match these rows, and an
     # adversarial review of plan step ``pay_calendar:C4-b-1`` is why.**  Before
@@ -2228,9 +2215,13 @@ def _build_cross_page_calendar_periods(db, user):
     # what makes writing it down the fix rather than a green run.
     #
     # 31 is what the inference answered, so this restores the figure rather
-    # than choosing a new one.  It is still a stored fact disagreeing with rows
-    # that are 28 to 31 days apart -- that is row **P78**, and the real remedy
-    # is a door that can express a monthly schedule at all.
+    # than choosing a new one.  It is still a stored fact disagreeing with
+    # paydays that are 28 to 31 days apart -- that is row **P78**, and the real
+    # remedy is a door that can express a monthly schedule at all.  Since plan
+    # step ``pay_calendar:C4-c`` it decides exactly ONE thing: the LAST
+    # period's projected end.  Every other end is the day before the next
+    # payday, which is what makes these rows a real calendar-monthly schedule
+    # rather than a stored claim to be one.
     pay_schedule_service.upsert_schedule(user.id, 31)
 
     all_periods = (
@@ -2238,6 +2229,19 @@ def _build_cross_page_calendar_periods(db, user):
         .filter_by(user_id=user.id)
         .order_by(PayPeriod.start_date)
         .all()
+    )
+
+    # The anchor period is the calendar month containing today, and the
+    # containment is ASSERTED through the calendar rather than off the row:
+    # plan step ``pay_calendar:C4-c`` dropped ``end_date``, and this fixture's
+    # whole point is that its DERIVED spans are the calendar months.  The
+    # created list runs chronologically from January of ``first_year``, so
+    # today's month sits at index ``12 + (today.month - 1)``.
+    anchor_period = created[12 + (today.month - 1)]
+    anchor_span = calendar_for(user.id).period_by_id(anchor_period.id)
+    assert anchor_span is not None and anchor_span.covers(today), (
+        f"anchor_period {anchor_span} does not contain today={today}; "
+        f"fixture invariant broken"
     )
     return all_periods, anchor_period
 

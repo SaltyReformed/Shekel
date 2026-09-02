@@ -623,7 +623,7 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         all eight callers in ``app/`` filled that argument with the same value
         -- the owner's complete saved period set, read out of the table as ORM
         rows whose ``end_date`` and ``period_index`` are the two derived
-        columns plan step C4 drops.  An argument every caller answers
+        columns plan step C4-c dropped.  An argument every caller answers
         identically is not a contract; it is the one thing a caller can get
         wrong, and ``_cash_periods``' own predecessor measured that mistake at
         ``$150,000.00`` (a fold read against a window missing its own period).

@@ -227,7 +227,7 @@ def _load_pay_periods_context(user_id):
     **The list is the DERIVATION since plan step C2-f3b**, where it was
     ``pay_period_service.get_all_periods`` -- ORM rows ordered by the stored
     ``period_index`` and labelled from the stored ``end_date``, both of which
-    plan step **C4** drops.  It matters beyond that step: this page renders the
+    plan step **C4-c** dropped.  It matters beyond that step: this page renders the
     ordinal and the date range that the four destructive doors beside it then
     decide against, so a row shown here and the row truncate deletes have to be
     described by one derivation or the confirmation the user gives is about a

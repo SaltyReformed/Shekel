@@ -69,10 +69,11 @@ from tests._test_helpers import (
     an_entered_day,
     an_observed_day,
     append_balance_assertion,
+    last_covered_day,
     load_migration_module,
     settle_day_columns,
-    settled_day_basis_id,
     settle_instant_on,
+    settled_day_basis_id,
     settlement_columns,
 )
 
@@ -551,7 +552,7 @@ class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
             self._unpair(db)
             anchor = append_balance_assertion(
                 db.session, seed_user["account"], seed_periods[0],
-                Decimal("1000.00"), settle_instant_on(seed_periods[0].end_date),
+                Decimal("1000.00"), settle_instant_on(last_covered_day(seed_periods[0])),
             )
             txn = self._dated_row(
                 db, seed_user, seed_periods, anchor.observed_on,
@@ -578,7 +579,7 @@ class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
             self._unpair(db)
             anchor = append_balance_assertion(
                 db.session, seed_user["account"], seed_periods[0],
-                Decimal("1000.00"), settle_instant_on(seed_periods[0].end_date),
+                Decimal("1000.00"), settle_instant_on(last_covered_day(seed_periods[0])),
             )
             moved = anchor.observed_on - timedelta(days=4)
             txn = self._dated_row(
@@ -620,7 +621,7 @@ class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
             self._unpair(db)
             anchor = append_balance_assertion(
                 db.session, seed_user["account"], seed_periods[0],
-                Decimal("1000.00"), settle_instant_on(seed_periods[0].end_date),
+                Decimal("1000.00"), settle_instant_on(last_covered_day(seed_periods[0])),
             )
             self._dated_row(
                 db, seed_user, seed_periods, anchor.observed_on,

@@ -158,7 +158,7 @@ class _GridContext(NamedTuple):
     it are now three views of the ONE calendar the read pass memoizes, and
     :attr:`balance_ctx` already carries the owner.  Nothing here reads
     ``end_date`` or ``period_index`` out of the table, which is what plan step
-    **C4** needs before it can drop both columns.
+    **C4-c** needed before it could drop both columns.
 
     Attributes:
         balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of +
@@ -492,7 +492,7 @@ def _build_entry_maps(transactions, budgets, all_periods) -> _GridEntryMaps:
         # The SPANS the out-of-period purchase warning is judged against
         # (plan step C4-a-3), keyed the way a row names its paycheck.  They
         # are DERIVED, where the warning read the stored ``end_date`` plan
-        # step C4-c drops.
+        # step C4-c dropped.
         entry_lists=build_entry_lists_dict(
             transactions, budgets,
             {period.period_id: period for period in all_periods},

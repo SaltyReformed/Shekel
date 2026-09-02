@@ -61,6 +61,8 @@ from tests._test_helpers import (
     assert_pay_period_invariants,
     bare_expense_template,
     create_savings_account,
+    derived_span,
+    last_covered_day,
     make_cadence_rule,
     make_every_period_rule,
     make_expense_template,
@@ -206,7 +208,7 @@ class TestTruncateHappyPath:
 
             assert deleted == 3  # indices 4, 5, 6
             remaining = {
-                p.period_index
+                derived_span(p).period_index
                 for p in all_periods(user_id)
             }
             # Bootstrap (0) + kept future indices 1..3.
@@ -308,7 +310,7 @@ class TestTruncateHappyPath:
             db.session.commit()
 
             before = seam_cash_balance_at(
-                account, scen, periods[2].end_date,  # index 3
+                account, scen, last_covered_day(periods[2]),  # index 3
             )
             assert before == Decimal("-2600.00")  # 1000 - 3*1200
 
@@ -319,7 +321,7 @@ class TestTruncateHappyPath:
             assert deleted == 3
 
             after = seam_cash_balance_at(
-                account, scen, periods[2].end_date,
+                account, scen, last_covered_day(periods[2]),
             )
             assert after == before  # retained window untouched
             assert_pay_period_invariants(db.session, user_id)
@@ -483,7 +485,7 @@ class TestTruncateHardLocks:
             )
             anchored = next(
                 period for period in periods
-                if period.start_date <= display_today() <= period.end_date
+                if period.start_date <= display_today() <= last_covered_day(period)
             )
             # Truncate through the period BEFORE the anchored one, so the
             # anchored period is inside the to-delete window.  Named by id

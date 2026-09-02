@@ -81,10 +81,11 @@ from app.services.pay_calendar import (
     saved_paydays_in_month_through,
 )
 from tests._test_helpers import (
-    all_periods,
     counting_calls,
     counting_read_passes,
     create_account_of_type,
+    derived_span,
+    last_covered_day,
     make_cadence_rule,
     make_transfer_template,
     payroll_basis,
@@ -94,7 +95,6 @@ from tests._test_helpers import (
     seed_tax_bracket_set,
 )
 from tests.oracles.recurrence_baseline import (
-    EVERY_N_PERIODS,
     EVERY_PERIOD,
     MONTHLY_FIRST,
 )
@@ -212,7 +212,7 @@ def _append_period(seed_user, seed_periods):
     """
     created = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        first_payday=seed_periods[-1].end_date + timedelta(days=1),
+        first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
         num_periods=1,
         cadence_days=14,
     )
@@ -235,7 +235,7 @@ class TestTheScheduleShapeTheseTestsRestOn:
                 if period.start_date.year == 2026
                 and period.start_date.month == 1
             ]
-            assert [period.period_index for period in january] == [0, 1, 2]
+            assert [derived_span(period).period_index for period in january] == [0, 1, 2]
             assert (
                 seed_periods[_JANUARY_THIRD_PAYCHECK_INDEX].start_date
                 == date(2026, 1, 30)
@@ -809,8 +809,6 @@ class TestAWindowMustBelongToTheOwner:
             unsaved = PayPeriod(
                 user_id=seed_user["user"].id,
                 start_date=date(2026, 6, 5),
-                end_date=date(2026, 6, 18),
-                period_index=99,
             )
             assert unsaved.id is None, "the premise: it was never flushed"
 
@@ -819,101 +817,18 @@ class TestAWindowMustBelongToTheOwner:
                     BalanceContext.build(seed_user["user"].id), {unsaved.id},
                 )
 
-    def test_a_stored_ordinal_out_of_payday_order_changes_nothing(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The corruption C2-b2's check refused is now INVISIBLE to the seam.
-
-        **This graded a raise until pay-calendar plan step C2-f3c**, and the
-        replacement is stronger than the refusal was.  The value used to hold
-        two reads of ``budget.pay_periods`` -- one ordered by the stored
-        ``period_index``, one by payday -- so a stored ordinal out of payday
-        order made them disagree, and disagreeing silently would have re-phased
-        every ``Every N Periods`` rule for this owner.  It was refused because
-        the seam could not tell which read to believe.
-
-        There is one read now, and its order is payday order by construction
-        (``derive_periods``), so the stored ordinal is not on the path at all.
-        This case therefore asserts the property the refusal was PROTECTING
-        rather than the refusal: scramble the column underneath a schedule and
-        the generate pass produces byte-identical rows.
-
-        **The cadence is ``EVERY_N_PERIODS`` at ``interval_n=2``, and that is
-        the whole test** (adversarial review of plan step C2-f3c).  The ONLY
-        ordinal-sensitive line in the seam is
-        ``recurrence/_occurrence._period_walk``'s
-        ``(period.period_index - offset) % interval_n``, and at ``interval_n=1``
-        that expression is zero for every ordinal there is -- so an
-        every-paycheck rule would assert something no ordinal, derived or
-        stored, can move.  The refusal this replaces named exactly this rule
-        class: it existed because a disagreeing ordinal would "silently
-        re-phase every ``Every N Periods`` rule".  At 2 the phase is real:
-        pointing the walk at the STORED column instead makes periods 0 and 1
-        swap phase and this goes red.
-
-        The swap parks one row on a spare ordinal and FLUSHES between each
-        step: ``uq_pay_periods_user_index`` is checked per statement, so a
-        direct exchange collides inside the one flush that would carry both
-        ``UPDATE`` statements.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            template = _make_template(
-                seed_user, EVERY_N_PERIODS, interval_n=2,
-            )
-            recurrence_engine.generate_for_template(
-                template,
-                GenerationSchedule.for_pass(
-                    BalanceContext.build(seed_user["user"].id),
-                ),
-                scenario_id,
-            )
-            db.session.flush()
-            before = _placements(template, scenario_id)
-            # The premise: the rule PHASES, so an ordinal it read wrongly would
-            # move the answer.  Every other paycheck of ten, not all ten.
-            assert 0 < len(before) < 10, (
-                f"an every-2-periods rule must fire in some but not all ten "
-                f"paychecks, got {len(before)}"
-            )
-
-            rows = all_periods(seed_user["user"].id)
-            first, second = rows[0], rows[1]
-            first_index, second_index = first.period_index, second.period_index
-            spare = max(row.period_index for row in rows) + 1
-
-            first.period_index = spare
-            db.session.flush()
-            second.period_index = first_index
-            db.session.flush()
-            first.period_index = second_index
-            db.session.flush()
-
-            # The premise: the stored ordinal now disagrees with payday order.
-            scrambled = (
-                db.session.query(PayPeriod)
-                .filter_by(user_id=seed_user["user"].id)
-                .order_by(PayPeriod.period_index)
-                .all()
-            )
-            assert scrambled[0].id == second.id
-            assert scrambled[0].start_date > scrambled[1].start_date
-
-            # And the answer is unchanged: same periods, same due dates.
-            second_template = _make_template(
-                seed_user, EVERY_N_PERIODS, interval_n=2,
-            )
-            second_template.name = "After the scramble"
-            db.session.flush()
-            recurrence_engine.generate_for_template(
-                second_template,
-                GenerationSchedule.for_pass(
-                    BalanceContext.build(seed_user["user"].id),
-                ),
-                scenario_id,
-            )
-            db.session.flush()
-            assert _placements(second_template, scenario_id) == before
+    # **``test_a_stored_ordinal_out_of_payday_order_changes_nothing`` was
+    # deleted at plan step ``pay_calendar:C4-c``, and it is worth saying what
+    # it did rather than leaving a gap.**  It scrambled
+    # ``budget.pay_periods.period_index`` underneath an ``EVERY_N_PERIODS``
+    # rule at ``interval_n=2`` -- the seam's only ordinal-sensitive expression
+    # is ``(period.period_index - offset) % interval_n`` and at 1 it is zero
+    # for every ordinal, so 2 was the whole test -- and asserted the generate
+    # pass produced byte-identical rows.  It graded a RAISE until plan step
+    # C2-f3c, when the second read went and the disagreement stopped being
+    # detectable; C4-c dropped the column, so the disagreement stopped being
+    # CONSTRUCTIBLE.  The ordinal is a row's position in payday order now, and
+    # ``derive_periods`` is the one thing that computes it.
 
     def test_a_narrowed_WINDOW_still_resolves_against_the_whole_schedule(
         self, app, db, seed_user, seed_periods,
@@ -1739,7 +1654,7 @@ class TestNoOrmPayPeriodEntersTheSeam:
     the placements carried one each, the row select joined the table on
     ``end_date``, and the amount producer resolved an id back to a derived
     period.  Reading a period's BOUNDS off the row means reading
-    ``end_date`` and ``period_index``, the two columns C4 drops, and finding
+    ``end_date`` and ``period_index``, the two columns C4-c dropped, and finding
     those readers by hand is what ledger row **P70** records going wrong: an
     AST census found SIX in query position where the step's own specification
     named two.

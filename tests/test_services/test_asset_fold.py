@@ -42,7 +42,6 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.interest_params import InterestParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app import ref_cache
@@ -75,6 +74,8 @@ from tests._test_helpers import (
     create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    derived_span,
+    last_covered_day,
     make_appreciating_account,
     make_investment_account,
     make_salary_profile,
@@ -1136,86 +1137,22 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         # reachable through ``contribution_events``.
         assert list(PeriodWindow(periods=tuple(reversed(periods)))) == periods
 
-    def test_the_door_walks_the_PAYDAY_whatever_the_stored_ordinal_says(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """The stored ordinal cannot reach this feed at all any more.
-
-        The stored ``period_index`` is REVERSED underneath the schedule with a
-        direct UPDATE -- a state ``pay_period_write`` rematerialises away and
-        ``uq_pay_periods_user_index`` still permits -- and the feed is then
-        read again through a FRESH read pass, so the calendar is re-derived
-        against the mutated rows rather than replayed out of the first pass's
-        memo.  The events must be unchanged, because a contribution belongs to
-        the payday it lands on and to nothing else.
-
-        **Two controls, because the assertion is worth exactly what they are
-        worth.**  A read ordered by the STORED ordinal really does hand the
-        rows back newest-first after the UPDATE (so the scramble took, and the
-        column this feed used to inherit its order from really is corrupt);
-        and the window the door is handed is in PAYDAY order regardless (so
-        the order is the derivation's, not a leftover sort).  Before plan step
-        C2-f2a the first control was what the door had to defend against with
-        a sort of its own; now the ordinal is not on the path.
-
-        Control 1 issues its own ``ORDER BY period_index`` query rather than
-        calling a shared helper: pay-calendar plan step C2-f3c deleted the last
-        reader that ordered by that column, and ``_test_helpers.all_periods``
-        deliberately orders by payday, so a helper could not express what this
-        control has to measure.
-
-        Without the derivation this fails: the test above measures the walk
-        answering differently for the same plan in a different order.
-        """
-        account = _401k(
-            seed_user, seed_periods[0], Decimal("20000.00"),
-            opened_on=seed_periods[0].start_date,
-        )
-        _salaried_deduction(seed_user, account, Decimal("500.00"))
-        db.session.commit()
-        inputs = _inputs(
-            _params_for(account), _deductions_for(seed_user, account),
-            Decimal("3631.74"),
-        )
-        boundary = ReconciledThrough(seed_periods[0].start_date)
-        before = _asset_contributions.contribution_events(
-            account, _ctx(seed_user).amounts(), inputs, boundary,
-            _ctx(seed_user).reported_periods(),
-        )
-
-        for offset, period in enumerate(reversed(seed_periods)):
-            db.session.query(PayPeriod).filter_by(id=period.id).update(
-                {"period_index": 1000 + offset},
-            )
-        db.session.commit()
-        scrambled = (
-            db.session.query(PayPeriod)
-            .filter_by(user_id=seed_user["user"].id)
-            .order_by(PayPeriod.period_index)
-            .all()
-        )
-        # Control 1: the stored column really is corrupt now -- a read ordered
-        # by it hands them back newest-first.
-        assert [period.id for period in scrambled] == [
-            period.id for period in reversed(seed_periods)
-        ]
-
-        window = _ctx(seed_user).reported_periods()
-        # Control 2: the DERIVED window is in payday order anyway, because its
-        # ordinal is the position in payday order rather than the column.
-        assert [period.period_id for period in window] == [
-            period.id for period in seed_periods
-        ]
-
-        after = _asset_contributions.contribution_events(
-            account, _ctx(seed_user).amounts(), inputs, boundary, window,
-        )
-
-        assert after == before
-        assert [day for day, _amount in after] == sorted(
-            day for day, _amount in after
-        )
-        assert after  # not vacuous: the account does contribute
+    # **``test_the_door_walks_the_PAYDAY_whatever_the_stored_ordinal_says``
+    # was deleted at plan step ``pay_calendar:C4-c``, and it is worth saying
+    # what it did rather than leaving a gap.**  It REVERSED
+    # ``budget.pay_periods.period_index`` underneath a live schedule with a
+    # direct UPDATE -- a state ``uq_pay_periods_user_index`` permitted --
+    # re-read the contribution feed through a fresh read pass, and asserted
+    # the events were unchanged, with two controls: that a read ordered by
+    # the stored column really did hand the rows back newest-first, and
+    # that the derived window was in payday order regardless.
+    #
+    # The column is dropped, so the scramble is not constructible and
+    # neither control has a subject: an ordinal IS the position in payday
+    # order now.  What the case was protecting -- that the walk's answer
+    # depends on the order it is given -- is measured by
+    # ``test_the_walk_is_ORDER_SENSITIVE_which_is_what_the_window_settles``
+    # above, which needs no corrupt column to show it.
 
     def test_a_recorded_contribution_consumes_the_same_limit(self):
         """$900 recorded in period 0 leaves $300 of that year's $1,200 limit.
@@ -1372,7 +1309,7 @@ class TestThePerPeriodIdentity:
                 cash_column.net
                 + cash_column.period_timing + cash_column.book_vs_bank
                 + column.accrual + column.contribution
-            ), f"identity broke on period {period.period_index}"
+            ), f"identity broke on period {derived_span(period).period_index}"
 
 
 # ``TestTheSeedFiltersTheModelledReturn`` stood here until plan step X-g2b.
@@ -1464,7 +1401,7 @@ class TestTheGrowthDecomposition:
         ctx = _ctx(seed_user)
 
         assert _growth(
-            seed_user["account"], ctx, seed_periods[-1].end_date,
+            seed_user["account"], ctx, last_covered_day(seed_periods[-1]),
         ) == (Decimal("0.00"), Decimal("0.00"))
 
 

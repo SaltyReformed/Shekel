@@ -42,6 +42,7 @@ from tests._test_helpers import (
     amount_basis_for_scenario,
     create_loan_account,
     freeze_today,
+    last_covered_day,
     loan_params_for,
     make_cadence_rule,
     seam_confirmed_view,
@@ -777,7 +778,7 @@ def test_standing_extra_folds_past_the_shadow_horizon(
     with app.app_context():
         current_period = next(
             period for period in seed_periods_today
-            if period.start_date <= date.today() <= period.end_date
+            if period.start_date <= date.today() <= last_covered_day(period)
         )
         # **The whole test reads at the loan's ORIGINATION day, not at the wall
         # clock, and the payment day is derived so the first installment can

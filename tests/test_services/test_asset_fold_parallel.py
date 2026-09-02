@@ -46,6 +46,7 @@ from app.services.balance_at._context import BalanceContext
 from app.services.projection_inputs import load_investment_params_for_accounts
 from tests._test_helpers import (
     create_hysa_account,
+    last_covered_day,
     make_investment_account,
     period_window,
     reassert_balance_on,
@@ -112,7 +113,7 @@ class TestTheGrainIsARegroupingNotADifferentModel:
         )
         reassert_balance_on(
             db.session, account,
-            settle_instant_on(seed_periods[0].end_date),
+            settle_instant_on(last_covered_day(seed_periods[0])),
         )
         db.session.commit()
         ctx = _ctx(seed_user)
@@ -158,7 +159,7 @@ class TestTheGrainIsARegroupingNotADifferentModel:
         )
         reassert_balance_on(
             db.session, account,
-            settle_instant_on(seed_periods[0].end_date),
+            settle_instant_on(last_covered_day(seed_periods[0])),
         )
         db.session.commit()
         ctx = _ctx(seed_user)
@@ -194,7 +195,7 @@ class TestTheTwoGrainsAreOneRunningTotal:
             apy=Decimal("0.05000"),
         )
         ctx = _ctx(seed_user)
-        first, last = seed_periods[0].start_date, seed_periods[-1].end_date
+        first, last = seed_periods[0].start_date, last_covered_day(seed_periods[-1])
         horizon = [
             first + timedelta(days=offset)
             for offset in range((last - first).days + 1)
@@ -206,7 +207,7 @@ class TestTheTwoGrainsAreOneRunningTotal:
         columns = _replay(account, ctx, seed_periods)
         assert len(daily) == 140
         for period in seed_periods:
-            assert daily[period.end_date] == columns[period.id].balance
+            assert daily[last_covered_day(period)] == columns[period.id].balance
 
     def test_the_balance_never_goes_backwards_on_a_pure_accrual_shape(
         self, db, seed_user, seed_periods,
@@ -223,7 +224,7 @@ class TestTheTwoGrainsAreOneRunningTotal:
             apy=Decimal("0.05000"),
         )
         ctx = _ctx(seed_user)
-        first, last = seed_periods[0].start_date, seed_periods[-1].end_date
+        first, last = seed_periods[0].start_date, last_covered_day(seed_periods[-1])
         horizon = [
             first + timedelta(days=offset)
             for offset in range((last - first).days + 1)

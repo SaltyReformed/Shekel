@@ -38,11 +38,12 @@ from app.utils.log_events import (
 from app.utils.dates import display_today
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     an_entered_day,
     create_account_of_type,
+    last_covered_day,
     make_cadence_rule,
-    open_calendar_hole,
     settlement_basis_id,
     shadow_amount,
 )
@@ -360,7 +361,7 @@ class TestTransferGenerationSharesTheOccurrencePairs:
         with app.app_context():
             long_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                first_payday=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=4,
                 cadence_days=90,
             )
@@ -387,11 +388,11 @@ class TestTransferGenerationSharesTheOccurrencePairs:
                 for day in (
                     date(year, month, 15)
                     for year in range(
-                        paycheck.start_date.year, paycheck.end_date.year + 1,
+                        paycheck.start_date.year, last_covered_day(paycheck).year + 1,
                     )
                     for month in range(1, 13)
                 )
-                if paycheck.start_date <= day <= paycheck.end_date
+                if paycheck.start_date <= day <= last_covered_day(paycheck)
             )
             assert len(expected) == 3, (
                 "a 90-day paycheck must cover the 15th of three months, or this "
@@ -435,14 +436,16 @@ class TestTransferGenerationSharesTheOccurrencePairs:
         asserts they did not diverge across the cutover.  The transaction twin
         is ``test_recurrence_engine.TestALegacyScheduleHole``.
 
-        **The hole is re-opened after the append, and plan step C3-b is why**:
-        ``pay_period_write`` materialises the payday derivation, so the batch
-        below ABSORBS the days it used to skip.  ``open_calendar_hole`` writes
-        the stored end back down, which is the only way to reach the state this
-        test is about -- and in the wild that state is rows written before C3-b.
+        **The whole fixture is the real writer's**, and since plan step
+        ``pay_calendar:C4-c`` nothing has to be undone afterwards: a batch
+        opening 43 days past the horizon is a legal write, and the days between
+        belong to the paycheck before them because ``end_date`` is derived
+        rather than stored.  *This test re-opened the hole by hand on its last
+        fixture line while that column existed, because C3-b's writer closed
+        it on every write.*
         """
         with app.app_context():
-            last_covered = seed_periods[-1].end_date
+            last_covered = calendar_for(seed_user["user"].id).horizon()
             later_start = last_covered + timedelta(days=43)
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
@@ -450,9 +453,8 @@ class TestTransferGenerationSharesTheOccurrencePairs:
                 num_periods=6,
                 cadence_days=14,
             )
-            gap_start, gap_end = open_calendar_hole(
-                db.session, seed_periods[-1], last_covered,
-            )
+            gap_start = last_covered + timedelta(days=1)
+            gap_end = later_start - timedelta(days=1)
             template = TestTransferGeneration()._make_template_with_rule(
                 seed_user, MONTHLY, day_of_month=15,
             )
@@ -1869,7 +1871,7 @@ class TestTransferMaintain:
             db.session.flush()
             # Narrow to the first SEVEN periods, so periods 7-9 lose their rows
             # and retire, and move the amount so the survivors are updated.
-            template.recurrence_rule.end_date = seed_periods[6].end_date
+            template.recurrence_rule.end_date = last_covered_day(seed_periods[6])
             template.default_amount = Decimal("155.00")
             db.session.flush()
 
@@ -2517,7 +2519,7 @@ class TestTransferMaintain:
             # periods 5-9 lose theirs -- four are empty and retire, and the
             # noted one is retained (4 removed, 1 retained).  Nothing is
             # created: every period the narrowed rule names already has a row.
-            template.recurrence_rule.end_date = seed_periods[4].end_date
+            template.recurrence_rule.end_date = last_covered_day(seed_periods[4])
             template.default_amount = Decimal("111.00")
             db.session.flush()
 

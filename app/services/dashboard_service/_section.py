@@ -103,11 +103,11 @@ class DashboardSection:
         span** (pay-calendar plan step C2-f2e).  It was
         ``pay_period_service.get_current_period(user_id)`` -- SQL matching
         ``start_date <= today <= end_date`` against the two columns plan step
-        **C4** drops, resolving a second ``date.today()`` of its own.  Where a
-        stored ``end_date`` disagrees with the one the paydays imply (plan
-        finding **P1**, the disagreement nothing reconciles) the two name
-        different paychecks, and this page then labelled one period's balance
-        with another's dates.  One derivation now, off the pass's memoized
+        **C4-c** dropped, resolving a second ``date.today()`` of its own.
+        Where a stored ``end_date`` disagreed with the one the paydays imply
+        (plan finding **P1**, the disagreement nothing reconciled) the two
+        named different paychecks, and this page then labelled one period's
+        balance with another's dates.  One derivation now, off the pass's memoized
         calendar and the pass's pinned day.
 
         It cannot answer twice differently: both terms are pinned on a frozen

@@ -38,8 +38,12 @@ paydays with no rent, no paycheck and no recurring transfer in them, which is
 why the routes' own tests assert the ROWS rather than the period count.
 
 **Nothing here reads ``end_date`` or ``period_index``**, the two columns plan
-step C4 drops, which is the property ``TestTheDestructiveDoorsHoldNoDerivedColumn``
-grades over both modules.
+step C4-c dropped -- and that stays a graded property rather than a
+consequence, because
+:class:`~app.services.pay_calendar.DerivedPeriod` still carries both names.
+``test_pay_period_admin.TestTheDestructiveDoorsHoldNoDerivedColumn`` censuses
+this module and ``pay_period_admin`` for either name on ANY receiver, so a
+future edit cannot regrow the read on a derived value either.
 """
 
 from datetime import date
@@ -139,17 +143,18 @@ def top_up_rolling_window(user_id, as_of=None):
     # one.  That is the only refusal this comment can prove, and a first draft
     # of it claimed all of them -- caught by an adversarial review of the
     # coverage-rule deletion, which reached the 500 by running it.
-    # ``reject_unmaterialisable_batch`` still refuses a STORED cadence below
-    # ``MIN_MATERIALISABLE_CADENCE_DAYS``, and ``ck_pay_schedule_cadence_range``
-    # admits 1, so a legacy owner holding one 500s here on both screens,
-    # permanently.  That is ledger row **pay_calendar:P33**, owned by C4 -- the
-    # step that drops the stored ``end_date`` this floor exists to protect and
-    # legalises a one-day cycle -- and it is NOT swallowed here meanwhile,
-    # because the state is a schedule this app cannot render rather than a
-    # refusal to shrug off.  The refusal that USED to reach this line (the
-    # coverage rule, deleted 2026-08-11) was swallowed with a WARNING, and an
-    # opportunistic writer needing a swallow was the clearest evidence that
-    # rule did not belong on a read path.
+    # **The CADENCE refusal that used to reach this line is gone** (plan step
+    # ``pay_calendar:C4-c``, closing ledger row **pay_calendar:P33**).  The
+    # writer refused a stored cadence below 2 while a stored ``end_date`` had
+    # to satisfy ``start < end``, and ``ck_pay_schedule_cadence_range`` admits
+    # 1 -- so an owner holding that value met a 500 HERE, on both of the app's
+    # main screens, permanently.  The column is dropped and a one-day cycle is
+    # an ordinary schedule, so the extend below has nothing left to refuse it
+    # for.  It was deliberately NOT swallowed while it existed: a schedule the
+    # app could not render is not a refusal to shrug off, and an opportunistic
+    # writer needing a swallow was the clearest evidence the rule was wrong.
+    # (The coverage rule, deleted 2026-08-11, was the other refusal that
+    # reached here, and it WAS swallowed with a WARNING.)
     return pay_period_admin.extend_pay_periods(user_id, deficit)
 
 
@@ -166,10 +171,9 @@ def _future_period_count(
     :meth:`~app.services.pay_calendar.PayCalendar.current_and_future`.
 
     **It DERIVES the ends rather than reading them** (plan step C4, finding
-    **P70**): this was the module's last query naming a column plan step C4
-    drops -- ``PayPeriod.end_date >= as_of``, counted in SQL -- and no period
-    end is named here now at all, which is the property
-    ``TestTheDestructiveDoorsHoldNoDerivedColumn`` grades.
+    **P70**): this was the module's last query naming a column plan step C4-c
+    dropped -- ``PayPeriod.end_date >= as_of``, counted in SQL -- and no period
+    end is named here at all.
 
     **It loads at the schedule facts the caller HOLDS rather than calling**
     :func:`~app.services.pay_calendar.calendar_for`, which would re-read the

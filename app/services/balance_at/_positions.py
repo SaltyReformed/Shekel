@@ -308,7 +308,7 @@ def positions_period_map(
             (the SAME ``ctx.as_of`` the kernel map splices on), and whose
             ``reported_periods()`` is the map's domain since plan step C2-c --
             each period's bounds DERIVED from the owner's paydays rather than
-            read off the two stored columns plan step C4 drops.
+            read off the two stored columns plan step C4-c dropped.
 
     Returns:
         ``OrderedDict`` period_id -> cent-quantized ``Decimal`` balance, in

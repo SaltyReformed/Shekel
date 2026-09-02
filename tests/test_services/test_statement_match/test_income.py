@@ -71,6 +71,9 @@ from ._builders import (
     a_transaction,
     an_import,
 )
+from tests._test_helpers import (
+    last_covered_day,
+)
 
 
 def _a_deposit(seed_user, amount="0.15", **kwargs):
@@ -200,7 +203,7 @@ class TestTheRowItWrites:
         later = a_later_period(seed_user)
         line = _a_deposit(
             seed_user,
-            transaction_on=seed_user["bootstrap_period"].end_date,
+            transaction_on=last_covered_day(seed_user["bootstrap_period"]),
             posted_on=later.start_date,
         )
 
@@ -534,7 +537,7 @@ class TestWhatItRefuses:
         to take it back -- which is the ordering ``mint_uncategorized``'s
         docstring states and this is what grades it.
         """
-        beyond = seed_user["bootstrap_period"].end_date + timedelta(days=400)
+        beyond = last_covered_day(seed_user["bootstrap_period"]) + timedelta(days=400)
         line = _a_deposit(seed_user, posted_on=beyond)
 
         with pytest.raises(ValidationError, match="No pay period covers"):
@@ -561,7 +564,7 @@ class TestTheScreenOffersExactlyWhatTheDoorAccepts:
         :meth:`ReviewScope.period_holding` would refuse, so the template's own
         condition and the door's refusal are one derivation.
         """
-        beyond = seed_user["bootstrap_period"].end_date + timedelta(days=400)
+        beyond = last_covered_day(seed_user["bootstrap_period"]) + timedelta(days=400)
         _a_deposit(seed_user, posted_on=beyond)
 
         offered = review_set(a_scope(seed_user)).recordable_inflows

@@ -10,7 +10,7 @@ A pay period here is a :class:`~app.services.pay_calendar.DerivedPeriod`, not a
 ``budget.pay_periods`` ORM row (pay-calendar plan step **C2-f2d-3**, whose
 as-built record carries the census).  Only ``start_date`` and the period's
 IDENTITY are read; ``end_date`` / ``period_index`` -- the columns plan step
-**C4** drops -- never were.  See :class:`PeriodInfo` for why that identity is
+**C4-c** dropped -- never were.  See :class:`PeriodInfo` for why that identity is
 never ``None``.
 
 The four calendar questions -- asked of the CALENDAR

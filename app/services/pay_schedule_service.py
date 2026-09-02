@@ -365,7 +365,7 @@ def set_history_opening(
     # derivation would build every period to answer it.  ``min`` rather than
     # the lowest ``period_index``, because the floor is measured against the
     # earliest payday and the two agree only while the index is in date order
-    # -- which is a stored column plan step C4 drops.
+    # -- which is a stored column plan step C4-c dropped.
     reject_history_opening_after_payday(
         history_opens_on,
         db.session.query(func.min(PayPeriod.start_date))

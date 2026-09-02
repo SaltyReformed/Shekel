@@ -1036,6 +1036,21 @@ class TestPayPeriodGenerateSchema:
             })
         assert "cadence_days" in exc.value.messages
 
+    def test_a_one_day_cadence_is_ACCEPTED(self):
+        """The floor is the COLUMN's, and 0 alone could not tell them apart.
+
+        This field's floor was ``max(CADENCE_DAYS_MIN, 2)`` between plan steps
+        X-ad-a and ``pay_calendar:C4-c``, because a one-day period could not be
+        written into the stored ``end_date`` ``ck_pay_periods_date_order``
+        bounded.  The case above rejects 0, which fails at EITHER floor, so it
+        was green against both and the docstring's "Range(1-365)" was false of
+        the code while it said so.  1 is the value that separates them.
+        """
+        assert PayPeriodGenerateSchema().load({
+            "start_date": "2026-03-01",
+            "cadence_days": "1",
+        })["cadence_days"] == 1
+
     def test_missing_start_date(self):
         """Missing start_date raises ValidationError."""
         with pytest.raises(ValidationError) as exc:

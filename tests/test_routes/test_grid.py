@@ -47,8 +47,10 @@ from tests._test_helpers import (
     append_balance_assertion,
     create_hysa_account,
     current_pay_period,
+    derived_span,
     field_is_disabled,
     freeze_today,
+    last_covered_day,
     make_investment_account,
     make_salary_profile,
     mark_purchase_settled,
@@ -3312,7 +3314,7 @@ class TestPeriodHeaderDateFormat:
             current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = next_year_period.period_index - current_period.period_index
+            offset = derived_span(next_year_period).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3333,7 +3335,7 @@ class TestPeriodHeaderDateFormat:
             current_period = current_pay_period(
                 seed_user["user"].id
             )
-            first_offset = periods[0].period_index - current_period.period_index
+            first_offset = derived_span(periods[0]).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=3&offset={first_offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3361,7 +3363,7 @@ class TestPeriodHeaderDateFormat:
             current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = future_period.period_index - current_period.period_index
+            offset = derived_span(future_period).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3393,7 +3395,7 @@ class TestPeriodHeaderDateFormat:
             current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = last_current.period_index - current_period.period_index
+            offset = derived_span(last_current).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=6&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3436,7 +3438,7 @@ class TestPeriodHeaderDateFormat:
             current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = periods[0].period_index - current_period.period_index
+            offset = derived_span(periods[0]).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=6&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3488,7 +3490,7 @@ class TestPeriodHeaderDateFormat:
             current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = periods[0].period_index - current_period.period_index
+            offset = derived_span(periods[0]).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3518,7 +3520,7 @@ class TestPeriodHeaderDateFormat:
             current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = dec_period.period_index - current_period.period_index
+            offset = derived_span(dec_period).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3530,7 +3532,7 @@ class TestPeriodHeaderDateFormat:
             # The next period (if it exists and starts next year) shows year.
             next_periods = [
                 p for p in periods
-                if p.period_index == dec_period.period_index + 1
+                if derived_span(p).period_index == derived_span(dec_period).period_index + 1
             ]
             if next_periods and next_periods[0].start_date.year > today.year:
                 full = next_periods[0].start_date.strftime("%-m/%-d/%y")
@@ -4052,7 +4054,7 @@ class TestTransactionNameRows:
             current = self._get_current_period(seed_user)
             past = next(
                 p for p in seed_periods_today
-                if p.period_index == current.period_index - 1
+                if derived_span(p).period_index == derived_span(current).period_index - 1
             )
 
             # Setup: past expense, current income + 2 expenses.
@@ -7361,8 +7363,8 @@ class TestMobileCardActionBar:
                 display_name=txn.name,
             )
             period = DerivedPeriod(
-                period_id=current.id, period_index=current.period_index,
-                start_date=current.start_date, end_date=current.end_date,
+                period_id=current.id, period_index=derived_span(current).period_index,
+                start_date=current.start_date, end_date=last_covered_day(current),
                 end_is_projected=False,
             )
             matched = {
@@ -8191,7 +8193,7 @@ class TestMobileJumpToPeriod:
                 seed_user["user"].id,
             )
             assert len(owner_periods) == 10
-            assert current.period_index == 4
+            assert derived_span(current).period_index == 4
 
             response = auth_client.get("/grid")
             assert response.status_code == 200

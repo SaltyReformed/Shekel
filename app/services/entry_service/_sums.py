@@ -8,7 +8,7 @@ entry list renders from.
 **The in-period CHECK is no longer here**, and it left at pay-calendar plan
 step C4-a-3 (ruling **R-PC31**).  It was ``check_purchase_date_in_period``,
 which reached through ``transaction.pay_period`` to compare a purchase against
-the STORED ``end_date`` plan step **C4-c** drops; the rule is now
+the STORED ``end_date`` plan step **C4-c** dropped; the rule is now
 :meth:`app.services.pay_calendar.DerivedPeriod.covers`, on the value that
 DERIVES the span, so the containment test this module ran and the one every
 period search runs are one spelling rather than two that agreed by hand.
@@ -206,7 +206,7 @@ def build_entry_lists_dict(
     C4-a-3, ruling **R-PC34**), for the reason *budgets* does in
     :func:`build_entry_sums_dict`.  The
     out-of-period warning read ``txn.pay_period.end_date`` through the ORM
-    relationship -- a stored column plan step **C4-c** drops, and a lazy load
+    relationship -- a stored column plan step **C4-c** dropped, and a lazy load
     per distinct paycheck issued from inside a render.  Each caller already
     holds the spans it needs and holds them by a different route: ``/grid``
     from the DERIVED window its own query scoped ``pay_period_id IN (...)``
@@ -294,7 +294,7 @@ def entry_list_view(
     **It no longer takes the TRANSACTION at all** (pay-calendar plan step
     C4-a-3).  The row was read for exactly one thing -- ``txn.pay_period``, to
     bound the out-of-period warning against the STORED ``end_date`` plan step
-    **C4-c** drops -- and every other input was already an argument, so once
+    **C4-c** dropped -- and every other input was already an argument, so once
     the span became one too the parameter had nothing left to answer.
 
     **That is a third argument a caller must pair correctly, and the honest

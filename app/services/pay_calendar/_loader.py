@@ -34,7 +34,7 @@ depend on the calendar, never the reverse.
 **And why it reads only ``start_date``.**  The payday is the sole fact in the
 row (``docs/plans/implementation_plan_pay_calendar.md`` section 1); ``end_date``
 and ``period_index`` are derived here from it.  So the query is already written
-against the schema plan step C4 leaves behind: C4 drops both columns and this
+against the schema plan step C4-c left behind: it dropped both columns and this
 module needs no edit for it.  *It said C4 "does not touch this module" until
 C4's FIRST commit, which ADDED :func:`calendar_at_schedule` here -- not because the
 drop reached the query, but because the rolling top-up needed this read without

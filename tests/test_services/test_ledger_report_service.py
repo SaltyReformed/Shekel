@@ -39,6 +39,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_settled_cash_transaction,
     create_settled_transfer,
+    last_covered_day,
     linked_ledger_account,
     make_balanced_entry,
 )
@@ -220,10 +221,7 @@ class TestIncomeStatementPayPeriodWindow:
             user_id = seed_user["user"].id
             checking = seed_user["account"]
             period1 = seed_user["bootstrap_period"]
-            period2 = PayPeriod(
-                user_id=user_id, start_date=date(2026, 2, 6),
-                end_date=date(2026, 2, 19), period_index=1,
-            )
+            period2 = PayPeriod(user_id=user_id, start_date=date(2026, 2, 6))
             db.session.add(period2)
             db.session.flush()
 
@@ -345,7 +343,7 @@ class TestThePeriodLabelCannotNameAnotherOwnersPeriod:
             )
             for rendered in (
                 victim_period.start_date.strftime("%b %d"),
-                str(victim_period.end_date.year),
+                str(last_covered_day(victim_period).year),
             ):
                 assert rendered not in report.window_label
 
@@ -365,7 +363,7 @@ class TestThePeriodLabelCannotNameAnotherOwnersPeriod:
                 StatementWindow("pay_period", period_id=own.id),
             )
             assert report.window_label == pay_period_range_label(
-                own.start_date, own.end_date,
+                own.start_date, last_covered_day(own),
             )
             assert report.window_label != ""
 

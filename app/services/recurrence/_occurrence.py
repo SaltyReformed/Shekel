@@ -137,25 +137,35 @@ extend places it.
 **Where the DERIVED calendar and the STORED columns disagree, this engine now
 believes the derivation** -- and that MOVES MONEY.  Stated here rather than
 discovered, because it is the whole risk surface plan step C2-b2 opened
-(adversarial review, 2026-08-11, which measured all three shapes).  There are
-three, and none of them is reachable through a live door: ``pay_period_write``
-materialises the derivation over the whole payday list on every write, so each
-one means rows written before plan step **C3-b** or edited outside that module,
-and the owner's next payday write REPAIRS them.
+(adversarial review, 2026-08-11, which measured all three shapes).
 
-* **A HOLE is absorbed** (plan ledger row **P27**).  A stored ``end_date``
-  short of the next payday leaves days uncovered; the derivation runs the
+**All three are now UNCONSTRUCTIBLE, and the paragraph is kept as the record of
+what the cutover crossed rather than as a live warning** (plan step
+``pay_calendar:C4-c``).  Each was a STORED column disagreeing with the payday
+set, and that step dropped both columns; there is one span and one ordinal,
+computed on every read, so nothing is left to disagree.  *Until then this
+paragraph said the states were unreachable because ``pay_period_write``
+re-materialised the derivation on every write and "the owner's next payday
+write REPAIRS them" -- true at the time and false since C4-c, which deleted
+that machinery along with its subject.  The writer repairs nothing now because
+there is nothing to repair.*  The three, as they were:
+
+* **A HOLE was absorbed** (plan ledger row **P27**).  A stored ``end_date``
+  short of the next payday left days uncovered; the derivation runs the
   preceding paycheck to the day before that payday, so an occurrence there
   seats against a real period id and generates a row where it used to be
   logged and skipped.
-* **The stored CADENCE moves the horizon** (row **P28**).  The last period's
+* **The stored CADENCE moved the horizon** (row **P28**).  The last period's
   derived end is ``payday + cadence_days - 1``, so a stored cadence that no
-  longer matches the stored end moves the generation window -- SHORTER loses
-  the occurrences past the new horizon, LONGER seats rows in a paycheck whose
-  stored span ends before their date.
-* **A stored ORDINAL is re-derived** (row **P26**).  ``period_index`` becomes a
-  period's position in payday order, so a stored ordinal that is not
-  ``0..n-1`` re-phases every ``Every N Periods`` rule -- including one naming a
+  longer matched the stored end moved the generation window -- SHORTER losing
+  the occurrences past the new horizon, LONGER seating rows in a paycheck whose
+  stored span ended before their date.  **This one has a survivor**: the
+  cadence is still the sole input to the last period's PROJECTED end, so
+  changing it still moves the horizon.  What is gone is the DISAGREEMENT --
+  there is no stored end for it to come apart from.
+* **A stored ORDINAL was re-derived** (row **P26**).  ``period_index`` is a
+  period's position in payday order, so a stored ordinal that was not
+  ``0..n-1`` re-phased every ``Every N Periods`` rule -- including one naming a
   start period, which the plan's first statement of P26 did not cover.
 
 Two consequences ride on the first two.  Where the change puts a SECOND
@@ -169,8 +179,9 @@ entirely -- plan ledger row **D18**, whose fix is recurrence plan step **R5**
 (it gives the occurrence its own column and deletes ``compute_due_date``).
 Both are measured and pinned by
 ``test_recurrence_engine.TestALegacyScheduleHole``.  Of the three shapes only
-the HOLE has a detector: ``scripts/integrity_check.py`` **BA-07** asks it as a
-query over the stored column and dies with that column at plan step C4.
+the HOLE ever had a detector -- ``scripts/integrity_check.py`` **BA-07**, a
+query over the stored column -- and it died with that column at plan step
+C4-c, by which point it had no subject either.
 
 :func:`occurrence_placements` generates through the schedule's HORIZON by
 default, because that is the last day a placement can succeed at all.  A

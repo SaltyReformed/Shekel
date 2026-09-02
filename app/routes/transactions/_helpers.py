@@ -143,7 +143,7 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     ``budget.pay_schedule`` more than this fragment used to cost.  The entry
     list's out-of-period warning needs the paycheck's SPAN, and the span is a
     derivation over the owner's paydays rather than the ``end_date`` column
-    plan step **C4-c** drops -- so a single-row surface that holds no window
+    plan step **C4-c** dropped -- so a single-row surface that holds no window
     has to derive rather than read.  Deriving is the only honest option left:
     a targeted "what is the next payday after this one" query here would be a
     second implementation of the rule this arc exists to state once.

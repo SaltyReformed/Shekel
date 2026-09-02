@@ -1881,10 +1881,7 @@ class TestSettledTransferAttributionMutation:
                 seed_user, db.session, "Savings", "Move Savings",
                 anchor_balance=Decimal("200.00"),
             )
-            period2 = PayPeriod(
-                user_id=user_id, start_date=date(2026, 2, 6),
-                end_date=date(2026, 2, 19), period_index=1,
-            )
+            period2 = PayPeriod(user_id=user_id, start_date=date(2026, 2, 6))
             db.session.add(period2)
             db.session.commit()
 

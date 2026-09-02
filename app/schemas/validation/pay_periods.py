@@ -29,7 +29,6 @@ from marshmallow import (
 )
 
 from app.config import BaseConfig
-from app.models.pay_period import MIN_MATERIALISABLE_CADENCE_DAYS
 from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
 from app.schemas.validation._helpers import (
     BaseSchema,
@@ -45,22 +44,18 @@ from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 #: fields is safe -- and it is what makes "the same bound" literally the same
 #: object rather than an equal copy.
 #:
-#: **The cadence FLOOR here is the WRITER's, not the column's**, and the
-#: difference is one day.  ``budget.pay_schedule.cadence_days`` accepts 1
-#: (:data:`~app.models.pay_schedule.CADENCE_DAYS_MIN`) and a derived calendar
-#: handles a one-day cycle correctly, but every form that carries a cadence
-#: submits it to :func:`~app.services.pay_period_write.record_paydays`, which
-#: STORES ``end_date`` and so cannot express a period shorter than two days
-#: (:data:`~app.models.pay_period.MIN_MATERIALISABLE_CADENCE_DAYS`).
-#: Bounding at the column's floor let a 1 through to the CHECK as an unhandled
-#: 500.  Taking the tighter of the two here means the browser, the schema and
-#: the service refuse the same set -- and it is what makes the generate
-#: route's remaining service refusal PROVABLY the forward-only one.  C4 drops
-#: the authored column and this floor returns to the column's.
-CADENCE_DAYS_FORM_MIN = max(CADENCE_DAYS_MIN, MIN_MATERIALISABLE_CADENCE_DAYS)
-
+#: **The cadence bound is the COLUMN's, and it is the only one there is** since
+#: plan step ``pay_calendar:C4-c``.  This module carried a second name for the
+#: floor -- ``CADENCE_DAYS_FORM_MIN``, one day tighter -- because the writer
+#: STORED ``end_date`` and ``ck_pay_periods_date_order`` required
+#: ``start_date < end_date``, so a cadence of 1 reached the CHECK as an
+#: unhandled 500.  The column is gone, two paydays a day apart simply define a
+#: one-day period, and the second name had no content left: one number with two
+#: names is how ``EFFECTIVE_DATE_*`` and ``_STARTS_ON_*`` already came to exist.
+#: So the browser, the schema and the column state one range, and the generate
+#: route's remaining service refusal is PROVABLY the forward-only one.
 _CADENCE_DAYS_RANGE = validate.Range(
-    min=CADENCE_DAYS_FORM_MIN, max=CADENCE_DAYS_MAX,
+    min=CADENCE_DAYS_MIN, max=CADENCE_DAYS_MAX,
 )
 _PERIOD_BATCH_RANGE = validate.Range(
     min=PERIOD_BATCH_MIN, max=PERIOD_BATCH_MAX,
