@@ -51,6 +51,7 @@ from sqlalchemy import text
 
 from app.extensions import db as _db
 from app.models.pay_schedule import PaySchedule
+from tests._test_helpers import restore_pay_period_derived_columns
 from app.models.salary_profile import SalaryProfile
 
 _MIGRATIONS_DIR = (
@@ -124,7 +125,29 @@ def restore_dropped_column(db):
 
 
 @pytest.fixture
-def without_the_schedule_key(db):
+def with_the_pay_period_derived_columns(db):
+    """Run the schema DOWN to where R-F16's downgrade can read what it reads.
+
+    R-F16's ``downgrade()`` derives the paycheck count it restores from
+    ``(pp.end_date - pp.start_date) + 1``, and plan step ``pay_calendar:C4-c``
+    dropped ``budget.pay_periods.end_date``.  Alembic downgrades run
+    newest-first, so by the time this revision's own ``downgrade()`` executes,
+    C4-c's has already put the column back -- and this fixture is that step,
+    driven through C4-c's shipped callable for the same reason
+    :func:`without_the_schedule_key` drives C4-b-2's: a hand-written
+    ``ADD COLUMN`` would be a second statement of the schema that could drift
+    from the migration in silence.
+
+    It restores nothing afterwards, for the reason that fixture gives: the
+    ``db`` fixture re-clones the per-worker database for every test.
+    """
+    restore_pay_period_derived_columns(db.session)
+    yield
+
+
+@pytest.fixture
+def without_the_schedule_key(db, with_the_pay_period_derived_columns):
+
     """Run the schema DOWN to where R-F16's downgrade actually meets it.
 
     Plan step ``pay_calendar:C4-b-2`` added ``fk_pay_periods_schedule``, so an
@@ -200,7 +223,7 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
     ])
     def test_the_restored_count_is_the_derived_one(
         self, app, db, seed_user, restore_dropped_column,
-        cadence_days, expected,
+        with_the_pay_period_derived_columns, cadence_days, expected,
     ):
         """Downgrade backfills ``round(365.2425 / cadence_days)``.
 
@@ -274,6 +297,7 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
 
     def test_an_owner_with_no_cadence_keeps_the_default(
         self, app, db, seed_user, restore_dropped_column,
+        with_the_pay_period_derived_columns,
     ):
         """A schedule-less owner lands on the column's own server default.
 
@@ -310,6 +334,7 @@ class TestTheRoundTripIsAFixedPoint:
 
     def test_down_then_up_drops_the_column_and_its_check(
         self, app, db, seed_user, restore_dropped_column,
+        with_the_pay_period_derived_columns,
     ):
         """The pair is re-runnable, and the CHECK travels with the column.
 
@@ -342,6 +367,7 @@ class TestTheUpgradeReportsWhatItCorrects:
 
     def test_a_disagreeing_row_is_reported_and_dropped_anyway(
         self, app, db, seed_user, restore_dropped_column, caplog,
+        with_the_pay_period_derived_columns,
     ):
         """26 stored beside a 7-day cadence logs the correction and proceeds.
 
@@ -386,6 +412,7 @@ class TestTheUpgradeReportsWhatItCorrects:
 
     def test_an_agreeing_row_is_not_reported(
         self, app, db, seed_user, restore_dropped_column, caplog,
+        with_the_pay_period_derived_columns,
     ):
         """THE CONTROL: a consistent owner produces no warning.
 

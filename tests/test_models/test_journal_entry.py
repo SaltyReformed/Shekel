@@ -370,8 +370,6 @@ class TestForeignKeyActions:
             fresh_period = PayPeriod(
                 user_id=seed_user["user"].id,
                 start_date=date(2027, 6, 4),
-                end_date=date(2027, 6, 17),
-                period_index=1,
             )
             _db.session.add(fresh_period)
             _db.session.flush()

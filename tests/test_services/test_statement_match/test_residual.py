@@ -65,6 +65,9 @@ from ._builders import (
     a_transaction,
     an_import,
 )
+from tests._test_helpers import (
+    last_covered_day,
+)
 
 
 def _submit(seed_user, lines=(), transactions=(), entries=(), residual=None):
@@ -1378,7 +1381,7 @@ class TestTheSHAPESAGroupCanTake:
         statement = an_import(seed_user)
         earlier = a_bank_line(
             seed_user, statement, amount="-100.00",
-            posted_on=seed_user["bootstrap_period"].end_date,
+            posted_on=last_covered_day(seed_user["bootstrap_period"]),
         )
         crossing = a_bank_line(
             seed_user, statement, amount="-80.06",

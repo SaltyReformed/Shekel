@@ -69,6 +69,7 @@ from tests._test_helpers import (
     amount_basis_for_scenario,
     create_loan_account,
     insert_trueup_event,
+    last_covered_day,
     loan_params_for,
     make_cadence_rule,
     seam_confirmed_view,
@@ -301,7 +302,7 @@ def _current_period(periods, today):
     """The seeded pay period containing *today*."""
     return next(
         period for period in periods
-        if period.start_date <= today <= period.end_date
+        if period.start_date <= today <= last_covered_day(period)
     )
 
 

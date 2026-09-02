@@ -50,9 +50,8 @@ from app.enums import (
     StatusEnum,
     TxnTypeEnum,
 )
-from app.models.pay_schedule import CADENCE_DAYS_MAX
+from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
-from app.schemas.validation.pay_periods import CADENCE_DAYS_FORM_MIN
 from app.services.pay_period_write import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 
 # Every ID-derived Jinja global, grouped by the ``ref_cache`` accessor
@@ -171,10 +170,12 @@ def register_pay_calendar_bound_globals(app: Flask) -> None:
     with the rule behind it.  Three forms carry a cadence and a period count
     -- the settings generate card, its standalone page, and now registration
     -- and each rendered its own ``min`` / ``max`` literals.  A literal in a
-    template is the copy nobody re-reads: the cadence floor moved to the
-    WRITER's (a one-day cadence cannot be materialised into an authored
-    ``end_date``) and three hardcoded ``min="1"`` attributes would have gone
-    on inviting the value that reached the CHECK as a 500.
+    template is the copy nobody re-reads, which the cadence floor proved
+    twice: X-ad-a moved it UP to the writer's, because a one-day cadence could
+    not be materialised into an authored ``end_date`` and three hardcoded
+    ``min="1"`` attributes went on inviting the value that reached the CHECK
+    as a 500 -- and plan step ``pay_calendar:C4-c`` moved it back DOWN to the
+    column's when that column was dropped.  Neither move touched a template.
 
     Registered UNCONDITIONALLY, unlike :func:`register_ref_id_globals`: these
     are module constants, so there is no ref-cache precondition and no
@@ -190,7 +191,7 @@ def register_pay_calendar_bound_globals(app: Flask) -> None:
         app: The Flask application whose ``jinja_env.globals`` to populate.
     """
     app.jinja_env.globals.update({
-        "CADENCE_DAYS_MIN": CADENCE_DAYS_FORM_MIN,
+        "CADENCE_DAYS_MIN": CADENCE_DAYS_MIN,
         "CADENCE_DAYS_MAX": CADENCE_DAYS_MAX,
         "PERIOD_BATCH_MIN": PERIOD_BATCH_MIN,
         "PERIOD_BATCH_MAX": PERIOD_BATCH_MAX,

@@ -37,6 +37,9 @@ from ._builders import (
     a_transaction,
     an_assertion,
 )
+from tests._test_helpers import (
+    last_covered_day,
+)
 
 
 def _candidate(seed_user, row_id, kind):
@@ -290,7 +293,7 @@ class TestTheWindowEachRowCarries:
             row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
 
             assert row is not None
-            assert row.expected_window == (period.start_date, period.end_date)
+            assert row.expected_window == (period.start_date, last_covered_day(period))
 
     def test_a_settled_transaction_carries_the_day_it_SETTLED(
         self, app, seed_user,
@@ -399,7 +402,7 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
-            asserted_for = period.end_date + timedelta(days=30)
+            asserted_for = last_covered_day(period) + timedelta(days=30)
             assertion = an_assertion(seed_user, observed_on=asserted_for)
             txn = a_transaction(
                 seed_user, name="Electricity", settled_on=asserted_for,
@@ -582,8 +585,6 @@ class TestTheCalendarIsTheOwnershipSCOPE:
             theirs = PayPeriod(
                 user_id=second_user["user"].id,
                 start_date=date(2024, 1, 5) + timedelta(days=14),
-                end_date=date(2024, 1, 18) + timedelta(days=14),
-                period_index=1,
             )
             db.session.add(theirs)
             db.session.flush()

@@ -170,6 +170,8 @@ from tests._test_helpers import (
     find_loan_ledger_account,
     freeze_today,
     insert_tracking_start_event,
+    derived_span,
+    last_covered_day,
     ledger_net,
     linked_ledger_account,
     load_migration_module,
@@ -1399,7 +1401,8 @@ class TestBackfillEqualsGoForward:
                 assert balance_map[period.id] == _resolver_balance(
                     loan.id, scenario_id, period.start_date,
                 ), (
-                    f"period {period.period_index}: map {balance_map[period.id]} "
+                    f"period {derived_span(period).period_index}: "
+                    f"map {balance_map[period.id]} "
                     f"!= resolver at {period.start_date}"
                 )
             # Non-vacuity: the anchor less the real principal (not the untouched
@@ -2243,7 +2246,8 @@ class TestReaderParallelRunAgainstResolver:
                     loan.id, scenario_id, period.start_date,
                 )
                 assert balance_map[period.id] == resolver_at_start, (
-                    f"period {period.period_index} (start {period.start_date}): "
+                    f"period {derived_span(period).period_index} "
+                    f"(start {period.start_date}): "
                     f"map {balance_map[period.id]} != resolver {resolver_at_start}"
                 )
             # Non-vacuity: not trivially constant -- 100,000 before any payment,
@@ -2325,7 +2329,7 @@ class TestReaderParallelRunAgainstResolver:
             # in the FIXTURE's sampling, not in the producers being compared.
             early_period = next(
                 period for period in seed_periods
-                if period.start_date <= frozen <= period.end_date
+                if period.start_date <= frozen <= last_covered_day(period)
             )
             early = _settle(
                 seed_user, loan, early_period, amount=monthly_pi,
@@ -2359,7 +2363,8 @@ class TestReaderParallelRunAgainstResolver:
                     loan.id, scenario_id, period.start_date,
                 )
                 assert balance_map[period.id] == resolver_at_start, (
-                    f"period {period.period_index} (start {period.start_date}):"
+                    f"period {derived_span(period).period_index} "
+                    f"(start {period.start_date}):"
                     f" map {balance_map[period.id]} != resolver "
                     f"{resolver_at_start}"
                 )
@@ -3004,7 +3009,7 @@ class TestLatePaidPaymentDating:
             )[loan.id]
             current_period = next(
                 p for p in seed_periods
-                if p.start_date <= _AS_OF <= p.end_date
+                if p.start_date <= _AS_OF <= last_covered_day(p)
             )
 
             # The ARITHMETIC, pinned first: agreement alone is not enough, since
@@ -3062,7 +3067,7 @@ class TestLatePaidPaymentDating:
             # On-time: the 2026-04-05 installment, in the period containing it.
             on_time_period = next(
                 p for p in periods
-                if p.start_date <= date(2026, 4, 5) <= p.end_date
+                if p.start_date <= date(2026, 4, 5) <= last_covered_day(p)
             )
             _settle(seed_user, loan, on_time_period)
 
@@ -3088,7 +3093,7 @@ class TestLatePaidPaymentDating:
             next_period = next(
                 p for p in periods if p.start_date == date(2026, 5, 22)
             )
-            assert next_period.end_date < date(2026, 6, 5)
+            assert last_covered_day(next_period) < date(2026, 6, 5)
 
             period_map = balance_at.build_maps(
                 [loan], BalanceContext.build(seed_user["user"].id),

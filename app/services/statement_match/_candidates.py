@@ -642,7 +642,7 @@ def _transaction_candidates(
             which each unsettled row's window is read from
             (:attr:`~._offers.CandidateRow.expected_window`).  The DERIVED
             span, never ``pay_periods.end_date``: that column is a stored copy
-            of a derivable fact and plan step ``pay_calendar:C4`` drops it.
+            of a derivable fact and plan step ``pay_calendar:C4-c`` dropped it.
         period_ids: The saved period ids of that same calendar
             (:meth:`~app.services.pay_calendar.PayCalendar.saved_by_id`),
             resolved ONCE by :func:`candidates_for` and threaded rather than
@@ -934,7 +934,7 @@ def destinations_for(
             offered and the two could disagree.  It is also where each offered
             row's SPAN comes from, DERIVED, where this producer read
             ``txn.pay_period.end_date`` -- a stored copy of a derivable fact
-            that plan step ``pay_calendar:C4-c`` drops.
+            that plan step ``pay_calendar:C4-c`` dropped.
 
     Returns:
         One :class:`~._creations.PurchaseDestination` per offerable row, oldest

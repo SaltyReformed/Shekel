@@ -121,7 +121,11 @@ def lock_user_writes(user_id: int) -> None:
     back; PostgreSQL releases it automatically at this transaction's end.
 
     The lock is not a substitute for the constraints underneath it: a duplicate
-    ``period_index`` is still forbidden by ``UNIQUE(user_id, period_index)``.
+    PAYDAY is still forbidden by ``uq_pay_periods_user_start``.  *This sentence
+    named ``UNIQUE(user_id, period_index)`` until plan step
+    ``pay_calendar:C4-c`` dropped that constraint with the ordinal column it
+    bounded; the point it illustrates is unchanged, and the remaining key is
+    the one that makes it.*
     The lock is what a caller has instead of such a constraint when the quantity
     it must protect is something it READ rather than a row it is about to write
     -- a posted SUM for the reconciles, and since ruling **R-EQ** (plan step

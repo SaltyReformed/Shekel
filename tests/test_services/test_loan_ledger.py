@@ -33,6 +33,7 @@ from tests._test_helpers import (
     create_savings_account,
     create_settled_transfer,
     insert_tracking_start_event,
+    last_covered_day,
     posted_loan_balance_at,
 )
 
@@ -362,7 +363,7 @@ class TestFoldValue:
             loan = _make_loan(seed_user, db)
             _settle(seed_user, db, loan, seed_periods[1], Decimal("1000.00"))
             db.session.commit()
-            on = seed_periods[1].end_date
+            on = last_covered_day(seed_periods[1])
             assert _fold(loan, seed_user, [on])[on] == (
                 Decimal("99500.00")
             )
@@ -384,7 +385,7 @@ class TestFoldValue:
             loan = _make_loan(seed_user, db)
             _settle(seed_user, db, loan, seed_periods[1], Decimal("1500.00"))
             db.session.commit()
-            on = seed_periods[1].end_date
+            on = last_covered_day(seed_periods[1])
             assert _fold(loan, seed_user, [on])[on] == (
                 Decimal("99000.00")
             )
@@ -410,7 +411,7 @@ class TestFoldValue:
             for period in (seed_periods[1], seed_periods[3]):
                 _settle(seed_user, db, loan, period, Decimal("1000.00"))
             db.session.commit()
-            on = seed_periods[3].end_date
+            on = last_covered_day(seed_periods[3])
             assert _fold(loan, seed_user, [on])[on] == (
                 Decimal("98997.50")
             )
@@ -657,5 +658,5 @@ class TestFoldNegativeControls:
             monkeypatch.setattr(
                 "app.services.loan_ledger._walk.split_one_payment", fake,
             )
-            on = seed_periods[1].end_date
+            on = last_covered_day(seed_periods[1])
             assert _fold(loan, seed_user, [on])[on] == expected

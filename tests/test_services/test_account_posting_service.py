@@ -74,6 +74,7 @@ from tests._test_helpers import (
     create_loan_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    derived_span,
     ledger_net,
     observed_day_of,
     open_owner_calendar,
@@ -1382,8 +1383,7 @@ class TestCorrectionPeriodAttribution:
         """Add (and return) a pay period whose range contains the assertion day."""
         period = PayPeriod(
             user_id=seed_user["user"].id,
-            start_date=date(2026, 3, 21), end_date=self._ASSERTION_DAY,
-            period_index=index,
+            start_date=date(2026, 3, 21),
         )
         _db.session.add(period)
         _db.session.flush()
@@ -1393,8 +1393,7 @@ class TestCorrectionPeriodAttribution:
         """Add (and return) the period that STARTS the day after the assertion."""
         period = PayPeriod(
             user_id=seed_user["user"].id,
-            start_date=date(2026, 4, 4), end_date=date(2026, 4, 17),
-            period_index=index,
+            start_date=date(2026, 4, 4),
         )
         _db.session.add(period)
         _db.session.flush()
@@ -1936,13 +1935,11 @@ class TestLedgerAgreesWithTheGridOnAssertionPeriods:
             )
             first = PayPeriod(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 3, 21), end_date=date(2026, 4, 3),
-                period_index=1,
+                start_date=date(2026, 3, 21),
             )
             second = PayPeriod(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 4, 4), end_date=date(2026, 4, 17),
-                period_index=2,
+                start_date=date(2026, 4, 4),
             )
             _db.session.add_all([first, second])
             _db.session.flush()
@@ -1967,7 +1964,7 @@ class TestLedgerAgreesWithTheGridOnAssertionPeriods:
             periods = (
                 _db.session.query(PayPeriod)
                 .filter_by(user_id=seed_user["user"].id)
-                .order_by(PayPeriod.period_index)
+                .order_by(PayPeriod.start_date)
                 .all()
             )
             grid = balance_at.grid_balance_view(account, ctx)
@@ -2169,7 +2166,7 @@ class TestTheSharedFilingDoor:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            earliest = min(seed_periods, key=lambda p: p.period_index)
+            earliest = min(seed_periods, key=lambda p: derived_span(p).period_index)
             assert earliest.start_date > self._PRE_SCHEDULE_DAY, (
                 "the fixture must place the probe day before every payday"
             )

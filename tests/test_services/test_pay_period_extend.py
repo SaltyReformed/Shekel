@@ -45,6 +45,8 @@ from scripts.integrity_check import (
 from tests._test_helpers import (
     assert_pay_period_invariants,
     create_savings_account,
+    derived_span,
+    last_covered_day,
     make_expense_template,
     make_transfer_template,
     populate_in_a_fresh_pass,
@@ -86,7 +88,7 @@ def _extend_andpopulate_in_a_fresh_pass(user_id, num_periods):
 
 def _period_length(period):
     """Inclusive day-span of a period == its cadence."""
-    return (period.end_date - period.start_date).days + 1
+    return (last_covered_day(period) - period.start_date).days + 1
 
 
 class TestPopulateFromActiveTemplates:
@@ -199,10 +201,10 @@ class TestExtendPayPeriods:
             )
             db.session.commit()
 
-            assert [p.period_index for p in new_periods] == [
-                last.period_index + 1, last.period_index + 2,
+            assert [derived_span(p).period_index for p in new_periods] == [
+                derived_span(last).period_index + 1, derived_span(last).period_index + 2,
             ]
-            assert new_periods[0].start_date == last.end_date + timedelta(days=1)
+            assert new_periods[0].start_date == last_covered_day(last) + timedelta(days=1)
             assert_pay_period_invariants(db.session, seed_user["user"].id)
 
     def test_this_door_takes_no_cadence_at_all(self, app, db, seed_user):
@@ -356,10 +358,10 @@ class TestExtendPayPeriods:
 
             # Pre-extend: 1000 - N*1200 at index N's end.
             assert seam_cash_balance_at(
-                account, scen, periods[3].end_date,  # index 4
+                account, scen, last_covered_day(periods[3]),  # index 4
             ) == Decimal("-3800.00")  # 1000 - 4*1200
             retained = seam_cash_balance_at(
-                account, scen, periods[1].end_date,  # index 2
+                account, scen, last_covered_day(periods[1]),  # index 2
             )
             assert retained == Decimal("-1400.00")  # 1000 - 2*1200
 
@@ -369,11 +371,11 @@ class TestExtendPayPeriods:
 
             # New window: the projection continues. Index 6 -> 1000 - 6*1200.
             assert seam_cash_balance_at(
-                account, scen, new_periods[-1].end_date,  # index 6
+                account, scen, last_covered_day(new_periods[-1]),  # index 6
             ) == Decimal("-6200.00")  # 1000 - 6*1200
             # Retained window is untouched by the append.
             assert seam_cash_balance_at(
-                account, scen, periods[1].end_date,
+                account, scen, last_covered_day(periods[1]),
             ) == retained
 
             # Discipline 1: structure sound.

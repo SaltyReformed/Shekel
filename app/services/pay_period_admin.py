@@ -11,11 +11,12 @@ never commits (the route owns the transaction).
 **It DECIDES; it does not write** (plan step C3-b).  Every row this
 module adds or removes goes through
 :mod:`app.services.pay_period_write`, the one place in ``app/`` that
-changes ``budget.pay_periods``, so the rule that a stored ``end_date``
-/ ``period_index`` equals the derivation over the owner's paydays has a
-single home.  What stays here are the two gates and the orchestration:
-which periods may go (the lock classifier and the discard count) and
-which reconciles a wipe owes.
+changes ``budget.pay_periods``.  That single home is why plan step
+``pay_calendar:C4-c`` could drop ``end_date`` and ``period_index`` in one
+place: while they were stored, the rule that they equalled the derivation
+over the owner's paydays lived there and nowhere else.  What stays here are
+the two gates and the orchestration: which periods may go (the lock classifier
+and the discard count) and which reconciles a wipe owes.
 
 **Nothing here REPOPULATES any more, and that is ruling R-R38** (plan step
 R7d-c-1).  Each door recorded its paydays and then, in the SAME call,
@@ -42,7 +43,7 @@ pylint's 1,000-line ceiling, so the next correction would have had to delete
 prose to fit, which is that finding's own sentence.
 
 **Nothing here reads ``end_date`` or ``period_index``, the two columns plan step
-C4 drops -- and since C4's FIRST commit that is the WHOLE module rather than the
+C4-c dropped -- and since C4's FIRST commit that is the WHOLE module rather than the
 narrow claim it was** (finding **P70**).  Every door decides on the owner's
 schedule read once through ``pay_calendar``, in
 :class:`~app.services.pay_calendar.DerivedPeriod` values.  Three of the four
@@ -118,9 +119,11 @@ logger = logging.getLogger(__name__)
 def extend_pay_periods(user_id, num_periods):
     """Append ``num_periods`` pay periods to the end of the user's schedule.
 
-    Tail-append only: the new paydays fall after every existing one, so the
-    ``period_index == calendar-order`` invariant the balance resolver relies on
-    is preserved (only tail-append and tail-truncate do).
+    Tail-append only: the new paydays fall after every existing one.  While
+    the ordinal was a COLUMN that mattered -- only tail-append and
+    tail-truncate preserved ``period_index == calendar-order``, which the
+    balance resolver walks; plan step ``pay_calendar:C4-c`` dropped it, and an
+    ordinal that IS the position in payday order cannot disagree with one.
     :func:`~app.services.pay_period_write.record_paydays` creates the new
     periods EMPTY -- it does not run the recurrence engine -- and this door
     LEAVES them empty (ruling **R-R38**): the caller repopulates them through
@@ -148,7 +151,7 @@ def extend_pay_periods(user_id, num_periods):
     day past the horizon returns the same day by construction (that day opens
     the period one cadence after the last payday) and leaves one implementation.
     It is a PAYDAY either way, never ``end_date + 1``: the payday spelling is the
-    one that survives plan step C4, which drops the column the other reads.
+    one that survived plan step C4-c, which dropped the column the other read.
 
     Args:
         user_id: The owning user's id.
@@ -381,19 +384,23 @@ def _gate_deletable_tail(
 
     **It DECIDES; it does not delete** (plan step C3-b).  The removal is
     ``pay_period_write``'s, which carries it out beside whatever the same
-    operation records and then re-materialises what survives.  That split is
-    what lets regenerate be ONE write: the gate runs here, and the writer sees
-    the operation's final payday set rather than the half-applied one an
-    adversarial review caught it refusing against.  It also gets the
-    re-materialisation for free -- without it a tail delete left the new last
-    period holding its old successor's end (paydays
-    ``[Jan 2, Jan 16, Feb 11]`` truncated through Jan 16 kept a stored end of
-    Feb 10 where the derivation says Jan 29), so a THIRD gate would eventually
-    have been needed to police a state the writer can simply not create.
+    operation records.  That split is what lets regenerate be ONE write: the
+    gate runs here, and the writer sees the operation's final payday set rather
+    than the half-applied one an adversarial review caught it refusing against.
+
+    *The composition had a SECOND reason until plan step ``pay_calendar:C4-c``,
+    and it is gone rather than merely unmentioned.*  While the two derived
+    columns were stored, a tail delete left the new last period holding its old
+    successor's end -- paydays ``[Jan 2, Jan 16, Feb 11]`` truncated through
+    Jan 16 kept a stored end of Feb 10 where the derivation says Jan 29 -- so
+    the writer re-materialised what survived, and getting that for free was
+    half the argument for one call.  C4-c dropped the columns: a delete removes
+    rows and moves no value anywhere (``retire_paydays``' own docstring states
+    it), so what is left is the refusals, and they are enough.
 
     **The tail is defined by PAYDAY, not by ordinal**, and that is the same
     normalization the arc is about: ``start_date`` is the only fact in the row,
-    ``period_index`` is derived from it, and plan step C4 drops the ordinal
+    ``period_index`` is derived from it, and plan step C4-c dropped the ordinal
     altogether.  Since plan step C3-b the two select the same rows by
     construction rather than by data: ``pay_period_write`` is the only writer
     of this table and reads the ordinal off the derivation, where it IS the
@@ -512,13 +519,13 @@ def regenerate_pay_periods(
 
     Args:
         user_id: The owning user's id.
-        new_start_date: First payday of the rebuilt tail.  Must fall at least
-            :data:`~app.models.pay_period.MIN_MATERIALISABLE_CADENCE_DAYS`
-            after the last RETAINED period's PAYDAY (re-checked by
-            ``record_paydays``' forward-only rule).  It may now fall INSIDE the
-            retained schedule's projected coverage, which is what makes
-            "correct my cadence going forward" expressible: the old guard
-            bounded on the retained ``end_date`` and so accepted only the
+        new_start_date: First payday of the rebuilt tail.  Must fall at
+            least one stored CADENCE after the last RETAINED period's PAYDAY
+            (``record_paydays``' forward-only rule, which re-checks it).  It
+            may fall INSIDE the retained schedule's projected coverage, which
+            is what makes "correct my cadence going forward" expressible: the
+            old guard bounded on the retained ``end_date`` -- a column plan
+            step ``pay_calendar:C4-c`` dropped -- and so accepted only the
             single day after it.
         num_periods: How many periods to generate.
         cadence_days: Days between paydays for the rebuilt tail; also
@@ -564,12 +571,14 @@ def regenerate_pay_periods(
     # ONE write, and an adversarial review of plan step C3-b is why.  The
     # truncate and the rebuild used to be two calls, so everything downstream
     # saw the schedule BETWEEN them -- an interval this door then widens again.
-    # The rule that measured it (the coverage rule) was deleted 2026-08-11; the
-    # composition stays, because ``_write_derivation`` would otherwise
-    # materialise that intermediate shape, shortening the newly-last survivor
-    # to a cadence projection and logging it as a repair before undoing both.
-    # The gate below still decides WHICH periods may go; the writer carries the
-    # delete out beside the create so one derivation sees the end state.
+    # The rule that measured it (the coverage rule) was deleted 2026-08-11,
+    # and the second reason went with the derived columns at plan step
+    # ``pay_calendar:C4-c`` -- the writer used to materialise that intermediate
+    # shape, shortening the newly-last survivor to a cadence projection and
+    # logging it as a repair before undoing both.  The composition stays on the
+    # remaining reason: the gate below decides WHICH periods may go, and the
+    # writer carries the delete out beside the create so every refusal is asked
+    # of the payday set the operation leaves behind.
     doomed = _gate_deletable_tail(saved, kept, confirm_discard, locks)
     return pay_period_write.record_paydays(
         user_id, new_start_date, num_periods, cadence_days,

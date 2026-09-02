@@ -19,6 +19,7 @@ from app.services.balance_at._asset_contributions import (
 )
 from tests._test_helpers import (
     current_pay_period,
+    derived_span,
     period_window,
 )
 from app.services.account_projection import (
@@ -106,7 +107,7 @@ class TestAppreciationBalanceMap:
         """
         with app.app_context():
             all_periods = sorted(
-                seed_periods_today, key=lambda p: p.period_index,
+                seed_periods_today, key=lambda p: derived_span(p).period_index,
             )
             anchor = all_periods[4]  # mid-list: real pre- and post-anchor periods
             acct = _make_property(
@@ -121,14 +122,14 @@ class TestAppreciationBalanceMap:
             # Pre-anchor periods hold flat at the user-set value: a
             # manually-set valuation is not back-cast (ruling R-S).
             for period in all_periods:
-                if period.period_index < anchor.period_index:
+                if derived_span(period).period_index < derived_span(anchor).period_index:
                     assert balances[period.id] == Decimal("400000.00")
 
             # The ANCHOR period earns its own 14 days, hand-computed above.
             assert balances[anchor.id] == Decimal("400453.76")
 
             # Post-anchor periods compound forward -- strictly increasing.
-            post = [p for p in all_periods if p.period_index > anchor.period_index]
+            post = [p for p in all_periods if derived_span(p).period_index > derived_span(anchor).period_index]
             assert post  # the anchor is mid-list, so post-anchor periods exist
             prev = balances[anchor.id]
             for period in post:
@@ -153,13 +154,13 @@ class TestAppreciationBalanceMap:
             for period in post:
                 assert abs(
                     balances[period.id] - expected[period.id],
-                ) <= Decimal("0.01"), f"period {period.period_index} diverged"
+                ) <= Decimal("0.01"), f"period {derived_span(period).period_index} diverged"
 
     def test_zero_rate_is_flat(self, app, db, seed_user, seed_periods_today):
         """A Property with a 0% rate carries its value flat at every period."""
         with app.app_context():
             all_periods = sorted(
-                seed_periods_today, key=lambda p: p.period_index,
+                seed_periods_today, key=lambda p: derived_span(p).period_index,
             )
             acct = _make_property(
                 db, seed_user, all_periods, all_periods[0],
@@ -181,7 +182,7 @@ class TestAppreciationBalanceMap:
         """
         with app.app_context():
             all_periods = sorted(
-                seed_periods_today, key=lambda p: p.period_index,
+                seed_periods_today, key=lambda p: derived_span(p).period_index,
             )
             acct = _make_property(
                 db, seed_user, all_periods, all_periods[0],

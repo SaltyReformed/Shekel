@@ -37,6 +37,7 @@ from app.models.pay_schedule import (
 )
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.services import pay_calendar, pay_period_write
+from tests._test_helpers import restore_pay_period_derived_columns
 
 
 _MIGRATIONS_DIR = (
@@ -414,7 +415,21 @@ class TestTheHistoryOpeningColumn:
 
 
 class TestBackfill:
-    """The migration's backfill derives cadence from the last period."""
+    """The migration's backfill derives cadence from the last period.
+
+    **Every case here restores the two derived ``budget.pay_periods`` columns
+    first**, and that is this revision's own schema rather than setup noise:
+    ``_BACKFILL_CADENCE_SQL`` selects ``end_date`` ordered by ``period_index``,
+    and plan step ``pay_calendar:C4-c`` dropped both.  Alembic downgrades run
+    newest-first, so at the point in the chain where ``af8254074bef`` executes
+    the columns are there;
+    :func:`~tests._test_helpers.restore_pay_period_derived_columns` puts them
+    back through C4-c's own ``downgrade()`` -- values included -- rather than
+    through hand-written DDL that could drift from it.  What it does not do is
+    place the database at this revision, which is 87 steps back; the statement
+    under test reads these two columns and ``budget.pay_schedule``, and head is
+    a superset for both.  Ledger row **P79** owns the general shape.
+    """
 
     def test_backfills_user_with_periods_at_last_period_cadence(
         self, app, db, bare_user,
@@ -436,6 +451,7 @@ class TestBackfill:
                 cadence_days=10,
             )
             db.session.flush()
+            restore_pay_period_derived_columns(db.session)
 
             db.session.execute(text(_BACKFILL_SQL))
             db.session.flush()
@@ -460,6 +476,7 @@ class TestBackfill:
         no_periods = bare_user["user"].id
         has_periods = seed_user["user"].id
         with app.app_context():
+            restore_pay_period_derived_columns(db.session)
             db.session.execute(text(_BACKFILL_SQL))
             db.session.flush()
 
@@ -489,6 +506,7 @@ class TestBackfill:
                 cadence_days=14,
             )
             db.session.flush()
+            restore_pay_period_derived_columns(db.session)
 
             db.session.execute(text(_BACKFILL_SQL))
             db.session.execute(text(_BACKFILL_SQL))

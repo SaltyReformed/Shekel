@@ -67,6 +67,7 @@ from tests._test_helpers import (
     add_entry,
     create_envelope_txn,
     default_settle_day,
+    last_covered_day,
     pay_periods_hydrated,
     settle_day_columns,
     settlement_columns,
@@ -727,122 +728,21 @@ class TestTheChartAndTheHeroCountTheSameWindows:
 
 
 class TestTheChartReadsTheDerivedOrdinal:
-    """The chart's paychecks come from payday order, not a stored column."""
+    """The chart's paychecks come from payday order.
 
-    def test_a_scrambled_stored_period_index_does_not_move_a_bar(
-        self, app, seed_user, seed_periods, db,
-    ):
-        """Swapping two stored ordinals leaves every bar on its own paycheck.
+    **Two firing controls for plan step C2-f3d went at plan step
+    ``pay_calendar:C4-c``, and neither was replaced.**  The retired walk
+    selected each bar with ``WHERE period_index = <chosen> - <steps>``, so a
+    stored ordinal out of payday order put the wrong paycheck in a bar
+    silently, and a HOLE in the stored ordinal moved a MONEY figure -- the
+    vs-average baseline read ``$1,300.00`` against a true ``$1,250.00``.  Both
+    cases built their state by writing ``budget.pay_periods.period_index``
+    directly, and C4-c dropped that column: the ordinal is a row's position in
+    payday order, so it cannot be scrambled and it cannot gap.
 
-        **The firing control for plan step C2-f3d.**  The retired walk
-        selected each bar with ``WHERE period_index = <chosen> - <steps>``,
-        so a stored ordinal out of payday order -- the state
-        ``uq_pay_periods_user_index`` and three runtime fences exist to
-        police, and which ``pay_period_write`` REPAIRS when it sees it --
-        put the wrong paycheck in a bar silently.  Here periods 3 and 4
-        spend ``300`` and ``400``; their stored ordinals are swapped, and
-        the series still reports ``300`` before ``400`` because the
-        calendar derives the ordinal from the paydays.  On the walk this
-        assertion fails with the two totals transposed.
-        """
-        with app.app_context():
-            for idx, amount in enumerate(
-                ["100.00", "200.00", "300.00", "400.00", "500.00"], start=0
-            ):
-                _txn(db, seed_user, seed_periods[idx], f"P{idx}", "Rent",
-                     amount)
-            # Swap the two stored ordinals through a parking value, because
-            # ``uq_pay_periods_user_index`` is checked per statement.
-            third, fourth = seed_periods[2].id, seed_periods[3].id
-            for pk, index in ((third, 999), (fourth, 2), (third, 3)):
-                db.session.query(PayPeriod).filter_by(id=pk).update(
-                    {"period_index": index},
-                )
-            db.session.commit()
-
-            report = compute_spending_report(
-                seed_user["user"].id, _pp_window(seed_periods[4]),
-            )
-
-            totals = [point.total for point in report.series[-5:]]
-            assert totals == [
-                Decimal("100.00"), Decimal("200.00"), Decimal("300.00"),
-                Decimal("400.00"), Decimal("500.00"),
-            ]
-            assert [p.window.period_id for p in report.series[-5:]] == [
-                p.id for p in seed_periods[:5]
-            ]
-
-    def test_a_gap_in_the_stored_ordinal_does_not_move_the_average(
-        self, app, seed_user, seed_periods, db,
-    ):
-        """A HOLE in the stored ordinal moves a MONEY figure on the walk.
-
-        The second of the three faults ``budget.pay_periods.period_index``
-        can express (the arc's taxonomy is in
-        :mod:`app.services.pay_calendar`), and it fails DIFFERENTLY from the
-        transposition above: the walk matched nothing at the missing ordinal,
-        so eleven steps reached only TEN paychecks and the series began one
-        paycheck later than it should.
-
-        **Twenty periods, not the fixture's ten, and that is the point.**  On
-        a ten-period owner both sides end up holding the same six windows, so
-        only the bar POSITIONS move and every figure survives -- a control
-        that would pin the defect's shape and not its cost.  Here the twelfth
-        slot is occupied, so the lost slot is a paycheck: the vs-average
-        baseline reads ``$1,300.00`` on the walk against a true
-        ``$1,250.00``.
-
-        Spends run ``$100.00`` x (ordinal + 1), so the trailing six windows
-        the hero averages (ordinals 9-14) are ``$1,000.00``..``$1,500.00`` =
-        ``$7,500.00`` / 6 = ``$1,250.00``.  The walk drops ordinal 9 and
-        averages the remaining five: ``$6,500.00`` / 5 = ``$1,300.00``.
-        """
-        with app.app_context():
-            # ``record_paydays`` returns the rows it RECORDED, so the owner's
-            # whole extended schedule is re-read rather than inferred from it.
-            pay_period_write.record_paydays(
-                user_id=seed_user["user"].id,
-                first_payday=seed_periods[0].start_date,
-                num_periods=20,
-                cadence_days=14,
-            )
-            db.session.flush()
-            periods = (
-                db.session.query(PayPeriod)
-                .filter_by(user_id=seed_user["user"].id)
-                .order_by(PayPeriod.start_date)
-                .all()
-            )
-            assert len(periods) == 20
-            for idx, period in enumerate(periods):
-                _txn(db, seed_user, period, f"P{idx}", "Rent",
-                     f"{(idx + 1) * 100}.00")
-            # Open a hole at stored ordinal 10 by pushing 10..19 up one.
-            # Highest first, so no statement collides with
-            # uq_pay_periods_user_index.
-            for period in reversed(periods[10:]):
-                db.session.query(PayPeriod).filter_by(id=period.id).update(
-                    {"period_index": PayPeriod.period_index + 1},
-                )
-            db.session.commit()
-
-            report = compute_spending_report(
-                seed_user["user"].id, _pp_window(periods[15]),
-            )
-
-            # Twelve occupied slots, ordinals 4..15, no blank anywhere.  The
-            # ``if`` is what lets this REPORT the walk's blank mid-chart slot
-            # rather than dying on it: a control that raises says less than
-            # one that prints both lists.
-            assert [
-                point.window.period_id if point.window else None
-                for point in report.series
-            ] == [period.id for period in periods[4:16]]
-            assert report.hero.spent_total == Decimal("1600.00")
-            assert report.hero.vs_prior.baseline == Decimal("1500.00")
-            assert report.hero.vs_average.baseline == Decimal("1250.00")
-            assert report.hero.vs_average.delta == Decimal("350.00")
+    What survives here is the ownership case, which is about the chosen
+    period's OWNER rather than about its ordinal.
+    """
 
     def test_another_owners_period_id_buys_no_bar_of_this_owners_money(
         self, app, seed_user, second_user, seed_periods, db,
@@ -924,7 +824,7 @@ class TestTheChartReadsTheDerivedOrdinal:
         row, which every owner a live door creates has had since plan step
         X-ad-a.  A legacy owner without one (plan finding **P8**) reads TWO,
         because ``pay_schedule_service.resolve_cadence`` infers the cadence
-        from a second ``budget.pay_periods`` query -- one that C4 deletes with
+        from a second ``budget.pay_periods`` query -- one that C4-c deleted with
         the column it orders by.  ``seed_user`` has the row.
         """
         with app.app_context():
@@ -939,7 +839,7 @@ class TestTheChartReadsTheDerivedOrdinal:
                 )
 
             assert len(selects) == 1, "\n".join(selects)
-            # The one surviving read may not be an ORDINAL search: C4 drops
+            # The one surviving read may not be an ORDINAL search: C4-c dropped
             # that column, and ``_loader.calendar_for`` selects id + start_date
             # precisely so it already runs against the schema C4 leaves.
             assert "period_index" not in selects[0]
@@ -979,7 +879,7 @@ class TestTheChartReadsTheDerivedOrdinal:
                 by_span = spending_analysis.query_settled_expenses_in_span(
                     seed_user["scenario"].id, seed_user["account"].id,
                     seed_user["user"].id,
-                    seed_periods[0].start_date, seed_periods[1].end_date,
+                    seed_periods[0].start_date, last_covered_day(seed_periods[1]),
                 )
 
             # Both queries must actually return rows, or "nothing was

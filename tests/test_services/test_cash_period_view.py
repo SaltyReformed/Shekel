@@ -61,6 +61,8 @@ from tests._test_helpers import (
     basis_for,
     create_envelope_txn,
     create_settled_cash_transaction,
+    derived_span,
+    last_covered_day,
     mark_purchase_settled,
     period_window,
     read_pass,
@@ -712,11 +714,11 @@ class TestTheIdentityHoldsOnEveryPeriod:
 
         figures = _view(account, scenario, seed_periods, as_of=as_of)
         timing = {
-            period.period_index: figures[period.id].period_timing
+            derived_span(period).period_index: figures[period.id].period_timing
             for period in seed_periods
         }
         book = {
-            period.period_index: figures[period.id].book_vs_bank
+            derived_span(period).period_index: figures[period.id].book_vs_bank
             for period in seed_periods
         }
         assert timing[3] == Decimal("300.00")
@@ -896,7 +898,7 @@ class TestTheIdentityHoldsOnEveryPeriod:
         # column whose span actually contains 2026-03-20.
         full = _view(account, scenario, seed_periods, as_of=as_of)
         assert seed_periods[5].start_date <= date(2026, 3, 20)
-        assert date(2026, 3, 20) <= seed_periods[5].end_date
+        assert date(2026, 3, 20) <= last_covered_day(seed_periods[5])
         assert full[seed_periods[5].id].period_timing == Decimal("-250.00")
         assert full[seed_periods[5].id].balance == Decimal("750.00")
 
@@ -968,169 +970,25 @@ class TestTheIdentityHoldsOnEveryPeriod:
         assert rows[0][1] == rows[0][2] == Decimal("-180.00")
 
 
-class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
-    """Plan step **C2-c**'s whole claim, proved by corrupting the column.
-
-    ``budget.pay_periods`` stores three values per row and only ``start_date``
-    is a fact; ``end_date`` is ``lead(start_date) - 1`` stored beside the
-    paydays it derives from, with nothing reconciling the two
-    (``docs/plans/implementation_plan_pay_calendar.md`` section 1).  Until
-    this step the cash view bisected that stored column
-    (``_cash_periods._PeriodSpans``) and sampled the fold at it, so a row whose
-    stored end had drifted valued its column on a day the owner's own paydays
-    do not agree is that column's last.
-
-    **Measured 0 of 62 and 0 of 61 disagreements** on the two
-    production-shaped databases the day this shipped, so the class is latent
-    rather than live -- which is exactly why it needs a constructed shape to be
-    graded at all.  The corruption below is applied with a direct UPDATE,
-    because ``pay_period_write`` rematerialises the derivation on every write
-    and so cannot produce it.
-    """
-
-    def test_a_corrupted_stored_end_moves_no_figure(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """The stored end says 01-20; the paydays say 01-15; the column obeys 01-15.
-
-        Period 0 runs 2026-01-02..2026-01-15 by derivation (the next payday is
-        01-16).  Its stored ``end_date`` is pushed five days out to 01-20, and a
-        ``$250.00`` expense budgeted to period 0 settles 2026-01-18 -- inside the
-        corrupted span and outside the real one.
-
-        Hand-computed against the seeded account's own ``$1,000.00``
-        origination assertion.
-        Reading the DERIVED span, period 0 closes 01-15 before the money moved:
-        its balance is ``$1,000.00``, it budgets the ``$250.00`` (net
-        ``-$250.00``) and nothing moves inside its span, so ``period_timing`` is
-        ``+$250.00`` and the two cancel.  The money lands in period 1, whose
-        span contains 01-18: that column moves ``-$250.00`` on the cash clock
-        while budgeting nothing, and its balance closes at ``$750.00``.
-
-        Reading the STORED column instead would sample period 0 at 01-20, after
-        the settle, giving it a ``$750.00`` balance and a ``$0.00``
-        ``period_timing`` -- and period 1 would then double-count the same
-        ``$250.00``.  Every figure below distinguishes the two.
-        """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        create_settled_cash_transaction(
-            seed_user, db.session, seed_periods[0], Decimal("250.00"),
-            settled_on=date(2026, 1, 18), name="settled after the real end",
-        )
-        # The corruption, applied UNDER the writer: production cannot reach
-        # this state through ``pay_period_write``, which rewrites every end
-        # from the paydays on every write.
-        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
-            {"end_date": date(2026, 1, 20)},
-        )
-        db.session.commit()
-
-        figures = _view(account, scenario, seed_periods)
-
-        assert figures[seed_periods[0].id].balance == Decimal("1000.00")
-        assert figures[seed_periods[0].id].net == Decimal("-250.00")
-        assert figures[seed_periods[0].id].period_timing == Decimal("250.00")
-        assert figures[seed_periods[1].id].balance == Decimal("750.00")
-        assert figures[seed_periods[1].id].net == Decimal("0.00")
-        assert figures[seed_periods[1].id].period_timing == Decimal("-250.00")
-
-    def test_a_corrupted_stored_end_moves_no_PROJECTED_figure_either(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """The two-source coupling C2-c created is CLOSED at **C4-a-1**.
-
-        C2-c pointed :func:`~app.services.balance_at._cash_fold.period_balances`
-        at each column's DERIVED end and left
-        :func:`~app.services.balance_at._cash_fold._cash_plan` clamping a
-        projected row against the STORED span it read off ``txn.pay_period``:
-        one module, two ends, which is pay-calendar finding **P38**.  An
-        adversarial design review of C2-c claimed R-K's identity breaks on that
-        split, and it did not -- the fold's steps and this view's cash-clock
-        grouping read the SAME ``day_nets``, so wherever the clamp put a row
-        both sides put it there.  What the split DID cost was a row rendering
-        in a column its budget period is not, reported as ``period_timing``,
-        and that is what this test measures gone.
-
-        Hand-computed against the seeded ``$1,000.00`` origination, with
-        ``as_of`` 2026-01-05 so ruling R-G's floor (01-06) never binds.  Period
-        0's stored end is pushed to 2026-01-20 while its paydays keep its
-        derived end at 2026-01-15, and a still-projected ``$250.00`` expense
-        budgeted to period 0 carries ``due_date`` 2026-01-18 -- inside the
-        corrupted span and outside the real one.  Reading the DERIVED span,
-        ``attribution_day`` clamps 01-18 down to 01-15, so the row lands
-        INSIDE the column that budgeted it: net ``-$250.00``, ``period_timing``
-        ``$0.00``, and a ``$750.00`` close.  Period 1 budgets nothing, nothing
-        lands in its span, and it closes at ``$750.00`` too.
-
-        **Every figure here distinguishes the two arms.**  Against the stored
-        span the row was not clamped at all: period 0 held ``$1,000.00`` with
-        ``+$250.00`` of timing and period 1 ``-$250.00``, which is what this
-        test asserted until C4-a-1.  The FIRING control for the clamp lives
-        beside the clamp, in
-        ``test_cash_fold.TestThePlanClampsAgainstTheDerivedSpan``; the control
-        below shows the same corruption is observable in the SAMPLING half this
-        class was written for.  The identity held on the old arm and holds
-        here, which is why it is asserted BESIDE the figures rather than
-        instead of them: it is the property, and the figures are the behaviour.
-        """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        as_of = date(2026, 1, 5)
-        add_txn(
-            db.session, seed_user, seed_periods[0], "projected bill", "250.00",
-            due_date=date(2026, 1, 18),
-        )
-        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
-            {"end_date": date(2026, 1, 20)},
-        )
-        db.session.commit()
-
-        figures = _view(account, scenario, seed_periods, as_of=as_of)
-
-        assert figures[seed_periods[0].id].net == Decimal("-250.00")
-        assert figures[seed_periods[0].id].period_timing == Decimal("0.00")
-        assert figures[seed_periods[0].id].balance == Decimal("750.00")
-        assert figures[seed_periods[1].id].net == Decimal("0.00")
-        assert figures[seed_periods[1].id].period_timing == Decimal("0.00")
-        assert figures[seed_periods[1].id].balance == Decimal("750.00")
-
-        rows = _identity_holds(account, scenario, seed_periods, as_of=as_of)
-        assert len(rows) == 10  # the loop is not vacuous
-        for period, balance_delta, explained in rows:
-            assert balance_delta == explained, (
-                f"period {period.period_id}"
-            )
-
-    def test_the_control_shows_the_stored_column_would_answer_differently(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """The firing control: the corruption is real, not a no-op.
-
-        Same fixture, read the way the retired ``_PeriodSpans`` read it -- the
-        stored ``end_date``, bisected -- so the numbers the test above rejects
-        are shown to be the ones the corrupted column actually produces.  A
-        pin without this control could pass on a schedule where the two spans
-        happen to coincide, which is every schedule production has.
-        """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        create_settled_cash_transaction(
-            seed_user, db.session, seed_periods[0], Decimal("250.00"),
-            settled_on=date(2026, 1, 18), name="settled after the real end",
-        )
-        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
-            {"end_date": date(2026, 1, 20)},
-        )
-        db.session.commit()
-
-        stored = db.session.get(PayPeriod, seed_periods[0].id)
-        assert stored.end_date == date(2026, 1, 20)
-        folded = balances_at(
-            assembled_fold(account, read_pass(account, scenario, _EARLY_AS_OF)),
-            [date(2026, 1, 15), date(2026, 1, 20)],
-        )
-        # Sampled at the stored end the column reads $750.00; at the derived
-        # end it reads $1,000.00.  The test above asserts the second.
-        assert folded[date(2026, 1, 20)] == Decimal("750.00")
-        assert folded[date(2026, 1, 15)] == Decimal("1000.00")
+# **``TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn`` was deleted at
+# plan step ``pay_calendar:C4-c``, and it is worth saying what it did
+# rather than leaving a gap.**  It was plan step C2-c's whole claim proved
+# by CORRUPTING the column: a ``budget.pay_periods.end_date`` pushed five
+# days past what the owner's paydays imply, applied with a direct UPDATE
+# because ``pay_period_write`` rematerialised the derivation on every
+# write and so could not produce one.  Three cases then asserted that
+# neither the settled columns, nor the projected ones, nor the block
+# headings moved -- with a control showing the stored column really would
+# have answered differently, so the agreement was evidence rather than a
+# tautology.
+#
+# The column is dropped, so there is no second end to corrupt and no
+# reader that could prefer it.  The premise is unconstructible rather than
+# merely unreached.  What the class was protecting -- that every column
+# here is valued at the span the paydays give -- is now a property of
+# there being one span: ``TestTheIdentityHoldsOnEveryPeriod`` above
+# drives it on ordinary schedules, and the class below drives it across a
+# 28-day gap in the saved rows.
 
 
 class TestAStoredScheduleHoleNoLongerBreaksTheIdentity:

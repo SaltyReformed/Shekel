@@ -117,12 +117,7 @@ def _make_full_year_periods(user, count=26, start=date(2026, 1, 2)):
     periods = []
     for i in range(count):
         start_date = start + timedelta(days=14 * i)
-        period = PayPeriod(
-            user_id=user.id,
-            start_date=start_date,
-            end_date=start_date + timedelta(days=13),
-            period_index=i + 1,
-        )
+        period = PayPeriod(user_id=user.id, start_date=start_date)
         _db.session.add(period)
         periods.append(period)
     _db.session.flush()

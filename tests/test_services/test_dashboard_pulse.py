@@ -41,8 +41,8 @@ from app.services.pay_calendar import PayCadence
 from app.services import transfer_service
 from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    last_covered_day,
     account_never_asserted,
     add_anchor_history as _add_anchor_history,
     add_entry,
@@ -139,7 +139,7 @@ class TestPulseHero:
             assert hero["account_name"] == seed_user["account"].name
             assert hero["period_start_date"] == seed_periods[_CURRENT_IDX].start_date
             assert hero["period_start_date"] == date(2026, 3, 13)
-            assert hero["period_end_date"] == seed_periods[_CURRENT_IDX].end_date
+            assert hero["period_end_date"] == last_covered_day(seed_periods[_CURRENT_IDX])
             assert hero["period_end_date"] == date(2026, 3, 26)
 
     def test_hero_balance_is_the_current_periods_end(
@@ -419,7 +419,7 @@ class TestPulseChart:
             assert len(chart["points"]) == 13
             # The points are the first 13 periods, in order.
             assert [pt["end_date"] for pt in chart["points"]] == [
-                p.end_date for p in periods[:13]
+                last_covered_day(p) for p in periods[:13]
             ]
 
     def test_chart_fewer_periods_degrades(self, app, seed_user, seed_periods, db):
@@ -511,7 +511,7 @@ class TestPulseTrough:
                 forward, balances, forward[0],
             )
             assert trough["balance"] == Decimal("300.00")
-            assert trough["end_date"] == seed_periods[_CURRENT_IDX + 2].end_date
+            assert trough["end_date"] == last_covered_day(seed_periods[_CURRENT_IDX + 2])
             # offset = period_index(7) - current period_index(5) = 2.
             assert trough["offset"] == 2
 
@@ -614,7 +614,7 @@ class TestPulsePeak:
                 forward, balances, forward[0],
             )
             assert peak["balance"] == Decimal("500.00")
-            assert peak["end_date"] == seed_periods[_CURRENT_IDX + 2].end_date
+            assert peak["end_date"] == last_covered_day(seed_periods[_CURRENT_IDX + 2])
             # offset = period_index(7) - current period_index(5) = 2.
             assert peak["offset"] == 2
 
@@ -638,7 +638,7 @@ class TestPulsePeak:
                 forward, balances, forward[0],
             )
             assert peak["balance"] == Decimal("500.00")
-            assert peak["end_date"] == seed_periods[_CURRENT_IDX].end_date
+            assert peak["end_date"] == last_covered_day(seed_periods[_CURRENT_IDX])
             # offset = period_index(5) - current period_index(5) = 0.
             assert peak["offset"] == 0
 
@@ -747,7 +747,7 @@ class TestPulsePeak:
             peak = result["peak"]
             # 1,000.00 anchor + 1,200.00 income = 2,200.00 end balance.
             assert peak["balance"] == Decimal("2200.00")
-            assert peak["end_date"] == current.end_date
+            assert peak["end_date"] == last_covered_day(current)
             # The current period is the first to reach the high; offset 0.
             assert peak["offset"] == 0
 
@@ -957,7 +957,7 @@ class TestPulseStillDue:
             # template can label "Next period (Mar 27 - Apr 9): $X".
             assert still["next_period_start"] == seed_periods[_CURRENT_IDX + 1].start_date
             assert still["next_period_start"] == date(2026, 3, 27)
-            assert still["next_period_end"] == seed_periods[_CURRENT_IDX + 1].end_date
+            assert still["next_period_end"] == last_covered_day(seed_periods[_CURRENT_IDX + 1])
             assert still["next_period_end"] == date(2026, 4, 9)
 
     def test_still_due_next_period_dates_none_when_no_next(
@@ -1053,7 +1053,7 @@ class TestPulseStreet:
             current = seed_periods[_CURRENT_IDX]
             _add_expense(
                 db.session, seed_user, current,
-                "Due on end", "10.00", due_date=current.end_date,
+                "Due on end", "10.00", due_date=last_covered_day(current),
             )
             _add_expense(
                 db.session, seed_user, current,
@@ -1386,7 +1386,7 @@ class TestHeroChartIdentity:
             # And the first chart point is the current period's end date.
             assert (
                 result["chart"]["points"][0]["end_date"]
-                == current.end_date
+                == last_covered_day(current)
             )
 
 
@@ -1457,8 +1457,8 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
                 p["end_date"]: p["balance"] for p in section["chart"]["points"]
             }
             for period in seed_periods[_CURRENT_IDX:]:
-                assert points_by_date[period.end_date] == Decimal("50000.00")
-                assert points_by_date[period.end_date] != accrued[period.id]
+                assert points_by_date[last_covered_day(period)] == Decimal("50000.00")
+                assert points_by_date[last_covered_day(period)] != accrued[period.id]
 
             # The "lowest point ahead" is the flat cash $50,000.00, not the
             # interest-inflated minimum the kind-correct map would have shown.
@@ -1650,86 +1650,27 @@ class TestOneClockPerRender:
             assert stale["hero"]["is_stale"] is True
 
 
-class TestPeriodIsDerivedNotStored:
-    """The region's period comes from the PAYDAYS, not from the stored span.
-
-    Until pay-calendar plan step **C2-f2e** the current period was
-    ``pay_period_service.get_current_period`` -- SQL matching
-    ``start_date <= today <= end_date`` over the two columns plan step **C4**
-    drops.  Where a stored ``end_date`` disagrees with the one the owner's
-    paydays imply (plan finding **P1**, the disagreement nothing reconciles)
-    that query and the calendar name DIFFERENT paychecks, and this page then
-    labelled one period's balance with another's dates.
-
-    **The disagreement has TWO directions and only one is covered here**
-    (C2-f2e's adversarial design review, 2026-08-18).  The case below is the
-    stored span being SHORTER than the derivation, where the derivation is the
-    generous answer and the pre-cutover tree blanked the page.  The inverse --
-    a derived end EARLIER than the stored one -- can only arise on the LAST
-    period, whose end is projected from ``budget.pay_schedule.cadence_days``,
-    and it is the direction where the new code refuses where the old answered.
-    It is not tested because it is not reachable through an app write door:
-    ``pay_schedule_service.upsert_schedule`` has one caller
-    (``pay_period_write._apply``), which runs only when the batch records a
-    payday and then rewrites the derivation onto every row.  It needs
-    hand-edited rows or legacy data, which is ledger row **P35**'s owner.
-    """
-
-    def test_a_wrong_stored_end_date_does_not_move_the_hero(
-        self, app, seed_user, seed_periods, db,
-    ):
-        """A doctored stored ``end_date`` changes nothing the hero renders.
-
-        Period 5 runs 2026-03-13 .. 2026-03-26 because period 6's payday is
-        2026-03-27 -- the derivation.  Rewriting period 5's stored ``end_date``
-        to 2026-03-19 (the day BEFORE the frozen today) leaves the paydays
-        untouched, so the calendar still places 2026-03-20 in period 5.  The
-        pre-cutover query would have found no period covering today at all and
-        the producer would have answered ``None``: a page that goes blank
-        because a derived column drifted.  **Measured, not argued** -- this
-        case was run verbatim against the merge base ``5ab457b7`` and failed on
-        ``result is not None``, with the region gone and the page rendering its
-        "No pay period covers today" CTA to an owner mid-paycheck.
-        """
-        with app.app_context():
-            stored = db.session.get(
-                type(seed_periods[_CURRENT_IDX]),
-                seed_periods[_CURRENT_IDX].id,
-            )
-            stored.end_date = date(2026, 3, 19)
-            db.session.commit()
-
-            # The premise, asserted rather than assumed, and it is the two
-            # halves DISAGREEING.  It used to be one assertion --
-            # ``pay_period_service.get_current_period(...) is None`` -- which
-            # said it by driving the reader that read the doctored column;
-            # plan step C2-f3a deleted that reader, so the premise is stated
-            # against the COLUMN itself, which is stronger: it does not depend
-            # on some reader still existing to demonstrate it.
-            #
-            # *A mechanical rename of the old call to the suite's
-            # ``current_pay_period`` helper would have been silent and wrong:
-            # that helper resolves through the DERIVATION, which ignores the
-            # doctored column, so the premise would have asserted the very
-            # thing this case then proves is false.*
-            assert stored.end_date < _TODAY, (
-                "the stored span must NOT cover the frozen today, or the "
-                "disagreement this case is about does not exist"
-            )
-            assert calendar_for(
-                seed_user["user"].id,
-            ).period_containing(_TODAY).period_id == stored.id, (
-                "the PAYDAYS must still place today in this period, or the "
-                "two halves agree and the case grades nothing"
-            )
-
-            result = dashboard_service.compute_pulse_section(
-                dashboard_section(seed_user["user"].id, as_of=_TODAY),
-            )
-            assert result is not None
-            assert result["hero"]["period_start_date"] == date(2026, 3, 13)
-            assert result["hero"]["period_end_date"] == date(2026, 3, 26)
-            assert result["street"]["days_total"] == 13
+# **``TestPeriodIsDerivedNotStored`` was deleted whole at plan step
+# ``pay_calendar:C4-c``, and it is worth saying what it did rather than
+# leaving a gap.**  Its one case rewrote period 5's stored ``end_date`` to
+# the day before the frozen today and asserted the hero region still
+# rendered -- where the pre-cutover query matched
+# ``start_date <= today <= end_date`` against that column, found no period
+# covering today, and blanked the region to a "No pay period covers today"
+# CTA for an owner mid-paycheck.  It was plan step C2-f2e's grade.
+#
+# C4-c dropped the column, so the disagreement it planted is not merely
+# unreachable, it is SILENT: assigning to an attribute the model no longer
+# maps sets a plain Python attribute, writes no UPDATE, and survives
+# ``expire_all`` -- the *born dead* shape ``docs/plans/lessons.md`` names.
+# The case and its own premise assertion both went on passing while
+# measuring nothing, so it is deleted rather than left green.
+#
+# The class had documented that only ONE of the disagreement's two
+# directions was covered, the other needing hand-edited or legacy rows
+# (ledger row **P35**'s owner).  Neither direction exists now: there is one
+# span, computed on every read.  The hero's period is graded on ordinary
+# schedules by the classes above.
 
 
 # ── Tracks: savings goal trajectory passthrough + debt fraction ─────

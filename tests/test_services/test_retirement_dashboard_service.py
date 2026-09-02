@@ -32,7 +32,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import PayCadence
+from app.services.pay_calendar import PayCadence, calendar_for
 from app.services import (
     account_service,
     balance_at,
@@ -47,6 +47,8 @@ from app.services.retirement_plan import load_retirement_inputs, picture_at
 from tests._test_helpers import (
     all_periods,
     current_pay_period,
+    derived_span,
+    last_covered_day,
     make_investment_account,
     mark_purchase_settled,
     open_books_before_the_first_assertion,
@@ -952,7 +954,7 @@ class TestRetirementAnchorInPastModeledHeadlineDatedSeed:
             owner_periods = all_periods(user.id)
             current_period = current_pay_period(user.id)
             assert current_period is not None
-            assert past_anchor.period_index < current_period.period_index, (
+            assert derived_span(past_anchor).period_index < derived_span(current_period).period_index, (
                 "fixture regressed: the anchor must be strictly before today"
             )
 
@@ -973,10 +975,15 @@ class TestRetirementAnchorInPastModeledHeadlineDatedSeed:
             # other engine kwargs are their defaults.  Seeding from V0 (cash)
             # and from the modeled value give DIFFERENT end balances, so the
             # equality below is non-tautological.
-            forward_periods = [
-                p for p in owner_periods
-                if p.period_index >= current_period.period_index
-            ]
+            # A ``PeriodWindow`` off the owner's own calendar, which is what
+            # ``growth_engine.project_balance`` is typed for and what
+            # ``_project_one_account`` hands it.  It was a list of ORM rows
+            # filtered by ordinal, and that only ran while the row still
+            # carried an ``end_date`` for the engine to read -- the duck type
+            # plan step ``pay_calendar:C4-c`` removed the second inhabitant of.
+            forward_periods = calendar_for(user.id).window(
+                derived_span(current_period).period_index, len(owner_periods),
+            )
             def _run(seed):
                 return growth_engine.project_balance(
                     current_balance=seed,
@@ -1611,7 +1618,9 @@ class TestTheProjectionAxisIsTheOwnersOwnCalendar:
         with app.app_context():
             user_id = seed_user["user"].id
             axis = self._axis_for(user_id, None)
-            assert axis[-1].end_date == seed_periods[-1].end_date
+            # ``axis`` holds ``DerivedPeriod`` values, which carry the span
+            # already; only the ORM row on the right needs the calendar.
+            assert axis[-1].end_date == last_covered_day(seed_periods[-1])
             assert all(period.period_id is not None for period in axis)
 
     def test_a_retirement_date_already_past_gives_an_EMPTY_axis(

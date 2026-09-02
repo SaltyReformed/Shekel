@@ -155,7 +155,7 @@ def _render_entry_list(
     budgets = fragment_amounts(txn).budgets
     # The paycheck this row is FILED in, DERIVED (pay-calendar plan step
     # C4-a-3).  The producer read ``txn.pay_period`` for its span until then,
-    # which is the stored ``end_date`` plan step C4-c drops.
+    # which is the stored ``end_date`` plan step C4-c dropped.
     #
     # The calendar belongs to the row's OWNER, spelled ``txn.pay_period.user_id``
     # rather than ``current_user.id``, because this fragment also serves the

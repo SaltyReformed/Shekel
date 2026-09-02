@@ -35,7 +35,11 @@ from app.services import (
 )
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.utils.dates import display_today
-from tests._test_helpers import registration_spec, all_periods
+from tests._test_helpers import (
+    all_periods,
+    last_covered_day,
+    registration_spec,
+)
 
 
 class TestHashPassword:
@@ -737,12 +741,12 @@ class TestRegistrationBuildsARealPayCalendar:
             assert periods[0].start_date == payday
             # Sign-up day sits inside the first paycheck at every offset --
             # the property the "LAST payday, not next" ruling buys.
-            assert periods[0].start_date <= signup_day <= periods[0].end_date
+            assert periods[0].start_date <= signup_day <= last_covered_day(periods[0])
             # Contiguous: each period opens the day after the previous closed.
             # A hole is exactly what the old bootstrap left behind, so its
             # absence is the assertion, not a formality.
             for earlier, later in zip(periods, periods[1:]):
-                assert later.start_date == earlier.end_date + timedelta(days=1)
+                assert later.start_date == last_covered_day(earlier) + timedelta(days=1)
 
     def test_the_schedule_row_is_written_with_the_stated_cadence(
         self, app, db,
@@ -769,7 +773,7 @@ class TestRegistrationBuildsARealPayCalendar:
             assert schedule.cadence_days == 7
             periods = all_periods(user.id)
             assert all(
-                p.end_date == p.start_date + timedelta(days=6) for p in periods
+                last_covered_day(p) == p.start_date + timedelta(days=6) for p in periods
             )
 
     def test_the_opening_assertion_is_dated_signup_day_and_files_cleanly(
@@ -907,41 +911,72 @@ class TestRegistrationBuildsARealPayCalendar:
                 ))
             assert db.session.query(User).count() == before
 
-    @pytest.mark.parametrize(
-        "field,value,message",
-        [
-            ("cadence_days", 1, "at least 2"),
-            ("num_periods", 0, "between 1 and 260"),
-            ("num_periods", 261, "between 1 and 260"),
-        ],
-    )
-    def test_an_unmaterialisable_batch_is_refused_before_the_user_exists(
-        self, app, db, field, value, message,
+    @pytest.mark.parametrize("num_periods", [0, 261])
+    def test_an_unwritable_batch_size_is_refused_before_the_user_exists(
+        self, app, db, num_periods,
     ):
-        """The WRITER's bounds are asked up front too, not just the column's.
+        """The WRITER's bound is asked up front too, not just the column's.
 
-        Three values that reached real failures far from their cause.  A
-        cadence of 1 passed every bound the app had and then died on
-        ``ck_pay_periods_date_order`` as an unhandled 500 -- reproduced on both
-        this door and the settings form.  A ``num_periods`` of 0 created
-        nothing and surfaced downstream as ``create_account`` complaining about
-        missing pay periods.  261 was refused only by a form field, so no
-        non-form caller was bounded at all.
+        A ``num_periods`` of 0 created nothing and surfaced downstream as
+        ``create_account`` complaining about missing pay periods; 261 was
+        refused only by a form field, so no non-form caller was bounded at all.
 
         The ``User`` count is the assertion that matters: ``register_user``
-        claims every refusal happens before the row is added, and these three
-        were the ones that could have falsified it.
+        claims every refusal happens before the row is added, and these were
+        the values that could have falsified it.
+
+        *A third case -- ``cadence_days=1``, refused with "at least 2" -- stood
+        here until plan step ``pay_calendar:C4-c``.  That bound was about the
+        stored ``end_date``, which could not hold a one-day period, and the
+        case below is its inverse: the cycle is legal and registration
+        RECORDS it.*
         """
         with app.app_context():
             before = db.session.query(User).count()
-            with pytest.raises(ValidationError, match=message):
-                auth_service.register_user(registration_spec(**{
-                    "email": f"batch-{field}-{value}@example.com",
-                    "display_name": "Bad Batch",
-                    field: value,
-                }))
+            with pytest.raises(ValidationError, match="between 1 and 260"):
+                auth_service.register_user(registration_spec(
+                    email=f"batch-{num_periods}@example.com",
+                    display_name="Bad Batch", num_periods=num_periods,
+                ))
             db.session.rollback()
             assert db.session.query(User).count() == before
+
+    def test_a_ONE_DAY_cadence_registers_and_records_its_paydays(
+        self, app, db,
+    ):
+        """Finding **P9**, closed at the door that could not express it.
+
+        Registration refused ``cadence_days=1`` with "at least 2" because a
+        stored ``end_date`` cannot hold a period whose end is its own start --
+        ``ck_pay_periods_date_order`` required ``start_date < end_date``, and
+        the value reached it as an unhandled ``CheckViolation`` 500 before the
+        writer learned to refuse it politely.  Plan step ``pay_calendar:C4-c``
+        dropped the column, so two paydays a day apart are simply two
+        paychecks.
+
+        The owner is asserted to hold the paydays the spec asked for, not
+        merely to exist: a registration that silently recorded a different
+        rhythm would pass a bare "no exception" check.
+
+        The opening payday is the OWNER's today rather than a literal, because
+        ``_reject_impossible_first_payday`` bounds it within one cadence of the
+        clock and one cadence is one DAY here -- a fixed date would be refused
+        on every run but one (``.claude/rules/testing.md``).
+        """
+        with app.app_context():
+            today = display_today()
+            user = auth_service.register_user(registration_spec(
+                email="one-day-cadence@example.com",
+                display_name="Daily Pay",
+                first_payday=today,
+                num_periods=3,
+                cadence_days=1,
+            ))
+            db.session.commit()
+
+            assert [
+                period.start_date for period in all_periods(user.id)
+            ] == [today, today + timedelta(days=1), today + timedelta(days=2)]
 
     def test_the_refusal_message_names_the_paycheck_not_the_owners_arithmetic(
         self, app, db,

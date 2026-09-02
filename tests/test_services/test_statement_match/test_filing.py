@@ -51,6 +51,9 @@ from ._builders import (
     an_import,
     the_merchant_id,
 )
+from tests._test_helpers import (
+    last_covered_day,
+)
 
 MERCHANT = "Food Lion"
 
@@ -751,7 +754,7 @@ class TestALineOutsideTheCalendarIsLeftAlone:
             statement = an_import(seed_user)
             start = seed_user["bootstrap_period"].start_date
             _swipe(seed_user, statement, amount="-10.89", posted_on=start)
-            beyond = seed_user["bootstrap_period"].end_date + timedelta(
+            beyond = last_covered_day(seed_user["bootstrap_period"]) + timedelta(
                 days=400,
             )
             _swipe(seed_user, statement, amount="-12.23", posted_on=beyond)

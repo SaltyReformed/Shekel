@@ -55,6 +55,7 @@ from app.utils.dates import display_today
 from app.services import account_service
 from tests._test_helpers import (
     current_pay_period,
+    last_covered_day,
     make_every_period_rule,
 )
 
@@ -561,7 +562,7 @@ class TestCarryForwardPreviewConfiguration:
                 .all()
             )
             today = display_today()
-            doomed = [p for p in periods if p.end_date >= today]
+            doomed = [p for p in periods if last_covered_day(p) >= today]
             assert doomed, "the fixture must cover today for this to remove it"
             pay_period_write.retire_paydays(
                 seed_user["user"].id, {period.id for period in doomed},
