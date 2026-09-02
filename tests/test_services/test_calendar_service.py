@@ -32,6 +32,7 @@ from app.services import (
     status_seam,
 )
 from tests._test_helpers import (
+    last_covered_day,
     settle_day_columns,
     settlement_columns,
 )
@@ -730,9 +731,9 @@ class TestMonthEndBalance:
         with app.app_context():
             p7 = seed_periods[7]
             p8 = seed_periods[8]
-            assert p7.end_date == date(2026, 4, 23)
+            assert last_covered_day(p7) == date(2026, 4, 23)
             assert p8.start_date == date(2026, 4, 24)
-            assert p8.end_date == date(2026, 5, 7)
+            assert last_covered_day(p8) == date(2026, 5, 7)
 
             _add_transaction(
                 db.session, seed_user, p7, "Mid-Apr Pay", "1500.00",

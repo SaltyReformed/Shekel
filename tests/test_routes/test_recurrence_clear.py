@@ -64,6 +64,7 @@ from app.services import (
 from tests._test_helpers import (
     all_periods,
     create_loan_account,
+    derived_span,
     make_cadence_rule,
     shadow_amount,
 )
@@ -165,7 +166,7 @@ def _recurring_transfer_template(seed_user, savings, recurs=True):
 
 def _period_indices(rows, periods):
     """Return the sorted period indices the given rows occupy."""
-    by_id = {p.id: p.period_index for p in periods}
+    by_id = {p.id: derived_span(p).period_index for p in periods}
     return sorted(by_id[row.pay_period_id] for row in rows)
 
 

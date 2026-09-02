@@ -653,8 +653,9 @@ class PayCalendar:
         Equal to the ordinal query it replaces by construction: this calendar's
         ``period_index`` IS payday order, so "the next index" and "the next
         payday" cannot name different periods -- which is the disagreement
-        ``uq_pay_periods_user_index`` and three runtime fences exist to police
-        on the stored columns.
+        ``uq_pay_periods_user_index`` and three runtime fences existed to
+        police on the stored columns, all five deleted with their subject at
+        plan step C4-c.
 
         **MATERIALISED, and that filter is what makes the answer safe to write
         into a foreign key** -- the same enforcement :meth:`filing_period`
@@ -882,7 +883,7 @@ class PayCalendar:
         target is compared against this; plan step **C4** moved the question
         onto this value from a ``PayPeriod.end_date >= as_of`` count in SQL,
         which was the last query in ``pay_period_admin`` naming a column plan
-        step C4 drops (finding **P70**).
+        step C4-c dropped (finding **P70**).
 
         Args:
             day: The first day the window covers, inclusive.

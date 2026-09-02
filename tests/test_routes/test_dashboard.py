@@ -39,6 +39,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.utils.dates import add_months, display_today
 from tests._test_helpers import (
+    last_covered_day,
     add_anchor_history as _add_anchor_history,
     add_txn as _add_txn,
     current_pay_period,
@@ -433,7 +434,7 @@ class TestDashboardPulseRendering:
             # the test would still pass.  Never a producer as its own oracle
             # (``docs/plans/verification.md`` #2).
             cur = seed_periods_today[4]
-            assert cur.start_date <= date.today() <= cur.end_date
+            assert cur.start_date <= date.today() <= last_covered_day(cur)
             nxt = seed_periods_today[5]
             peak_period = seed_periods_today[6]
             income = Transaction(
@@ -475,7 +476,7 @@ class TestDashboardPulseRendering:
             # POSITIONAL -- see the peak test above for why the fixture does
             # not ask the search this asserts on.
             cur = seed_periods_today[4]
-            assert cur.start_date <= date.today() <= cur.end_date
+            assert cur.start_date <= date.today() <= last_covered_day(cur)
             nxt = seed_periods_today[5]
             _add_txn(
                 db.session, seed_user, nxt, "Next Period Bill", "175.00",
@@ -510,7 +511,7 @@ class TestDashboardPulseRendering:
             cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "End Day Bill", "250.00",
-                due_date=cur.end_date,
+                due_date=last_covered_day(cur),
             )
             db.session.commit()
 

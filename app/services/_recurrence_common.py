@@ -785,14 +785,14 @@ def rows_this_pass_may_maintain(selector, schedule, effective_from) -> list:
     that function resolved the ORM row out of the write window BEFORE applying
     the bound, deliberately and with a comment saying so, precisely so both
     halves read the same stored column.  They agreed.  What C2-f3c does is move
-    them BOTH onto the derived end, because plan step **C4** drops the column
-    they agreed on -- and the reason that is safe is a separate invariant, not
-    a bug being fixed: ``pay_period_write._write_derivation`` is the only
-    writer of ``end_date`` in ``app/`` and rewrites every stored end from the
-    derivation on every pass.  Measured 2026-08-19 on production: 62 periods,
-    zero rows where the two differ.  The one shape where they still can is
-    legacy data written before plan step C3-b, and there the derived end is the
-    answer this arc exists to give.
+    them BOTH onto the derived end, ahead of plan step **C4-c** dropping the
+    column they agreed on -- and the reason that was safe is a separate
+    invariant, not a bug being fixed: ``pay_period_write`` was the only writer
+    of ``end_date`` in ``app/`` and rewrote every stored end from the derivation
+    on every pass.  Measured 2026-08-19 on production: 62 periods, zero rows
+    where the two differ.  C4-c then removed the column, so there is one end
+    and this paragraph records why the swap moved no figure rather than a
+    choice anything still has.
 
     **The domain is the WINDOW, and it must be a SUPERSET of the plan's named
     set** or ``_maintain``'s RETIRE branch could never fire: a row is retired

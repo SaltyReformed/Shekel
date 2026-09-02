@@ -9,7 +9,7 @@ horizons.  No Flask, no SQLAlchemy: they operate on the DERIVED pay calendar
 **They took ORM ``PayPeriod`` rows until pay-calendar plan step C2-f2d-3.**
 Both of the two things read off a period here -- its ordinal and its id -- are
 answered by the derived value, and the ordinal is one of the two columns plan
-step **C4** drops, so a helper keyed on the stored one would have had to move
+step **C4-c** dropped, so a helper keyed on the stored one would have had to move
 anyway.
 
 **The horizons are named in MONTHS and resolved in PAY PERIODS, and until

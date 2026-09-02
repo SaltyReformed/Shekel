@@ -127,7 +127,7 @@ def _destination(txn, *, is_settled=False):
     **The paycheck comes off the owner's CALENDAR, exactly as
     ``destinations_for`` reads it** (pay-calendar plan step C4-a-4), and this
     helper stands in for that producer -- so it derives the span rather than
-    reading the ``pay_periods.end_date`` column plan step C4-c drops.
+    reading the ``pay_periods.end_date`` column plan step C4-c dropped.
     """
     return PurchaseDestination(
         transaction_id=txn.id,

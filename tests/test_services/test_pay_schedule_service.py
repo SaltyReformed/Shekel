@@ -496,7 +496,7 @@ class TestSetHistoryOpening:
 
         Measured against ``min(start_date)`` rather than the lowest
         ``period_index``: the two agree only while the index is in date order,
-        and that is a stored column plan step C4 drops.
+        and that is a stored column plan step C4-c dropped.
         """
         user_id = bare_user["user"].id
         with app.app_context():

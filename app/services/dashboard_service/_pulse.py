@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     # one since pay-calendar plan step C2-f2e -- the current one, the next
     # one, and every point the chart, the trough and the peak read -- where
     # the current period and the forward set were ``budget.pay_periods`` ORM
-    # rows carrying the two derived columns plan step **C4** drops.  Type-only:
+    # rows carrying the two derived columns plan step **C4-c** dropped.  Type-only:
     # the values arrive from ``balance_ctx.calendar()`` and
     # ``balance_ctx.reported_periods()``, which this module reaches through the
     # section's ``BalanceContext``.

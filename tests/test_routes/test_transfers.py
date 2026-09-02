@@ -41,6 +41,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
     field_is_disabled,
+    last_covered_day,
     make_every_period_rule,
     make_transfer_template,
     net_posted_by_day,
@@ -414,7 +415,7 @@ class TestTheStartPeriodSelectorComesFromTheDerivation:
             today = display_today()
             expected = next(
                 period for period in seed_periods_today
-                if period.start_date <= today <= period.end_date
+                if period.start_date <= today <= last_covered_day(period)
             )
 
             html = auth_client.get("/transfers/new").data.decode()

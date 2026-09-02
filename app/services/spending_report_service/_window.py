@@ -180,7 +180,7 @@ def _series_windows(
     steps)`` call, and for a ``"pay_period"`` window each of those eleven calls
     ran a ``WHERE period_index = <chosen> - <steps>`` query against
     ``budget.pay_periods`` -- a NINTH hand-rolled period search (ledger row
-    **P45**), reading the stored ordinal plan step **C4** drops, on a render
+    **P45**), reading the stored ordinal plan step **C4-c** dropped, on a render
     that already holds the owner's whole derived calendar.  A run of
     consecutive paychecks ending at a known one is exactly what
     :meth:`~app.services.pay_calendar.PayCalendar.window` answers, so the

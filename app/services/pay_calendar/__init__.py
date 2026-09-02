@@ -4,10 +4,11 @@ Shekel Budget App -- The pay calendar: one derivation of "which paycheck".
 A pay period is not three stored facts.  It is ONE fact -- the payday -- and
 two values derived from the owner's payday set:  the period's ordinal is its
 position in that set, and its last covered day is the day before the next
-payday.  ``budget.pay_periods`` stores all three today, which is why a gap, an
-overlap and an index out of date order are all EXPRESSIBLE states that five
-separate runtime fences have to police.  This package holds the derivation, so
-that after plan step C4 none of those states has a subject.
+payday.  ``budget.pay_periods`` stored all three until plan step **C4-c**,
+which is why a gap, an overlap and an index out of date order were EXPRESSIBLE
+states that five separate runtime fences had to police.  This package holds the
+derivation, and since that step dropped both columns none of those states has a
+subject -- nor does any of the five fences, all of which went with it.
 
 The plan of record is ``docs/plans/implementation_plan_pay_calendar.md``.
 **What it says about this package, quoted rather than paraphrased:** nothing.
@@ -33,7 +34,9 @@ C3    the writer materialises paydays from this derivation instead of
       helper is open.
 C4    ``end_date`` and ``period_index`` are dropped from the table, and the
       readers named in the plan's section 3 take their bounds from a
-      calendar instead of from ``txn.pay_period``.
+      calendar instead of from ``txn.pay_period``.  This row is DONE, not
+      intended: the readers moved across the ``C4-a`` leaves and the columns
+      went at ``C4-c``.
 ===== ====================================================================
 
 **Why a package rather than a module** (developer ruling, 2026-08-08): the

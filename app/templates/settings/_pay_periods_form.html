@@ -21,11 +21,11 @@
   {{ render_field("start_date", "First Payday", type="date", required=true, errors=errors) }}
 
   {# ``min`` / ``max`` mirror the schema's shared bounds rather than
-     restating them: the cadence floor is the WRITER's (2), not the
-     schedule column's (1), because this form submits to the writer and a
-     one-day cadence reached ck_pay_periods_date_order as a 500 until plan
-     step X-ad-a.  Browser hints only -- the schema and the service refuse
-     the same set independently. #}
+     restating them.  The cadence floor is ck_pay_schedule_cadence_range's
+     own (1): it was the WRITER's tighter 2 between plan steps X-ad-a and
+     pay_calendar:C4-c, because a stored end_date could not express a one-day
+     period, and neither move touched this file.  Browser hints only -- the
+     schema and the service refuse the same set independently. #}
   {{ render_field("num_periods", "Number of Periods", type="number",
                    value=config['DEFAULT_PAY_PERIOD_HORIZON'],
                    input_attrs='min="%s" max="%s"'|format(PERIOD_BATCH_MIN, PERIOD_BATCH_MAX),

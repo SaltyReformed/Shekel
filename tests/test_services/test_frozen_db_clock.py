@@ -40,6 +40,7 @@ from tests._test_helpers import (
     _db_clock_insert_attrs,
     _rewrite_db_clock_calls,
     create_settled_cash_transaction,
+    last_covered_day,
     override_anchor,
     same_instant_writes,
 )
@@ -122,7 +123,7 @@ class TestTheDatabaseClockIsTheTestClock:
             assert (
                 seed_periods[0].start_date
                 <= row.created_at.date()
-                <= seed_periods[-1].end_date
+                <= last_covered_day(seed_periods[-1])
             )
 
     def test_a_settled_transactions_day_lands_on_the_frozen_day(

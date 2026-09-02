@@ -52,7 +52,10 @@ from app.services.statement_match import NewEnvelope, PurchaseCreation
 # it, so exporting it would be the surface rule 13 forbids; a test for a
 # module reaches into it, which is the allowance every sibling here takes.
 from app.services.statement_match import _create  # pylint: disable=protected-access
-from tests._test_helpers import open_books_before_the_first_assertion
+from tests._test_helpers import (
+    last_covered_day,
+    open_books_before_the_first_assertion,
+)
 
 from ._builders import (
     a_bank_line,
@@ -438,8 +441,8 @@ class TestTheNewEnvelopeArm:
             statement = an_import(seed_user)
             line = a_bank_line(
                 seed_user, statement, amount="-31.41",
-                posted_on=period.end_date + timedelta(days=1),
-                transaction_on=period.end_date,
+                posted_on=last_covered_day(period) + timedelta(days=1),
+                transaction_on=last_covered_day(period),
             )
 
             recorded = _record(seed_user, line, new_envelope=NewEnvelope(
@@ -801,7 +804,7 @@ class TestTheSpanADestinationCarriesIsDERIVED:
     ``destinations_for`` read ``txn.pay_period`` for each offered envelope's
     paycheck, which is ``pay_periods.end_date`` -- a stored copy of the day
     before the NEXT payday, with nothing reconciling the two, and plan step
-    C4-c drops it.  It now scopes its scan by
+    C4-c dropped it.  It now scopes its scan by
     :meth:`~app.services.pay_calendar.PayCalendar.saved_by_id`'s own keys and
     indexes that SAME mapping, so the span it publishes is DERIVED and the
     lookup cannot miss a row the scan returned.
@@ -834,7 +837,7 @@ class TestTheSpanADestinationCarriesIsDERIVED:
         """
         with app.app_context():
             bootstrap = seed_user["bootstrap_period"]
-            stored_end = bootstrap.end_date
+            stored_end = last_covered_day(bootstrap)
             a_payday_on(seed_user, stored_end + timedelta(days=8))
             envelope = a_transaction(
                 seed_user, name="Groceries", amount="500.00", is_envelope=True,
@@ -873,7 +876,7 @@ class TestTheSpanADestinationCarriesIsDERIVED:
             bootstrap = seed_user["bootstrap_period"]
             # Derived BEFORE the write, which is the whole case.
             handed = pay_calendar.calendar_for(seed_user["user"].id)
-            a_payday_on(seed_user, bootstrap.end_date + timedelta(days=8))
+            a_payday_on(seed_user, last_covered_day(bootstrap) + timedelta(days=8))
 
             offered = {
                 d.transaction_id: d for d in statement_match.destinations_for(
@@ -882,7 +885,7 @@ class TestTheSpanADestinationCarriesIsDERIVED:
             }
 
             projected_end = bootstrap.start_date + timedelta(days=13)
-            re_read_end = bootstrap.end_date + timedelta(days=7)
+            re_read_end = last_covered_day(bootstrap) + timedelta(days=7)
             assert projected_end != re_read_end
             assert offered[envelope.id].period.end_date == projected_end
 
@@ -929,7 +932,7 @@ class TestTheSpanADestinationCarriesIsDERIVED:
         """
         with app.app_context():
             bootstrap = seed_user["bootstrap_period"]
-            stored_end = bootstrap.end_date
+            stored_end = last_covered_day(bootstrap)
             a_payday_on(seed_user, stored_end + timedelta(days=8))
             envelope = a_transaction(
                 seed_user, name="Groceries", amount="500.00", is_envelope=True,
@@ -955,10 +958,10 @@ class TestTheSpanADestinationCarriesIsDERIVED:
         with app.app_context():
             bootstrap = seed_user["bootstrap_period"]
             middle = a_payday_on(
-                seed_user, bootstrap.end_date + timedelta(days=8),
+                seed_user, last_covered_day(bootstrap) + timedelta(days=8),
             )
             last = a_payday_on(
-                seed_user, bootstrap.end_date + timedelta(days=30),
+                seed_user, last_covered_day(bootstrap) + timedelta(days=30),
             )
             here = a_transaction(
                 seed_user, name="Groceries", amount="500.00",
@@ -1054,14 +1057,23 @@ class TestTheSpanADestinationCarriesIsDERIVED:
         newest row the newest id in the middle of the sequence.  Staged here
         by recording the LATER payday first, so the two orders disagree and
         the assertion can tell them apart.
+
+        **The bootstrap's last covered day is read ONCE, before either payday
+        is written**, and since plan step ``pay_calendar:C4-c`` it has to be: a
+        DERIVED end MOVES when a neighbouring payday is written, where the
+        stored column could not.  Recording ``later`` pulls the bootstrap's end
+        back from its cadence projection to the day before that payday, so a
+        second read would place ``middle`` AFTER ``later`` -- the fixture would
+        stage the very order it exists to disagree with.
         """
         with app.app_context():
             bootstrap = seed_user["bootstrap_period"]
+            bootstrap_end = last_covered_day(bootstrap)
             later = a_payday_on(
-                seed_user, bootstrap.end_date + timedelta(days=30),
+                seed_user, bootstrap_end + timedelta(days=30),
             )
             middle = a_payday_on(
-                seed_user, bootstrap.end_date + timedelta(days=8),
+                seed_user, bootstrap_end + timedelta(days=8),
             )
             assert middle.id > later.id
             assert middle.start_date < later.start_date

@@ -86,7 +86,6 @@ from app.services.recurrence import _months, _occurrence, _resolution
 from app.services.recurrence import EndBound, EndsAfterOccurrences
 from tests.oracles import recurrence_baseline
 from tests.test_services.test_recurrence_resolution import build_calendar
-
 #: The committed R1 snapshot the parallel run is measured against.
 BASELINE_PATH = Path(recurrence_baseline.__file__).with_suffix(".txt")
 
@@ -317,28 +316,41 @@ def _day_sweep_occurrences(
 
 def _linear_place(
     day: date, periods: list, placement: PeriodPlacementEnum,
+    cadence_days: int,
 ) -> int | None:
     """Return the index of the period *day* places into, by linear scan.
 
     The independent oracle for placement: no bisect, no calendar object, and
     the two rules written out separately rather than shared with the engine.
 
+    **The ordinal is the POSITION and the span is computed**, since plan step
+    ``pay_calendar:C4-c`` dropped both columns this used to read off the row.
+    That makes the oracle more independent rather than less: it had been
+    reading values the application's own writer had materialised, and it now
+    states the rule itself through
+    ``recurrence_baseline.period_last_covered_day``.
+
     Args:
         day: The date to place.
-        periods: Pay periods in ``period_index`` order.
+        periods: Pay periods in payday order, which is ordinal order.
         placement: Which placement rule to apply.
+        cadence_days: The cadence *periods* was built at, which is what the
+            LAST period's end is projected from.
 
     Returns:
-        The period's ``period_index``, or ``None`` when none qualifies.
+        The period's ordinal, or ``None`` when none qualifies.
     """
     if placement is PeriodPlacementEnum.CONTAINING_DATE:
-        for period in periods:
-            if period.start_date <= day <= period.end_date:
-                return period.period_index
+        for index, period in enumerate(periods):
+            end = recurrence_baseline.period_last_covered_day(
+                periods, cadence_days, index,
+            )
+            if period.start_date <= day <= end:
+                return index
         return None
-    for period in periods:
+    for index, period in enumerate(periods):
         if period.start_date >= day:
-            return period.period_index
+            return index
     return None
 
 
@@ -619,7 +631,10 @@ class TestTheParallelRun:
             shape.label: shape for shape in recurrence_baseline.build_shapes()
         }
         biweekly, _long = _baseline_schedules()
-        by_index = {period.period_index: period for period in biweekly}
+        # The ordinal is the POSITION in payday order: these rows are the
+        # oracle's own unsaved ones, so no calendar holds them and there is no
+        # stored ordinal to read since plan step ``pay_calendar:C4-c``.
+        by_index = dict(enumerate(biweekly))
         committed = _committed_rows()
 
         for label, (index, occurrence) in _BOUND_DIVERGENCES.items():
@@ -629,9 +644,12 @@ class TestTheParallelRun:
                 f"occurrence of its own cadence"
             )
             period = by_index[index]
-            assert period.start_date <= occurrence <= period.end_date, (
+            period_end = recurrence_baseline.period_last_covered_day(
+                biweekly, recurrence_baseline.SCHEDULE_CADENCE_DAYS, index,
+            )
+            assert period.start_date <= occurrence <= period_end, (
                 f"{label}: period {index} ({period.start_date}.."
-                f"{period.end_date}) does not contain {occurrence}, so it is "
+                f"{period_end}) does not contain {occurrence}, so it is "
                 f"not the row a period-bounded matcher would have generated"
             )
             # The opening side needs no ``is not None`` guard since plan step
@@ -673,7 +691,10 @@ class TestTheParallelRun:
                 first_day, last_day, base_month, month_step, nominal_day,
             )
             expected = [
-                (day, _linear_place(day, long_periods, placement))
+                (day, _linear_place(
+                    day, long_periods, placement,
+                    recurrence_baseline.LONG_CADENCE_DAYS,
+                ))
                 for day in swept
             ]
             assert placements[label] == expected, (

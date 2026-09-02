@@ -50,7 +50,9 @@ from tests._test_helpers import (
     add_txn,
     all_periods,
     assert_pay_period_invariants,
+    derived_span,
     freeze_today,
+    last_covered_day,
     make_expense_template,
     populate_in_a_fresh_pass,
     seam_cash_balance_at,
@@ -94,7 +96,7 @@ def _count_periods(db_session, user_id):
 def _index_set(user_id):
     """The set of period_index values the user currently has."""
     return {
-        p.period_index
+        derived_span(p).period_index
         for p in all_periods(user_id)
     }
 
@@ -139,9 +141,9 @@ class TestRegenerateHappyPath:
                 user_id, FROZEN_TODAY, num_periods=4, cadence_days=14,
             )
             db.session.commit()
-            today_index = periods[0].period_index
+            today_index = derived_span(periods[0]).period_index
             today_start = periods[0].start_date
-            new_start = periods[0].end_date + timedelta(days=1)
+            new_start = last_covered_day(periods[0]) + timedelta(days=1)
 
             pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=2,
@@ -149,10 +151,15 @@ class TestRegenerateHappyPath:
             )
             db.session.commit()
 
+            # Keyed on the PAYDAY, which is the row's identity since plan
+            # step ``pay_calendar:C4-c`` dropped the ordinal column; ``.one()``
+            # is the survival half (exactly one row still opens on that day)
+            # and the ordinal is asserted from the derivation, so the case
+            # still says the in-progress paycheck kept its place in the order.
             kept = db.session.query(PayPeriod).filter_by(
-                user_id=user_id, period_index=today_index,
+                user_id=user_id, start_date=today_start,
             ).one()
-            assert kept.start_date == today_start  # the payday period survived
+            assert derived_span(kept).period_index == today_index
             assert_pay_period_invariants(db.session, user_id)
 
     def test_rebuilds_tail_keeps_current_and_historical(
@@ -162,9 +169,9 @@ class TestRegenerateHappyPath:
         with app.app_context():
             periods = _spanning_periods(db.session, seed_user, count=8)
             user_id = seed_user["user"].id
-            current_index = periods[3].period_index  # index 4
+            current_index = derived_span(periods[3]).period_index  # index 4
             current_start = periods[3].start_date
-            new_start = periods[3].end_date + timedelta(days=1)
+            new_start = last_covered_day(periods[3]) + timedelta(days=1)
 
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=3,
@@ -174,13 +181,13 @@ class TestRegenerateHappyPath:
 
             # Bootstrap (0) + retained 1..4 + freshly built 5..7.
             assert _index_set(user_id) == {0, 1, 2, 3, 4, 5, 6, 7}
-            assert [p.period_index for p in new_periods] == [5, 6, 7]
+            assert [derived_span(p).period_index for p in new_periods] == [5, 6, 7]
             assert new_periods[0].start_date == new_start
             # The in-progress period was not touched.
             kept = db.session.query(PayPeriod).filter_by(
-                user_id=user_id, period_index=current_index,
+                user_id=user_id, start_date=current_start,
             ).one()
-            assert kept.start_date == current_start
+            assert derived_span(kept).period_index == current_index
             assert_pay_period_invariants(db.session, user_id)
             assert all(r.passed for r in check_balance_anomalies(db.session))
             assert all(r.passed for r in check_referential_integrity(db.session))
@@ -196,7 +203,7 @@ class TestRegenerateHappyPath:
             periods = _spanning_periods(db.session, seed_user, count=6)
             user_id = seed_user["user"].id
             make_expense_template(db.session, seed_user)
-            new_start = periods[3].end_date + timedelta(days=1)
+            new_start = last_covered_day(periods[3]) + timedelta(days=1)
 
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=3,
@@ -217,7 +224,7 @@ class TestRegenerateHappyPath:
             periods = _spanning_periods(db.session, seed_user, count=6)
             user_id = seed_user["user"].id
             make_expense_template(db.session, seed_user)
-            new_start = periods[3].end_date + timedelta(days=1)
+            new_start = last_covered_day(periods[3]) + timedelta(days=1)
 
             new_periods = _regenerate_and_populate(
                 user_id, new_start_date=new_start, num_periods=3,
@@ -235,7 +242,7 @@ class TestRegenerateHappyPath:
         with app.app_context():
             periods = _spanning_periods(db.session, seed_user, count=6)
             user_id = seed_user["user"].id
-            new_start = periods[3].end_date + timedelta(days=1)
+            new_start = last_covered_day(periods[3]) + timedelta(days=1)
 
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=2,
@@ -246,7 +253,7 @@ class TestRegenerateHappyPath:
             schedule = pay_schedule_service.get_schedule(user_id)
             assert schedule.cadence_days == 7
             assert (
-                new_periods[0].end_date - new_periods[0].start_date
+                last_covered_day(new_periods[0]) - new_periods[0].start_date
             ).days + 1 == 7
 
     def test_balances_correct_after_regenerate(self, app, db, seed_user):
@@ -266,7 +273,7 @@ class TestRegenerateHappyPath:
             make_expense_template(db.session, seed_user, amount="1200.00")
             populate_in_a_fresh_pass(user_id, {p.id for p in periods})
             db.session.commit()
-            retained_end = periods[3].end_date  # index 4
+            retained_end = last_covered_day(periods[3])  # index 4
             new_start = retained_end + timedelta(days=1)
 
             before = seam_cash_balance_at(
@@ -287,7 +294,7 @@ class TestRegenerateHappyPath:
 
             last = all_periods(user_id)[-1]  # index 8
             assert seam_cash_balance_at(
-                account, scen, last.end_date,
+                account, scen, last_covered_day(last),
             ) == Decimal("-8600.00")  # 1000 - 8*1200
             assert_pay_period_invariants(db.session, user_id)
             assert all(r.passed for r in check_balance_anomalies(db.session))
@@ -395,7 +402,7 @@ class TestRegenerateRefusals:
             )
             db.session.commit()
             before = _count_periods(db.session, user_id)
-            new_start = periods[3].end_date + timedelta(days=1)
+            new_start = last_covered_day(periods[3]) + timedelta(days=1)
 
             with pytest.raises(PayPeriodLocked):
                 pay_period_admin.regenerate_pay_periods(
@@ -412,7 +419,7 @@ class TestRegenerateRefusals:
             user_id = seed_user["user"].id
             add_txn(db.session, seed_user, periods[5], "Cash", "50.00")  # idx 6
             db.session.commit()
-            new_start = periods[3].end_date + timedelta(days=1)
+            new_start = last_covered_day(periods[3]) + timedelta(days=1)
 
             with pytest.raises(PayPeriodDiscardRequired):
                 pay_period_admin.regenerate_pay_periods(
@@ -427,7 +434,7 @@ class TestRegenerateRefusals:
                 cadence_days=14, confirm_discard=True,
             )
             db.session.commit()
-            assert [p.period_index for p in new_periods] == [5, 6, 7]
+            assert [derived_span(p).period_index for p in new_periods] == [5, 6, 7]
             assert_pay_period_invariants(db.session, user_id)
 
     def test_overlapping_new_start_rejected_and_rolls_back(

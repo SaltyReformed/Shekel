@@ -1098,7 +1098,7 @@ class TestOneCalendarDerivationPerRender:
         -- deliberately, so that pass sees any rows the top-up creates.  It
         therefore cannot share the pass's calendar and derives its own.  Before
         C4 it counted ``PayPeriod.end_date >= as_of`` in SQL and derived
-        nothing; the column it counted is one plan step C4 drops.
+        nothing; the column it counted is one plan step C4-c dropped.
 
         **TWO is the bound, not an aspiration.**  A third would mean a producer
         below the pass resolving its own schedule again, which is what every

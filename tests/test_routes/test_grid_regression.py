@@ -41,7 +41,10 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.ref import Status, TransactionType
 from app.services import cash_ledger
 
-from tests._test_helpers import current_pay_period
+from tests._test_helpers import (
+    current_pay_period,
+    derived_span,
+)
 
 
 class TestPaydayWorkflowRegression:
@@ -541,12 +544,12 @@ class TestPaydayWorkflowRegression:
             # Past period: immediately before current.
             past_period = next(
                 p for p in seed_periods_today
-                if p.period_index == current_period.period_index - 1
+                if derived_span(p).period_index == derived_span(current_period).period_index - 1
             )
             # Future period: immediately after current (payback target).
             future_period = next(
                 p for p in seed_periods_today
-                if p.period_index == current_period.period_index + 1
+                if derived_span(p).period_index == derived_span(current_period).period_index + 1
             )
 
             # -- Create test transactions --

@@ -99,7 +99,9 @@ from tests._test_helpers import (
     create_settled_cash_transaction,
     create_settled_transfer,
     current_pay_period,
+    derived_span,
     insert_trueup_event,
+    last_covered_day,
     loan_params_for,
     make_appreciating_account,
     make_investment_account,
@@ -534,7 +536,7 @@ class TestBalanceMapLoan:
             # first scheduled payment: the trued-up balance, held flat.
             post_anchor = [
                 p for p in periods
-                if anchor_date <= p.end_date < first_payment
+                if anchor_date <= last_covered_day(p) < first_payment
             ]
             assert post_anchor, "expected a post-anchor pre-first-payment period"
             assert seam[post_anchor[0].id] == schedule.projection_seed
@@ -547,7 +549,7 @@ class TestBalanceMapLoan:
             # loan opened at $240,000 and no payment was ever recorded, so that is
             # what it owed then.  The $200,000 assertion is dated today and is NOT
             # back-projected over the past.
-            pre_anchor = [p for p in periods if p.end_date < anchor_date]
+            pre_anchor = [p for p in periods if last_covered_day(p) < anchor_date]
             assert pre_anchor, "expected a pre-anchor period"
             assert seam[pre_anchor[-1].id] == Decimal("240000.00")
 
@@ -637,7 +639,7 @@ class TestBalanceMapLoan:
             )
             future = [
                 p for p in periods
-                if p.start_date > bctx.as_of and p.end_date > first_payment
+                if p.start_date > bctx.as_of and last_covered_day(p) > first_payment
             ]
             assert future, "expected a future period past the first payment"
             fp = future[0]
@@ -645,7 +647,7 @@ class TestBalanceMapLoan:
             # forward walk reduces the balance to -- recomputed independently.
             due_by_end = [
                 row for row in schedule.schedule
-                if not row.is_confirmed and row.payment_date <= fp.end_date
+                if not row.is_confirmed and row.payment_date <= last_covered_day(fp)
             ]
             assert due_by_end, "expected an installment due by the future period"
             expected = max(
@@ -1086,7 +1088,7 @@ class TestInvestmentGrowthSinceAnchor:
             )
 
             result = balance_at.investment_growth_since_anchor(
-                inv, bctx, current,
+                inv, bctx, derived_span(current),
             )
             assert result is not None
             growth, contributed = result
@@ -1128,10 +1130,10 @@ class TestInvestmentGrowthSinceAnchor:
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
-            assert current.end_date > date.today()  # the dates differ
+            assert last_covered_day(current) > date.today()  # the dates differ
 
             growth, contributed = balance_at.investment_growth_since_anchor(
-                inv, bctx, current,
+                inv, bctx, derived_span(current),
             )
             balances = balance_at.balance_map(inv, bctx)
             assert growth + contributed == (
@@ -1167,7 +1169,7 @@ class TestInvestmentGrowthSinceAnchor:
             )
 
             result = balance_at.investment_growth_since_anchor(
-                inv, bctx, current,
+                inv, bctx, derived_span(current),
             )
             assert result is not None
             growth, contributed = result
@@ -1470,7 +1472,7 @@ class TestBalanceAt:
             # Kind-correct scalar == kind-correct map at the period's END,
             # and STRICTLY BELOW it on the period's first day.
             assert balance_at.balance_at(
-                hysa, bctx, periods[6].end_date,
+                hysa, bctx, last_covered_day(periods[6]),
             ) == full_map[periods[6].id]
             assert seam < full_map[periods[6].id]
             # And it ACCRUES: strictly above the flat no-interest cash carry
@@ -1507,7 +1509,7 @@ class TestBalanceAt:
             schedule = net_worth_kernel.generate_debt_schedules(
                 [mortgage], bctx,
             )[mortgage.id]
-            as_of = periods[7].end_date  # future under seed_periods_today
+            as_of = last_covered_day(periods[7])  # future under seed_periods_today
 
             seam = balance_at.balance_at(mortgage, bctx, as_of)
 
@@ -1557,7 +1559,7 @@ class TestBalanceAt:
             full_map = balance_at.balance_map(inv, bctx)
             # The map IS the scalar at each period's end date.
             assert balance_at.balance_at(
-                inv, bctx, periods[6].end_date,
+                inv, bctx, last_covered_day(periods[6]),
             ) == full_map[periods[6].id]
             # And the scalar is DATE-precise: strictly less on the period's
             # first day than on its last, where it used to be equal.
@@ -1588,7 +1590,7 @@ class TestBalanceAt:
 
             full_map = balance_at.balance_map(prop, bctx)
             assert balance_at.balance_at(
-                prop, bctx, periods[6].end_date,
+                prop, bctx, last_covered_day(periods[6]),
             ) == full_map[periods[6].id]
             first_day = balance_at.balance_at(prop, bctx, periods[6].start_date)
             assert first_day < full_map[periods[6].id]
@@ -1765,7 +1767,7 @@ class TestMultiLoanIsolation:
             anchor_date = date.today()
             anchor_period = next(
                 p for p in periods
-                if p.start_date <= anchor_date <= p.end_date
+                if p.start_date <= anchor_date <= last_covered_day(p)
             )
             # The period the true-ups landed in -> each loan's OWN trued-up
             # balance (both are still pre-first-payment there).
@@ -1774,7 +1776,7 @@ class TestMultiLoanIsolation:
 
             # A period that ended before the true-ups -> each loan's OWN ledger
             # opening (no payment was recorded against either).
-            pre_anchor = [p for p in periods if p.end_date < anchor_date]
+            pre_anchor = [p for p in periods if last_covered_day(p) < anchor_date]
             assert pre_anchor, "expected a pre-anchor period"
             earlier = pre_anchor[-1].id
             assert seam_maps[loan_a.id][earlier] == Decimal("240000.00")
@@ -2152,7 +2154,7 @@ class TestOnlyALoanIsNotATransactionSum:
                 one_period = Decimal("9999.00") * (
                     1 + growth_engine.span_return_rate(
                         _configured_annual_rate(acct),
-                        periods[5].start_date, periods[5].end_date,
+                        periods[5].start_date, last_covered_day(periods[5]),
                     )
                 )
                 landed = after[periods[5].id] - before[acct.id][periods[5].id]
@@ -2279,7 +2281,7 @@ class TestCashFlowView:
             assert len(seam) == len(periods)  # the loop is not vacuous
             for period in periods:
                 assert seam[period.id] == balance_at.cash_balance_at(
-                    account, bctx, period.end_date,
+                    account, bctx, last_covered_day(period),
                 ), f"map and scalar disagree at period {period.id}"
 
     def test_cash_map_omits_interest_unlike_kind_correct_map(
@@ -2381,7 +2383,7 @@ class TestCashFlowView:
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
-            as_of = periods[-1].end_date
+            as_of = last_covered_day(periods[-1])
 
             cash = balance_at.cash_balance_at(hysa, bctx, as_of)
             # No transactions, no interest -> flat at the anchor, strictly
@@ -4266,10 +4268,10 @@ class TestLoanNotYetOriginated:
             bctx = BalanceContext.build(seed_user["user"].id)
             current = next(
                 p for p in periods
-                if p.start_date <= bctx.as_of <= p.end_date
+                if p.start_date <= bctx.as_of <= last_covered_day(p)
             )
             assert current.start_date == date(2026, 3, 13)
-            assert current.end_date == date(2026, 3, 26)
+            assert last_covered_day(current) == date(2026, 3, 26)
 
             hero = balance_at.balance_at(acct, bctx, bctx.as_of)
             trend = balance_at.balance_map(acct, bctx)[current.id]
@@ -4283,8 +4285,8 @@ class TestLoanNotYetOriginated:
             # map would do WITHOUT the current-period clamp -- really does report
             # the full opening here (period end 2026-03-26 is after origination
             # 2026-03-25).  The clamp to ctx.as_of is load-bearing, not decorative.
-            unclamped = positions(acct, bctx, [current.end_date])
-            assert unclamped[current.end_date] == self.OPENING
+            unclamped = positions(acct, bctx, [last_covered_day(current)])
+            assert unclamped[last_covered_day(current)] == self.OPENING
 
     def test_liability_band_owes_nothing_before_origination(
         self, app, db, seed_user, seed_periods,
@@ -4908,11 +4910,12 @@ class TestScalarAndMapAgree:
             # Period-END keyed (C2), clamped to today for the current period,
             # whose end is future (the scalar would project there, not confirm).
             probe = (
-                min(period.end_date, bctx.as_of) if begun else period.end_date
+                min(last_covered_day(period), bctx.as_of) if begun else last_covered_day(period)
             )
             scalar = balance_at.balance_at(acct, bctx, probe)
             assert bmap[period.id] == scalar, (
-                f"{shape}: period {period.start_date}..{period.end_date} "
+                f"{shape}: period {period.start_date}.."
+                f"{last_covered_day(period)} "
                 f"({'begun' if begun else 'future'}) -- "
                 f"map={bmap[period.id]} scalar@{probe}={scalar}"
             )
@@ -5226,7 +5229,7 @@ class TestRecordsBalanceAt:
             account = seed_user["account"]
             ctx = balance_at.BalanceContext.build(user_id)
             periods = all_periods(user_id)
-            day = periods[1].end_date
+            day = last_covered_day(periods[1])
 
             assert balance_at.records_balance_at(account, ctx, day) == (
                 balance_at.cash_balance_at(account, ctx, day)
@@ -5246,7 +5249,7 @@ class TestRecordsBalanceAt:
             user_id = seed_user["user"].id
             account = seed_user["account"]
             periods = all_periods(user_id)
-            day = periods[1].end_date
+            day = last_covered_day(periods[1])
 
             create_settled_cash_transaction(
                 seed_user, db.session, periods[1], Decimal("125.00"),
@@ -5287,7 +5290,7 @@ class TestRecordsBalanceAt:
             user_id = seed_user["user"].id
             account = seed_user["account"]
             periods = all_periods(user_id)
-            day = periods[1].end_date
+            day = last_covered_day(periods[1])
 
             records = balance_at.records_balance_at(
                 account, balance_at.BalanceContext.build(user_id), day,
@@ -5331,12 +5334,12 @@ class TestRecordsBalanceAt:
             )
 
             assert balance_at.records_balance_at(
-                inv, ctx, periods[-1].end_date,
+                inv, ctx, last_covered_day(periods[-1]),
             ) is None
             # Non-vacuity: the plain account beside it DOES answer, so this is a
             # property of the KIND rather than of the fixture.
             assert balance_at.records_balance_at(
-                seed_user["account"], ctx, periods[-1].end_date,
+                seed_user["account"], ctx, last_covered_day(periods[-1]),
             ) is not None
 
     def test_it_refuses_an_instant_where_a_civil_day_is_meant(
@@ -5351,7 +5354,7 @@ class TestRecordsBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             ctx = balance_at.BalanceContext.build(user_id)
-            day = current_pay_period(user_id).end_date
+            day = last_covered_day(current_pay_period(user_id))
 
             with pytest.raises(TypeError):
                 balance_at.records_balance_at(
@@ -5402,8 +5405,8 @@ class TestCashAnchorHistory:
             db.session.commit()
 
             for balance, day in (
-                (Decimal("500.00"), periods[1].end_date),
-                (Decimal("400.00"), periods[2].end_date),
+                (Decimal("500.00"), last_covered_day(periods[1])),
+                (Decimal("400.00"), last_covered_day(periods[2])),
             ):
                 anchor_service.apply_anchor_true_up(
                     account=account, new_balance=balance, observed_on=day,
@@ -5416,8 +5419,8 @@ class TestCashAnchorHistory:
 
             assert history.reconcilable is True
             assert [row.observed_on for row in history.rows] == [
-                periods[2].end_date,
-                periods[1].end_date,
+                last_covered_day(periods[2]),
+                last_covered_day(periods[1]),
                 # The ORIGINATION assertion, dated on the seeded owner's
                 # bootstrap day (plan step X-f3c-2c).  ``seed_periods_today``
                 # drops that pay PERIOD and used to re-home the assertion with
@@ -5530,7 +5533,7 @@ class TestCashAnchorHistory:
             )
             anchor_service.apply_anchor_true_up(
                 account=later, new_balance=Decimal("2746.58"),
-                observed_on=periods[3].end_date,
+                observed_on=last_covered_day(periods[3]),
             )
             db.session.commit()
 
@@ -5549,7 +5552,7 @@ class TestCashAnchorHistory:
             # +$300.00 recorded, $2,746.58 declared again, so the declaration
             # takes $300.00 back out.
             trued_up = history.rows[0]
-            assert trued_up.observed_on == periods[3].end_date
+            assert trued_up.observed_on == last_covered_day(periods[3])
             assert trued_up.recorded == Decimal("2746.58")
             assert trued_up.ledger == Decimal("3046.58")
             assert trued_up.correction == Decimal("-300.00")
@@ -5580,7 +5583,7 @@ class TestCashAnchorHistory:
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             anchor_service.apply_anchor_true_up(
                 account=hysa, new_balance=Decimal("5100.00"),
-                observed_on=periods[2].end_date,
+                observed_on=last_covered_day(periods[2]),
             )
             db.session.commit()
 
@@ -5602,7 +5605,7 @@ class TestCashAnchorHistory:
             # of the KIND rather than of the fixture.
             anchor_service.apply_anchor_true_up(
                 account=seed_user["account"], new_balance=Decimal("900.00"),
-                observed_on=periods[2].end_date,
+                observed_on=last_covered_day(periods[2]),
             )
             db.session.commit()
             plain = balance_at.cash_anchor_history(
@@ -5671,7 +5674,7 @@ class TestCashAnchorHistory:
             user_id = seed_user["user"].id
             account = seed_user["account"]
             periods = all_periods(user_id)
-            back_day = periods[1].end_date
+            back_day = last_covered_day(periods[1])
             typed_day = periods[3].start_date
 
             append_balance_assertion(
@@ -5681,7 +5684,7 @@ class TestCashAnchorHistory:
             )
             append_balance_assertion(
                 db.session, account, periods[2], Decimal("710.00"),
-                settle_instant_on(periods[2].end_date),
+                settle_instant_on(last_covered_day(periods[2])),
             )
             db.session.commit()
 
@@ -5692,7 +5695,7 @@ class TestCashAnchorHistory:
 
             assert by_day[back_day].recorded_on == typed_day
             assert by_day[back_day].recorded_on != back_day
-            same_day = by_day[periods[2].end_date]
+            same_day = by_day[last_covered_day(periods[2])]
             assert same_day.recorded_on == same_day.observed_on
 
     def test_three_declarations_on_one_day_all_appear_and_chain(
@@ -5711,7 +5714,7 @@ class TestCashAnchorHistory:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            day = all_periods(user_id)[1].end_date
+            day = last_covered_day(all_periods(user_id)[1])
 
             for balance in (Decimal("1172.44"), Decimal("1133.47"),
                             Decimal("1087.61")):

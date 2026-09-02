@@ -13,16 +13,19 @@ from datetime import date
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.models.pay_schedule import PaySchedule
 from app.models.transaction import Transaction
 from app.services import pay_period_write
-from tests._test_helpers import add_txn, freeze_today
+from tests._test_helpers import (
+    add_txn,
+    freeze_today,
+    last_covered_day,
+)
 
 
 def _spans(session, user_id):
     """Return the owner's ``(start_date, end_date)`` spans, payday ascending."""
     return [
-        (period.start_date, period.end_date)
+        (period.start_date, last_covered_day(period))
         for period in session.query(PayPeriod)
         .filter_by(user_id=user_id)
         .order_by(PayPeriod.start_date)
@@ -134,7 +137,7 @@ class TestPayPeriodGenerate:
 
         Ruling **R-PC1**'s forward-only rule, through the route.  The bound is
         the latest PAYDAY plus ``MIN_MATERIALISABLE_CADENCE_DAYS`` since plan
-        step C3-b -- it was the latest ``end_date``, a column plan step C4
+        step C3-b -- it was the latest ``end_date``, a column plan step C4-c
         drops -- and what it now refuses is exactly the mid-schedule insert
         plan step C6 defers.
         """
@@ -350,62 +353,56 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
             assert survivor.settled_on == date(2026, 6, 15)
             assert survivor.pay_period_id == seed_periods[-1].id
 
-    def test_generate_accepts_a_batch_that_pulls_the_horizon_back(
+    def test_generate_can_only_WIDEN_the_covered_interval(
         self, app, db, auth_client, seed_user, seed_periods, monkeypatch,
     ):
-        """The legacy-data door, which returned 422 under its own error key.
+        """A batch through this door cannot pull the horizon back at all.
 
-        **This shape needs LEGACY data to reach the write at all**, and saying
-        so is the point: after the forward-only floor became one full cadence,
-        a batch that only ADDS paydays always widens the covered interval.
-        What can still pull the horizon back is a stored cadence SHORTER than
-        the schedule it generated, which no door can now create (the cadence
-        rule) and which pre-C3-b data carries (finding **P28**).  The schedule
-        row is edited directly to build it.
+        **This case asserted the OPPOSITE until plan step
+        ``pay_calendar:C4-c``**, and the inversion is that step in one
+        property.  The horizon was the LAST ROW'S STORED ``end_date``, written
+        at whatever cadence the batch that created it ran at; editing
+        ``budget.pay_schedule.cadence_days`` afterwards -- finding **P28**'s
+        legacy shape -- left the two disagreeing, and a later generate
+        rewrote the stored end DOWN to the new cadence's projection.  A door
+        could therefore take a settled row's cash day out of every paycheck.
 
-        The 180-day paycheck ends 2026-12-27 and holds a row that cleared
-        2026-08-15; recording 2026-07-03 at cadence 2 pulls the horizon back to
-        2026-07-04, past it.  That is now a redirect and a created period, not
-        a 422 -- and the ``schedule`` error key the refusal introduced has no
-        remaining producer.
+        There is one value now.  The floor is ``latest payday + the stored
+        cadence`` and the new horizon is ``new payday + the new cadence - 1``,
+        so a batch that RECORDS a payday leaves the horizon at least
+        ``old horizon + the new cadence`` -- strictly greater, for every
+        cadence in 1..365.  A batch every one of whose requested paydays
+        already exists records none, and ``_apply`` then skips
+        ``upsert_schedule`` entirely, so the horizon is unchanged and the post
+        is still accepted: **non-decreasing** is the property this door has,
+        and strictly increasing is what it has when it writes.  *An adversarial
+        review corrected that sentence, 2026-09-01.*  Either way the state the
+        deleted case built is unreachable through this door, and this is the
+        assertion that says so rather than the absence of a test.
+
+        Driven at the SMALLEST cadence the schema admits, because that is where
+        the margin is thinnest: one day.
         """
         freeze_today(monkeypatch, date(2025, 12, 1))
         with app.app_context():
             user_id = seed_user["user"].id
-            row = self._settled_row_past(
-                db.session, seed_user, seed_periods[-1], date(2026, 8, 15),
-            )
-            row_id, home_period_id = row.id, seed_periods[-1].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 1),
                 num_periods=1, cadence_days=180,
             )
-            db.session.query(PaySchedule).filter_by(user_id=user_id).update(
-                {"cadence_days": 2}, synchronize_session=False,
-            )
             db.session.commit()
-            before = db.session.query(PayPeriod).filter_by(
-                user_id=user_id,
-            ).count()
-            spans = _spans(db.session, user_id)
-            assert any(start <= date(2026, 8, 15) <= end for start, end in spans)
+            before_horizon = max(end for _start, end in _spans(db.session, user_id))
+            # 2026-07-01 + 180 - 1.
+            assert before_horizon == date(2026, 12, 27)
 
+            # The floor is the latest payday plus the STORED cadence, so this
+            # is the earliest day the door accepts.
             resp = auth_client.post("/pay-periods/generate", data={
-                "start_date": "2026-07-03", "num_periods": "1",
-                "cadence_days": "2",
+                "start_date": "2026-12-28", "num_periods": "1",
+                "cadence_days": "1",
             })
 
             assert resp.status_code == 302
-            assert db.session.query(PayPeriod).filter_by(
-                user_id=user_id,
-            ).count() == before + 1
-            # The horizon really did move BACK past the settled day -- without
-            # this the test would pass even if the write stranded nothing.
-            spans = _spans(db.session, user_id)
-            assert max(end for _start, end in spans) == date(2026, 7, 4)
-            assert not any(
-                start <= date(2026, 8, 15) <= end for start, end in spans
-            )
-            survivor = db.session.get(Transaction, row_id)
-            assert survivor.settled_on == date(2026, 8, 15)
-            assert survivor.pay_period_id == home_period_id
+            after_horizon = max(end for _start, end in _spans(db.session, user_id))
+            assert after_horizon == date(2026, 12, 28)
+            assert after_horizon > before_horizon

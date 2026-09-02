@@ -54,6 +54,9 @@ from app.utils.dates import display_today
 # pytest fixture from conftest.py.
 from scripts.seed_user import _check_production_password
 from scripts.seed_user import seed_user as run_seed_user
+from tests._test_helpers import (
+    derived_span,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -528,11 +531,11 @@ class TestSeedUserProvisioning:
             periods = (
                 db.session.query(PayPeriod)
                 .filter_by(user_id=user.id)
-                .order_by(PayPeriod.period_index)
+                .order_by(PayPeriod.start_date)
                 .all()
             )
             assert len(periods) == 4
-            assert [p.period_index for p in periods] == [0, 1, 2, 3]
+            assert [derived_span(p).period_index for p in periods] == [0, 1, 2, 3]
             assert periods[0].start_date == display_today()
             schedule = (
                 db.session.query(PaySchedule).filter_by(user_id=user.id).one()

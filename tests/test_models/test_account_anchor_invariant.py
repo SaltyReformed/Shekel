@@ -90,6 +90,7 @@ from app.services.auth_service import hash_password
 from app.utils.dates import display_today
 from tests._test_helpers import (
     current_pay_period,
+    last_covered_day,
     registration_spec,
 )
 
@@ -245,11 +246,11 @@ class TestCreationPathsWriteAnchor:
             # whole schedule now, not one placeholder.
             periods = db.session.query(PayPeriod).filter_by(
                 user_id=user.id,
-            ).order_by(PayPeriod.period_index).all()
+            ).order_by(PayPeriod.start_date).all()
             assert len(periods) == 3
             assert periods[0].start_date == last_payday
-            assert periods[0].end_date == last_payday + timedelta(days=13)
-            assert periods[0].start_date <= signup_day <= periods[0].end_date
+            assert last_covered_day(periods[0]) == last_payday + timedelta(days=13)
+            assert periods[0].start_date <= signup_day <= last_covered_day(periods[0])
 
             histories = db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account.id,
@@ -315,7 +316,7 @@ class TestCreationPathsWriteAnchor:
             assert (
                 current_period.start_date
                 <= history.observed_on
-                <= current_period.end_date
+                <= last_covered_day(current_period)
             )
             assert history.anchor_balance == Decimal("1500.00")
 
