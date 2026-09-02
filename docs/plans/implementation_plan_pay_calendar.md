@@ -6,12 +6,14 @@
 ticked at `C2-f3e` (`4f134bf4`). Built: **C1**, **C2** whole, **C3**. Section 4 carries each commit;
 what reached `main` is a MEASUREMENT (`git log --oneline origin/main..dev`).
 
-**`C4` is IN FLIGHT and is the deepest cut in the arc.** Decomposed into seven leaves 2026-08-25
+**`C4` is IN FLIGHT and `C4-c`, its deepest cut, has SHIPPED (`c703e1c7`).** Decomposed into seven leaves 2026-08-25
 (developer) once its reader census was re-measured -- the leaves ARE that census, which row
 **P70**'s query-position count structurally could not see.
-**All five `C4-a` reader leaves have SHIPPED, and `C4-b` was split in two on 2026-09-01**
-(developer, **R-PC40**) once its real prerequisite was measured: `C4-b-1` takes the TEST CORPUS off
-hand-built pay periods, `C4-b-2` adds the key, `C4-c` drops the columns.
+**All five `C4-a` reader leaves, both `C4-b` leaves and `C4-c` have SHIPPED**; `C4-d` is the one
+open leaf, and it is the same defect one tier up -- in the TYPE rather than in the schema.  `C4-b`
+was split in two on 2026-09-01 (developer, **R-PC40**) once its real prerequisite was measured:
+`C4-b-1` took the TEST CORPUS off hand-built pay periods, `C4-b-2` added the key, `C4-c` dropped
+the columns.
 
 **`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
 salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
@@ -31,15 +33,11 @@ id could be another arc's (`conventions.md` rules 9 and 10).
 ## 0. Sequencing against the other two arcs
 
 Three arcs are live. **A step with no code yet has no measured file set**, and the first draft
-claimed one for C1-C3 anyway. What IS measured is the surface C4 must cross, by AST over `app/`:
-
-```text
-.end_date      35 files / 72 accesses.  33 are PayPeriod; 2 read only RecurrenceRule
-               (loan_recurrence_sync, recurrence/_authoring) and are untouched.  At
-               least 7 of the 33 read it off a DERIVED value that survives C4
-               (SchedulePeriod, TrendPoint, synthetic periods), so 35 OVERSTATES it.
-.period_index  21 files / 60 accesses.
-```
+claimed one for C1-C3 anyway. The surface `C4` had to cross was measured by AST over `app/` on
+2026-08-08 and is a HISTORICAL figure: `.end_date` 35 files / 72 accesses (33 of them `PayPeriod`),
+`.period_index` 21 files / 60 accesses. **`C4-c` crossed it**; the same census over `app/` today
+returns ZERO reads of either name reached through a `budget.pay_periods` row, and every surviving
+`.end_date` is a `DerivedPeriod`, `TrendPoint`, `SchedulePeriod` or `RecurrenceRule`.
 
 C2 is not merely adjacent to the balance arc's **X-l**, it IS that step, and it is also recurrence
 **R-F12**: three arcs asking for one total calendar. X-l's stated root -- "the pay calendar is a
@@ -58,16 +56,18 @@ read and no stored ordinal is left for an inserted payday to re-phase (row **P11
 
 ## 1. Root cause
 
-`budget.pay_periods` stores three values per row and only one of them is a fact.
+`budget.pay_periods` STORED three values per row and only one of them was a fact.  **`C4-c` dropped
+the other two on 2026-09-01 (`c703e1c7`), so this section is the arc's ROOT CAUSE as it stood, kept
+because everything below is argued from it.**  The table holds `start_date` and nothing else now.
 
-| column | is it a fact? | what it actually is |
+| column | is it a fact? | what it actually was |
 |---|---|---|
 | `start_date` | **yes** | the day money arrived |
 | `end_date` | no | `lead(start_date) - 1` -- the day before the NEXT payday |
 | `period_index` | no | `row_number() - 1` over the user's paydays in date order |
 
-`pay_period_service`'s own module docstring states the derivation it then does not enforce
-("end_date = day before next payday"); what the writer computes is `start_date + cadence_days - 1`,
+`pay_period_service`'s own module docstring stated the derivation it then did not enforce
+("end_date = day before next payday"); what the writer computed was `start_date + cadence_days - 1`,
 which equals the definition only when the next batch happens to start at `start + cadence`.
 
 **Two derived values stored beside the fact they derive from, with nothing reconciling them.** Every
@@ -255,8 +255,9 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `historical/pay_calendar_as_built_2026-08-16.md`. **Must not be undone**: `pay_period_write`
       is the ONE place in `app/` that constructs or deletes a pay period, and R-PC1's coverage half
       is DELETED.
-- [ ] **C4 -- drop the derived columns.** The DECOMPOSED parent, split into SEVEN leaves 2026-08-25
-      (developer); it ticks with `C4-c`. Its FIRST commit landed before the split (row **P70**): the
+- [ ] **C4 -- drop the derived columns.** The DECOMPOSED parent, split into seven leaves 2026-08-25
+      and into EIGHT on 2026-09-01 when `C4-b` split in two (**R-PC40**); it ticks with `C4-d`, its
+      last open leaf, NOT with `C4-c` -- the drop shipped and the cadence TYPE did not. Its FIRST commit landed before the split (row **P70**): the
       rolling top-up's remaining-paycheck count moved onto `PayCalendar.current_and_future` and the
       top-up itself left for `pay_period_rolling`, `pay_period_admin` having had nine lines under
       its ceiling (row **P31**). Closes **P1**, **P4**, **P5**, **P8**, **P9**.
@@ -312,41 +313,17 @@ entry's overflow; nothing live depends on a line here.
       rather than deleting it. **Blocked by `C4-b-2`, not `C4-c`** -- the new type is true only once
       `None` means "no schedule row", which deleting the inferring arm is what establishes; `C4-c`'s
       columns are not this leaf's subject. *Call-site counts measured 2026-09-01; re-run them.*
-- [ ] **C4-c -- the drop.**
-
-`pay_period_write._write_derivation` stops authoring the two columns and `PayPeriodOverlapStored`
-goes with the stored-versus-derived comparison it raises from; `MIN_MATERIALISABLE_CADENCE_DAYS` and
-`PayPeriod.__repr__`'s ordinal go with them. Then ONE destructive migration: `DROP COLUMN end_date`,
-`DROP COLUMN period_index`, and **three** constraints with them -- `ck_pay_periods_date_order`,
-`ck_pay_periods_positive_index` and `uq_pay_periods_user_index`. It carries the `Review:` line.
-**The downgrade is NOT unconditionally lossless and must say so**: re-adding
-`CHECK (start_date < end_date)` fails outright on any one-day period this legalises (row **P9**),
-and the LAST row's rebuilt end is a projection off `cadence_days` as it reads at downgrade time.
-Deletes the four surviving fences of section 1, including `integrity_check` BA-03 / BA-04 / BA-07
-and `_pp_assert_structure`'s invariants 1, 2, 3a and 3b, and re-bases every hand-built
-`PayPeriod(...)` that passes a dropped column --
-**counted by the grep in (d) at the time, never from a number written here**, which stood at 63
-across 35 files before `C4-b-1`. **This leaf needs its own review pass**; it is the deepest cut into
-the spine.
-
-**What the shipped `C4-a` leaves oblige this one to**, moved here from their own entries when that
-span was condensed. (a) The reconcile panel's three arms scope ownership by the calendar's own saved
-period ids -- the first build's "the refusal is unreachable" argument was measured FALSE, because
-`/grid` appends a payday AND populates it in one transaction. (b) `_build_grid_row_data` builds no
-entry map: `_build_entry_maps` is the one place that does (**R-PC35**). (c) Re-run the census
-PREDICATE stated above rather than trusting any list: `C4-a-5` found a reader in `tests/` that this
-document's own paragraph and a fresh grep both missed, because deleting an accessor censuses its
-class where a search cannot. (d) **Do not read a COUNT of hand-built `PayPeriod(...)` constructions
-out of any document, including this one.** `C4-b-1` converted the 21 sites that build an ORDINARY
-owner; what stays hand-built is deliberate -- the corrupt-state cases, the pure-value oracles, and
-row **P78**'s `_build_cross_page_calendar_periods`, which builds 36 calendar-MONTHLY periods no door
-can write. `grep -rn 'PayPeriod($' tests/` answered **38 across 19 files** on 2026-09-01; re-run it.
-
-*The C5 span is COMPLETE and is condensed here under rule 5, to buy the room `C4-b`'s decomposition
-needed; the commits are the record and `steps.md` carries each row's own sentence.*
+- [x] **C4-c -- the drop.** `c703e1c7`. Migration `b7a41e2c9d63`, RE-PARENTED onto `c9a4e7b21d58`;
+      63 rows byte-identical across that adjacency, the off-cadence control shown able to DISAGREE
+      first. `upgrade()` REPORTS a disagreeing stored pair rather than discarding it; the downgrade
+      names its three missing promises and a one-day period aborts it whole. **What a later step
+      must obey**: a migration test predating this head must rewind first (**P79**). Closed **P1**,
+      **P4**, **P5**, **P9**, **P26**, **P33**, **P53**, **P70**; opened **P79**, **P80**.
 
 - [x] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** `4e8b40b3`. The
-      decomposed parent, ticked with `C5b`.
+      decomposed parent, ticked with `C5b`.  This span is COMPLETE and condensed under rule 5, to
+      buy the room `C4-b`'s decomposition needed; the commits are the record and `steps.md` carries
+      each row's own sentence.
 - [x] **C5a -- delete what is now unconstructible.** `fe365de1`. Ticked at `C2-b2`; ticks
       `recurrence:R-F10`.
 - [x] **C5b -- a paycheck may owe one template more than once.** `4e8b40b3`. One commit under two
