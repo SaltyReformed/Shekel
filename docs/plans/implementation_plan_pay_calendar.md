@@ -315,10 +315,10 @@ entry's overflow; nothing live depends on a line here.
       columns are not this leaf's subject. *Call-site counts measured 2026-09-01; re-run them.*
 - [x] **C4-c -- the drop.** `c703e1c7`. Migration `b7a41e2c9d63`, RE-PARENTED onto `c9a4e7b21d58`;
       63 rows byte-identical across that adjacency, the off-cadence control shown able to DISAGREE
-      first. `upgrade()` REPORTS a disagreeing stored pair rather than discarding it; the downgrade
-      names its three missing promises and a one-day period aborts it whole. **What a later step
-      must obey**: a migration test predating this head must rewind first (**P79**). Closed **P1**,
-      **P4**, **P5**, **P9**, **P26**, **P33**, **P53**, **P70**; opened **P79**, **P80**.
+      first. `upgrade()` REPORTS a disagreeing stored pair; the downgrade names its three missing
+      promises and a one-day period aborts it whole. **What a later step must obey**: a migration
+      test predating this head must rewind first (**P79**). Closed TEN rows -- **P1**, **P4**,
+      **P5**, **P9**, **P26**, **P27**, **P28**, **P33**, **P53**, **P70**; opened **P79**, **P80**.
 
 - [x] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** `4e8b40b3`. The
       decomposed parent, ticked with `C5b`.  This span is COMPLETE and condensed under rule 5, to
