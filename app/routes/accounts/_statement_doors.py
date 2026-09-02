@@ -351,6 +351,11 @@ def submitted_match(submitted) -> MatchSubmission:
         line_ids=frozenset(submitted["line_ids"]),
         rows=frozenset(submitted["rows"]),
         accepted_difference=submitted["residual"],
+        # WHICH member that difference belongs to (plan step
+        # ``bank_import:X-gj-3a``).  ``None`` on every surface that does not
+        # render the control, which is what the schema's own ``load_default``
+        # says and what the door reads as *nothing says which*.
+        attributed_to=submitted["difference_on"],
     )
 
 

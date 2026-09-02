@@ -8,11 +8,13 @@ finding **N-336** asks for took the file past its line cap.  Nothing moved
 across it: :func:`resolve_rows` called nothing in the write half and the write
 half calls nothing here, so the split is the call graph's own shape.
 
-**FIVE refusals live here and they share one subject**: whether what a body
+**SIX refusals live here and they share one subject**: whether what a body
 sent is what this pass could have offered.  Two are about the LINES -- a line
-this account does not hold, and one another match has claimed -- and three
+this account does not hold, and one another match has claimed -- and four
 about the ROWS: a row this pass could not offer or can no longer price, one
-subject named twice, and a row that has MOVED since the screen described it.
+subject named twice, a row that has MOVED since the screen described it, and
+an ATTRIBUTION naming a row the submission does not carry (plan step
+``bank_import:X-gj-3a``).
 The refusals in :mod:`._accept` are about the submission's SHAPE instead -- an
 empty side, a parent matched beside its own child -- and the ones in
 :mod:`._variance` are about the two sides DISAGREEING, which since plan step
@@ -180,6 +182,28 @@ def resolve_rows(
         raise ValidationError(
             "This match names the same row more than once.  Reload the page "
             "and try again; nothing was changed."
+        )
+    if (
+        submission.attributed_to is not None
+        and submission.attributed_to not in submission.rows
+    ):
+        # **The attribution is a POINTER into the rows and this is what makes
+        # it one** (plan step ``bank_import:X-gj-3a``).  It is refused HERE,
+        # beside the duplicate-subject refusal above, because both are facts
+        # about the SUBMISSION as a set of rows rather than about any row's
+        # state -- and because refusing it before the offer set is read means
+        # a body naming a row it does not carry never reaches the arithmetic
+        # that would decide the remedy.
+        #
+        # **Compared as a WHOLE reviewed value rather than by subject.**  The
+        # pane renders the option's value as the row's own token, so the two
+        # fields are one string in any browser; a body whose attribution
+        # carries a different figure or revision from the row it points at is
+        # describing two states of one row, which is finding **N-336**'s shape
+        # with the halves inside one submission.
+        raise ValidationError(
+            "This match says its difference belongs to a row it does not "
+            "include.  Reload the page and try again; nothing was changed."
         )
     offered = [
         row for row in unmatched_rows(scope.candidates, matched)

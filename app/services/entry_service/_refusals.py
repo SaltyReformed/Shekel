@@ -59,7 +59,7 @@ from app.utils.dates import display_today
 #:
 #: **What the miscount cost is measured.**  Ruling **R-FW**'s purchase-day
 #: correction submits ``purchased_on`` beside ``settled_on`` in ONE call
-#: (``statement_match._accept._apply_day``), so on the developer's own
+#: (``statement_match._moving._apply_day``), so on the developer's own
 #: statement 13 of the 15 corrections the review screen offered were refused by
 #: a guard about what a row COST, for a field that changes no cost -- and the
 #: 13 include the whole 2026-04-29 bookkeeping session ruling R-FW exists for.
