@@ -6,14 +6,14 @@
 ticked at `C2-f3e` (`4f134bf4`). Built: **C1**, **C2** whole, **C3**. Section 4 carries each commit;
 what reached `main` is a MEASUREMENT (`git log --oneline origin/main..dev`).
 
-**`C4` is IN FLIGHT and `C4-c`, its deepest cut, has SHIPPED (`c703e1c7`).** Decomposed into seven leaves 2026-08-25
-(developer) once its reader census was re-measured -- the leaves ARE that census, which row
-**P70**'s query-position count structurally could not see.
+**`C4` is IN FLIGHT and `C4-c`, its deepest cut, has SHIPPED (`c703e1c7`).** Decomposed into seven
+leaves 2026-08-25 (developer) once its reader census was re-measured -- the leaves ARE that census,
+which row **P70**'s query-position count structurally could not see.
 **All five `C4-a` reader leaves, both `C4-b` leaves and `C4-c` have SHIPPED**; `C4-d` is the one
-open leaf, and it is the same defect one tier up -- in the TYPE rather than in the schema.  `C4-b`
+open leaf, and it is the same defect one tier up -- in the TYPE rather than in the schema. `C4-b`
 was split in two on 2026-09-01 (developer, **R-PC40**) once its real prerequisite was measured:
-`C4-b-1` took the TEST CORPUS off hand-built pay periods, `C4-b-2` added the key, `C4-c` dropped
-the columns.
+`C4-b-1` took the TEST CORPUS off hand-built pay periods, `C4-b-2` added the key, `C4-c` dropped the
+columns.
 
 **`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
 salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
@@ -56,9 +56,9 @@ read and no stored ordinal is left for an inserted payday to re-phase (row **P11
 
 ## 1. Root cause
 
-`budget.pay_periods` STORED three values per row and only one of them was a fact.  **`C4-c` dropped
+`budget.pay_periods` STORED three values per row and only one of them was a fact. **`C4-c` dropped
 the other two on 2026-09-01 (`c703e1c7`), so this section is the arc's ROOT CAUSE as it stood, kept
-because everything below is argued from it.**  The table holds `start_date` and nothing else now.
+because everything below is argued from it.** The table holds `start_date` and nothing else now.
 
 | column | is it a fact? | what it actually was |
 |---|---|---|
@@ -257,10 +257,11 @@ their only live specimen from them, which both `_staging` docstrings predict and
       is DELETED.
 - [ ] **C4 -- drop the derived columns.** The DECOMPOSED parent, split into seven leaves 2026-08-25
       and into EIGHT on 2026-09-01 when `C4-b` split in two (**R-PC40**); it ticks with `C4-d`, its
-      last open leaf, NOT with `C4-c` -- the drop shipped and the cadence TYPE did not. Its FIRST commit landed before the split (row **P70**): the
-      rolling top-up's remaining-paycheck count moved onto `PayCalendar.current_and_future` and the
-      top-up itself left for `pay_period_rolling`, `pay_period_admin` having had nine lines under
-      its ceiling (row **P31**). Closes **P1**, **P4**, **P5**, **P8**, **P9**.
+      last open leaf, NOT with `C4-c` -- the drop shipped and the cadence TYPE did not. Its FIRST
+      commit landed before the split (row **P70**): the rolling top-up's remaining-paycheck count
+      moved onto `PayCalendar.current_and_future` and the top-up itself left for
+      `pay_period_rolling`, `pay_period_admin` having had nine lines under its ceiling (row
+      **P31**). Closes **P1**, **P4**, **P5**, **P8**, **P9**.
 
 **THE READER CENSUS was the leaf list and the leaves have taken it**; its three re-measurements
 (2026-08-25 by AST, 2026-08-28 at `C4-a-2` for a SHAPE the first was blind to, and `C4-a-5`'s, which
@@ -319,11 +320,10 @@ entry's overflow; nothing live depends on a line here.
       promises and a one-day period aborts it whole. **What a later step must obey**: a migration
       test predating this head must rewind first (**P79**). Closed TEN rows -- **P1**, **P4**,
       **P5**, **P9**, **P26**, **P27**, **P28**, **P33**, **P53**, **P70**; opened **P79**, **P80**.
-
 - [x] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** `4e8b40b3`. The
-      decomposed parent, ticked with `C5b`.  This span is COMPLETE and condensed under rule 5, to
-      buy the room `C4-b`'s decomposition needed; the commits are the record and `steps.md` carries
-      each row's own sentence.
+      decomposed parent, ticked with `C5b`. This span is COMPLETE and condensed under rule 5, to buy
+      the room `C4-b`'s decomposition needed; the commits are the record and `steps.md` carries each
+      row's own sentence.
 - [x] **C5a -- delete what is now unconstructible.** `fe365de1`. Ticked at `C2-b2`; ticks
       `recurrence:R-F10`.
 - [x] **C5b -- a paycheck may owe one template more than once.** `4e8b40b3`. One commit under two
