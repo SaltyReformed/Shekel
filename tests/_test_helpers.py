@@ -21,6 +21,7 @@ from datetime import (
     timezone as _real_timezone,
 )
 from decimal import Decimal
+from app.models.amount_ownership import AmountOwnership
 
 
 # The synthetic split-loan fixture shared verbatim by the three parallel
@@ -2967,7 +2968,7 @@ def create_settled_cash_transaction(
         name=name,
         category_id=None if category is None else category.id,
         transaction_type_id=type_id,
-        estimated_amount=amount,
+        amount_ownership=AmountOwnership.own(amount),
     )
     db_session.add(txn)
     db_session.flush()
@@ -3128,7 +3129,7 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type_id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
         template_id=template.id,
     )
     db_session.add(txn)
@@ -3733,7 +3734,7 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         name=name,
         category_id=cat_id,
         transaction_type_id=type_id,
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         due_date=due_date,
         is_deleted=is_deleted,
         # The settle DAY and the basis that says how it is known, as one pair
@@ -7448,3 +7449,61 @@ def match_two_lines(db_session, account, owner_id, early, late):
         "late": late,
     })
     db_session.commit()
+
+
+def write_past_the_amount_seam(row, value):
+    """Write *row*'s figure column DIRECTLY, bypassing ``amount_ownership``.
+
+    **The only supported way for a test to construct a state the mapping
+    refuses** (plan step **X-au-k**), and it exists because the obvious
+    spelling is a trap.  ``Transaction.__estimated_amount`` and
+    ``Transfer.__amount`` are double-underscored, so Python mangles them and a
+    hand-written ``row._estimated_amount = x`` binds a plain instance attribute
+    that reaches no column -- a SILENT no-op, which is the right failure for a
+    typo in application code and the wrong one for a control that means to
+    write.
+
+    Three tests need this: the two that prove a derived row's answer is
+    invariant under a rival figure (``test_amount_source.py``), and the two
+    that prove the database still refuses the drift a transfer shadow could
+    once hold (``test_a_transfer_shadow_is_derived.py``,
+    ``test_transfer_service.py``).  Each is constructing the shape
+    :class:`~app.models.amount_ownership.AmountOwnership` has no member for, so
+    none of them can go through the seam.
+
+    Args:
+        row: A :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer`.
+        value: The figure to write, or ``None`` to empty the column.
+
+    Raises:
+        AttributeError: When *row*'s model maps no such private column, which
+            is what stops this helper from silently binding a new attribute if
+            a later step renames one.
+    """
+    attr = f"_{type(row).__name__}__{_figure_column_of(row)}"
+    if attr not in type(row).__mapper__.attrs:
+        raise AttributeError(
+            f"{type(row).__name__} maps no {attr!r}; the amount seam's private "
+            "column was renamed and this helper would have bound a plain "
+            "attribute that writes nothing"
+        )
+    setattr(row, attr, value)
+
+
+def _figure_column_of(row) -> str:
+    """Return the column *row*'s table stores an owned figure in.
+
+    Args:
+        row: A ``Transaction`` or ``Transfer``.
+
+    Returns:
+        ``"estimated_amount"`` or ``"amount"``.
+
+    Raises:
+        AttributeError: When *row* is neither.
+    """
+    for column in ("estimated_amount", "amount"):
+        if column in type(row).__table__.c:
+            return column
+    raise AttributeError(f"{type(row).__name__} carries no figure column")

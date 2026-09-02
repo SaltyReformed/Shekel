@@ -34,6 +34,7 @@ from tests._test_helpers import (
 )
 from tests._test_helpers import freeze_today
 from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 #: A civil day whose EVENING in ``America/New_York`` falls on the PREVIOUS UTC
 #: day's successor -- i.e. an instant where the two calendars disagree.  Frozen
@@ -58,7 +59,7 @@ def _make_txn(seed_user, period, *, status):
         name="Seam test expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal("50.00"),
+        amount_ownership=AmountOwnership.own(Decimal("50.00")),
     )
     db.session.add(txn)
     db.session.flush()

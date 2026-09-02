@@ -41,7 +41,7 @@ class TestCreditWorkflow:
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal(amount),
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
         )
         db.session.add(txn)
         db.session.flush()
@@ -95,7 +95,7 @@ class TestCreditWorkflow:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -160,7 +160,7 @@ class TestCreditWorkflow:
                 name="Last Period Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -381,7 +381,7 @@ class TestCarryForward:
                     name=name,
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("50.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 )
                 db.session.add(txn)
             db.session.flush()
@@ -425,7 +425,7 @@ class TestCarryForward:
                 name="Unpaid",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             t2 = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -435,7 +435,7 @@ class TestCarryForward:
                 name="Already Paid",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
                 **settle_day_columns(seed_periods[0].start_date),
@@ -492,7 +492,7 @@ class TestCarryForward:
                 name="Car Payment",
                 category_id=seed_user["categories"]["Car Payment"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
                 is_override=False,
             )
             db.session.add(txn)
@@ -524,7 +524,7 @@ class TestCarryForward:
                 name="Unpaid Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("80.00"),
+                amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             t2 = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -534,7 +534,7 @@ class TestCarryForward:
                 name="Cancelled Expense",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
             )
             db.session.add_all([t1, t2])
             db.session.flush()
@@ -573,7 +573,7 @@ class TestCarryForward:
                 name="Unpaid Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("60.00"),
+                amount_ownership=AmountOwnership.own(Decimal("60.00")),
             )
             t2 = Transaction(
                 pay_period_id=seed_periods[0].id,
@@ -583,7 +583,7 @@ class TestCarryForward:
                 name="Received Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
                 **settle_day_columns(seed_periods[0].start_date),
@@ -624,7 +624,7 @@ class TestCarryForward:
                 name="Deleted Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("40.00"),
+                amount_ownership=AmountOwnership.own(Decimal("40.00")),
                 is_deleted=True,
             )
             db.session.add(txn)
@@ -778,6 +778,7 @@ class TestCarryForward:
 # Import at the bottom to avoid circular issues in the test helpers.
 from app.models.transaction_template import TransactionTemplate
 from app.services import account_service
+from app.models.amount_ownership import AmountOwnership
 
 
 class TestNegativePaths:
@@ -801,7 +802,7 @@ class TestNegativePaths:
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal(amount),
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
         )
         db.session.add(txn)
         db.session.flush()
@@ -979,7 +980,7 @@ class TestNegativePaths:
                 name="Template Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 is_override=False,
             )
             # Create an ad-hoc transaction (no template).
@@ -991,7 +992,7 @@ class TestNegativePaths:
                 name="Ad-hoc Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("30.00"),
+                amount_ownership=AmountOwnership.own(Decimal("30.00")),
             )
             db.session.add_all([txn_with_template, txn_adhoc])
             db.session.flush()
@@ -1094,7 +1095,7 @@ class TestNegativePaths:
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected.id,
-                amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
                 name="Test Transfer",
             )
             db.session.add(transfer)

@@ -35,6 +35,7 @@ from app.services import (
     status_seam,
     transaction_service,
 )
+from app.services.amount_ownership import state_own_amount
 from app.services.settle_day import recorded_settle_day
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
@@ -125,15 +126,22 @@ _POSTING_RELEVANT_FIELDS = frozenset({
 # to be re-run on the transaction side by this step's own edit door (finding
 # **N-185**).  Naming the pair here is what keeps the loop from growing a third
 # member silently.
-#: The fields the STATUS SEAM owns, excluded from the field-application loop
-#: so it cannot become a second writer of any of them.  ``settled_amount``
+#: The fields a SEAM owns, excluded from the field-application loop so it
+#: cannot become a second writer of any of them.  ``settled_amount``
 #: joined at plan step X-au-c3: it states WHAT MOVED, so a bare ``setattr``
 #: could book money on a row that never settled and could do it beside a basis
 #: saying something else.  It reaches the record only through
 #: ``apply_requested_status``, which hands it to the settle verb or refuses it
 #: with a designed 400 when no settle is happening.
+#:
+#: ``estimated_amount`` joined at plan step **X-au-k**, and it is the one
+#: member this set no longer has to be TRUSTED about: the column is read-only
+#: on the model now, so a ``setattr`` that reached it raises ``AttributeError``
+#: rather than half-writing the amount-ownership pair.  It stays named here
+#: because the loop must SKIP it deliberately rather than crash, and because a
+#: reader asking which fields a seam owns should find all four in one place.
 _SEAM_OWNED_FIELDS = frozenset(
-    {"status_id", "settled_on", "settled_amount"}
+    {"status_id", "settled_on", "settled_amount", "estimated_amount"}
 )
 
 
@@ -173,11 +181,14 @@ def _apply_field_updates(txn, data):
        (``occurs_on IS NULL``) is still keyed on its paycheck by
        ``idx_transactions_template_scenario_undated``, so for that row the
        ordering is exactly as load-bearing as it was.
-    2b. **(NEW to this list, shipped at X-au-c2b)** ``amount_source_id = None``
-       whenever a figure is typed: a hand-priced row OWNS its figure, and
-       ``ck_transactions_amount_ownership`` pairs the two one-to-one, so
-       writing the column while a relation still claimed the row is an
-       ``IntegrityError``.
+    2b. **(shipped at X-au-c2b, restated at X-au-k)** a typed figure is stated
+       through ``amount_ownership.state_own_amount``: a hand-priced row OWNS
+       its figure, so storing it RELEASES the relation that priced it.  This
+       was two acts -- the loop wrote the column and this cleared the source --
+       and their pairing was a convention the loop could break.  It is one act
+       over one attribute now, so the release cannot be forgotten and the loop
+       cannot reach the column at all (the field is in
+       ``_SEAM_OWNED_FIELDS``).
     3. the derived-amount refusal, asked AFTER the loop so ``tracks_purchases``
        reads the RESULTING row: unchecking "Track individual purchases" in the
        same save legitimately gives the row its own amount back.  **It reads a
@@ -214,18 +225,14 @@ def _apply_field_updates(txn, data):
         setattr(txn, field, value)
 
     if "estimated_amount" in data:
-        # A typed figure makes the row's amount its OWN, so the relation that
-        # priced it is CLEARED in the same act (plan step X-au-c2b).
-        # ``ck_transactions_amount_ownership`` pairs the two -- a row states
-        # either a figure or the relation that prices it, never both -- so
-        # writing the column while a relation still claimed the row is an
-        # ``IntegrityError``.  It is a no-op on today's data, because nothing
-        # is declared derived yet, and it is written now because the amount
-        # model's own dispatch already ASSERTS it: "a row a human RE-PRICED
-        # owns its figure because the write door CLEARS its source".  That was
-        # true at one write door of three when an adversarial review counted
-        # them.
-        txn.amount_source_id = None
+        # A typed figure makes the row's amount its OWN, and storing it IS
+        # releasing the relation that priced it (plan step X-au-k) -- the amount
+        # model's own dispatch asserts exactly that: "a row a human RE-PRICED
+        # owns its figure because the write door CLEARS its source".  The value
+        # is never ``None`` here: ``estimated_amount`` is not ``allow_none`` on
+        # any of the three transaction schemas, so ``_normalize_empty_inputs``
+        # DROPS an empty box rather than loading it as an explicit nothing.
+        state_own_amount(txn, data["estimated_amount"])
 
     if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
         txn.is_override = True

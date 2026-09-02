@@ -53,6 +53,7 @@ from tests._test_helpers import (
     make_investment_account,
     payroll_basis,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # Hand-computed expected values (see module docstring for derivation).
@@ -149,7 +150,7 @@ def _make_txn(
         name="producer-test txn",
         category_id=category.id,
         transaction_type_id=txn_type.id,
-        estimated_amount=Decimal(estimated_amount),
+        amount_ownership=AmountOwnership.own(Decimal(estimated_amount)),
         is_override=is_override,
     )
     db.session.add(txn)

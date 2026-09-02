@@ -25,6 +25,7 @@ from tests._test_helpers import (
     settlement_if_settling,
     shadow_amount,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -44,7 +45,7 @@ def _create_projected_expense(seed_user, seed_periods_today, period_index=0):
         name="Test Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
         due_date=seed_periods_today[period_index].start_date,
     )
     db.session.add(txn)

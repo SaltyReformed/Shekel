@@ -63,6 +63,7 @@ from tests._test_helpers import (
     settle_instant_on,
     settlement_columns,
 )
+from app.models.amount_ownership import AmountOwnership
 
 _APR_FIRST = date(2026, 4, 1)
 _APR_LAST = date(2026, 4, 30)
@@ -85,7 +86,7 @@ def _add_txn(
         status_id=status_id,
         name=name,
         transaction_type_id=type_id,
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         **settlement_columns(
             default_settle_day(period, status_id), amount, settled_amount,
         ),

@@ -53,6 +53,7 @@ from tests._test_helpers import (
     mark_purchase_settled,
     open_books_before_the_first_assertion,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _picture(user_id, as_of=None):
@@ -705,7 +706,7 @@ def _add_envelope_expense_with_settled_entries_ret(
         name="Retirement-side expense",
         category_id=category_id,
         transaction_type_id=expense_type_id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
     )
     db_session.add(txn)
     db_session.flush()

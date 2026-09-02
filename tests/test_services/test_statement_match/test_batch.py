@@ -67,6 +67,7 @@ from ._builders import (
     an_answers,
     an_import,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _batch(seed_user, matches=(), creations=(), incomes=()):
@@ -611,7 +612,7 @@ class TestASIBLINGWriteCannotBookAgainstAStalePrice:
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
             # DRIFTED off the sum of its card entries, which is what an owner
             # correcting a projected payback to their card statement produces.
-            estimated_amount=Decimal("60.00"),
+            amount_ownership=AmountOwnership.own(Decimal("60.00")),
             credit_payback_for_id=envelope.id,
         )
         _db.session.add(payback)

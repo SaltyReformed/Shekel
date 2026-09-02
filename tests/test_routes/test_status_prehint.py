@@ -18,6 +18,7 @@ from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
 from app.services import account_service, status_seam, transfer_service
 from tests._test_helpers import settlement_if_settling
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_expense(seed_user, seed_periods_today, *, is_envelope=False):
@@ -34,7 +35,7 @@ def _create_expense(seed_user, seed_periods_today, *, is_envelope=False):
         name="Prehint Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("42.00"),
+        amount_ownership=AmountOwnership.own(Decimal("42.00")),
         is_envelope=is_envelope,
     )
     db.session.add(txn)

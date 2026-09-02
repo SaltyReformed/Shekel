@@ -23,6 +23,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import authenticate, verify_password
 from app.exceptions import AuthError
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -553,7 +554,7 @@ class TestDeactivateCompanion:
             name="Groceries",
             category_id=category.id,
             transaction_type_id=expense_type_id,
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
         )
         db.session.add(txn)
         db.session.flush()

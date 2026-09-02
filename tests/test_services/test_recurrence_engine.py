@@ -79,6 +79,8 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 # --- Rule / period objects for the pure pattern-matching tests ---------------
@@ -418,7 +420,7 @@ class TestRecurrenceGeneration:
 
             # Override one entry.
             created[0].is_override = True
-            created[0].estimated_amount = Decimal("999.99")
+            state_own_amount(created[0], Decimal("999.99"))
             db.session.flush()
 
             # Regenerate -- the overridden entry should be preserved.
@@ -1257,7 +1259,7 @@ class TestGenerateForTemplate:
                     status_id=projected_id,
                     name=template.name,
                     transaction_type_id=template.transaction_type_id,
-                    estimated_amount=Decimal("100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
                     is_override=False,
                     is_deleted=False,
                 ))
@@ -2873,7 +2875,7 @@ class TestRegenerateForTemplate:
                 name=template.name,
                 category_id=template.category_id,
                 transaction_type_id=template.transaction_type_id,
-                estimated_amount=Decimal("55.00"),
+                amount_ownership=AmountOwnership.own(Decimal("55.00")),
                 is_override=True,
                 is_deleted=False,
             )
@@ -3044,7 +3046,7 @@ class TestResolveConflicts:
             # Override one entry.
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # Resolve as 'keep'.
@@ -3076,7 +3078,7 @@ class TestResolveConflicts:
             # Override one entry.
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # Resolve as 'update' with new amount.
@@ -3111,7 +3113,7 @@ class TestResolveConflicts:
             # Override one entry with a custom amount.
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # Resolve as 'update' with no new amount.
@@ -3145,7 +3147,7 @@ class TestResolveConflicts:
 
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # Attempt resolve as second_user -- should be blocked.
@@ -3177,7 +3179,7 @@ class TestResolveConflicts:
 
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # 'keep' with wrong user -- no-op by design (keep never modifies).
@@ -3208,7 +3210,7 @@ class TestResolveConflicts:
 
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             recurrence_engine.resolve_conflicts(
@@ -3239,7 +3241,7 @@ class TestResolveConflicts:
             db.session.flush()
             txn_a = created_a[0]
             txn_a.is_override = True
-            txn_a.estimated_amount = Decimal("999.99")
+            state_own_amount(txn_a, Decimal("999.99"))
 
             # Create template and transaction for user B (second_user).
             # second_user needs their own periods and template.
@@ -3260,7 +3262,7 @@ class TestResolveConflicts:
             db.session.flush()
             txn_b = created_b[0]
             txn_b.is_override = True
-            txn_b.estimated_amount = Decimal("888.88")
+            state_own_amount(txn_b, Decimal("888.88"))
             db.session.flush()
 
             # Resolve as user A -- only txn_a should be modified.
@@ -3477,7 +3479,7 @@ class TestResolveConflictsShadowGuard:
                 "Pre-condition: regular transaction must not be a shadow."
             )
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             recurrence_engine.resolve_conflicts(

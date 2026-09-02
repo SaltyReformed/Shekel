@@ -31,6 +31,7 @@ from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from tests._test_helpers import load_migration_module
+from app.models.amount_ownership import AmountOwnership
 
 MIGRATION = "c8e5a2f31b47_a_row_answers_an_occurrence_not_a_paycheck.py"
 
@@ -98,7 +99,7 @@ class TestTheDowngradeRefusesAnUnrestorablePair:
                     name=label,
                     category_id=category.id,
                     transaction_type_id=txn_type.id,
-                    estimated_amount=Decimal("100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
                     occurs_on=occurrence,
                     is_override=False,
                     is_deleted=False,
@@ -162,7 +163,7 @@ class TestTheDowngradeRefusesAnUnrestorablePair:
                     name=f"override={override}",
                     category_id=category.id,
                     transaction_type_id=txn_type.id,
-                    estimated_amount=Decimal("100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
                     occurs_on=occurrence,
                     is_override=override,
                     is_deleted=False,

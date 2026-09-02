@@ -60,6 +60,8 @@ from app.services.settle_day import (
     record_settle_day,
     recorded_settle_day,
 )
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 def _balance_on(seed_user, day):
@@ -373,7 +375,7 @@ class TestARowThatMOVEDSinceTheReviewIsRefused:
 
         # ...and the row moves after the screen was rendered.
         txn.settled_amount = Decimal("500.00")
-        txn.estimated_amount = Decimal("500.00")
+        state_own_amount(txn, Decimal("500.00"))
         db.session.flush()
 
         with pytest.raises(ValidationError, match="reviewed against different"):
@@ -2231,7 +2233,7 @@ class TestWhatAOneToOneMatchSTILLRefuses:
             name="CC Payback: Groceries",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            estimated_amount=Decimal("60.00"),
+            amount_ownership=AmountOwnership.own(Decimal("60.00")),
             credit_payback_for_id=envelope.id,
         )
         db.session.add(payback)

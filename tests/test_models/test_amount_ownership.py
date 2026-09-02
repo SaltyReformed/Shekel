@@ -54,12 +54,14 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy.exc
+from sqlalchemy import insert
 
 from app import ref_cache
 from app.enums import AmountSourceEnum, StatusEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.ref import AmountSource, TransactionType
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from tests._test_helpers import (
@@ -82,8 +84,11 @@ def _make_transaction(seed_user, seed_periods, **overrides):
     Args:
         seed_user: The ``seed_user`` fixture payload.
         seed_periods: The ``seed_periods`` fixture list.
-        **overrides: Column values to set or replace -- notably
-            ``estimated_amount`` and ``amount_source_id``, the pair under test.
+        **overrides: Column values to set or replace.  The amount-ownership
+            pair is one of them -- ``amount_ownership`` -- and since plan step
+            X-au-k it is the ONLY way an ORM caller can state it; the two
+            unpaired shapes this module grades are written by
+            :func:`_insert_transaction_row` instead.
 
     Returns:
         The unflushed :class:`~app.models.transaction.Transaction`.
@@ -99,7 +104,7 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         "name": "Ownership control",
         "category_id": seed_user["categories"]["Rent"].id,
         "transaction_type_id": expense_type.id,
-        "estimated_amount": Decimal("300.00"),
+        "amount_ownership": AmountOwnership.own(Decimal("300.00")),
     }
     fields.update(overrides)
     # **The settle DAY carries its basis unless the caller states one** (plan
@@ -112,6 +117,90 @@ def _make_transaction(seed_user, seed_periods, **overrides):
     if "settled_day_basis_id" not in overrides:
         fields.update(settle_day_columns(fields.get("settled_on")))
     return Transaction(**fields)
+
+
+def _insert_transaction_row(seed_user, seed_periods, *, figure, source_id,
+                            **overrides):
+    """INSERT a transaction row through Core, bypassing the ORM entirely.
+
+    **This is how the unpaired shapes are written since plan step X-au-k, and
+    the change makes the control stronger rather than weaker.**  Before it,
+    ``estimated_amount`` and ``amount_source_id`` were two mapped columns and a
+    test could hand the ORM either half; now they are one mapped attribute over
+    :class:`~app.models.amount_ownership.AmountOwnership`, which refuses a
+    figure beside a relation, so an ORM path cannot reach the state the CHECK
+    is supposed to refuse.  Routing the control through the ORM would therefore
+    have graded the new TYPE -- and the constraint's own job is the writer that
+    is NOT this application: a migration, a ``psql`` session, a trigger.  Core
+    is that writer.
+
+    Args:
+        seed_user: The ``seed_user`` fixture payload.
+        seed_periods: The ``seed_periods`` fixture list.
+        figure: What to write to ``estimated_amount`` (may be ``None``).
+        source_id: What to write to ``amount_source_id`` (may be ``None``).
+        **overrides: Any other column values to set or replace.
+
+    Returns:
+        The Core ``insert()`` result.
+
+    Raises:
+        sqlalchemy.exc.IntegrityError: When the row breaks a constraint, which
+            is what every caller here is asserting.
+    """
+    expense_type = (
+        db.session.query(TransactionType).filter_by(name="Expense").one()
+    )
+    values = {
+        "pay_period_id": seed_periods[0].id,
+        "scenario_id": seed_user["scenario"].id,
+        "account_id": seed_user["account"].id,
+        "status_id": ref_cache.status_id(StatusEnum.PROJECTED),
+        "name": "Ownership control",
+        "category_id": seed_user["categories"]["Rent"].id,
+        "transaction_type_id": expense_type.id,
+        "estimated_amount": figure,
+        "amount_source_id": source_id,
+    }
+    # Overrides FIRST: ``settle_day_columns`` reads ``settled_on`` to decide
+    # the basis beside it, so applying them the other way round would pair a
+    # caller's settle day with no basis and kill the row on
+    # ``ck_transactions_settle_day_basis_pairing`` rather than on the
+    # constraint under test -- a control that fires for the wrong reason.
+    values.update(overrides)
+    values.update(settle_day_columns(values.get("settled_on")))
+    return db.session.execute(insert(Transaction).values(**values))
+
+
+def _insert_transfer_row(data, *, figure, source_id, **overrides):
+    """INSERT a transfer row through Core.  The twin of the function above.
+
+    Args:
+        data: The ``seed_full_user_data`` fixture payload.
+        figure: What to write to ``amount`` (may be ``None``).
+        source_id: What to write to ``amount_source_id`` (may be ``None``).
+        **overrides: Any other column values to set or replace.
+
+    Returns:
+        The Core ``insert()`` result.
+
+    Raises:
+        sqlalchemy.exc.IntegrityError: When the row breaks a constraint.
+    """
+    values = {
+        "user_id": data["user"].id,
+        "from_account_id": data["account"].id,
+        "to_account_id": data["savings_account"].id,
+        "transfer_template_id": data["transfer_template"].id,
+        "pay_period_id": data["periods"][0].id,
+        "scenario_id": data["scenario"].id,
+        "status_id": ref_cache.status_id(StatusEnum.PROJECTED),
+        "name": "Ownership control",
+        "amount": figure,
+        "amount_source_id": source_id,
+    }
+    values.update(overrides)
+    return db.session.execute(insert(Transfer).values(**values))
 
 
 def _make_transfer(data, **overrides):
@@ -142,7 +231,7 @@ def _make_transfer(data, **overrides):
         "scenario_id": data["scenario"].id,
         "status_id": ref_cache.status_id(StatusEnum.PROJECTED),
         "name": "Ownership control",
-        "amount": Decimal("100.00"),
+        "amount_ownership": AmountOwnership.own(Decimal("100.00")),
     }
     fields.update(overrides)
     return Transfer(**fields)
@@ -162,19 +251,17 @@ class TestTransactionAmountOwnership:
         leave a figure that no longer follows its own inputs.
         """
         with app.app_context():
-            txn = _make_transaction(
-                seed_user, seed_periods,
-                estimated_amount=Decimal("300.00"),
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
-                ),
-            )
-            db.session.add(txn)
             with pytest.raises(
                 sqlalchemy.exc.IntegrityError,
                 match="ck_transactions_amount_ownership",
             ):
-                db.session.flush()
+                _insert_transaction_row(
+                    seed_user, seed_periods,
+                    figure=Decimal("300.00"),
+                    source_id=ref_cache.amount_source_id(
+                        AmountSourceEnum.TEMPLATE
+                    ),
+                )
             db.session.rollback()
 
     def test_an_empty_figure_needs_a_declared_source(
@@ -186,15 +273,13 @@ class TestTransactionAmountOwnership:
         prices it is unpriceable, and nothing on the row would say why.
         """
         with app.app_context():
-            txn = _make_transaction(
-                seed_user, seed_periods, estimated_amount=None,
-            )
-            db.session.add(txn)
             with pytest.raises(
                 sqlalchemy.exc.IntegrityError,
                 match="ck_transactions_amount_ownership",
             ):
-                db.session.flush()
+                _insert_transaction_row(
+                    seed_user, seed_periods, figure=None, source_id=None,
+                )
             db.session.rollback()
 
     def test_declaring_a_source_and_emptying_the_figure_is_accepted(
@@ -211,8 +296,7 @@ class TestTransactionAmountOwnership:
             )
             txn = _make_transaction(
                 seed_user, seed_periods,
-                estimated_amount=None,
-                amount_source_id=template_source,
+                amount_ownership=AmountOwnership.derived(template_source),
             )
             db.session.add(txn)
             db.session.flush()
@@ -246,19 +330,17 @@ class TestTransferAmountOwnership:
         drift corrector repairs the copies that got away.
         """
         with app.app_context():
-            xfer = _make_transfer(
-                seed_full_user_data,
-                amount=Decimal("100.00"),
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
-                ),
-            )
-            db.session.add(xfer)
             with pytest.raises(
                 sqlalchemy.exc.IntegrityError,
                 match="ck_transfers_amount_ownership",
             ):
-                db.session.flush()
+                _insert_transfer_row(
+                    seed_full_user_data,
+                    figure=Decimal("100.00"),
+                    source_id=ref_cache.amount_source_id(
+                        AmountSourceEnum.TEMPLATE
+                    ),
+                )
             db.session.rollback()
 
     def test_an_empty_figure_needs_a_declared_source(
@@ -266,13 +348,13 @@ class TestTransferAmountOwnership:
     ):
         """A transfer with no figure and no source is refused."""
         with app.app_context():
-            xfer = _make_transfer(seed_full_user_data, amount=None)
-            db.session.add(xfer)
             with pytest.raises(
                 sqlalchemy.exc.IntegrityError,
                 match="ck_transfers_amount_ownership",
             ):
-                db.session.flush()
+                _insert_transfer_row(
+                    seed_full_user_data, figure=None, source_id=None,
+                )
             db.session.rollback()
 
     def test_declaring_a_source_and_emptying_the_figure_is_accepted(
@@ -292,7 +374,7 @@ class TestTransferAmountOwnership:
             )
             xfer = _make_transfer(
                 seed_full_user_data,
-                amount=None, amount_source_id=template_source,
+                amount_ownership=AmountOwnership.derived(template_source),
             )
             db.session.add(xfer)
             db.session.flush()
@@ -319,10 +401,9 @@ class TestAdHocTransferOwnsItsAmount:
         with app.app_context():
             xfer = _make_transfer(
                 seed_full_user_data,
-                amount=None,
                 transfer_template_id=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
             )
             db.session.add(xfer)
@@ -468,9 +549,8 @@ class TestAmountSourceReferentialIntegrity:
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods,
-                estimated_amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
             )
             db.session.add(txn)
@@ -516,9 +596,8 @@ class TestTheCheapAccessorRefusesADerivedRow:
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods,
-                estimated_amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
             )
             db.session.add(txn)
@@ -542,10 +621,9 @@ class TestTheCheapAccessorRefusesADerivedRow:
         with app.app_context():
             xfer = _make_transfer(
                 seed_full_user_data,
-                amount=None,
                 due_date=date(2026, 3, 15),
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
             )
             db.session.add(xfer)
@@ -585,9 +663,8 @@ class TestTheCheapAccessorRefusesADerivedRow:
             txn = _make_transaction(
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                estimated_amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
                 settled_on=settled_on,
                 **settlement_columns(
@@ -612,9 +689,8 @@ class TestTheCheapAccessorRefusesADerivedRow:
             txn = _make_transaction(
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.CANCELLED),
-                estimated_amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
             )
             db.session.add(txn)
@@ -629,9 +705,8 @@ class TestTheCheapAccessorRefusesADerivedRow:
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods,
-                estimated_amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
                 is_deleted=True,
             )
@@ -683,9 +758,8 @@ class TestTheDowngradeRefusesToInventAFigure:
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods,
-                estimated_amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
             )
             db.session.add(txn)
@@ -704,9 +778,8 @@ class TestTheDowngradeRefusesToInventAFigure:
         with app.app_context():
             xfer = _make_transfer(
                 seed_full_user_data,
-                amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
             )
             db.session.add(xfer)
@@ -749,9 +822,8 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
             db.session.flush()
             txn = _make_transaction(
                 td, td["periods"],
-                estimated_amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.PARENT_TRANSFER,
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.PARENT_TRANSFER),
                 ),
                 transfer_id=xfer.id,
                 template_id=None,
@@ -776,18 +848,16 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
             td = seed_full_user_data
             xfer = _make_transfer(
                 td,
-                amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE,
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
             )
             db.session.add(xfer)
             db.session.flush()
             txn = _make_transaction(
                 td, td["periods"],
-                estimated_amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.PARENT_TRANSFER,
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.PARENT_TRANSFER),
                 ),
                 transfer_id=xfer.id,
                 template_id=None,
@@ -822,17 +892,15 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
             td = seed_full_user_data
             xfer = _make_transfer(
                 td,
-                amount=None,
-                amount_source_id=ref_cache.amount_source_id(
-                    AmountSourceEnum.TEMPLATE,
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
             )
             db.session.add(xfer)
             db.session.flush()
             txn = _make_transaction(
                 td, td["periods"],
-                estimated_amount=Decimal("25.00"),
-                amount_source_id=None,
+                amount_ownership=AmountOwnership.own(Decimal("25.00")),
                 transfer_id=xfer.id,
                 template_id=None,
             )

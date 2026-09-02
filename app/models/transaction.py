@@ -8,9 +8,12 @@ actual amounts plus a status workflow.
 
 from datetime import date
 
+from sqlalchemy.ext.hybrid import hybrid_property
+
 from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
+from app.models.amount_ownership import from_columns
 from app.models.mixins import (
     OptimisticLockMixin,
     SettleDatedMixin,
@@ -326,16 +329,24 @@ class Transaction(
         # a figure -- which makes a stale derived amount UNREPRESENTABLE rather
         # than merely unlikely.
         #
-        # **It bites on the WRITE side, and that is the half prose could not
-        # buy.**  Every one of the five private repair mechanisms R-FI names
-        # writes the amount column ALONE -- ``regenerate_for_template``'s amount
-        # arm, ``entry_credit_workflow.sync_entry_payback``'s unconditional
-        # rewrite, ``transfer_service``'s copy and its drift corrector,
-        # ``income_service``'s read-time repair that writes nothing back -- so a
-        # writer that sets a figure on a derived row without saying the row now
-        # owns it is an ``IntegrityError`` at flush instead of a number nobody
-        # can date.  A reader that skips the resolver gets ``None`` rather than a
-        # plausible wrong figure; a writer that skips the model gets refused.
+        # **WHAT THIS CONSTRAINT NOW CATCHES, restated at plan step X-au-k
+        # because the paragraph here described a world that has ended.**  It
+        # used to say that every private repair mechanism R-FI names writes the
+        # amount column ALONE, so a writer stamping a figure onto a derived row
+        # was an ``IntegrityError`` at flush.  Two of those mechanisms were
+        # converted at X-au-k and ``transfer_service``'s copy and drift
+        # corrector were deleted at X-au-g-2c-2, so no writer in this
+        # application writes one column any more: the pair is ONE mapped
+        # attribute over a type that has no member for the illegal shape, and
+        # the ORM spelling raises ``AttributeError`` before a flush is reached.
+        #
+        # This CHECK is therefore the backstop rather than the catcher, and it
+        # is not redundant.  It refuses the EMPTY pair, which the type does not
+        # represent and a half-built row passes through legitimately in memory;
+        # and it refuses a writer that is not this application at all -- a
+        # migration, a ``psql`` session, a trigger, a bulk ``UPDATE`` that
+        # names the column rather than the attribute.  A reader that skips the
+        # resolver still gets ``None`` rather than a plausible wrong figure.
         #
         # **Written as two NULL tests rather than against a source VALUE**, so no
         # ``ref.amount_sources`` id is frozen into the schema: the OWN state is
@@ -442,12 +453,24 @@ class Transaction(
     )
     # The row's OWN amount, and NULLABLE since plan step X-au-c1: a row whose
     # amount is DERIVED does not store one at all (ruling **R-FI**).  NULL here
-    # means "ask ``cash_ledger.resolve_transaction_amount``", and it is
-    # structurally paired with ``amount_source_id`` by
-    # ``ck_transactions_amount_ownership`` above -- neither column can be set
-    # without the other saying so.  No production row is NULL as of this step;
-    # the per-kind cutovers (plan steps X-au-d through X-au-i) are what empty it.
-    estimated_amount = db.Column(db.Numeric(12, 2))
+    # means "ask ``cash_ledger.resolve_transaction_amount``".  No production row
+    # is NULL as of this step; the per-kind cutovers (plan steps X-au-d through
+    # X-au-f) are what empty it.
+    #
+    # **PRIVATE since plan step X-au-k**, with the SQL name unchanged: the pair
+    # this column belongs to is mapped as ONE attribute
+    # (:attr:`amount_ownership`), and a column that stayed publicly assignable
+    # would be the half-write that attribute exists to make unsayable.  Read it
+    # through :attr:`estimated_amount`, which is a read-only projection and
+    # still a query expression.
+    #
+    # **The name is DOUBLE-underscored, and that is the seal rather than a
+    # style**: Python mangles it to ``_Transaction__estimated_amount``, so the single-underscore
+    # spelling a reader would guess -- ``row._estimated_amount`` -- binds a plain
+    # instance attribute that reaches no column at all.  A write that misses
+    # the seam is then a no-op the next read exposes, instead of the
+    # half-written pair this step exists to make unrepresentable.
+    __estimated_amount = db.Column("estimated_amount", db.Numeric(12, 2))
     # WHAT MOVED -- a fact about the ROW, not a second opinion about the plan
     # above and not part of the assertion beside it (plan step **X-au-c3**).
     # NULL until the row first settles, and NULL whenever the basis is
@@ -500,13 +523,39 @@ class Transaction(
     # so the ref DELETE is refused instead.  Resolved through
     # ``ref_cache.amount_source_id``; the OWN state is a NULL test on this column
     # and needs no cache read.
-    amount_source_id = db.Column(
+    #
+    # **PRIVATE since plan step X-au-k**, for the reason its partner states,
+    # and double-underscored for the same seal.
+    __amount_source_id = db.Column(
+        "amount_source_id",
         db.Integer,
         db.ForeignKey(
             "ref.amount_sources.id",
             name="fk_transactions_amount_source_id",
             ondelete="RESTRICT",
         ),
+    )
+    # THE PAIR ABOVE, AS ONE ATTRIBUTE (plan step **X-au-k**).  Assigning it is
+    # the only way to move this row between R-FI's two states, so "the one
+    # writer of a row's amount-ownership pair" is a property of the mapping
+    # rather than a census of call sites -- which is what it was, and what had
+    # to be re-run every time a cutover grew the derived population.  The two
+    # sites that made the census unmaintainable are splats over a VARIABLE
+    # field name (``recurrence_engine/_maintain.py``,
+    # ``routes/transactions/mutations.py``): no grep and no AST pass can see
+    # them, and neither can reach this attribute by accident.
+    #
+    # ``ck_transactions_amount_ownership`` STAYS, and the two refuse different
+    # things: :class:`~app.models.amount_ownership.AmountOwnership` refuses a
+    # figure BESIDE a relation, and the CHECK refuses NEITHER -- the state a
+    # row still being built passes through in memory.  The CHECK is also the
+    # backstop against a writer that is not this application at all: a
+    # migration, a ``psql`` session, a trigger.
+    # ``from_columns`` rather than the class itself: it answers ``None`` for a
+    # row that has stated no ownership, which keeps that state out of the
+    # value object and lets the type be TOTAL over ruling R-FI's two.
+    amount_ownership = db.composite(
+        from_columns, __estimated_amount, __amount_source_id,
     )
     # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     transfer_id = db.Column(
@@ -634,6 +683,57 @@ class Transaction(
         # envelope", which is a budget-clock question.
         order_by="TransactionEntry.purchased_on",
     )
+
+    @hybrid_property
+    def estimated_amount(self):
+        """Return the figure this row states as its own, or ``None``.
+
+        A READ-ONLY projection of :attr:`amount_ownership` (plan step
+        **X-au-k**), so every reader that asked for the column still gets it
+        and no reader has to learn the pair.  It reads the mapped column
+        rather than the composite so that a row still being built -- one whose
+        ownership has not been stated -- answers ``None`` instead of raising.
+
+        **There is no setter, and that is the whole step.**  ``AttributeError``
+        is what a direct write gets, including a ``setattr`` over a variable
+        field name, which is the shape the two splat sites use.  To state this
+        row's amount, assign :attr:`amount_ownership` through
+        ``app.services.amount_ownership``.
+
+        As a ``hybrid_property`` rather than a plain one because
+        ``Transaction.estimated_amount`` is also a QUERY expression: at class
+        level this returns the mapped column, so ``filter``, ``order_by``,
+        ``in_``, ``func`` wrappers and ``aliased()`` all keep working
+        unchanged.
+
+        **The exception, stated because an enumeration that lists only what it
+        verified reads as complete**: the LOADER options do not take it.
+        ``load_only(Transaction.estimated_amount)`` raises ``IndexError`` on
+        SQLAlchemy 2.0.49 -- a hybrid is not a mapped attribute and the option
+        has no column to defer.  Nothing in ``app/`` or ``tests/`` uses
+        ``load_only`` on either name; a caller that needs one wants
+        ``Transaction.amount_ownership``, which IS mapped.
+
+        Returns:
+            The stored figure, or ``None`` when this row's amount is derived
+            or not yet stated.
+        """
+        return self.__estimated_amount
+
+    @hybrid_property
+    def amount_source_id(self):
+        """Return the id of the relation pricing this row, or ``None``.
+
+        The read-only twin of :attr:`estimated_amount`; see it for why there
+        is no setter and why this is a hybrid.  ``None`` means the row owns
+        its figure, which is the NULL test
+        ``ck_transactions_amount_ownership`` is written over.
+
+        Returns:
+            The ``ref.amount_sources`` id, or ``None`` when the row owns its
+            amount or has not stated its ownership yet.
+        """
+        return self.__amount_source_id
 
     @property
     def is_income(self):

@@ -59,6 +59,7 @@ from tests._test_helpers import (
     settle_day_columns,
 )
 from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 
 def _instant(year, month, day, hour=0, minute=0, second=0):
@@ -587,7 +588,7 @@ class TestSourceFactValuation:
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             name="unpaid bill",
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
         ))
         db.session.commit()
 

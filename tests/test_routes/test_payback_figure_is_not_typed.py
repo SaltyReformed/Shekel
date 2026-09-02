@@ -28,6 +28,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import credit_workflow
 from app.services.entry_credit_workflow import sync_entry_payback
+from app.models.amount_ownership import AmountOwnership
 
 
 @pytest.fixture(name="payback_pair")
@@ -50,7 +51,7 @@ def _payback_pair(app, seed_user, seed_periods):
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             name="Card purchase",
-            estimated_amount=Decimal("181.58"),
+            amount_ownership=AmountOwnership.own(Decimal("181.58")),
         )
         _db.session.add(source)
         _db.session.flush()
@@ -136,7 +137,7 @@ class TestTheCopyNamesTheRepairTHISPaybackHas:
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Card envelope",
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 is_envelope=True,
             )
             _db.session.add(envelope)
@@ -204,7 +205,7 @@ class TestTheDeleteRefusalNamesTheRepairTHISPaybackHas:
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Card envelope",
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 is_envelope=True,
             )
             _db.session.add(envelope)

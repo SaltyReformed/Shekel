@@ -70,6 +70,7 @@ from app.services.cash_ledger import (
 )
 from app.services.cash_ledger._amount_source import _RELATION_RULES, _RULE_ANSWERS
 from tests._test_helpers import (
+    write_past_the_amount_seam,
     add_escrow_line,
     add_txn,
     capture_sql_statements,
@@ -528,7 +529,7 @@ class TestWhichRulePricesARow:
             owns=True,
         )
         shadow = _shadow_of(xfer)
-        shadow.estimated_amount = Decimal("77.77")
+        state_own_amount(shadow, Decimal("77.77"))
         db.session.flush()
         assert amount_rule(shadow) is AmountRule.OWN
         assert _resolve(seed_user, shadow) == Decimal("77.77")
@@ -643,9 +644,12 @@ class TestTheDeclarationDecides:
         xfer, _ = _generated_transfer(
             seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
         )
-        xfer.amount_source_id = ref_cache.amount_source_id(
-            AmountSourceEnum.PARENT_TRANSFER,
-        )
+        # RE-declared: ``_generated_transfer`` already returns a derived
+        # transfer naming its TEMPLATE, so this swaps the relation and empties
+        # nothing.  One act since plan step X-au-k, where it was a bare column
+        # write that happened to be legal only because the figure was already
+        # gone.
+        declare_derived(xfer, AmountSourceEnum.PARENT_TRANSFER)
         db.session.flush()
         with pytest.raises(AmountUnresolvable, match="no parent transfer"):
             resolve_transfer_amount(xfer)
@@ -1055,12 +1059,17 @@ class TestEveryRefusalFires:
         txn = add_txn(db.session, seed_user, seed_periods[0], "Haircut", "35.00")
         basis = _basis_for(seed_user)
         with db.session.no_autoflush:
-            txn.estimated_amount = None
+            # The FOURTH shape: ownership stated as neither a figure nor a
+            # relation.  Since plan step X-au-k the acts refuse it -- a caller
+            # meaning "derived" says so -- so the state is named directly by
+            # the bare value object, which is exactly what SQLAlchemy hands a
+            # half-built row and what the CHECK refuses to persist.
+            txn.amount_ownership = None
             with pytest.raises(
                 AmountUnresolvable, match="owns its amount and carries none",
             ):
                 resolve_transaction_amount(txn, basis)
-            txn.estimated_amount = Decimal("35.00")
+            state_own_amount(txn, Decimal("35.00"))
 
     def test_a_transfer_carrying_no_figure_is_refused(
         self, app, db, seed_user, seed_periods,
@@ -1074,12 +1083,15 @@ class TestEveryRefusalFires:
             seed_periods[0], amount=Decimal("75.00"),
         )
         with db.session.no_autoflush:
-            xfer.amount = None
+            # The FOURTH shape, on the transfer side: ownership stated as
+            # neither a figure nor a relation.  See the transaction twin above
+            # for why the bare value object names it since plan step X-au-k.
+            xfer.amount_ownership = None
             with pytest.raises(
                 AmountUnresolvable, match="owns its amount and carries none",
             ):
                 resolve_transfer_amount(xfer)
-            xfer.amount = Decimal("75.00")
+            state_own_amount(xfer, Decimal("75.00"))
 
 
 class TestTheLoanPaymentRule:
@@ -1349,15 +1361,24 @@ class TestTheRulesDoNotReadTheColumnTheyReplace:
         ``ck_transactions_amount_ownership`` refuses a figure beside a
         declaration, which is what turns this property from a measurement into a
         construction.  The in-memory write is still what grades the rule.
+
+        **It is written to the private COLUMN since plan step X-au-k, and the
+        reason is the property itself.**  The pair is one attribute now, so
+        ``state_own_amount`` would ALSO release the declaration -- the row
+        would legitimately own the nudge, the resolver would rightly answer
+        it, and this test would be grading an OWN row while claiming to grade
+        a derived one.  Reaching past the mapping is the only way left to hold
+        a derived row beside a rival figure, and that it is the only way left
+        is what X-au-k bought.
         """
         template = _priced_template(seed_user)
         txn = _template_row(seed_user, seed_periods[0], template)
         basis = _basis_for(seed_user)
         before = resolve_transaction_amount(txn, basis)
         with db.session.no_autoflush:
-            txn.estimated_amount = nudge
+            write_past_the_amount_seam(txn, nudge)
             assert resolve_transaction_amount(txn, basis) == before
-            txn.estimated_amount = None
+            write_past_the_amount_seam(txn, None)
 
     def test_a_declared_row_cannot_carry_a_rival_figure_at_all(
         self, app, db, seed_user, seed_periods,
@@ -1367,10 +1388,15 @@ class TestTheRulesDoNotReadTheColumnTheyReplace:
         A derived row whose column holds a figure is the state the whole arc
         exists to delete, and it is the state the CHECK forbids -- so the
         rival figure the test above writes in memory cannot survive a flush.
+
+        It reaches past the mapping for the same reason that test does: since
+        plan step X-au-k the seam cannot express this state at all, so a
+        control routed through it would grade the type and never reach the
+        database.  Both tiers are graded, one per test.
         """
         template = _priced_template(seed_user)
         txn = _template_row(seed_user, seed_periods[0], template)
-        txn.estimated_amount = Decimal("1000.00")
+        write_past_the_amount_seam(txn, Decimal("1000.00"))
         with pytest.raises(IntegrityError, match="ck_transactions_amount_ownership"):
             db.session.flush()
         db.session.rollback()
@@ -1388,11 +1414,15 @@ class TestTheRulesDoNotReadTheColumnTheyReplace:
         shadow = _shadow_of(xfer)
         basis = _basis_for(seed_user)
         with db.session.no_autoflush:
-            shadow.estimated_amount = Decimal("4242.42")
-            xfer.amount = Decimal("2424.24")
+            # Both rival figures are written past the mapping, for the reason
+            # ``test_a_template_rows_answer_ignores_its_own_column`` states:
+            # the acts would release each row's declaration and the test would
+            # grade two OWN rows.
+            write_past_the_amount_seam(shadow, Decimal("4242.42"))
+            write_past_the_amount_seam(xfer, Decimal("2424.24"))
             assert resolve_transaction_amount(shadow, basis) == _OLD_PRICE
-            shadow.estimated_amount = None
-            xfer.amount = None
+            write_past_the_amount_seam(shadow, None)
+            write_past_the_amount_seam(xfer, None)
         template_amount_service.set_amount(
             template, Decimal("199.00"), effective_on=_PRICE_ROSE_ON,
         )
@@ -1406,9 +1436,9 @@ class TestTheRulesDoNotReadTheColumnTheyReplace:
         txn = add_txn(db.session, seed_user, seed_periods[0], "Haircut", "35.00")
         basis = _basis_for(seed_user)
         with db.session.no_autoflush:
-            txn.estimated_amount = Decimal("36.00")
+            state_own_amount(txn, Decimal("36.00"))
             assert resolve_transaction_amount(txn, basis) == Decimal("36.00")
-            txn.estimated_amount = Decimal("35.00")
+            state_own_amount(txn, Decimal("35.00"))
 
 
 def _touch(*rows):

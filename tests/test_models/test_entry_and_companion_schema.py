@@ -22,6 +22,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from tests._test_helpers import load_migration_module
+from app.models.amount_ownership import AmountOwnership
 
 _REFUND_MIGRATION = load_migration_module(
     "b8e4c1f7a903_a_refund_is_a_negative_purchase.py",
@@ -57,7 +58,7 @@ def _make_txn(seed_user, seed_periods, estimated_amount=Decimal("500.00")):
         name="Test Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=estimated_amount,
+        amount_ownership=AmountOwnership.own(estimated_amount),
     )
     db.session.add(txn)
     db.session.flush()

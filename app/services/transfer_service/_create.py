@@ -31,6 +31,7 @@ from app.enums import AmountSourceEnum, SettlementBasisEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
+from app.models.amount_ownership import AmountOwnership
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -336,7 +337,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         status_id=spec.status_id,
         transfer_template_id=spec.transfer_template_id,
         name=transfer_name,
-        amount=amount,
+        amount_ownership=AmountOwnership.own(amount),
         category_id=spec.category_id,
         notes=spec.notes,
         due_date=spec.due_date,
