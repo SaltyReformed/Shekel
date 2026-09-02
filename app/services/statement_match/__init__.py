@@ -115,6 +115,19 @@ The public surface, and what each piece is for:
   accepts* has a figure to accept.  It runs the accept door's own reads and
   refusals without the writes, so the screen and the door cannot state
   different totals (plan step ``bank_import:X-f6d-4``).
+* :func:`skip_line` and :func:`unskip_line` -- the FOURTH verb's two doors
+  (plan step ``bank_import:X-gj-4a``, ruling **R-JG**): the owner decides a
+  bank line is explained by nothing they budget for, and can decide otherwise
+  again.  **They MOVE NO MONEY and can move none** -- the only table either
+  writes is ``budget.statement_line_skips``, which holds no figure -- so the
+  bank's record, the books and the difference between them are all exactly
+  what they were; what changes is that :func:`review_set` stops asking.  A
+  line carries at most ONE answer, so :func:`skip_line` refuses a line an
+  accepted match already explains and ABSORBS a repeat of the same decision.
+* :func:`awaiting_review_count` -- how many of an account's recorded lines
+  still have no answer, which is the figure the GRID's bank control renders.
+  It applies the review pass's own four predicates and no others, so a badge
+  and the screen it links to cannot disagree.
 * :func:`release_match` -- the undo.  It restores the QUESTION rather than
   the days, and removes what the act CREATED: the purchase a bank line became,
   a group's recorded difference, and the budget line minted to hold a purchase
@@ -250,7 +263,6 @@ from ._gaps import BooksBound, ReviewBounds
 from ._reads import (
     ReviewSet,
     RowsNeverShown,
-    awaiting_review_count,
     review_set,
 )
 from ._verdict import RuleVerdict
@@ -274,6 +286,8 @@ from ._directory import (
     merchant_directory,
 )
 from ._scope import ReviewScope
+from ._skipping import SkippedLine, skip_line, unskip_line
+from ._undisposed import awaiting_review_count
 from ._panel import AddAct, AddTab, MatchCandidates, VerbPanel
 from ._verbs import Verb, VerbOffer
 from ._reconcile import Tab, reconcile_page
@@ -351,6 +365,7 @@ __all__ = [
     "StatementQueue",
     "ReviewedBatch",
     "ReviewedRow",
+    "SkippedLine",
     "StatementRegister",
     "DirectoryAsk",
     "MerchantDirectory",
@@ -395,6 +410,8 @@ __all__ = [
     "removals_by_match",
     "register_set",
     "review_set",
+    "skip_line",
+    "unskip_line",
     "rule_filed_acts",
     "rule_creating",
     "rule_naming",

@@ -181,6 +181,7 @@ def _load_line(
     """
     line = load_lines(
         scope.account_id, frozenset({creation.line_id}), matched,
+        for_write=True,
     )[0]
     # **An inflow is a purchase only where the owner's own rule claims it**
     # (plan step ``bank_import:X-gj-2b-2``, ruling **R-HT(a)**).  A merchant

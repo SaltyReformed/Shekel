@@ -8,7 +8,11 @@ promised a repair nothing in ``app/`` could perform.
 
 **Four properties are what this door is FOR, and all four are graded here:**
 
-* it removes the import and the lines IT first recorded, and nothing else;
+* it removes the import and the lines IT first recorded, and nothing else --
+  and it SAYS how many of the owner's own SKIP decisions went with those lines
+  (plan step ``bank_import:X-gj-4a``), because a destructive act that removes
+  answers without saying how many is the shape every other figure on this
+  receipt exists to refuse;
 * it RELEASES every match naming one of those lines rather than letting the
   database shred the membership -- and the settle days those matches wrote
   STAY, because they are the app's own record;
@@ -169,6 +173,77 @@ class TestItRemovesWhatThatImportRecorded:
         assert removal.period_start == date(2026, 3, 2)
         assert removal.period_end == date(2026, 3, 4)
         assert removal.matches_released == 0
+
+
+class TestItSaysHowManyOfTheOwnersSKIPSItDestroyed:
+    """Plan step ``bank_import:X-gj-4a``, ruling **bank_import:R-JG**.
+
+    A skip claims nothing but its own line, so
+    ``fk_statement_line_skips_line_account`` takes it away with the line rather
+    than refusing this delete -- which is right, and is exactly why the receipt
+    has to COUNT it.  What the number names is questions the owner has already
+    answered being asked again the next time the same span is imported.
+
+    **Counted BEFORE the cascade, which is what these grade**: a figure read
+    afterwards would be zero however many rows went, and the test would pass
+    against a receipt that under-reports every removal.
+    """
+
+    def test_a_delete_reports_the_skips_it_took(self, app, db, seed_user):
+        """Two skipped lines go with their import, and the receipt says two."""
+        outcome = _import(seed_user)
+        lines = db.session.query(BankStatementLine).order_by(
+            BankStatementLine.id,
+        ).all()
+        for line in lines:
+            statement_match.skip_line(
+                line.id, seed_user["user"].id, seed_user["account"].id,
+            )
+        db.session.flush()
+
+        removal = _undo(seed_user, outcome.import_id)
+
+        assert removal.skips_forgotten == 2
+        assert _rows(db, "budget.statement_line_skips", "account_id",
+                     seed_user["account"].id) == 0
+
+    def test_a_delete_that_took_no_skip_reports_zero(
+        self, app, db, seed_user,
+    ):
+        """The ordinary case, so the count above is about the skips.
+
+        Separated deliberately: a receipt hard-coded to the number of lines
+        would pass the case above and fail here.
+        """
+        outcome = _import(seed_user)
+
+        removal = _undo(seed_user, outcome.import_id)
+
+        assert removal.skips_forgotten == 0
+
+    def test_it_counts_only_THIS_imports_skips(self, app, db, seed_user):
+        """A skip on a line another import owns is not this delete's to report.
+
+        MONEY-ADJACENT in the same way ``test_a_line_ANOTHER_import_recorded
+        _stays`` is: an owner tidying up one import must not be told they lost
+        answers that are still standing.
+        """
+        first = _import(seed_user)
+        kept = db.session.query(BankStatementLine).order_by(
+            BankStatementLine.id,
+        ).first()
+        statement_match.skip_line(
+            kept.id, seed_user["user"].id, seed_user["account"].id,
+        )
+        second = _import(seed_user, file_name="again.csv")
+        assert second.recorded_count == 0
+
+        removal = _undo(seed_user, second.import_id)
+
+        assert removal.skips_forgotten == 0
+        assert _rows(db, "budget.statement_line_skips", "account_id",
+                     seed_user["account"].id) == 1
+        assert _undo(seed_user, first.import_id).skips_forgotten == 1
 
 
 class TestItReleasesTheANCHORSItsLinesSupported:

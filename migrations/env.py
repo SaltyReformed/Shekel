@@ -62,6 +62,23 @@ _NON_MODEL_TABLES = frozenset({
     # session that writes the rows being audited, which is exactly the
     # tampering vector finding F-028 calls out.  Keep it raw.
     "audit_log",
+    # system.pre_origination_purge and system.loan_due_date_backfill --
+    # what earlier migrations KEPT of rows they removed, so their own
+    # downgrades can restore them (``c4e91a7b2d38`` and its sibling).
+    # They are backed by no model on purpose: a migration's snapshot of
+    # rows it destroyed is not application state.
+    #
+    # **They belong here because the alternative is a fence made of
+    # memory** (plan step ``bank_import:X-gj-4a``).  Every autogenerate
+    # since they were created has proposed ``op.drop_table`` for both,
+    # and ``6376c2b8e6db``'s docstring records having had to strip the
+    # pair by hand -- "every autogenerate since has offered to drop
+    # them".  A migration author who does not notice ships a revision
+    # that destroys the only record of what two earlier migrations
+    # removed.  This constant exists for exactly this case; the two
+    # tables were simply never added to it.
+    "pre_origination_purge",
+    "loan_due_date_backfill",
 })
 
 # Indexes belonging to the non-model tables.  Autogenerate compares
@@ -84,6 +101,11 @@ def include_object(object_, name, type_, reflected, compare_to):
     (revision a5be2a99ea14) via raw SQL; treating them as autogenerate
     candidates would propose ``op.drop_table('audit_log')`` and the
     matching index drops on every migrate run.
+    ``system.pre_origination_purge`` and ``system.loan_due_date_backfill``
+    are what two earlier migrations KEPT of rows they removed, so their
+    own downgrades can restore them; dropping either destroys that record.
+    See ``_NON_MODEL_TABLES`` for why they belong in the constant rather
+    than in each author's memory.
 
     Returning ``False`` at the ``"table"`` or ``"index"`` type
     short-circuits both the drop op and any child column/constraint

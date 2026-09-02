@@ -95,18 +95,20 @@ from app.services.statement_match import release_match
 
 from ._anchor import release_anchors_from
 from ._identity import forget_identity_if_last
-from ._reads import matches_by_import
+from ._reads import matches_by_import, skips_by_import
 
 
 @dataclass(frozen=True)
 class ImportRemoval:  # pylint: disable=too-many-instance-attributes
     """What undoing one import actually removed.
 
-    Pylint: ``too-many-instance-attributes`` (10/7) -- ten because a delete
-    undoes ten distinct things, not because the value wants splitting.  The
+    Pylint: ``too-many-instance-attributes`` (11/7) -- eleven because a delete
+    undoes eleven distinct things, not because the value wants splitting.  The
     ninth and tenth arrived with plan step ``bank_import:X-f6f`` and they are
     the two that say this act MOVES MONEY; hiding either to satisfy a limit is
-    how a destructive receipt comes to under-report what it destroyed.
+    how a destructive receipt comes to under-report what it destroyed.  *It
+    read ten until plan step ``bank_import:X-gj-4a``* -- a count in a rationale
+    is a measurement, and this one went stale in the commit that made it stale.
     ``ImportRecord`` in :mod:`._reads` carries the identical disable for the
     identical reason: a receipt that genuinely states N facts is not improved
     by hiding ``N - 7`` of them from the person who pressed a destructive
@@ -146,6 +148,17 @@ class ImportRemoval:  # pylint: disable=too-many-instance-attributes
             source.
         merchants_forgotten: Merchants this account has been left with no
             reason to remember (:func:`_forget_orphan_merchants`).
+        skips_forgotten: Decisions that a line was explained by nothing, which
+            went with the lines they were about (plan step
+            ``bank_import:X-gj-4a``, ruling **R-JG**).  **Counted rather than
+            left to the cascade to do silently**: a skip claims nothing but its
+            own line, so ``fk_statement_line_skips_line_account`` takes it away
+            with the line rather than refusing the delete -- and a destructive
+            act that removes an owner's answers without saying how many is
+            exactly what every other field on this receipt exists to stop.
+            Re-importing the same file records the lines again with no skip, so
+            what this number names is questions the owner will be asked a
+            second time.
     """
 
     import_id: int
@@ -159,6 +172,7 @@ class ImportRemoval:  # pylint: disable=too-many-instance-attributes
     merchants_forgotten: int
     rows_removed: int
     cash_removed: Decimal
+    skips_forgotten: int
 
 
 @dataclass(frozen=True)
@@ -376,6 +390,18 @@ def delete_import(
         )
         .one()
     )
+    # Counted BEFORE the cascade takes them, for the reason the line count
+    # above is: afterwards the rows are gone and the receipt would have nothing
+    # to read.  A skip is not released the way a match is -- it claims no app
+    # row, so there is nothing for a door to give back -- it simply goes with
+    # its line (``fk_statement_line_skips_line_account``).
+    #
+    # **The SAME read the page previews with** (:func:`~._reads
+    # .skips_by_import`), which is what ``_release_matches`` says of
+    # ``matches_by_import`` one line down and for the identical reason: a
+    # confirmation that counted differently from the act it confirms would be
+    # a confirmation that lies, and this figure is on both.
+    skips_forgotten = skips_by_import(account_id).get(import_id, 0)
     matches_released, rows_removed, cash_removed = _release_matches(
         import_id, owner_id, account_id,
     )
@@ -417,4 +443,5 @@ def delete_import(
         anchors_released=anchors_released,
         rows_removed=rows_removed,
         cash_removed=cash_removed,
+        skips_forgotten=skips_forgotten,
     )
