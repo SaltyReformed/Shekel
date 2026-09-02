@@ -36,7 +36,9 @@ adversarial reviews measured it unsafe on today's schema:
   as ``estimated_amount + extra`` and documents that column as *"always the
   generated base"*.  Writing the freeze there makes the derivation read its own
   output, so a settle / revert / settle cycle COMPOUNDS the standing extra --
-  measured ``$1,599.10 -> $1,699.10 -> $1,799.10``;
+  measured ``$1,599.10 -> $1,699.10 -> $1,799.10``.  *Both halves of that
+  hazard are gone: plan step X-au-c3 moved the record off the plan, and plan
+  step X-au-g-2c-2 deleted the producer that read the column;*
 * what a row is worth prefers a human's ``actual_amount`` over its own amount,
   and nothing clears a leftover ``actual_amount`` when a transfer is reverted
   (finding **N-257**), so a freeze written to ``estimated_amount`` is silently
@@ -54,11 +56,10 @@ across four modules.
 **What it costs on production today is `$0.00`, and the reason is worth
 stating**: ``budget.loan_payment_settings`` holds ZERO rows, so
 ``loan_payment_config`` answers ``(False, 0.00)`` for every transfer template
-and :func:`frozen_amount` returns ``None`` everywhere.  All 342 shadows carry
-``actual_amount = NULL`` (re-measured 2026-08-12), which is that fact in the
-data.  The split opens the
-first time a loan payment transfer is created through
-``routes/loan/payment_transfer.py``, which is a live route.
+and every shadow resolves to its parent's own figure -- which every shadow
+already equalled (re-measured 2026-09-01 at stamp ``a4c6f1d92b73``: 0 of 350
+differ).  The split opens the first time a loan payment transfer is created
+through ``routes/loan/payment_transfer.py``, which is a live route.
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Reads and mutates ORM rows; no flush, no commit.
@@ -135,60 +136,25 @@ def _reject_unsettleable(shadow: Transaction) -> None:
         )
 
 
-def frozen_amount(shadow: Transaction, basis: AmountBasis) -> Decimal | None:
-    """Return the live payment-date figure a settle FREEZES, or ``None``.
-
-    The capture-on-settle rule: when the operator settles an auto-derived loan
-    payment with one click, the figure recorded is the LIVE payment-date amount
-    (P&I + escrow-as-of + extra), not the creation-time estimate the shadow was
-    generated with.  Because the frozen cash and the genesis split read the same
-    ``escrow_monthly_as_of`` on the shadow's own DUE date, ``cash == split``
-    holds by construction rather than by luck.
-
-    **Why the stored figure is stale in the first place**, since the freeze
-    reads as arbitrary without it: ``routes/loan/payment_transfer.py`` writes
-    one P&I-plus-escrow SNAPSHOT into ``transfer_templates.default_amount`` when
-    the payment is set up, and ``transfer_recurrence`` copies that same scalar
-    into every transfer it generates, for every period, forever.  The live
-    figure re-resolves the escrow version in effect on each row's own due date.
-    So the stored amount is not stale by accident -- it is a copy of a
-    derivation, taken once and never invalidated, which is finding **N-224**'s
-    shape and what ruling **R-FI** deletes outright.
-
-    ``None`` -- meaning "this row derives nothing; leave its amount alone" --
-    for every shadow that needs no capture: an operator ``is_override`` (the
-    operator owns that amount), an already-settled shadow, a transfer that is
-    not a loan payment (no settings row), a MANUAL payment with no standing
-    extra (its stored estimate already IS the cash), or a loan that cannot
-    resolve.  :meth:`~app.services.cash_ledger.LoanPricing.live_cash`
-    owns that list; this is a named seam over it, not a second copy.
-
-    **It asks the pass's OWN loan derivation** (plan step X-au-c2b).  It called
-    ``live_loan_payment_amount``, a second implementation of that same rule
-    whose docstring said it "mirrors" the first's candidate filter -- and which
-    re-queried the transfer and re-resolved the loan for every offered row,
-    which is finding **N-269**.  One derivation, asked twice, costs the second
-    ask nothing.
-
-    **The ``is_projected`` guard inside makes the freeze ONE-SHOT**, and
-    :func:`settle` is placed to keep it that way: it resolves this BEFORE the
-    status is applied, so a genuine first settle still sees a Projected shadow.
-    A re-settle cannot reach it at all -- :func:`settle` runs only on the way
-    INTO the settled band (``enters_settled_band``), so the ``done -> done``
-    identity a stale tab can submit never re-freezes.
-
-    Args:
-        shadow: Either leg of the transfer -- both share the transfer id, the
-            pay period and the due date, so either resolves the same figure and
-            Transfer Invariant 3 is preserved whichever is passed.
-        basis: The read pass's
-            :class:`~app.services.cash_ledger.AmountBasis`, whose ``loans``
-            derivation answers.
-
-    Returns:
-        The ``Decimal`` to freeze, or ``None``.
-    """
-    return basis.loans.live_cash(shadow)
+# ``frozen_amount`` stood here until plan step X-au-g-2c-2, and what deleted it
+# is the state it repaired becoming unrepresentable rather than a rule changing.
+# It published ``LoanPricing.live_cash`` under a name -- *the live payment-date
+# figure a settle FREEZES* -- because a loan-payment shadow STORED a
+# creation-time estimate that the settle had to supersede.  A transfer shadow
+# stores no figure at all now: it declares ``PARENT_TRANSFER`` and is priced by
+# the amount model, so :func:`_resolved_figure` below answers the same number
+# for a derive-mode payment (its installment's P&I + escrow + extra), for a
+# manual one (its definition's price + extra) and for a plain transfer (its
+# parent's), and there is nothing left to freeze OVER.
+#
+# **The freeze's ``is_projected`` guard went with it and is not missed**, which
+# is worth stating because it was load-bearing: it made the capture ONE-SHOT,
+# so a ``done -> done`` replay from a stale tab could not rewrite a recorded
+# figure with a later derivation.  What holds that now is
+# :func:`~app.services.row_valuation.fixed_contribution`, asked FIRST inside
+# :func:`_resolved_figure` -- a settled row answers from its own settlement
+# RECORD and never reaches a producer -- plus :func:`settle` running only on
+# the way INTO the settled band.  Two independent reasons where there was one.
 
 
 def settle_amount(shadow: Transaction, basis: AmountBasis) -> Decimal:
@@ -217,11 +183,11 @@ def settle_amount(shadow: Transaction, basis: AmountBasis) -> Decimal:
         basis: The read pass's
             :class:`~app.services.cash_ledger.AmountBasis`, built for this
             shadow's owner and scenario.  Its ``loans`` derivation is what
-            answers the freeze.
+            prices a loan payment.
 
     Returns:
-        The frozen live figure when there is one, else what the row
-        CONTRIBUTES (:func:`_unfrozen_amount`).
+        A RETAINED correction where one stands, else what the row resolves to
+        (:func:`_resolved_figure`).
 
     Raises:
         ValidationError: On a row this module may not settle
@@ -241,23 +207,25 @@ def settle_amount(shadow: Transaction, basis: AmountBasis) -> Decimal:
     held = honoured_correction(shadow)
     if held is not None:
         return held
-    # ONE basis for both halves (plan step X-au-c2b, finding **N-269**): the
-    # freeze and the fall-through both price this shadow, and building one each
-    # is how a single offered row paid for the transfer lookup twice.  Since
-    # plan step X-au-j that one basis is the PASS's rather than this call's, so
-    # K offered shadows share it instead of building K (finding **N-295**).
-    frozen = frozen_amount(shadow, basis)
-    return _unfrozen_amount(shadow, basis) if frozen is None else frozen
+    return _resolved_figure(shadow, basis)
 
 
-def _unfrozen_amount(shadow: Transaction, basis: AmountBasis) -> Decimal:
-    """Return what *shadow* contributes when no freeze answers for it.
+def _resolved_figure(shadow: Transaction, basis: AmountBasis) -> Decimal:
+    """Return what *shadow* is worth, absent a correction a human supplied.
 
     The transfer twin's replacement for ``shadow.effective_amount`` (plan step
     X-au-c2), and the ONE statement of it, so the figure the panel OFFERS and
     the figure :func:`settle` BOOKS cannot come to be computed two ways -- which
     is the drift :func:`settle_amount` exists to prevent, and it would have been
     reintroduced by inlining this at both sites.
+
+    **It is the WHOLE derivation since plan step X-au-g-2c-2**, where it was one
+    of two arms.  ``frozen_amount`` sat in front of it and answered first for a
+    loan payment, because such a shadow stored a creation-time estimate the
+    settle had to supersede; the shadow stores nothing now, so the amount model
+    answers every shape -- a derive-mode payment's installment, a manual one's
+    definition price plus the standing extra, a plain transfer's parent -- and
+    one arm is left where two had to be kept in step.
 
     **The status / entered-actual gate is asked BEFORE the basis is built**,
     and an adversarial review is why: Python evaluates arguments before the
@@ -269,19 +237,17 @@ def _unfrozen_amount(shadow: Transaction, basis: AmountBasis) -> Decimal:
     transfer is reverted, so every re-offered reverted shadow paid a full
     producer run whose answer was discarded.
 
-    **It is reached only when :func:`frozen_amount` answered ``None``.**  A
-    derive-mode loan payment is priced by the freeze, so the resolver runs
-    exactly for the rows the loan derivation had no answer for.  It once repeated
-    the transfer / template lookup ``frozen_amount`` had just made -- finding
-    **N-269** -- which plan step X-au-c2b closed by handing both halves the same
-    basis: a derivation asked a second time answers from what it already
-    resolved.
+    **The ``is_projected`` one-shot guard is NOT missing from here**, which is
+    worth stating because the arm this replaced carried one.  A settled row
+    answers from ``fixed_contribution`` above -- its own settlement RECORD --
+    and never reaches the resolver, and :func:`settle` runs only on the way INTO
+    the settled band, so a ``done -> done`` replay from a stale tab re-derives
+    nothing.  Two independent reasons where the freeze had one.
 
     Args:
         shadow: The leg being priced.
         basis: The read pass's
-            :class:`~app.services.cash_ledger.AmountBasis`, shared with
-            :func:`frozen_amount`.
+            :class:`~app.services.cash_ledger.AmountBasis`.
 
     Returns:
         ``0`` for a row that contributes nothing, what the row RECORDED as
@@ -312,9 +278,9 @@ def settle(
 
     Two acts, in this order, and the order is the rule:
 
-    1. **The figure, decided but not yet written.**  :func:`frozen_amount` is
-       resolved ONCE, before anything moves -- it is guarded on ``is_projected``,
-       so asking after the status flip would always answer ``None``.  A RETAINED
+    1. **The figure, decided but not yet written.**  :func:`_resolved_figure`
+       is asked ONCE, before anything moves -- after the status flip it would
+       answer from the settlement record this act is about to write.  A RETAINED
        correction (:func:`~app.services.status_seam.honoured_correction`)
        outranks that derivation, and a figure a HUMAN supplied NOW outranks
        both: it is compared against what the row would book anyway and is a
@@ -407,10 +373,7 @@ def settle(
     # predicate, and by its fallback -- and each asking is a ``Transfer`` query
     # plus, for a derive-mode payment, a loan-basis resolve and an escrow load.
     basis = amount_basis(rows.expense.account.user_id, rows.expense.scenario_id)
-    frozen = frozen_amount(rows.expense, basis)
-    resolved = (
-        _unfrozen_amount(rows.expense, basis) if frozen is None else frozen
-    )
+    resolved = _resolved_figure(rows.expense, basis)
     # A RETAINED correction outranks the derivation, through the same published
     # rule :func:`settle_amount` offers from, so the pair's offer and its
     # booking are one expression (plan step X-au-c3).
@@ -448,13 +411,47 @@ def settle(
         ),
     )
 
-    if frozen is not None and correction is None:
+    # The one money write no operator asked for, on the record.  It fires when
+    # the app's own derivation decided the booked figure AND that figure is not
+    # the one the transfer states -- which is the event's whole purpose, since
+    # what makes a settle worth recording is that it books something other than
+    # what the operator could see.  Not when a human's figure won, whether they
+    # typed it at this tick (*correction*) or at an earlier one the revert
+    # retained (*held*).
+    #
+    # **Three things changed at plan step X-au-g-2c-2, and all three are
+    # corrections rather than consequences.**
+    #
+    # The predicate was ``frozen is not None`` -- it asked the deleted
+    # read-time repair whether it had fired.  A first replacement asked the
+    # amount model for the RULE (``AmountRule.LOAN_PAYMENT``), and an
+    # adversarial review measured that WIDER than what it replaced: the old
+    # producer's candidate map admitted only derive-mode payments and manual
+    # ones carrying a standing extra, so a manual / no-extra settle logged
+    # nothing, while every loan payment matches the rule.  The event would have
+    # started firing on settles where no derivation decided anything, directly
+    # contradicting the sentence above it.  Comparing against the transfer's
+    # own figure reproduces the old extension exactly -- a derive-mode payment
+    # books its installment, a manual one with an extra books base + extra, and
+    # both differ from ``transfers.amount``, while a manual payment with no
+    # extra and a plain transfer book precisely that figure -- without naming a
+    # producer that no longer exists.
+    #
+    # And the guard did not test *held*, so a re-settle that HONOURED a retained
+    # correction logged a freeze that had not happened and reported the
+    # derivation's figure as though it were the booked one -- two numbers apart,
+    # in a record whose whole purpose is to say which was booked.
+    if (
+        correction is None
+        and held is None
+        and booked != rows.transfer.amount
+    ):
         log_event(
             logger, logging.INFO, EVT_TRANSFER_AMOUNT_FROZEN, BUSINESS,
             "A derived loan payment recorded its live payment-date figure",
             user_id=rows.transfer.user_id,
             transfer_id=rows.transfer.id,
-            frozen_amount=str(frozen),
+            frozen_amount=str(booked),
         )
     return correction is not None
 

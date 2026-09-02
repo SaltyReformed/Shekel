@@ -2,10 +2,10 @@
 Shekel Budget App -- Cash ledger: what one loan INSTALLMENT costs.
 
 Amount rule 4's per-shadow tier: a loan's rate periods and payment day
-(:class:`_LoanCashBasis`), and the two rules that price one shadow against
-them -- the DERIVE arm's installment P&I plus that installment's own escrow
-plus any standing extra, and the MANUAL arm's operator-owned base plus the
-extra.
+(:class:`_LoanCashBasis`), and the rule that prices one shadow against them --
+the DERIVE arm's installment P&I plus that installment's own escrow plus any
+standing extra.  The MANUAL arm lived here too until plan step X-au-g-2c-2;
+see the note at the foot of this file for where it went and why.
 
 **Every contractual term here resolves on the INSTALLMENT it governs, never on
 a read date** (ruling **R-IJ**, plan step X-au-g-2b).  The basis holds the
@@ -229,11 +229,14 @@ def _shadow_live_amount(
 ) -> Decimal:
     """Derive-mode live cash for a loan-payment shadow: its INSTALLMENT's P&I + escrow + extra.
 
-    The single expression both the projected-display override
-    (:meth:`LoanPricing.live_cash`) and the settle-time capture (the SAME
-    method since plan step X-au-c2b, which collapsed the two functions that
-    answered this into one) build an AUTO-DERIVED loan payment's cash from, so
-    they can never disagree.
+    The single expression every reader of an AUTO-DERIVED loan payment's cash
+    builds it from, so no two can disagree.  It backed a read-time override and
+    a settle-time capture as one method until plan step X-au-g-2c-2 deleted
+    both: a derive-mode shadow stores no figure for an override to supersede,
+    and a settle books what the amount model resolves
+    (:func:`._amount_source._loan_payment_answer` -> :meth:`derive_cash`), so
+    the display figure and the booked one are one expression rather than two
+    kept in step.
 
     **BOTH contractual terms resolve on the shadow's own DUE date, and that is
     ruling R-IJ** (plan step X-au-g-2b): the due date
@@ -293,46 +296,21 @@ def _shadow_live_amount(
     return round_money(monthly_pi + escrow + extra_principal)
 
 
-def _manual_shadow_amount(
-    shadow: Transaction, extra_principal: Decimal,
-) -> Decimal:
-    """Manual-mode live cash for a loan-payment shadow: its RECURRING base + extra.
-
-    In manual mode the operator owns the base cash (the typed ``default_amount``
-    the generated shadow stores as its ``estimated_amount``); the cash does not
-    re-derive P&I or escrow (decision D).  ``extra_principal`` is still added on
-    top (spec Sec. 6.1, "extra added in BOTH modes"), and the settle freeze
-    captures the same base + extra so the split routes the extra into principal.
-
-    The base is ``estimated_amount`` (the recurring base), which is what keeps
-    manual mode COHERENT with derive mode: that arm recomputes from config and
-    names no per-instance figure either.
-
-    **The reason this used to be a DISTINCTION is gone, and saying so beats
-    leaving a rationale that names a state nothing can reach** (plan step
-    X-au-c3).  It read: a projected shadow could carry an operator-typed
-    ``actual_amount`` while still ``is_projected`` and not ``is_override``, and
-    the row's CONTRIBUTION would return that actual, stacking ``extra`` on a
-    per-instance typed value.  A figure now RECORDS a settle, and what keeps one
-    out of this answer is the STATUS: ``row_valuation.settled_figure`` returns
-    ``None`` for an unsettled row whatever it still carries, and
-    :meth:`LoanPricing.live_cash` gates on ``is_projected``.  So the two
-    expressions answer the same number for every reachable input.  (An earlier
-    draft credited ``ck_transactions_settled_amount_needs_basis``; that CHECK
-    says nothing about status, and an unsettled row carrying a recorded figure
-    is the legal RETAINED state.  The conclusion held, the reason did not.)  The column is
-    still the right thing to name, because it is what the RECURRENCE writes and
-    what the extra is defined against; it is simply no longer a choice between
-    two answers.
-
-    Args:
-        shadow: The projected loan-payment shadow whose recurring base is added to.
-        extra_principal: The standing extra principal (``> 0`` at the call sites).
-
-    Returns:
-        ``round_money(shadow.estimated_amount + extra_principal)``.
-    """
-    base = shadow.estimated_amount
-    if not isinstance(base, Decimal):
-        base = Decimal(str(base))
-    return round_money(base + extra_principal)
+# ``_manual_shadow_amount`` lived here until plan step X-au-g-2c-2, and what
+# deleted it is the state it read becoming unrepresentable rather than a
+# caller changing its mind.  It derived a MANUAL-mode loan payment's cash as
+# ``round_money(shadow.estimated_amount + extra_principal)`` -- the operator's
+# stored base plus the standing extra -- under a docstring asserting that
+# column was "the recurring base".  A transfer shadow stores no figure at all
+# now: it declares ``PARENT_TRANSFER`` and reads its parent through the amount
+# model, so the manual arm is ``resolve_transfer_amount(txn.transfer) + extra``
+# (:func:`._amount_source._loan_payment_answer`) -- the DEFINITION's price
+# rather than a copy of it, which is the same arm ruling **R-FI** gives every
+# other manually-priced row.
+#
+# **The two answered the same number for every row that existed**: Transfer
+# Invariant 3 held on the column, so a shadow's ``estimated_amount`` WAS its
+# parent's ``amount`` (measured 2026-09-01 on production, stamp
+# ``a4c6f1d92b73``: 0 of 350 shadows differed).  What is gone is the way they
+# could come apart -- and the ordering hazard the balance README recorded,
+# where plan step X-au-f would have NULLed the very column this read.

@@ -98,10 +98,14 @@ class AmountBasis:
         salary: The owner-and-scenario salary derivation
             (:class:`app.services.income_service.SalaryPricing`): what each
             active profile pays, per template and period.
-        loans: The scenario's loan-payment derivation
-            (:class:`._loan_pricing.LoanPricing`): which transfers are loan
-            payments, and each destination loan's P&I, payment day and escrow
-            history.
+        loans: The pass's loan derivation
+            (:class:`._loan_pricing.LoanPricing`): each destination loan's
+            rate-period set, contractual payment day and escrow history,
+            resolved at most once per loan.  It answered *which transfers are
+            loan payments* too until plan step X-au-g-2c-2 deleted the
+            read-time repair that needed the question asked scenario-wide; the
+            amount model reads the refinement off the parent transfer it was
+            handed, per row.
     """
 
     user_id: int
@@ -136,8 +140,13 @@ def amount_basis(user_id, scenario_id) -> AmountBasis:
     object forced a CROSS-ACCOUNT reader -- the calendar, the spending report, a
     dashboard -- to group its rows by account and pay for one basis per group.
 
-    **NEITHER derivation reads a clock, and plan step X-au-g-2b is what made
-    that true of the loan half.**  It was built as
+    **The loan derivation takes NEITHER a clock nor a scenario**, and the
+    second went at plan step X-au-g-2c-2 with the config map it scoped: a
+    loan's terms are not scenario-scoped, so the argument only ever expressed a
+    mistake.  Pricing a row against another scenario's basis is refused by
+    :func:`._amount_source.resolve_transaction_amount`, from the row's own
+    column.  **Neither derivation reads a clock, and plan step X-au-g-2b is
+    what made that true of the loan half.**  It was built as
     ``loan_pricing(scenario_id, date.today())`` and resolved every loan-payment
     shadow's P&I against that one date -- finding **N-40**, and the last
     ``date.today()`` call anywhere in this package (a control asserts the
@@ -169,7 +178,7 @@ def amount_basis(user_id, scenario_id) -> AmountBasis:
         user_id=user_id,
         scenario_id=scenario_id,
         salary=income_service.salary_pricing(user_id, scenario_id),
-        loans=loan_pricing(scenario_id),
+        loans=loan_pricing(),
     )
 
 

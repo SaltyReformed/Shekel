@@ -23,6 +23,7 @@ from app.services import account_service
 from tests._test_helpers import (
     open_books_before_the_first_assertion,
     settlement_if_settling,
+    shadow_amount,
 )
 
 
@@ -511,7 +512,7 @@ class TestTransferShadowMarkDoneStateMachine:
             db.session.expire_all()
             reread_shadow = db.session.get(Transaction, shadow.id)
             reread_xfer = db.session.get(Transfer, xfer.id)
-            assert reread_shadow.estimated_amount == Decimal("100.00"), (
+            assert shadow_amount(reread_shadow) == Decimal("100.00"), (
                 "a commit after the refused PATCH wrote the shadow's amount"
             )
             assert reread_xfer.amount == Decimal("100.00"), (

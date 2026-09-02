@@ -1,9 +1,9 @@
 """
 Shekel Budget App -- Cash ledger: the read pass's LOAN-PAYMENT derivation.
 
-:class:`LoanPricing` is amount rule 4's producer, pinned to a scenario and to
-nothing else: which transfers are loan payments, and what each one's shadow
-costs.  Lazy, so a pass that prices no loan payment issues no query.
+:class:`LoanPricing` is amount rule 4's producer: what one loan-payment shadow's
+installment costs, with each destination loan resolved at most once per read
+pass.  Lazy, so a pass that prices no loan payment issues no query.
 
 Sits above :mod:`._loan_installment`, which owns the per-installment rules it
 delegates to, and below :mod:`._amount_basis`, which holds ONE of these per
@@ -11,52 +11,56 @@ read pass.
 
 **Moved here from ``loan_payment_service`` at plan step X-au-g-2a.**  The
 argument for the move is written once, in :mod:`._loan_installment`.
+
+**It is a MEMO now and no longer a repair, and plan step X-au-g-2c-2 is what
+took the second half.**  It carried :meth:`live_cash` -- the read-time override
+that SUPERSEDED a loan-payment shadow's stored figure on every balance and
+display surface -- together with the scenario-wide ``{transfer_id: config}``
+map that decided which shadows it fired for.  Ruling **R-FI** deletes a
+read-time repair by making the state it repairs unrepresentable, and that is
+what a shadow declaring ``PARENT_TRANSFER`` with no stored figure does: there
+is no stale copy left to supersede, so the override has nothing to find and
+:func:`._amount_source._loan_payment_answer` prices the row directly.
+
+**Deleting that map took the package's ONLY ``budget.transfers`` query with
+it.**  ``_load_live_payment_configs`` INNER-joined the scenario's transfers
+through their template to ``loan_payment_settings`` to discover which of them
+were loan payments -- a question the amount model now asks of the parent it was
+handed, per row, off a relationship (ruling **R-FK**).  :mod:`._events` invokes
+Transfer Invariant 5 as a principle of this package ("the same reason the
+projection engine never queries ``Transfer`` directly"), and these thirteen
+modules make no statement against that table at all again.
+
+**It takes no SCENARIO either, and that is the same deletion one level down.**
+The scenario only ever scoped the config map; a loan's terms are not
+scenario-scoped, which :func:`._loan_installment._resolve_loan_basis` already
+recorded when it lost its own scenario argument at plan step X-au-g-1 (*"the
+parameter only ever existed to scope the payment rows this no longer reads"*).
+The pin a caller can still get wrong -- pricing a row against another
+scenario's basis -- is refused by
+:func:`._amount_source.resolve_transaction_amount`, which asks the row's own
+``scenario_id`` column and is TOTAL where the map's membership never was.
 """
 
-from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy.orm import contains_eager
-
-from app.extensions import db
-from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transaction import Transaction
-from app.models.transfer import Transfer
-from app.models.transfer_template import TransferTemplate
 from app.services.loan_loaders import load_escrow_lines
-from app.services.recurring_transfer_query import loan_payment_config
-from app.utils.balance_predicates import is_projected
 from ._loan_installment import (
     _LoanCashBasis,
-    _manual_shadow_amount,
     _resolve_loan_basis,
     _shadow_live_amount,
 )
 
-@dataclass(frozen=True)
-class _LivePaymentConfig:
-    """A loan-payment transfer's live-override config: mode, extra, and loan.
-
-    Bundles the three facts :class:`LoanPricing` needs per loan-payment transfer
-    so the per-shadow rule reads typed attributes instead of threading a
-    3-tuple.  ``loan_account_id`` is the transfer's destination loan (used only
-    in derive mode, to resolve P&I / escrow).
-    """
-
-    derive_from_loan: bool
-    extra_principal: Decimal
-    loan_account_id: int
-
 
 class LoanPricing:
-    """Everything a loan-payment shadow's live cash needs, resolved per read pass.
+    """Each destination loan's terms, resolved at most once per read pass.
 
     **The DERIVATION half of amount rule 4, split from its per-row lookup at
-    plan step X-au-c2b.**  Every expensive thing behind a loan payment's live
-    figure -- which transfers in the scenario are loan payments at all, and each
-    destination loan's rate-period P&I, contractual payment day and escrow line
-    history -- is scoped by the SCENARIO and by the LOAN, and by nothing about
-    which rows a caller happens to have loaded.  Keyed that way, one read pass
+    plan step X-au-c2b.**  Everything expensive behind a loan payment's figure
+    -- the destination loan's rate-period set, its contractual payment day and
+    its escrow line history -- is scoped by the LOAN and by nothing about which
+    rows a caller happens to have loaded.  Keyed that way, one read pass
     resolves each loan once however many row sets ask
     (:class:`~app.services.cash_ledger.AmountBasis`).
 
@@ -66,17 +70,14 @@ class LoanPricing:
     function's own docstring said it *"mirrors live_loan_transfer_amounts'
     candidate filter ... so the settle capture fires for precisely the set the
     projected override covers"*.  Two implementations of one rule, kept in step
-    by hand, is what this class collapses: :meth:`live_cash` is that rule, and
-    both callers ask it.  The cost of the split was findings **N-268** and
-    **N-269** -- a request that priced two row sets paid the transfer/template
-    lookup and the loan resolve twice.
+    by hand, is what this class collapsed; the cost of the split had been
+    findings **N-268** and **N-269**, a request that priced two row sets paying
+    the loan resolve twice.
 
-    **Both derivations are LAZY**, so a read pass whose rows hold no loan
-    payment pays nothing at all: :meth:`live_cash` answers ``None`` from
-    ``transfer_id`` alone before it touches :attr:`config_by_transfer`, and the
-    per-loan resolve only runs for a loan a shadow actually names.  That is the
-    "no query when there are no candidates" property the row-set producers had,
-    kept rather than traded away.
+    **The derivation is LAZY**, so a read pass whose rows hold no loan payment
+    pays nothing at all: the per-loan resolve only runs for a loan a shadow
+    actually names.  That is the "no query when there are no candidates"
+    property the row-set producers had, kept rather than traded away.
 
     **IT READS NO CLOCK, and plan step X-au-g-2b is what deleted the one it
     used to read.**  It took an ``as_of`` and resolved each loan's rate-period
@@ -85,46 +86,22 @@ class LoanPricing:
     contractual terms on the INSTALLMENT they govern, as ruling D5 had already
     put a payment's escrow, so there is no pass-level date left to pin: the
     per-loan resolve (:func:`._loan_installment._resolve_loan_basis`) answers
-    the loan's term SET, which no date parameterises, and each shadow reads
-    the period governing its own due date.  What a whole pass now shares is
-    the derivation rather than an answer, which is the same property the
-    scenario pin has.
+    the loan's term SET, which no date parameterises, and each shadow reads the
+    period governing its own due date.  What a whole pass now shares is the
+    derivation rather than an answer.
+
+    **It states no ownership rule and reads no status, which is where it
+    differs from the ``live_cash`` it replaced** (plan step X-au-g-2c-2).  That
+    method answered ``None`` for an operator ``is_override``, an already-settled
+    shadow, or a manual payment with no standing extra, because a read-time
+    REPAIR is a question about which stored figure to supersede.  Pricing is
+    not: whether a row COUNTS and who last touched it are finding **N-262**'s
+    separate question, answered above this tier.
     """
 
-    def __init__(self, scenario_id: int) -> None:
-        """Pin the scenario; resolve nothing yet.
-
-        Args:
-            scenario_id: The scenario whose loan payments this prices.
-        """
-        self._scenario_id = scenario_id
-        self._config: "dict[int, _LivePaymentConfig] | None" = None
+    def __init__(self) -> None:
+        """Resolve nothing; each loan is loaded on first use and kept."""
         self._loans: "dict[int, tuple[_LoanCashBasis | None, list]]" = {}
-
-    @property
-    def config_by_transfer(self) -> "dict[int, _LivePaymentConfig]":
-        """``{transfer_id: config}`` for every loan payment in the scenario.
-
-        Resolved on first read and kept.  Only transfers that actually need a
-        read-time figure are carried: a DERIVE-mode loan payment (its cash
-        re-derives P&I + as-of escrow + extra) or a MANUAL one carrying a
-        standing extra (its stored base + extra).  A generic transfer has no
-        settings row and never reaches the query; a manual payment with no extra
-        keeps its stored amount and is dropped here, so the absence of a key is
-        the whole "this row needs no live figure" answer.
-
-        **It is scoped by SCENARIO where the row-set producers scoped by the
-        candidates' transfer ids**, which tightens it: a transfer belonging to
-        another scenario can no longer be priced against this basis.  Both
-        producers already took a ``scenario_id`` and resolved the LOAN against
-        it, so pricing a foreign transfer meant resolving one scenario's payment
-        against another's loan.  Zero such rows exist on the 2026-08-16
-        production clone (``budget.loan_payment_settings`` is empty, so the map
-        is empty there and this rule is graded on a seeded loan).
-        """
-        if self._config is None:
-            self._config = _load_live_payment_configs(self._scenario_id)
-        return self._config
 
     def _loan(self, loan_account_id: int) -> "tuple[_LoanCashBasis | None, list]":
         """Return ``(basis, escrow lines)`` for one loan, resolving it at most once.
@@ -146,57 +123,6 @@ class LoanPricing:
             self._loans[loan_account_id] = (basis, lines)
         return self._loans[loan_account_id]
 
-    def live_cash(self, shadow: Transaction) -> "Decimal | None":
-        """Return the live cash that SUPERSEDES *shadow*'s stored figure, or ``None``.
-
-        **The ONE rule both the projected display and the settle freeze ask**,
-        and collapsing the two copies of it is plan step X-au-c2b's doing.  A
-        stored transfer amount is a cache of this derivation, so every balance
-        and display surface shows the recompute -- which is what keeps a payment
-        row from disagreeing with the loan card after an escrow, rate, or extra
-        change.  At a settle the same figure is what FREEZES, so the frozen cash
-        and the genesis split read one number on the shadow's own DUE date and
-        ``cash == split`` holds by construction.
-
-        ``None`` -- leave the stored estimate or a typed actual alone -- for
-        every shadow that needs no live figure: no transfer, an operator
-        ``is_override`` (the operator owns that amount), an already-settled
-        shadow, a transfer that is not a loan payment, a MANUAL payment with no
-        standing extra (its stored estimate already IS the cash), or a loan that
-        will not resolve.
-
-        **The ``is_projected`` guard is what makes the settle freeze ONE-SHOT.**
-        ``transfer_service`` resolves the figure BEFORE applying the status, so a
-        genuine first settle still sees a Projected shadow; a re-settle of an
-        already-DONE shadow -- the ``done -> done`` identity a stale tab can
-        submit -- answers ``None`` here, so a frozen ``actual_amount`` is never
-        rewritten to a later figure that was never paid.
-
-        Args:
-            shadow: The shadow being asked about.  Either leg resolves the same
-                figure (both share the transfer id, the pay period and the due
-                date), so Transfer Invariant 3 is preserved whichever is passed.
-
-        Returns:
-            The live cash, or ``None`` when this shadow keeps its stored figure.
-        """
-        if (
-            shadow.transfer_id is None
-            or shadow.is_override
-            or not is_projected(shadow)
-        ):
-            return None
-        config = self.config_by_transfer.get(shadow.transfer_id)
-        if config is None:
-            return None
-        if not config.derive_from_loan:
-            # Manual mode with a standing extra (the config filter guarantees
-            # extra > 0 here): stored base + extra, no re-derivation.
-            return _manual_shadow_amount(shadow, config.extra_principal)
-        return self.derive_cash(
-            shadow, config.loan_account_id, config.extra_principal,
-        )
-
     def derive_cash(
         self,
         shadow: Transaction,
@@ -208,20 +134,22 @@ class LoanPricing:
         **Amount rule 4's derive arm, and it reads no status** -- not
         ``is_projected``, not ``is_override``, not ``is_deleted``.  That is
         finding **N-262**'s rule one tier down: those three say whether a row
-        COUNTS and who last touched it, never what prices it.  :meth:`live_cash`
-        gates on them because the read-time REPAIR is a question about which
-        stored figure to supersede; pricing is not.
+        COUNTS and who last touched it, never what prices it.
 
         Args:
             shadow: The payment shadow whose installment dates the escrow.
+                Either leg resolves the same figure -- both share the transfer
+                id, the pay period and the due date -- so Transfer Invariant 3
+                is preserved whichever is passed.
             loan_account_id: The destination loan to resolve.
             extra_principal: The recurring payment's standing extra principal
-                (``0.00`` when none), from :func:`loan_payment_config`.
+                (``0.00`` when none), from
+                :func:`~app.services.recurring_transfer_query.loan_payment_config`.
 
         Returns:
             The derived cash, or ``None`` when the loan will not resolve -- an
             account carrying no ``LoanParams``, which rule 4 turns into a
-            refusal rather than a fallback to the stored snapshot.
+            refusal rather than a fallback to a stored snapshot.
         """
         basis, escrow_lines = self._loan(loan_account_id)
         if basis is None:
@@ -229,68 +157,20 @@ class LoanPricing:
         return _shadow_live_amount(basis, escrow_lines, shadow, extra_principal)
 
 
-def loan_pricing(scenario_id: int) -> LoanPricing:
-    """Return the read pass's :class:`LoanPricing` for *scenario_id*.
+def loan_pricing() -> LoanPricing:
+    """Return a read pass's :class:`LoanPricing`.
 
     The named constructor the amount model calls, so no caller reaches for the
-    class directly.  Resolves nothing: every derivation behind it is lazy, so a
+    class directly.  Resolves nothing: the derivation behind it is lazy, so a
     pass that prices no loan payment issues no query.
 
-    It took an ``as_of`` beside the scenario until plan step X-au-g-2b, and the
-    argument for its absence is on :class:`LoanPricing`: a loan's contractual
-    terms resolve on the installment they govern (ruling **R-IJ**), so a read
-    pass has no date to hand this.
-
-    Args:
-        scenario_id: The scenario whose loan payments this prices.
+    It took an ``as_of`` until plan step X-au-g-2b and a ``scenario_id`` until
+    X-au-g-2c-2, and the argument for the absence of both is on
+    :class:`LoanPricing`: a loan's contractual terms resolve on the installment
+    they govern (ruling **R-IJ**) and are not scenario-scoped, so a read pass
+    has neither a date nor a scenario to hand this.
 
     Returns:
         The unresolved :class:`LoanPricing` handle.
     """
-    return LoanPricing(scenario_id)
-
-
-def _load_live_payment_configs(
-    scenario_id: int,
-) -> "dict[int, _LivePaymentConfig]":
-    """Load ``{transfer_id: config}`` for the scenario's loan-payment transfers.
-
-    One query: the scenario's transfers INNER-joined through their template to a
-    ``loan_payment_settings`` row, so a scenario with no loan payment at all --
-    which production is -- returns an empty map from a single indexed read and
-    resolves no loan.  The join is what keeps this scenario-wide load cheap
-    where a bare ``transfers`` scan would not be.
-
-    Args:
-        scenario_id: The scenario to load.
-
-    Returns:
-        ``{transfer_id: _LivePaymentConfig}``, carrying only the transfers that
-        need a read-time figure: DERIVE mode, or MANUAL with a standing extra.
-    """
-    transfers = (
-        db.session.query(Transfer)
-        .join(TransferTemplate, Transfer.transfer_template_id == TransferTemplate.id)
-        .join(
-            LoanPaymentSettings,
-            LoanPaymentSettings.transfer_template_id == TransferTemplate.id,
-        )
-        .options(
-            contains_eager(Transfer.template).contains_eager(
-                TransferTemplate.settings,
-            ),
-        )
-        .filter(Transfer.scenario_id == scenario_id)
-        .all()
-    )
-    config: dict[int, _LivePaymentConfig] = {}
-    for xfer in transfers:
-        derive, extra = loan_payment_config(xfer.template)
-        if not derive and extra <= Decimal("0.00"):
-            continue
-        config[xfer.id] = _LivePaymentConfig(
-            derive_from_loan=derive,
-            extra_principal=extra,
-            loan_account_id=xfer.to_account_id,
-        )
-    return config
+    return LoanPricing()

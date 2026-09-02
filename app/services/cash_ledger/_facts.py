@@ -37,11 +37,10 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy.orm import selectinload
-
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.transaction import Transaction
+from app.utils.amount_relationships import valuation_load_options
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_projected_clause,
@@ -487,9 +486,13 @@ def _unwindowed_contributing_rows(
     """
     return (
         db.session.query(Transaction)
-        .options(
-            selectinload(Transaction.entries),
-        )
+        # What a CONTRIBUTION pass reads, stated by the valuation rather than
+        # copied here (plan step X-au-g-2c-2).  Every transfer SHADOW in this
+        # set is DERIVED now, so pricing one walks to its parent transfer and
+        # that definition's settings -- roughly two years of forward projection
+        # on the Projected arm, so the per-row load this replaces is the
+        # largest N+1 the cutover could have introduced.
+        .options(*valuation_load_options())
         .filter(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,

@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+import sqlalchemy.exc
 
 from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
@@ -36,6 +37,7 @@ from tests._test_helpers import (
     create_loan_account,
     settlement_basis_id,
     settlement_columns,
+    shadow_amount,
 )
 from app.services.settle_day import record_settle_day
 from app.services.state_machine import allowed_transitions
@@ -151,7 +153,7 @@ class TestCreateTransfer:
             assert types == {expense_type.id, income_type.id}
 
             for s in shadows:
-                assert s.estimated_amount == Decimal("250.00")
+                assert shadow_amount(s) == Decimal("250.00")
                 assert s.status_id == td["projected_status"].id
                 assert s.pay_period_id == td["periods"][0].id
                 assert s.scenario_id == td["scenario"].id
@@ -490,7 +492,7 @@ class TestUpdateTransfer:
             assert xfer.amount == Decimal("400.00")
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             for s in shadows:
-                assert s.estimated_amount == Decimal("400.00")
+                assert shadow_amount(s) == Decimal("400.00")
 
     def test_status_syncs_shadows(self, app, db, transfer_data):
         """Updating status propagates to both shadows."""
@@ -1018,7 +1020,7 @@ class TestInvariants:
             assert xfer.amount == Decimal("777.77")
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             for s in shadows:
-                assert s.estimated_amount == Decimal("777.77")
+                assert shadow_amount(s) == Decimal("777.77")
 
     def test_statuses_always_match_after_update(self, app, db, transfer_data):
         """Invariant 4: shadow statuses always equal transfer status."""
@@ -1069,7 +1071,7 @@ class TestInvariants:
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             assert len(shadows) == 2
             for s in shadows:
-                assert s.estimated_amount == Decimal("999.99")
+                assert shadow_amount(s) == Decimal("999.99")
                 assert s.status_id == done.id
                 assert s.pay_period_id == td["periods"][4].id
 
@@ -1424,7 +1426,7 @@ class TestRestoreTransfer:
             # drift under test is the STATUS, so the record is coherent.
             record_settle_day(drifted, an_entered_day(date(2026, 3, 20)))
             for column, value in settlement_columns(
-                date(2026, 3, 20), drifted.estimated_amount,
+                date(2026, 3, 20), shadow_amount(drifted),
             ).items():
                 setattr(drifted, column, value)
             db.session.flush()
@@ -1558,12 +1560,29 @@ class TestRestoreTransfer:
             assert result.is_deleted is False
             assert result.amount == Decimal("250.00")
 
-    def test_corrects_drifted_shadow_amounts(self, app, db, transfer_data):
-        """Verify that restore_transfer detects and corrects shadow
-        estimated_amount values that drifted from the transfer amount
-        during the soft-deleted period.  This defense-in-depth check
-        prevents restoring inconsistent shadow data that would cause
-        incorrect balance calculations.
+    def test_a_shadow_amount_CANNOT_drift_from_its_transfer(
+        self, app, db, transfer_data,
+    ):
+        """The drift ``restore_transfer`` used to repair is now unconstructible.
+
+        **This case graded the repair until plan step X-au-g-2c-2 and grades
+        its ABSENCE now**, which is the cutover in one assertion.  It soft-
+        deleted a transfer, wrote ``$999.00`` onto one shadow to simulate drift
+        during the deleted period, restored, and checked both shadows had been
+        put back to ``$250.00`` -- a hand-written corrector that logged a
+        warning and rewrote the copy.
+
+        A shadow stores no figure at all now: it declares ``PARENT_TRANSFER``
+        and reads its parent through the amount model, so the SIMULATION is
+        what fails.  ``ck_transactions_amount_ownership`` refuses a row holding
+        both a declaration and a figure, and the refusal arrives at the flush --
+        so there is no window, deleted or otherwise, in which the two can
+        disagree, and nothing left for a restore to correct.
+
+        Both halves are asserted: that the write is refused, and that a restore
+        over an untouched pair still leaves both legs worth the transfer.  The
+        first alone would pass on a schema that had stopped storing shadows at
+        all.
         """
         with app.app_context():
             td = transfer_data
@@ -1573,21 +1592,33 @@ class TestRestoreTransfer:
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()
 
-            # Simulate drift: directly change a shadow's amount.
             shadow = db.session.query(Transaction).filter_by(
                 transfer_id=xfer_id
             ).first()
+            # A SAVEPOINT, so the refused write is undone without taking the
+            # fixture's own transfer with it -- the whole case runs in one
+            # transaction, and a bare rollback here would leave nothing to
+            # restore.
+            attempt = db.session.begin_nested()
             shadow.estimated_amount = Decimal("999.00")
-            db.session.flush()
+            # ``match`` names the constraint that IS the claim; a bare
+            # ``IntegrityError`` would pass on an FK or a unique index too.
+            with pytest.raises(
+                sqlalchemy.exc.IntegrityError,
+                match="ck_transactions_amount_ownership",
+            ):
+                db.session.flush()
+            attempt.rollback()
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
 
-            # Both shadows must match transfer amount (250.00), not 999.00.
             shadows = db.session.query(Transaction).filter_by(
                 transfer_id=xfer_id
             ).all()
+            assert len(shadows) == 2
             for s in shadows:
-                assert s.estimated_amount == Decimal("250.00")
+                assert s.estimated_amount is None
+                assert shadow_amount(s) == Decimal("250.00")
 
     def test_corrects_drifted_shadow_status(self, app, db, transfer_data):
         """Verify that restore_transfer detects and corrects shadow
@@ -2194,7 +2225,7 @@ class TestTheStatusMirrorIsAtomic:
             # and the RECORD come with it (plan step X-au-c3).
             record_settle_day(income_shadow, an_entered_day(display_today()))
             for column, value in settlement_columns(
-                display_today(), income_shadow.estimated_amount,
+                display_today(), shadow_amount(income_shadow),
             ).items():
                 setattr(income_shadow, column, value)
             db.session.flush()

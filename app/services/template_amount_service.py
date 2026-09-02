@@ -122,10 +122,11 @@ def owns_its_amount(template) -> bool:
     * a **derive-mode loan-payment** transfer template, whose ``default_amount``
       is the P&I plus escrow captured at its last write
       (``routes/loan/payment_transfer.py``) and whose projected cash is
-      recomputed live by ``cash_ledger.LoanPricing.live_cash``.
+      recomputed live by amount rule 4 (``cash_ledger._loan_pricing``).
 
     A MANUAL loan payment is NOT refused: there the operator owns the base cash
-    (``cash_ledger._loan_installment._manual_shadow_amount``), which is exactly a stated
+    (amount rule 4's MANUAL arm, which resolves the parent transfer's own
+    figure since plan step X-au-g-2c-2), which is exactly a stated
     amount.  The distinction is read live off the settings row rather than
     remembered, so a template that is switched between the two modes gains or
     loses its series at that moment; the versions it already holds stay as the

@@ -342,17 +342,16 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     step X-au-c2 routes the readers through it, and X-au-c3 makes a settled row
     RECORD what moved so no settled row is priced here at all.
 
-    **A caller resolving many rows should eager-load SEVEN relationships**, and
-    an adversarial review counted them after a first draft named two: per row,
-    ``Transaction.template`` and ``Transaction.transfer``; per template,
-    ``TransactionTemplate.salary_profiles`` and ``.amount_versions``; per
-    transfer, ``Transfer.template``, and per transfer template ``.settings`` and
-    ``.amount_versions``.  Every one is ``lazy="select"``.  The per-TEMPLATE
-    ones cost one query per distinct definition rather than per row (the
-    collections are identity-mapped, so 44 templates serve 452 rows on the
-    production clone); the per-ROW ones are a true N+1.  Stated rather than
-    hidden: the eager load belongs in the loaders plan step X-au-c2 routes, not
-    in a per-row rule.
+    **A caller resolving many rows should apply
+    :func:`~app.utils.amount_relationships.pricing_load_options`**, re-exported
+    from this package so a caller asks the amount model for its own load.  It
+    was a paragraph naming seven relationships that every routed loader had to
+    remember; plan step X-au-g-2c-2 made it a function, because
+    that step is what made the ``Transaction.transfer`` chain load-bearing --
+    a transfer shadow is DERIVED now, so the grid, the cash fold and the loan
+    payment feed each walk to a parent per row without it.  It lives one tier
+    DOWN because ``loan_loaders`` needs it and this package imports
+    ``loan_loaders``; that module states the argument.
 
     **It no longer asks whether *txn* was in the basis's row set** (plan step
     X-au-c2b).  A basis holds DERIVATIONS pinned to an owner and a scenario, not

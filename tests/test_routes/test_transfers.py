@@ -39,14 +39,15 @@ from tests._test_helpers import (
     an_observed_day,
     cadence_payload,
     create_account_of_type,
-    open_books_before_the_first_assertion,
     create_loan_account,
     field_is_disabled,
     make_every_period_rule,
     make_transfer_template,
     net_posted_by_day,
+    open_books_before_the_first_assertion,
     override_anchor,
     settlement_basis_id,
+    shadow_amount,
 )
 from app.services.row_valuation import owned_contribution
 from app.services.settle_day import (
@@ -829,7 +830,7 @@ class TestTemplateUpdate:
             )
             assert len(shadows) == 2
             assert all(
-                s.estimated_amount == Decimal("250.00") for s in shadows
+                shadow_amount(s) == Decimal("250.00") for s in shadows
             )
 
     def test_archive_template(self, app, auth_client, seed_user, seed_periods_today):
@@ -1372,7 +1373,7 @@ class TestTransferInstance:
                 .filter_by(transfer_id=xfer.id)
                 .all()
             )
-            assert all(s.estimated_amount == Decimal("200.00") for s in shadows)
+            assert all(shadow_amount(s) == Decimal("200.00") for s in shadows)
 
     def test_update_transfer_to_credit_rejected(
         self, app, auth_client, seed_user, seed_periods_today
@@ -2785,9 +2786,10 @@ class TestShadowContextResponse:
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("300.00")
 
-            # Verify the shadow amount was synced.
+            # Verify the shadow FOLLOWS the parent.  It holds no copy since
+            # plan step X-au-g-2c-2; Transfer Invariant 3 is what it READS.
             db.session.refresh(shadow)
-            assert shadow.estimated_amount == Decimal("300.00")
+            assert shadow_amount(shadow) == Decimal("300.00")
 
     def test_mark_done_from_shadow_renders_transaction_cell_with_grid_refresh(
         self, app, auth_client, seed_user, seed_periods_today
@@ -2969,8 +2971,18 @@ class TestUnarchiveUsesService:
     ):
         """Verify that the unarchive route uses the transfer service to
         restore soft-deleted transfers, including the service's invariant
-        correction logic.  An intentionally drifted shadow amount should
+        correction logic.  An intentionally drifted shadow PERIOD should
         be corrected on unarchive, proving the service was called.
+
+        **The drift was the shadow's AMOUNT until plan step X-au-g-2c-2.**  A
+        shadow stores no figure now -- it declares ``PARENT_TRANSFER`` and reads
+        its parent -- so ``ck_transactions_amount_ownership`` refuses the write
+        the simulation made, and ``restore_transfer``'s amount corrector is
+        deleted along with the drift it repaired.  The PERIOD corrector
+        (Transfer Invariant 5) is still a hand-written repair and still the
+        proof this route reaches the service rather than flipping ``is_deleted``
+        itself; the amount half is graded as unconstructible in
+        ``test_transfer_service.TestRestoreTransfer``.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -2982,13 +2994,16 @@ class TestUnarchiveUsesService:
             transfer_service.delete_transfer(xfer_id, seed_user["user"].id, soft=True)
             db.session.commit()
 
-            # Drift one shadow's amount while soft-deleted.
+            # Drift one shadow's period while soft-deleted.
             shadow = (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer_id)
                 .first()
             )
-            shadow.estimated_amount = Decimal("999.00")
+            drifted_period_id = next(
+                p.id for p in seed_periods_today if p.id != xfer.pay_period_id
+            )
+            shadow.pay_period_id = drifted_period_id
             db.session.commit()
 
             # Deactivate the template to match the route's expectations.
@@ -3007,7 +3022,7 @@ class TestUnarchiveUsesService:
             db.session.refresh(xfer)
             assert xfer.is_deleted is False
 
-            # Both shadows restored AND the drifted amount corrected.
+            # Both shadows restored AND the drifted period corrected.
             # This proves the service's invariant correction ran.
             shadows = (
                 db.session.query(Transaction)
@@ -3017,7 +3032,8 @@ class TestUnarchiveUsesService:
             assert len(shadows) == 2
             for s in shadows:
                 assert s.is_deleted is False
-                assert s.estimated_amount == Decimal("200.00")
+                assert s.pay_period_id == xfer.pay_period_id
+                assert shadow_amount(s) == Decimal("200.00")
 
 
 # ── One-Time Transfer Tests ────────────────────────────────────────────
@@ -3716,7 +3732,7 @@ class TestOneTimeTransfer:
             # $500.00, under a plain "updated." flash.
             assert after[0].name == "Renamed"
             assert after[0].amount == Decimal("650.00")
-            assert {s.estimated_amount for s in shadows} == {Decimal("650.00")}
+            assert {shadow_amount(s) for s in shadows} == {Decimal("650.00")}
 
     def test_recurring_transfer_idor_period(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4123,7 +4139,7 @@ class TestTransferTemplateHardDelete:
             for shadow in surviving_shadows:
                 assert shadow.is_deleted is False
                 assert shadow.status_id == received_status.id
-                assert shadow.estimated_amount == Decimal("250.00")
+                assert shadow_amount(shadow) == Decimal("250.00")
             assert {s.id for s in surviving_shadows} == set(received_shadow_ids)
 
             # Non-settled (Projected) transfer was deleted by the

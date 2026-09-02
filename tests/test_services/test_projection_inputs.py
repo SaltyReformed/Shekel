@@ -46,6 +46,7 @@ from tests._test_helpers import (
     an_entered_day,
     basis_for,
     settlement_columns,
+    shadow_amount,
 )
 from app.services.settle_day import record_settle_day
 
@@ -609,7 +610,7 @@ class TestShadowContributionBoundary:
                 row.status_id = settled_id
                 record_settle_day(row, an_entered_day(period.start_date))
                 for column, value in settlement_columns(
-                    period.start_date, row.estimated_amount,
+                    period.start_date, shadow_amount(row),
                     submitted=(
                         Decimal(str(actual)) if actual is not None else None
                     ),

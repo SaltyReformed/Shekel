@@ -27,6 +27,7 @@ from app.models.transfer import Transfer
 from app.services import account_posting_service
 from app.services import posting_service
 from app.services.transfer_service import _settle
+from app.services.transfer_service._amount import apply_amount_ownership
 from app.services.transfer_service._endpoints import (
     _apply_endpoint_move,
     _resolve_endpoints,
@@ -742,20 +743,19 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
         _reverse_loan_payment_before_it_leaves(rows.transfer)
     _apply_endpoint_move(rows, endpoints)
 
-    # ── amount ─────────────────────────────────────────────────────
-    if "amount" in updates:
-        new_amount = amount
-        rows.transfer.amount = new_amount
-        # The parent now states its OWN figure, so the relation that priced it
-        # is cleared with it -- ``ck_transfers_amount_ownership`` is the same
-        # pairing ``ck_transactions_amount_ownership`` makes one table over
-        # (plan step X-au-c2b).  ``budget.transfers.amount`` is ALREADY
-        # nullable (X-au-c1), so this door is nearer the constraint than the
-        # transaction one: only the transfer cutover (X-au-f) stands between it
-        # and a row whose column is NULL.  A no-op today; nothing is declared.
-        rows.transfer.amount_source_id = None
-        for shadow in rows.shadows:
-            shadow.estimated_amount = new_amount
+    # ── amount, and WHO OWNS each row's figure ─────────────────────
+    # Asked for an ``is_override`` too, not only for an ``amount``: clearing
+    # the flag is the conflict resolver handing a row back to its definition,
+    # and a leg left OWNING its frozen figure through that act is the drift
+    # this step exists to make unconstructible (plan step X-au-g-2c-2).
+    if "amount" in updates or "is_override" in updates:
+        apply_amount_ownership(
+            rows, stated_amount=amount,
+            stated_override=(
+                bool(updates["is_override"])
+                if "is_override" in updates else None
+            ),
+        )
 
     # ── the SETTLE ─────────────────────────────────────────────────
     # When this update moves the transfer into the settled band, ONE act writes

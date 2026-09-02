@@ -22,6 +22,7 @@ from app.services import account_service
 from tests._test_helpers import (
     create_loan_account,
     open_books_before_the_first_assertion,
+    shadow_amount,
 )
 
 
@@ -117,8 +118,8 @@ class TestUpdateShadowGuard:
             expense = db.session.get(Transaction, expense.id)
             income = db.session.get(Transaction, income.id)
             assert xfer.amount == Decimal("500.00")
-            assert expense.estimated_amount == Decimal("500.00")
-            assert income.estimated_amount == Decimal("500.00")
+            assert shadow_amount(expense) == Decimal("500.00")
+            assert shadow_amount(income) == Decimal("500.00")
 
     def test_a_settled_figure_on_an_UNSETTLED_shadow_is_refused(
         self, app, db, auth_client, seed_user, seed_periods_today
