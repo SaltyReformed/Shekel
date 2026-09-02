@@ -93,14 +93,19 @@ quality problem in this project.
     reads alongside the contract. Format:
     `` Pylint: ``<rule>`` (<count>/<limit>) -- <why it is intentional/irreducible>. ``
   - **Statement-scoped** -- the directive sits on any other line (`broad-except`,
-    `protected-access`, `import-outside-toplevel`, a module-level `too-many-lines`): put the
-    rationale in a comment **immediately above** the disabled line. Format:
-    `` # Pylint: ``<rule>`` -- <why>. ``
+    `protected-access`, `import-outside-toplevel`): put the rationale in a comment
+    **immediately above** the disabled line. Format: `` # Pylint: ``<rule>`` -- <why>. ``
 
   The rationale must name every rule the directive disables. `(<count>/<limit>)` is required for the
   count-based smells (`too-many-*`) and omitted where there is no count (e.g. `broad-except`). The
   `shekel-disable-rationale` checker enforces marker presence, location, and rule-naming; the
   `(<count>/<limit>)` shape is a documented convention, not machine-checked.
+- **A module at the 1,000-line ceiling is SPLIT, not exempted.** `max-module-lines` is pylint's own
+  default -- it is set in no config file here -- and the `C0302` refusal is the notice: the session
+  whose commit breaks a module is the session that splits it. A module-level `too-many-lines`
+  disable is NOT available, whatever rationale it carries. The RATING is blind to this, since one
+  `C0302` across ~500 modules still rounds to 10.00/10, so the signal is pylint's exit code (bit 16)
+  and never the score. Ruling `balance:R-IR`, 2026-09-01.
 - **snake_case** for all variables, functions, modules, and database columns.
 - **No unused imports.** Fix immediately.
 - **Import organization.** Three sections separated by blank lines: standard library, third-party,
