@@ -48,6 +48,7 @@ from app.models.ref import AccountType
 from app.services import pay_period_write, transfer_service
 from app.services import account_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -79,7 +80,7 @@ def _add_txn(
         name=name,
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=type_id,
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         due_date=due_date,
         transfer_id=transfer_id,
     )

@@ -746,6 +746,13 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
         # row's own, and the four attributes below are every column the OWN arm
         # and the contribution gate touch.  There is no ``effective_amount``
         # property any more -- the resolved figure arrives as an argument.
+        #
+        # **Plain attributes, and NOT ``amount_ownership``** (plan step
+        # X-au-k).  This is a stand-in rather than a mapped row, so what it
+        # owes the rules under test is their READ shape; the composite is how
+        # the real model keeps those two reads consistent, and a stub that
+        # carried it would have to re-implement the projection to answer them
+        # at all.
         self.estimated_amount = Decimal(effective_amount)
         self.amount_source_id = None
         # The settlement RECORD (plan step X-au-c3).  ``settled_figure`` asks

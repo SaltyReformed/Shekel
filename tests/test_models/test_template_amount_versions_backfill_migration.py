@@ -50,6 +50,7 @@ from tests._test_helpers import (
     load_migration_module,
     make_salary_profile,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 _MIGRATION = load_migration_module(
@@ -106,7 +107,7 @@ def _row(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=Decimal(amount),
+        amount_ownership=AmountOwnership.own(Decimal(amount)),
         is_override=is_override,
         is_deleted=is_deleted,
         due_date=due_date,

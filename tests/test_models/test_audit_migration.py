@@ -51,6 +51,7 @@ from tests._test_helpers import (
     ledger_accounts_for_account,
     make_balanced_entry,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # Module-level xdist_group marker pins every test in this module to
@@ -414,7 +415,7 @@ class TestUserIdCapture:
             name="UID Capture Test",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense.id,
-            estimated_amount=Decimal("12.00"),
+            amount_ownership=AmountOwnership.own(Decimal("12.00")),
         )
         db.session.add(txn)
         db.session.flush()

@@ -53,6 +53,7 @@ from app.utils.balance_predicates import (
     is_projected_clause,
     settled_status_ids,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_txn(db, seed_user, seed_periods, status_member, *, is_deleted=False):
@@ -73,7 +74,7 @@ def _make_txn(db, seed_user, seed_periods, status_member, *, is_deleted=False):
         name=f"Test-{status_member.name}",
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
         is_deleted=is_deleted,
     )
     db.session.add(txn)

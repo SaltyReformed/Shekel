@@ -417,6 +417,35 @@ are NOT a partition over those two columns (ruling R-FI). Stored-vs-derived drif
 `../../plans/conventions.md` rule 8 says is not resolved, and which the read-time repair is what
 hides.
 
+**AND THE DISCRIMINATOR ITSELF IS AN OPEN QUESTION, opened at `X-au-k` on 2026-09-02 and recorded
+here because it is an argument about this phase rather than about one leaf.** `amount_source_id` is
+a STORED DISCRIMINATOR over an EXCLUSIVE ARC whose legs the row already carries -- `template_id`,
+`transfer_id`, `credit_payback_for_id`, which `ck_transactions_one_pricing_link` already makes
+mutually exclusive. That is a shape this codebase names and builds everywhere else
+(`statement_match.py`'s three typed FKs, `recurrence_rule.py`'s closing bound,
+`template_amount_version.py`'s two owners, and `X-ai-s` which converts `journal_entries` to it), and
+in every one of those the discriminator is DERIVED from which leg is set rather than stored beside
+it. Storing it costs a ref table, a reverse map rebuilt per dispatch
+(`_amount_source._declared_relation`), and a state where the two can disagree -- finding **N-440**,
+which `budget.transfers` forbids with `ck_transfers_adhoc_owns_amount` and `budget.transactions`
+does not.
+
+**What makes it non-redundant TODAY is that the arc is INCOMPLETE, and that is the honest statement
+of the question.** Two of the three links have no `AmountSourceEnum` member between them:
+`credit_payback_for_id` has none, and **N-264**'s finance charge would carry no link at all. So
+**N-264 has two readings and only one is written down.** As recorded it is a reason to keep the
+column forever -- *a derived row that no pricing link can reach*. Read the other way it says the arc
+is missing a leg, and the remedy is to give `CC4c` its own link (which fits
+`ck_transactions_one_pricing_link` unchanged) rather than to keep a derivable column on 997 live
+rows. **Nobody has ruled between those two readings**, and the card arc cannot be assumed into
+either.
+
+*One ground for keeping the column is REFUTED and must not be re-argued: that `template_id` is
+`ondelete="SET NULL"`, so a "derived rows have a link" CHECK would refuse a definition delete.
+`budget.transfers` already ships exactly that constraint, so this application already runs that
+behaviour on half its tables -- and the alternative it was preferred over is worse, because a
+persisted row with no link is unpriceable in silence where a refused DELETE is loud.*
+
 * [ ] **X-au** `feat(cash): a row's amount is either its own or derived` -- the DECOMPOSED parent
   (**R-FI**), carrying **N-40**, **N-224**, **N-228**, **N-238**. It ticks with the last of its
   leaves. **It SUPERSEDES X-ar**, whose two stated premises tracing also refuted: its deletion set was
@@ -448,43 +477,10 @@ hides.
   producer-free arms live in `row_valuation.py`; and the amount rules read no STATUS, the basis
   pinning `date.today()` being `X-i2`'s money rather than theirs.
   * [x] **X-au-c3** `3d1379d1` -- a settle RECORDS what moved rather than refreshing an amount. What a later leaf must obey is in this phase's preamble, not here. Record in `archive/eight_shipped_steps_2026-09-01.md`.
-* [ ] **X-au-k** `refactor(models): a row's amount ownership is ONE attribute` -- make
-  `amount_ownership.py`'s opening claim, *"The ONE writer of a row's amount-ownership pair"*,
-  STRUCTURALLY true. **It is a census today, not a structure** (developer, 2026-09-02). The figure
-  and `amount_source_id` are two independently mapped columns, so any code can write one of them;
-  `ck_transactions_amount_ownership` / `ck_transfers_amount_ownership` catch the half-write at
-  FLUSH, and what keeps live code away from that failure is a guard somewhere else plus a census
-  that has to be re-run every time the derived population grows. Measured 2026-09-02: the pair is
-  written outside the seam at **five modules / six lines** -- `entry_credit_workflow.py:192`,
-  `routes/transactions/mutations.py:228`, `carry_forward_service/_execute.py:404` and `:407`,
-  `recurrence_engine/_conflicts.py:120`, `transaction_service/_settle.py:633` -- of which **three
-  write ONE column** and rely on an upstream refusal never to meet a derived row, plus two
-  `setattr` splat sites (`_maintain.py:354`, `mutations.py:214`).
-  * **It runs BEFORE the three cutovers, and that is the whole point of its rank.** `X-au-d`,
-    `X-au-e` and `X-au-f` each NULL a figure and set a source across a live row population, and
-    finding **N-293** is precisely the defect waiting for them: a field splat that writes one
-    column of the pair and aborts the entire template edit at flush. If the pair is atomic first,
-    that class cannot be written; if it is not, three cutovers hand-maintain what the type should
-    have made unrepresentable. Carries **N-293**, whose closure depends on which fork is ruled.
-  * **OPENS WITH A DESIGN FORK, ruled at the gate BEFORE any code is written**, so a session that
-    picks this up at `#10` does not start by editing models. (a) PRIVATE columns
-    (`_estimated_amount`, `_amount_source_id`) behind read-only properties, so a direct write
-    raises `AttributeError` -- simplest to reason about, but every query that filters or orders on
-    those names has to move, and it makes the illegal write *fail* rather than *unsayable*.
-    (b) A SQLAlchemy `composite()` mapping both columns onto ONE value object
-    (`AmountOwnership.own(figure)` / `.derived(relation)`), so the half-write has no expression at
-    all because there is one attribute to assign -- the most structural answer, and the one that
-    dissolves the splat class outright, at the cost of care in queries and in the
-    `DerivedRowFields` / `DerivedTransferFields` records. (c) Something better.
-  * **The database CHECKs STAY under whichever fork wins.** They are the backstop against a writer
-    that is not this application at all -- a migration, a `psql` session, a trigger -- which is the
-    one surface no Python-side structure can reach. Deleting them would be trading a real guarantee
-    for a tidier diagram.
-  * **What it does NOT do:** it does not decide who OWNS a figure. That question is
-    `transfer_service/_amount.apply_amount_ownership`'s and `X-au-h`'s; this step only makes the
-    two-column WRITE atomic, so a caller can state the wrong ownership but can no longer state half
-    of one.
-
+* [x] **X-au-k** `7315ecd9` -- a row's amount ownership is ONE mapped attribute over a value
+  object total across ruling R-FI's two states (**R-IW**); the `_FIGURE_COLUMNS` registry is
+  gone and no migration was needed. Closed **N-293**, opened **N-437** and **N-440**. Record in
+  `archive/x_au_k_as_built_2026-09-02.md`.
 * [ ] **X-au-d** `refactor(salary): a projected paycheck is not stored` -- the SALARY cutover. The
   recurrence engine stops pricing salary rows, the 51 live rows go NULL, and
   `income_service.live_projected_net`, `transaction_service._freshest_amount` and

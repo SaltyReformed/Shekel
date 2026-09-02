@@ -348,6 +348,19 @@ def _apply_maintain_work(work, derived, template_id, scenario_id, projected_id):
     # when a rule EDIT moves the occurrence set out from under an existing row
     # is the question the skip-predicate leaf owns; baking the answer in here
     # would decide it silently.
+    #
+    # **The AMOUNT travels as one attribute since plan step X-au-k**, and this
+    # loop is why that matters.  ``DerivedRowFields`` carries
+    # ``amount_ownership``, so ``setattr`` here writes a row's whole ownership
+    # or none of it -- where it used to write ``estimated_amount`` alone and
+    # abort the entire template edit at flush against
+    # ``ck_transactions_amount_ownership`` (finding **N-293**, closed there).
+    # What it can still do is state ``own`` over a row that was DERIVED, which
+    # is a SILENT hand-back rather than a refusal: finding **N-437**, owned by
+    # plan step X-au-e, which stops generation pricing rows at all.  It is
+    # unreachable today because this pass selects on ``template_id`` and
+    # ``ck_transactions_one_pricing_link`` makes that exclusive with
+    # ``transfer_id`` -- the only link whose rows are derived before X-au-e.
     updated = []
     for row in work.update:
         for field, value in derived[row.occurs_on]._asdict().items():

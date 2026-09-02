@@ -51,6 +51,7 @@ from tests._test_helpers import (
     settlement_columns,
 )
 from tests.test_services.test_cash_fold import _instant
+from app.models.amount_ownership import AmountOwnership
 
 _ZERO = Decimal("0.00")
 
@@ -74,7 +75,7 @@ def _settled(
         transaction_type_id=ref_cache.txn_type_id(
             TxnTypeEnum.INCOME if is_income else TxnTypeEnum.EXPENSE,
         ),
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         **settlement_columns(day, amount, amount),
         **settle_day_columns(day),
     )
@@ -93,7 +94,7 @@ def _projected(db, seed_user, period, name, amount, due_date):
         status_id=status_id,
         name=name,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         **settlement_columns(
             default_settle_day(period, status_id), amount, None,
         ),

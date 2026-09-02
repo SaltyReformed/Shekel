@@ -10,6 +10,7 @@ import logging
 from decimal import Decimal
 
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.category import Category
 from app import ref_cache
@@ -636,7 +637,7 @@ def create_cc_payback_transaction(
         name=f"CC Payback: {source_txn.name}",
         category_id=cc_category.id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=amount,
+        amount_ownership=AmountOwnership.own(amount),
         credit_payback_for_id=source_txn.id,
     )
     db.session.add(payback)

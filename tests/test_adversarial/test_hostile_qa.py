@@ -53,6 +53,7 @@ from app.services import (
 )
 from app.services import account_service
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -81,7 +82,7 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
         name=name,
         category_id=seed_user["categories"][category_key].id,
         transaction_type_id=txn_type.id,
-        estimated_amount=planned,
+        amount_ownership=AmountOwnership.own(planned),
         **settle_day_columns(settled_on),
         **settlement_columns(settled_on, planned, submitted=settled_amount),
     )
@@ -935,7 +936,7 @@ class TestNumericEdgeCases:
                 name="Overflow Test",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=txn_type.id,
-                estimated_amount=Decimal("99999999999.99"),
+                amount_ownership=AmountOwnership.own(Decimal("99999999999.99")),
             )
             db.session.add(txn)
 
@@ -1007,7 +1008,7 @@ class TestAuthEdgeCases:
                 name="Other's Expense",
                 category_id=second_user["categories"]["Rent"].id,
                 transaction_type_id=txn_type.id,
-                estimated_amount=Decimal("99.99"),
+                amount_ownership=AmountOwnership.own(Decimal("99.99")),
             )
             db.session.add(txn2)
             db.session.commit()

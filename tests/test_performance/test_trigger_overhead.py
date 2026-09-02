@@ -24,6 +24,7 @@ from app.services import recurrence_engine
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import make_every_period_rule
+from app.models.amount_ownership import AmountOwnership
 
 # Per-workload overhead ceilings, in percent.
 #
@@ -399,7 +400,7 @@ class TestRecurrenceEngineOverhead:
                     name=f"Bulk Txn {i}",
                     category_id=category_id,
                     transaction_type_id=expense.id,
-                    estimated_amount=Decimal("50.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 )
                 db.session.add(txn)
             db.session.flush()
@@ -472,7 +473,7 @@ class TestRecurrenceEngineOverhead:
                     name=f"Update Txn {i}-{copy}",
                     category_id=category_id,
                     transaction_type_id=expense.id,
-                    estimated_amount=Decimal("50.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 )
                 db.session.add(txn)
         db.session.flush()
@@ -538,7 +539,7 @@ class TestRecurrenceEngineOverhead:
                     name=f"Delete {label} {i}",
                     category_id=category_id,
                     transaction_type_id=expense.id,
-                    estimated_amount=Decimal("50.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 )
                 db.session.add(txn)
             db.session.flush()

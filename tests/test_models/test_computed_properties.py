@@ -40,6 +40,7 @@ from tests._test_helpers import (
     settlement_columns,
 )
 from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── What a TRANSACTION contributes ───────────────────────────────────
@@ -99,7 +100,7 @@ class TestTransactionEffectiveAmount:
             name="Test",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=estimated,
+            amount_ownership=AmountOwnership.own(estimated),
             **settle_day_columns(settled_on),
             **settlement_columns(settled_on, estimated, submitted=actual),
         )
@@ -251,7 +252,7 @@ class TestTransactionTypeProperties:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -272,7 +273,7 @@ class TestTransactionTypeProperties:
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("85.00"),
+                amount_ownership=AmountOwnership.own(Decimal("85.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -330,7 +331,7 @@ class TestTransferAmountResolves:
             scenario_id=seed_user["scenario"].id,
             status_id=status.id,
             name="Test Transfer",
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
         )
         db.session.add(xfer)
         db.session.flush()
@@ -809,7 +810,7 @@ class TestDaysUntilDue:
             name="Test Due",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             due_date=due_date_val,
         )
         db.session.add(txn)
@@ -883,7 +884,7 @@ class TestSettleDayRefusesAnInstant:
                 name="Instant refusal",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 **settle_day_columns(seed_periods[0].start_date),
                 **settlement_columns(
                     seed_periods[0].start_date, Decimal("100.00"),
@@ -925,7 +926,7 @@ class TestSettleDayRefusesAnInstant:
                     name="Instant refusal",
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
                     settled_on=datetime(2026, 3, 4, 4, 30, tzinfo=timezone.utc),
                 )
 
@@ -955,7 +956,7 @@ class TestDaysPaidBeforeDue:
             name="Test Paid Timing",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             due_date=due_date_val,
             **settle_day_columns(settled_on_val),
             **settlement_columns(settled_on_val, Decimal("100.00")),

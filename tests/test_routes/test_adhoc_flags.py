@@ -27,6 +27,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service
 from app.services.row_valuation import settled_figure
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False,
@@ -36,7 +37,7 @@ def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False
     type_enum = TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE
     txn = Transaction(
         name=name,
-        estimated_amount=Decimal(amount),
+        amount_ownership=AmountOwnership.own(Decimal(amount)),
         transaction_type_id=ref_cache.txn_type_id(type_enum),
         status_id=ref_cache.status_id(status),
         pay_period_id=period.id,

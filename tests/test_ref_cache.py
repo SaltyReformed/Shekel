@@ -63,6 +63,7 @@ from tests._test_helpers import (
     settle_day_columns,
     settlement_basis_id,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 class TestRefCacheStatuses:
@@ -272,7 +273,7 @@ class TestEffectiveAmount:
                 name="Credited Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("250.00"),
+                amount_ownership=AmountOwnership.own(Decimal("250.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -300,7 +301,7 @@ class TestEffectiveAmount:
                 name="Paid Expense",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 settled_amount=Decimal("487.00"),
                 settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
                 # A settled row carries the day its money moved.
@@ -330,7 +331,7 @@ class TestEffectiveAmount:
                 name="Projected Expense",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -362,7 +363,7 @@ class TestGridShowsPaidNotDone:
                 name="Test Expense",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             db.session.add(txn)
             db.session.commit()

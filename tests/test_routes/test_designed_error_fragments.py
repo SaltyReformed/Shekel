@@ -22,6 +22,7 @@ from app.models.transaction import Transaction
 from app.services import account_service, status_seam, transfer_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from tests._test_helpers import settlement_if_settling
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_expense(seed_user, seed_periods_today, status_name="Projected"):
@@ -44,7 +45,7 @@ def _create_expense(seed_user, seed_periods_today, status_name="Projected"):
         name="Fragment Test Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("55.00"),
+        amount_ownership=AmountOwnership.own(Decimal("55.00")),
     )
     db.session.add(txn)
     db.session.commit()

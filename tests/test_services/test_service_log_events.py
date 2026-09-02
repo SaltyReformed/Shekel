@@ -81,6 +81,7 @@ from app.utils.log_events import (
     EVT_TRANSFER_UPDATED,
 )
 from tests._test_helpers import make_every_period_rule
+from app.models.amount_ownership import AmountOwnership
 
 
 class _LogCapture:
@@ -349,7 +350,7 @@ def _projected_expense(app, db, seed_user, seed_periods):
         name="Test Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("50.00"),
+        amount_ownership=AmountOwnership.own(Decimal("50.00")),
     )
     db.session.add(txn)
     db.session.flush()
@@ -437,7 +438,7 @@ def _envelope_transaction(app, db, seed_user, seed_periods):
         name="Groceries Envelope",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("400.00"),
+        amount_ownership=AmountOwnership.own(Decimal("400.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -834,7 +835,7 @@ class TestRecurrenceEngineLogging:
             name="Other Owner Txn",
             category_id=seed_second_user["categories"]["Rent"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("75.00"),
+            amount_ownership=AmountOwnership.own(Decimal("75.00")),
             is_override=True,
         )
         db.session.add(s2_txn)
@@ -881,7 +882,7 @@ class TestCarryForwardLogging:
             name="Ad-hoc Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.commit()

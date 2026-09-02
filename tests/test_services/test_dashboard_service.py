@@ -38,6 +38,7 @@ from tests._test_helpers import (
     settle_day_columns,
     settlement_columns,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Entry-tracked bill row, single declared base (E-21 / MED-03) ────
@@ -93,7 +94,7 @@ class TestBillRowSingleBase:
             name="Envelope bill",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            estimated_amount=Decimal(str(estimated)),
+            amount_ownership=AmountOwnership.own(Decimal(str(estimated))),
             template_id=template.id,
             due_date=date(2026, 1, 5),
             # The settlement record -- day, figure and basis together, through

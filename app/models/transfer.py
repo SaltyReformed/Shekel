@@ -6,7 +6,10 @@ Supports both template-generated recurring transfers and ad-hoc one-time transfe
 """
 
 
+from sqlalchemy.ext.hybrid import hybrid_property
+
 from app.extensions import db
+from app.models.amount_ownership import from_columns
 from app.models.mixins import (
     OptimisticLockMixin,
     SoftDeleteOverridableMixin,
@@ -220,16 +223,31 @@ class Transfer(
     # whose amount is DERIVED does not store one (ruling **R-FI**).  NULL means
     # "ask ``cash_ledger.resolve_transfer_amount``", which for a generated
     # transfer is its definition's effective-dated price series as of the
-    # transfer's own due date.  Structurally paired with ``amount_source_id`` by
-    # ``ck_transfers_amount_ownership`` above.  No production row is NULL as of
-    # this step; plan step X-au-f is what empties it for generated transfers.
-    amount = db.Column(db.Numeric(12, 2))
+    # transfer's own due date.  No production row is NULL as of this step; plan
+    # step X-au-f is what empties it for generated transfers.
+    #
+    # **PRIVATE since plan step X-au-k**, with the SQL name unchanged: read it
+    # through :attr:`amount`, write it through :attr:`amount_ownership`.  The
+    # transaction twin (``Transaction._estimated_amount``) states the argument
+    # in full.
+    #
+    # **The name is DOUBLE-underscored, and that is the seal rather than a
+    # style**: Python mangles it to ``_Transfer__amount``, so the single-underscore
+    # spelling a reader would guess -- ``row._amount`` -- binds a plain
+    # instance attribute that reaches no column at all.  A write that misses
+    # the seam is then a no-op the next read exposes, instead of the
+    # half-written pair this step exists to make unrepresentable.
+    __amount = db.Column("amount", db.Numeric(12, 2))
     # WHICH RELATION prices this transfer, or NULL when it owns its own figure
     # (ruling **R-FI**, plan step X-au-c1).  Only ``template`` is meaningful here
     # -- a transfer has no parent transfer -- and RESTRICT is for the reason the
     # transaction twin states: a vanishing ref row would convert a derived
     # transfer into one claiming to own an amount it does not have.
-    amount_source_id = db.Column(
+    #
+    # **PRIVATE since plan step X-au-k**, for the reason its partner states,
+    # and double-underscored for the same seal.
+    __amount_source_id = db.Column(
+        "amount_source_id",
         db.Integer,
         db.ForeignKey(
             "ref.amount_sources.id",
@@ -237,6 +255,13 @@ class Transfer(
             ondelete="RESTRICT",
         ),
     )
+    # THE PAIR ABOVE, AS ONE ATTRIBUTE (plan step **X-au-k**), and the twin of
+    # ``Transaction.amount_ownership`` -- see that attribute for why the pair
+    # is one assignment and why ``ck_transfers_amount_ownership`` stays.  The
+    # attribute carries the SAME name on both models even though the figure
+    # COLUMN does not, which is what let the write seam stop dispatching on the
+    # model to find out which column a table stores a figure in.
+    amount_ownership = db.composite(from_columns, __amount, __amount_source_id)
     # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
@@ -293,6 +318,36 @@ class Transfer(
     pay_period = db.relationship("PayPeriod")
     scenario = db.relationship("Scenario")
     category = db.relationship("Category", lazy="joined")
+
+    @hybrid_property
+    def amount(self):
+        """Return the figure this transfer states as its own, or ``None``.
+
+        The read-only projection of :attr:`amount_ownership`, and the twin of
+        ``Transaction.estimated_amount`` -- see it for why there is no setter
+        and why this is a hybrid rather than a plain property.  To state this
+        transfer's amount, assign :attr:`amount_ownership` through
+        ``app.services.amount_ownership``.
+
+        Returns:
+            The stored figure, or ``None`` when this transfer's amount is
+            derived or not yet stated.
+        """
+        return self.__amount
+
+    @hybrid_property
+    def amount_source_id(self):
+        """Return the id of the relation pricing this transfer, or ``None``.
+
+        The read-only twin of :attr:`amount`.  ``None`` means the transfer
+        owns its figure, which is the NULL test
+        ``ck_transfers_amount_ownership`` is written over.
+
+        Returns:
+            The ``ref.amount_sources`` id, or ``None`` when the transfer owns
+            its amount or has not stated its ownership yet.
+        """
+        return self.__amount_source_id
 
     @property
     def settled_on(self):

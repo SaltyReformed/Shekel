@@ -44,6 +44,7 @@ from app.models.transfer import Transfer
 from app.models.ref import AccountType
 from app.services import transfer_service
 from app.services import account_service
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -66,7 +67,7 @@ def _create_projected_expense(seed_user, period):
         name="C-29 Bill",
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal("123.45"),
+        amount_ownership=AmountOwnership.own(Decimal("123.45")),
     )
     db.session.add(txn)
     db.session.commit()

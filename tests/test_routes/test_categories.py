@@ -38,6 +38,7 @@ from tests._test_helpers import (
     current_pay_period,
     select_option_values,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -256,7 +257,7 @@ class TestCategoryDelete:
                 category_id=category.id,
                 transaction_type_id=txn_type.id,
                 name="Grocery Trip",
-                estimated_amount=Decimal("85.00"),
+                amount_ownership=AmountOwnership.own(Decimal("85.00")),
                 status_id=projected.id,
             )
             db.session.add(txn)
@@ -365,7 +366,7 @@ class TestCategoryDelete:
                 category_id=category.id,
                 transaction_type_id=txn_type.id,
                 name="Soft Deleted Expense",
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 status_id=projected.id,
                 is_deleted=True,
             )
@@ -406,7 +407,7 @@ class TestCategoryDelete:
                 category_id=category.id,
                 transaction_type_id=txn_type.id,
                 name="Active Expense",
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 status_id=projected.id,
             )
             db.session.add(txn)
@@ -706,7 +707,7 @@ class TestCategoryEdit:
                 category_id=cat.id,
                 transaction_type_id=txn_type.id,
                 name="Fill Up",
-                estimated_amount=Decimal("45.00"),
+                amount_ownership=AmountOwnership.own(Decimal("45.00")),
                 status_id=projected.id,
             )
             db.session.add(txn)
@@ -1132,7 +1133,7 @@ class TestArchiveHelpers:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 name="Paid History Template",
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 status_id=paid_status.id,
             )
             db.session.add(txn)
@@ -1166,7 +1167,7 @@ class TestArchiveHelpers:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 name="Projected Only Template",
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 status_id=projected_status.id,
             )
             db.session.add(txn)
@@ -1213,7 +1214,7 @@ class TestArchiveHelpers:
                 status_id=paid_status.id,
                 transfer_template_id=xfer_template.id,
                 name="Paid Transfer",
-                amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
             )
             db.session.add(xfer)
             db.session.commit()
@@ -1259,7 +1260,7 @@ class TestArchiveHelpers:
                 status_id=projected_status.id,
                 transfer_template_id=xfer_template.id,
                 name="Projected Transfer",
-                amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
             db.session.add(xfer)
             db.session.commit()
@@ -1280,7 +1281,7 @@ class TestArchiveHelpers:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 name="Account History Txn",
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 status_id=projected_status.id,
             )
             db.session.add(txn)
@@ -1551,7 +1552,7 @@ class TestCategoryArchiveDelete:
                 category_id=category.id,
                 transaction_type_id=txn_type.id,
                 name="Rent Payment",
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
                 status_id=projected.id,
             )
             db.session.add(txn)

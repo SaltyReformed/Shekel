@@ -45,6 +45,7 @@ from tests._test_helpers import (
 )
 from app.services import cash_ledger
 from app.utils.dates import display_today
+from app.models.amount_ownership import AmountOwnership
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +248,7 @@ class TestConcurrentMarkDone:
             name="Rent",
             category_id=data["category"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("1500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("1500.00")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -301,7 +302,7 @@ class TestConcurrentMarkDone:
             name="Paycheck",
             category_id=data["category"].id,
             transaction_type_id=income_type.id,
-            estimated_amount=Decimal("3000.00"),
+            amount_ownership=AmountOwnership.own(Decimal("3000.00")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -365,7 +366,7 @@ class TestConcurrentCarryForwardAndEdit:
             name="Groceries",
             category_id=data["category"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
         )
         db.session.add(txn)
         db.session.commit()

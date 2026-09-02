@@ -30,6 +30,7 @@ from tests._test_helpers import (
     loan_params_for,
     register_form_data,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── XSS Payload Vectors ─────────────────────────────────────────
@@ -156,7 +157,7 @@ def _create_transaction(seed_user, seed_periods_today):
         name="Test Transaction",
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
     )
     db.session.add(txn)
     db.session.commit()

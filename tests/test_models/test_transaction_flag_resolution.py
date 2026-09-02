@@ -16,13 +16,14 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.models.amount_ownership import AmountOwnership
 
 
 def _adhoc(seed_user, period, *, is_envelope, companion_visible):
     """Create and commit an ad-hoc (template_id IS NULL) transaction."""
     txn = Transaction(
         name="Ad-hoc",
-        estimated_amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         pay_period_id=period.id,
@@ -60,7 +61,7 @@ def _templated(seed_user, period, *, tpl_envelope, tpl_visible,
     db.session.flush()
     txn = Transaction(
         name="Templated",
-        estimated_amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         pay_period_id=period.id,

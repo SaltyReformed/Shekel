@@ -56,6 +56,7 @@ from app import ref_cache
 from app.enums import SettledDayBasisEnum, SettlementBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.ref import TransactionType
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services.settle_day import (
@@ -111,6 +112,10 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         "estimated_amount": Decimal("300.00"),
     }
     fields.update(overrides)
+    # **The amount-ownership pair is ONE attribute** (plan step X-au-k), so the
+    # figure this builder splats becomes the row's OWNERSHIP at the last
+    # moment -- after every line above that reads it as a column.
+    fields["amount_ownership"] = AmountOwnership.own(fields.pop("estimated_amount"))
     return Transaction(**fields)
 
 

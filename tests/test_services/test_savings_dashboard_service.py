@@ -46,6 +46,7 @@ from tests._test_helpers import (
     settle_day_columns,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
+from app.models.amount_ownership import AmountOwnership
 
 
 def _derived_period(period_id, period_index=None):
@@ -2771,7 +2772,7 @@ def _make_projected_envelope_expense(
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
     )
     db_session.add(txn)
     db_session.flush()

@@ -14,8 +14,10 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
+from app.services.amount_ownership import state_own_amount
 from app.services.cash_ledger import resolve_transaction_amount
 from app.services.row_valuation import purchases_total
 from app.utils.balance_predicates import is_projected_clause
@@ -294,11 +296,11 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
          when neither applies (an inactive template, or a destination
          whose only row is finalised or soft-deleted).
          Then bump the resolved row: its own resolved amount plus the
-         leftover is written to ``estimated_amount``, its ``amount_source_id``
-         is CLEARED (a topped-up row states its own figure from then on --
-         ``ck_transactions_amount_ownership`` pairs the two, so writing one
-         without the other is an ``IntegrityError``), and ``is_override``
-         flips ``True``.  The flip blocks future
+         leftover becomes the row's OWNERSHIP through
+         ``amount_ownership.state_own_amount`` -- one act over one attribute
+         since plan step X-au-k, where it was a figure write and a separate
+         source clear whose PAIRING the CHECK had to catch -- and
+         ``is_override`` flips ``True``.  The flip blocks future
          recurrence-engine passes from regenerating the row (verified by
          the ``is_override`` skip clause in
          ``app/services/recurrence_engine.py``).  A freshly created row
@@ -392,19 +394,19 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
             source_txn, target_period, basis, recurrence_engine,
             schedule,
         )
-        # Resolve BEFORE writing, and clear the source in the same act: a
-        # topped-up row states its own figure from then on, which is what
-        # ``ck_transactions_amount_ownership`` pairs with a non-NULL amount
-        # (plan step X-au-c1).  Writing the column while a relation still
-        # claimed the row would be an ``IntegrityError``, and reading the
-        # column instead of resolving it would meet a ``None`` on a derived
-        # target.  It is a no-op on today's data -- nothing is declared -- and
-        # the reason it is written now is that the read above is incoherent
-        # without it.
-        target_row.estimated_amount = (
-            resolve_transaction_amount(target_row, basis) + leftover
+        # Resolve BEFORE writing: a topped-up row states its own figure from
+        # then on, and reading the column instead of resolving it would meet a
+        # ``None`` on a derived target.
+        #
+        # **Releasing the relation is no longer a second statement** (plan step
+        # X-au-k).  This read "write the column, then clear the source", two
+        # lines whose ORDER did not matter but whose PAIRING did, and a caller
+        # that wrote the first without the second was an ``IntegrityError`` at
+        # flush.  ``state_own_amount`` assigns one attribute holding one of two
+        # shapes, so the release IS the write.
+        state_own_amount(
+            target_row, resolve_transaction_amount(target_row, basis) + leftover,
         )
-        target_row.amount_source_id = None
         target_row.is_override = True
 
     transaction_service.settle_from_entries(source_txn)
@@ -546,7 +548,7 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
         name=source_txn.name,
         category_id=source_txn.category_id,
         transaction_type_id=source_txn.transaction_type_id,
-        estimated_amount=Decimal("0"),
+        amount_ownership=AmountOwnership.own(Decimal("0")),
         due_date=None,
         is_override=True,
         is_deleted=False,
