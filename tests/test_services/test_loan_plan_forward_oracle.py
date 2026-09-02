@@ -24,7 +24,6 @@ from datetime import date
 from decimal import Decimal
 
 from app.services.balance_at._plan import (
-    AccrualCharge,
     LoanForwardPlan,
     PlannedPayment,
 )
@@ -32,6 +31,7 @@ from app.services.balance_at._plan_fold import (
     fold_forward,
     plan_interest_in_year,
 )
+from tests.oracles.loan_monthly_composition import accrual_charge
 
 _RATE = Decimal("0.06")           # 6% annual -> 0.5% monthly
 _ORIGINATION = date(2025, 1, 1)
@@ -75,9 +75,7 @@ def _plan(
     return LoanForwardPlan(
         payments=list(payments),
         charges=[
-            AccrualCharge(
-                on_date=on_date, annual_rate=rate, escrow=Decimal(escrow),
-            )
+            accrual_charge(on_date, rate, Decimal(escrow))
             for on_date in sorted(opens.values())
         ],
     )

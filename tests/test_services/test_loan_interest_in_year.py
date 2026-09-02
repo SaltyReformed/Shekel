@@ -32,8 +32,8 @@ from app.extensions import db
 from app.services import balance_at
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at._plan import loan_plan
-from app.services.loan_ledger import split_payment_cash
 from app.services.balance_at import BalanceContext
+from tests.oracles.loan_monthly_composition import charge_then_allocate
 from tests._test_helpers import (
     clear_loan_ledger,
     create_loan_with_trueup,
@@ -68,7 +68,7 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     A test-side parallel of the producer's projected half (step C6c): it seeds from
     the SAME ``projection_seed`` the balance folds, walks the loan's
     :func:`~app.services.balance_at._plan.loan_plan` records in due order, and sums
-    each payment's interest (``split_payment_cash``, the ONE split) by its EFFECTIVE
+    each payment's interest (the RETIRED one-payment-a-month composition) by its EFFECTIVE
     year, dropping any due-month slot in *exclude_slots* (the settled-slot merge) --
     WITHOUT calling ``plan_interest_in_year``.  So the producer's WIRING (the right
     seed, the right plan, the right year key, the merge, the two halves summed) is
@@ -82,8 +82,10 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     # The CHARGE standing against each accrual period, keyed by the period it
     # opens.  Since plan step R16-a a month's interest and escrow are charged
     # once per period rather than once per payment, and this oracle folds
-    # through ``split_payment_cash`` -- the one-payment-per-month composition --
-    # because every plan it grades puts one payment in each period.
+    # through the RETIRED one-payment-per-month composition
+    # (``tests.oracles.loan_monthly_composition``, deleted from ``app/`` at plan
+    # step X-au-g-2c-3b-2) because every plan it grades puts one payment in each
+    # period.
     charged = {
         (charge.on_date.year, charge.on_date.month): charge
         for charge in plan.charges
@@ -95,8 +97,8 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     ):
         slot = (payment.due_date.year, payment.due_date.month)
         charge = charged[slot]
-        parts = split_payment_cash(
-            payment.cash, balance, charge.annual_rate, charge.escrow,
+        parts = charge_then_allocate(
+            payment.cash, balance, charge.period.annual_rate, charge.escrow,
         )
         balance = parts.balance_after
         if payment.effective_date.year == year and slot not in exclude_slots:

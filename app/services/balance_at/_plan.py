@@ -72,9 +72,11 @@ overdue slot with no record is neither, so it holds flat -- honest delinquency.
 projected records, its live D3 cash, and the resolver's contractual schedule --
 all above the pure leaf -- so it is a SEAM responsibility, exactly as
 :func:`app.services.balance_at.positions` composes the past fold with the forward
-projection.  The one arithmetic :mod:`._plan_fold` shares with the leaf is
-:func:`app.services.loan_ledger.apply_payment_cash`, so a PLANNED / ESTIMATED
-payment allocates its cash byte-identically to an ACTUAL settled one.
+projection.  What :mod:`._plan_fold` does NOT own is the arithmetic: since plan
+step X-au-g-2c-3b-2 it maps this model onto
+:func:`app.services.loan_ledger.replay_loan_events`, the ONE replay the settled
+walk runs, so a PLANNED / ESTIMATED payment is charged and allocated
+byte-identically to an ACTUAL settled one.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
@@ -297,7 +299,8 @@ def _planned_from_shadows(
 
     **The other seven callers of that accessor really are settled-only**, which
     is what makes "two" a census rather than a second guess:
-    ``cash_ledger.settled_cash_leg``, ``loan_ledger._split.split_one_payment``,
+    ``cash_ledger.settled_cash_leg``, ``loan_ledger._events.loan_event_stream``
+    (``._split.split_one_payment`` until plan step X-au-g-2c-3b-2),
     ``loan_posting_service._sync`` and ``._display``,
     ``savings_dashboard_service._metrics``, and the spending report's
     ``_window`` and ``_breakdown`` -- each loading rows filtered to the settled

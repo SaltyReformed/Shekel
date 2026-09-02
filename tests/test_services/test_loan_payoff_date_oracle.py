@@ -48,9 +48,7 @@ from app.services import (
     loan_resolver,
 )
 from app.services.balance_at._positions import memoized_payoff
-from app.services.loan_ledger import split_payment_cash
 from app.services.balance_at._plan import (
-    AccrualCharge,
     LoanForwardPlan,
     PlannedPayment,
 )
@@ -73,6 +71,10 @@ from tests._test_helpers import (
     loan_params_for,
     make_cadence_rule,
     seam_confirmed_view,
+)
+from tests.oracles.loan_monthly_composition import (
+    accrual_charge,
+    charge_then_allocate,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 
@@ -108,11 +110,7 @@ def _plan(payments, *, rate="0.00", escrow="0.00"):
     return LoanForwardPlan(
         payments=list(payments),
         charges=[
-            AccrualCharge(
-                on_date=on_date,
-                annual_rate=Decimal(rate),
-                escrow=Decimal(escrow),
-            )
+            accrual_charge(on_date, Decimal(rate), Decimal(escrow))
             for on_date in sorted(opens.values())
         ],
     )
@@ -125,13 +123,14 @@ def _clears_within(seed, plan, extra, target):
     the producer, and keys on the payment's EFFECTIVE date -- when its cash
     actually moves -- which is the property "clear by the target" actually means.
 
-    **It folds through ``split_payment_cash``, the ONE-PAYMENT-PER-MONTH
-    composition, deliberately** (plan step R16-a).  Every plan this oracle grades
-    puts exactly one payment in each accrual period, and on that shape charging a
-    month inside the per-payment step is the same arithmetic as charging it as
-    its own event -- so agreeing with this oracle is the equivalence claim
-    itself, measured rather than asserted.  A plan with two payments in one
-    period is NOT gradeable here and is pinned directly instead
+    **It folds through the RETIRED ONE-PAYMENT-PER-MONTH composition
+    deliberately** (plan step R16-a; ``tests.oracles.loan_monthly_composition``
+    since plan step X-au-g-2c-3b-2 deleted it from ``app/``).  Every plan this
+    oracle grades puts exactly one payment in each accrual period, and on that
+    shape charging a month inside the per-payment step is the same arithmetic as
+    charging it as its own event -- so agreeing with this oracle is the
+    equivalence claim itself, measured rather than asserted.  A plan with two
+    payments in one period is NOT gradeable here and is pinned directly instead
     (:class:`TestChargePerPeriodNotPerPayment`).
     """
     charged = {
@@ -143,8 +142,9 @@ def _clears_within(seed, plan, extra, target):
         plan.payments, key=lambda p: (p.due_date, p.effective_date),
     ):
         charge = charged[(payment.due_date.year, payment.due_date.month)]
-        parts = split_payment_cash(
-            payment.cash + extra, balance, charge.annual_rate, charge.escrow,
+        parts = charge_then_allocate(
+            payment.cash + extra, balance,
+            charge.period.annual_rate, charge.escrow,
         )
         balance = parts.balance_after
         if balance <= Decimal("0.00"):
@@ -273,8 +273,13 @@ def _committed_payoff(loan_params, scenario_id, as_of, extra):
     """Return (committed payoff, pure-contractual payoff) from the resolver.
 
     The independent reference: ``compute_payoff_scenarios`` computes the payoff via
-    ``project_forward`` -- a different code path from the fold's
-    ``split_payment_cash`` -- so agreement is meaningful, not tautological.
+    ``project_forward``, which amortizes the CONTRACTUAL schedule month by month
+    and consumes no payment records at all -- a different code path from the
+    seam's fold, so agreement is meaningful, not tautological.  *This sentence
+    named ``split_payment_cash`` as the contrast until plan step X-au-g-2c-3b-2,
+    which was doubly wrong: the fold stopped calling it at R16-a, and it no
+    longer exists.  The independence was never that function's; it is
+    ``project_forward`` being a wholly separate walk.*
     """
     ctx_loan = loan_payment_service.load_loan_context(
         loan_params.account_id, amount_basis_for_scenario(scenario_id),
@@ -824,8 +829,9 @@ class TestPlanRequiredExtraEdges:
         """A payment smaller than its own interest breaks the obvious bound.
 
         Paying the whole balance as extra looks like a guaranteed upper bound --
-        surely the first installment then clears the loan.  It is not:
-        ``split_payment_cash`` takes interest out of the cash FIRST, so on
+        surely the first installment then clears the loan.  It is not: the ONE
+        allocation (``app.utils.money.apply_payment_cash``) takes the standing
+        interest out of the cash FIRST, so on
         $100,000 at 25% (a $2,083.33 monthly accrual, quantized by the shared
         split) against $500 payments, an extra of exactly the balance still
         leaves $1,583.33 owing at the first installment.  Clearing by then needs
@@ -1116,10 +1122,13 @@ class TestChargePerPeriodNotPerPayment:
         loans at one rate each -- it cannot vary the axis the change lives on.
         This sweeps 300 generated ONE-PAYMENT-PER-MONTH plans over rate, escrow,
         cash, seed, length and the ruling-D1 clamp, and grades the new
-        charge-then-allocate fold against a transcription of the fold R16-a
-        replaced: charge a month INSIDE each payment's split
-        (``split_payment_cash``, which still composes exactly that).  Every
-        payoff date and every year's interest must agree to the cent.
+        charge-then-allocate fold against the RETIRED fold R16-a replaced:
+        charge a month INSIDE each payment's split
+        (``tests.oracles.loan_monthly_composition.charge_then_allocate``, which
+        composes exactly that, and which plan step X-au-g-2c-3b-2 moved out of
+        ``app/`` into the oracle package precisely so this comparison survives
+        the deletion).  Every payoff date and every year's interest must agree to
+        the cent.
 
         The seed is fixed, so a failure is reproducible rather than a flake.
         """
@@ -1150,7 +1159,7 @@ class TestChargePerPeriodNotPerPayment:
             balance, payoff_before = seed, None
             interest_before: dict[int, Decimal] = {}
             for payment in payments:
-                parts = split_payment_cash(
+                parts = charge_then_allocate(
                     payment.cash, balance, rate, escrow,
                 )
                 balance = parts.balance_after

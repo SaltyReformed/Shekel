@@ -399,7 +399,7 @@ def is_confirmed_payment_eligible(
     reproduces this predicate's anchor half STRUCTURALLY instead: it walks
     anchors and payments in one chronological merge, so a payment due at or
     before an anchor is overwritten by that anchor's reset rather than filtered
-    out (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`).  The
+    out (:func:`app.services.loan_ledger.replay_loan_events`).  The
     two are the same ``anchor_date < due_date`` boundary in two forms -- the
     walk's applied at EVERY anchor, this one at the latest only -- which is what
     they must not drift on.

@@ -17,7 +17,10 @@ wrong way for sharing.  ``loan_ledger`` (closure 23) is BELOW it and already
 imports every input a charge needs -- the rate periods
 (:mod:`app.services.rate_period_engine`) and the escrow lines
 (:mod:`app.services.escrow_calculator`) -- so the calendar lives here and BOTH
-walks take it.
+walks take it.  *The two closure figures were measured 2026-09-02 and are quoted
+as the REASON the duplication was forced rather than chosen; re-measure them
+before citing them again, since an undated measurement quoted as a reason decays
+invisibly.*
 
 Pure: plain data in, plain values out.  No I/O, no clock, no Flask.
 """
@@ -27,16 +30,26 @@ from datetime import date
 from decimal import Decimal
 
 from app.services import escrow_calculator
-from app.services.rate_period_engine import period_for_date
+from app.services.rate_period_engine import RatePeriod, period_for_date
 
 
 def installment_slot(due: date) -> tuple[int, int]:
     """Return the ``(year, month)`` installment a due date belongs to.
 
-    The project's identity for "which contractual installment is this?", shared
-    by the charge calendar below, the forward plan's PLANNED-vs-ESTIMATED de-dup
-    (``balance_at._plan._month_slot``) and the tax reader's settled-slot merge
-    (``balance_at._loan_interest._due_slot``).
+    The project's identity for "which contractual installment is this?", called
+    by the charge calendar below and by the forward plan's PLANNED-vs-ESTIMATED
+    de-dup (``balance_at._plan._month_slot``).
+
+    **TWO further sites spell the same key inline rather than calling this, and
+    naming them as sharers here was false until plan step X-au-g-2c-3b-2**: the
+    tax reader's settled-slot merge (``balance_at._loan_interest._due_slot``) and
+    the resolver feed's collision key
+    (``loan_payment_service._engine_prep._redistribute_to_distinct_months``) each
+    write ``(due.year, due.month)`` themselves.  They agree today by coincidence
+    of arithmetic, not by construction, and routing them here is a change to the
+    installment identity across the whole loan architecture -- which is
+    ``recurrence:R16-c``'s job, not this function's.  Recorded so the next reader
+    does not trust the word "shared".
 
     **It is the CALENDAR month, and for a loan whose ``payment_day`` is not the
     1st that is not the contract's own period** -- the Van Loan's runs the 22nd
@@ -70,7 +83,24 @@ class AccrualCharge:
     **It carries a RATE and not an interest AMOUNT**, because interest accrues on
     the balance standing when the charge falls, and only the walk knows that --
     an anchor between two payments resets it.  The escrow is an amount: it is a
-    function of the date alone.
+    function of the date alone.  *Since plan step X-au-g-2c-3b-2 the rate arrives
+    as the whole governing ``RatePeriod`` rather than a bare fraction, so the
+    value now also carries the CONTRACT facts that period holds -- its level P&I,
+    its index, its remaining term.  The sentence above stays true of what a
+    charge COSTS; what widened is what a charge KNOWS.*
+
+    **The rate it carries is the whole governing :class:`RatePeriod`, and plan
+    step X-au-g-2c-3b-2 is why.**  The accrual samples ``period.annual_rate``;
+    the CONFIRMED schedule row a settled payment builds displays that same rate
+    and sizes its extra-payment split against the same period's ``period_pi``
+    (:func:`~app.services.rate_period_engine.confirmed_amortization_row`).  While
+    the charge carried a bare rate, the row re-resolved the period on the
+    PAYMENT's own due date -- identical for the one-payment-a-month shape, and
+    divergent for the shape this step exists to serve: a rate change effective
+    inside a period would tag a second payment's row with the NEW rate while its
+    (zero) interest belonged to the old one.  Resolving ONCE, on the accrual
+    period the charge IS, is what makes "the row's rate is the rate its interest
+    accrued at" provable rather than true by coincidence.
 
     Attributes:
         on_date: The date this period's charge falls, in CONTRACT time -- the
@@ -78,16 +108,19 @@ class AccrualCharge:
             where it sorts against the payments in a walk.  The charge is applied
             BEFORE any payment sharing its date, since interest is charged on the
             balance a payment has not yet reduced.
-        annual_rate: The annual rate governing this period's accrual
+        period: The :class:`~app.services.rate_period_engine.RatePeriod`
+            governing this period's accrual
             (:func:`~app.services.rate_period_engine.period_for_date` on
-            ``on_date``).
+            ``on_date``).  Its ``annual_rate`` drives the accrual; every payment
+            in this accrual period carries the whole period onto its split, so
+            the displayed rate and the accrued interest come from one resolution.
         escrow: The monthly escrow in force for this period
             (:func:`~app.services.escrow_calculator.escrow_monthly_as_of` on
             ``on_date``), ``0.00`` when the loan escrows nothing.
     """
 
     on_date: date
-    annual_rate: Decimal
+    period: RatePeriod
     escrow: Decimal
 
 
@@ -140,7 +173,7 @@ def charges_for_due_dates(
     return [
         AccrualCharge(
             on_date=on_date,
-            annual_rate=period_for_date(periods, on_date).annual_rate,
+            period=period_for_date(periods, on_date),
             escrow=escrow_calculator.escrow_monthly_as_of(
                 escrow_lines, on_date,
             ),

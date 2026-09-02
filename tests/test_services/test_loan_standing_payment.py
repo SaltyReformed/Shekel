@@ -240,7 +240,7 @@ class TestStandingInstallmentCash:
         escrow-INCLUSIVE -- an owner types the whole mortgage payment, and the
         developer's own template states ``$1,910.95`` for a ``$1,293.96`` P&I
         and a ``$616.99`` escrow -- so the escrow argument must NOT be added on
-        top of it; it is what ``split_payment_cash`` backs out of principal.
+        top of it; it is what the loan replay's charge backs out of principal.
         With ``escrow=0.00`` alone the two spellings agree, and the case that
         distinguishes them is the only one that matters.
         """
@@ -314,7 +314,7 @@ class TestEstimatedTierPricing:
     def test_an_estimated_installment_states_its_own_escrow_beside_the_cash(
         self, seed_user, db,  # pylint: disable=unused-argument
     ):
-        """The (cash, escrow) pair is the one ``split_payment_cash`` takes.
+        """The (cash, escrow) pair is the one the loan replay takes.
 
         A stated base is escrow-inclusive, so a tier calling its escrow ``0.00``
         would route the escrow into principal and pay the loan down by it every
@@ -558,7 +558,8 @@ class TestTheEscrowPairingFoldsToTheSameBalance:
 
     Plan step R7d-a made the ESTIMATED tier state an installment's real escrow
     beside its cash where it used to pass ``0.00`` beside an escrow-free
-    contractual P&I.  ``split_payment_cash`` computes
+    contractual P&I.  The ONE allocation
+    (``app.utils.money.apply_payment_cash``) computes
     ``principal = cash - interest - escrow``, so adding the escrow to BOTH sides
     moves no balance -- and until this class that claim was pinned only by
     asserting the two FIELDS.  A reader who "restored" ``escrow=0.00`` while the

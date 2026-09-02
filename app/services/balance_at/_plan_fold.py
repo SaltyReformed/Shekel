@@ -29,11 +29,14 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_CEILING, Decimal
 
-from app.services.loan_ledger import apply_payment_cash
-from app.utils.money import accrue_monthly_interest
+from app.services.loan_ledger import (
+    LoanCashEvent,
+    LoanEventStream,
+    replay_loan_events,
+)
 
 from ._fold import sample_cumulative
-from ._plan import AccrualCharge, LoanForwardPlan, PlannedPayment
+from ._plan import LoanForwardPlan
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -72,7 +75,7 @@ class _PlanSplit:
         principal: The debt this payment paid down (``cash - interest - escrow``,
             capped at the balance; may be NEGATIVE for an underpayment).
         balance_after: The running balance AFTER this payment
-            (:attr:`~app.services.loan_ledger.PaymentCashSplit.balance_after`) --
+            (:attr:`~app.utils.money.PaymentCashSplit.balance_after`) --
             what :func:`plan_payoff_date` scans for the first ``<= 0`` to find the
             date the loan clears.  ``fold_forward`` does not read it (it prefix-sums
             ``principal``); it is carried so the payoff derivation reuses the ONE
@@ -86,37 +89,6 @@ class _PlanSplit:
     balance_after: Decimal
 
 
-def _forward_events(
-    plan: LoanForwardPlan,
-) -> list[tuple[bool, AccrualCharge | PlannedPayment]]:
-    """Return *plan*'s charges and payments merged into ONE contract-time order.
-
-    The walk order :func:`_split_plan` folds: ascending by date, and **a period's
-    charge before any payment sharing its date**, because interest is charged on
-    the balance a payment has not yet reduced.  Payments on one date keep their
-    ``effective_date`` tie-break, which is the order the fold has always used.
-
-    Args:
-        plan: The loan's :func:`._plan.loan_plan` forward model.
-
-    Returns:
-        ``[(is_charge, item), ...]`` in walk order -- the flag is the
-        discriminant rather than an ``isinstance`` at the fold, so a value
-        that gained a sibling field could not silently change arms.
-    """
-    ordered = sorted(
-        [
-            (charge.on_date, 0, charge.on_date, charge)
-            for charge in plan.charges
-        ] + [
-            (payment.due_date, 1, payment.effective_date, payment)
-            for payment in plan.payments
-        ],
-        key=lambda event: event[:3],
-    )
-    return [(kind == 0, item) for _when, kind, _tie, item in ordered]
-
-
 def _split_plan(
     seed: Decimal,
     plan: LoanForwardPlan,
@@ -124,32 +96,46 @@ def _split_plan(
 ) -> list[_PlanSplit]:
     """Fold *plan* from *seed* in DUE order, returning each payment's split.
 
-    The shared forward fold every reader runs.  It walks the plan's charges and
-    payments merged in DUE (contract) order from *seed* (:func:`_forward_events`)
-    -- so interest is charged on the right running balance and a late-clamped
-    payment never re-splits an installment (ruling R-A) -- accumulating each
-    period's charge and allocating each payment's cash against whatever charge
-    stands (:func:`~app.services.loan_ledger.apply_payment_cash`, the ONE
-    allocation), keyed by its EFFECTIVE (visible) date.  :func:`fold_forward`
-    prefix-sums the ``principal`` side for the balance;
-    :func:`plan_interest_in_year` sums the ``interest`` side for the tax figure, so
-    the loan's projected balance and its projected interest come from ONE fold and
-    cannot disagree.
+    The shared forward fold every reader runs, and since plan step
+    **X-au-g-2c-3b-2** it is an ADAPTER rather than a fold: it maps the plan's
+    records onto the loan replay's event vocabulary, runs
+    :func:`~app.services.loan_ledger.replay_loan_events` -- the ONE rule, shared
+    with the settled walk -- and maps each outcome back onto the two figures the
+    forward readers need.  :func:`fold_forward` prefix-sums the ``principal`` side
+    for the balance; :func:`plan_interest_in_year` sums the ``interest`` side for
+    the tax figure, so the loan's projected balance and its projected interest
+    come from ONE fold and cannot disagree.
 
-    **It stopped calling ``split_payment_cash`` at plan step R16-a**, and that is
-    the step rather than a detail of it.  That function charges a month INSIDE the
-    per-payment step, so calling it once per record made the payment count the
-    clock: measured on a production clone, 30 payments of ``$531.94`` fourteen
-    days apart charged the same ``$1,096.34`` as 30 a month apart, split for
-    split, so a loan paid twice as fast modelled identical interest.  Charging
-    here and allocating there makes a second payment inside one period clear no
-    fresh charge and pay pure principal.  For the one-payment-per-month shape
-    every live loan is in the two are byte-identical, which is measured rather
-    than argued (``tests/manual/verify_r7d_estimate_equality.py``).
+    **It stated that rule itself until X-au-g-2c-3b-2**, and the duplication was
+    forced rather than chosen: ``balance_at`` reaches ``loan_ledger`` and not the
+    other way about, so the settled walk could not be handed this fold and wrote
+    its own.  That is the same layering shape plan steps X-au-g-2c-3a (the
+    allocation) and X-au-g-2c-3b-1 (the charge calendar) each found one tier
+    down, and the remedy is the same: the rule moves to the tier every walk can
+    reach.
+
+    **The plan asserts nothing, so its stream carries no RESET.**  A forward
+    projection starts from a seed the caller already resolved; only the settled
+    walk replays a loan's anchors.
+
+    **It stopped charging a month INSIDE the per-payment step at plan step
+    R16-a**, and that is the step rather than a detail of it.  Charging per
+    payment made the payment count the clock: measured on a production clone, 30
+    payments of ``$531.94`` fourteen days apart charged the same ``$1,096.34`` as
+    30 a month apart, split for split, so a loan paid twice as fast modelled
+    identical interest.  Charging per PERIOD makes a second payment inside one
+    period clear no fresh charge and pay pure principal.  For the
+    one-payment-per-month shape every live loan is in the two are byte-identical,
+    which is measured rather than argued
+    (``tests/manual/verify_r7d_estimate_equality.py``).
 
     Args:
         seed: The balance the projection starts from.
-        plan: The loan's :func:`._plan.loan_plan` forward model.
+        plan: The loan's :func:`._plan.loan_plan` forward model.  Its payments are
+            pre-sorted onto ``(due_date, effective_date)`` here, which is the
+            within-date order the fold has always used; the replay sorts stably
+            on ``(date, kind)`` and adds no tie-break of its own, so that order
+            survives (:class:`~app.services.loan_ledger.LoanEventStream`).
         extra_monthly: A HYPOTHETICAL extra added once per ACCRUAL PERIOD, for the
             what-if search (:func:`plan_required_extra`).  ``0.00`` -- the default,
             and what every real read passes -- folds the plan as it stands.  Per
@@ -164,33 +150,34 @@ def _split_plan(
     Returns:
         One :class:`_PlanSplit` per payment, in DUE order.
     """
-    splits: list[_PlanSplit] = []
-    balance = seed
-    interest_due = escrow_due = extra_due = _ZERO_MONEY
-    for is_charge, item in _forward_events(plan):
-        if is_charge:
-            if balance <= _ZERO_MONEY:
-                # A closed loan accrues nothing and impounds nothing; a payment
-                # that follows is a refund in full, which the allocator's own
-                # closed-loan arm answers.
-                continue
-            interest_due += accrue_monthly_interest(balance, item.annual_rate)
-            escrow_due += item.escrow
-            extra_due += extra_monthly
-            continue
-        parts = apply_payment_cash(
-            item.cash + extra_due, balance, interest_due, escrow_due,
+    replay = replay_loan_events(
+        seed,
+        LoanEventStream(
+            charges=plan.charges,
+            payments=[
+                LoanCashEvent(
+                    on_date=payment.due_date,
+                    cash=payment.cash,
+                    source=payment,
+                )
+                for payment in sorted(
+                    plan.payments,
+                    key=lambda record: (record.due_date, record.effective_date),
+                )
+            ],
+        ),
+        extra_per_period=extra_monthly,
+    )
+    return [
+        _PlanSplit(
+            due_date=outcome.event.source.due_date,
+            effective_date=outcome.event.source.effective_date,
+            interest=outcome.split.interest,
+            principal=outcome.split.principal,
+            balance_after=outcome.split.balance_after,
         )
-        balance = parts.balance_after
-        interest_due = escrow_due = extra_due = _ZERO_MONEY
-        splits.append(_PlanSplit(
-            due_date=item.due_date,
-            effective_date=item.effective_date,
-            interest=parts.interest,
-            principal=parts.principal,
-            balance_after=balance,
-        ))
-    return splits
+        for outcome in replay.payments
+    ]
 
 
 def plan_payoff_date(
@@ -283,8 +270,9 @@ def plan_required_extra(
     relabelling its answer.
 
     Monotone, so a binary search is sound: every added cent is pure principal
-    (``split_payment_cash`` subtracts interest and escrow first), so more extra
-    can only move the zero-crossing earlier or leave it where it is.
+    (:func:`~app.utils.money.apply_payment_cash` subtracts the standing interest
+    and escrow first), so more extra can only move the zero-crossing earlier or
+    leave it where it is.
 
     Args:
         seed: The balance the projection starts from -- the loan's confirmed
@@ -342,8 +330,9 @@ def plan_required_extra(
 
     # An UPPER BOUND has to be found, not assumed.  The seed looks like one --
     # pay the whole balance as extra and the first installment clears it -- but
-    # it is not: ``split_payment_cash`` takes interest and escrow out of the cash
-    # FIRST, so on a loan whose period interest exceeds its payment cash even
+    # it is not: the allocation (:func:`~app.utils.money.apply_payment_cash`)
+    # takes the standing interest and escrow out of the cash FIRST, so on a loan
+    # whose period interest exceeds its payment cash even
     # ``seed`` leaves a residue.  Double until the bound genuinely reaches the
     # target, so the bisection below starts from an invariant that HOLDS rather
     # than one that looked obvious.
