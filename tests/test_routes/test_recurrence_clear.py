@@ -61,7 +61,12 @@ from app.services import (
     transfer_recurrence,
     transfer_service,
 )
-from tests._test_helpers import create_loan_account, make_cadence_rule, all_periods
+from tests._test_helpers import (
+    all_periods,
+    create_loan_account,
+    make_cadence_rule,
+    shadow_amount,
+)
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
 
 
@@ -491,7 +496,7 @@ class TestClearingATransferTemplatesRecurrence:
             ).all()
             assert len(pair) == 2
             assert {t.transaction_type_id for t in pair} == {income_id, expense_id}
-            assert all(t.estimated_amount == xfer.amount for t in pair)
+            assert all(shadow_amount(t) == xfer.amount for t in pair)
             assert all(t.pay_period_id == xfer.pay_period_id for t in pair)
         # 4 survivors x 2 legs; the 6 swept transfers took 12 shadows with them.
         assert db.session.query(Transaction).filter(

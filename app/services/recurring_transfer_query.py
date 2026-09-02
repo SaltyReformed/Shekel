@@ -245,7 +245,7 @@ class StandingPayment:
             a snapshot of the contract rather than a statement.
         extra_principal: The standing monthly overpayment (``0.00`` when none),
             added in BOTH modes exactly as
-            :meth:`~app.services.cash_ledger.LoanPricing.live_cash`
+            amount rule 4 (:func:`app.services.cash_ledger.resolve_transaction_amount`)
             adds it to a materialised row.
     """
 
@@ -296,7 +296,8 @@ def standing_installment_cash(
     **The ONE rule for "what will this loan be paid on this date", asked about
     an installment no row covers** (plan step **R7d-a**).  A materialised row is
     priced by
-    :meth:`~app.services.cash_ledger.LoanPricing.live_cash`; this is
+    amount rule 4 (:func:`app.services.cash_ledger.resolve_transaction_amount`);
+    this is
     the same question for a month whose row has not been written, and the arms
     are deliberately the same cases so the two cannot come to disagree:
 
@@ -317,7 +318,7 @@ def standing_installment_cash(
       owner is not paying.
 
     **The DERIVE arm's residue is now ONE difference from what
-    :meth:`~app.services.cash_ledger.LoanPricing.live_cash` prices the
+    amount rule 4 prices the
     same installment at, and it is named rather than absorbed.**  It was TWO
     until plan step ``balance:X-au-g-2b``: that producer pinned its P&I at the
     READ PASS's ``as_of`` while this read the contract's P&I for the

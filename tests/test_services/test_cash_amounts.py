@@ -77,6 +77,8 @@ from pathlib import Path
 import pytest
 import sqlalchemy.exc
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.services.cash_ledger import _amounts
 from app.services.cash_ledger._amounts import (
     _entry_aware_amount,
@@ -734,7 +736,10 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
     carries them.
     """
 
-    def __init__(self, txn_id=None, effective_amount="77.00", statusless=False):
+    def __init__(
+        self, txn_id=None, effective_amount="77.00", statusless=False,
+        *, salary_shaped=False, pay_period_id=None,
+    ):
         self.id = txn_id
         # What the row OWNS, which since plan step X-au-c2 is what the
         # valuation reads: ``amount_source_id IS NULL`` says the figure is the
@@ -757,21 +762,32 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
         # facts.  ``None`` / ``False`` throughout, so neither derivation is
         # reached and the fall-through under test is what runs.
         self.transfer_id = None
+        # A row the SALARY half can answer for: income, on a template, in a
+        # period.  Off by default, so the fall-through under test is what runs.
+        # It became the only way to reach the seam at plan step X-au-g-2c-2 --
+        # the loan half is deleted, and it was the half a planted figure used
+        # to land on.
+        self._salary_shaped = salary_shaped
         # The scenario the basis this row is priced against declares.  Zero on
         # both sides, matching ``planted_basis``'s default: a mismatch is what
         # ``resolve_transaction_amount`` refuses (plan step X-au-c2b).
         self.scenario_id = 0
         self.is_override = False
-        self.is_income = False
-        self.template_id = None
-        self.pay_period_id = None
+        self.is_income = salary_shaped
+        self.template_id = txn_id if salary_shaped else None
+        self.pay_period_id = pay_period_id
         # ``status_id`` is always present, and *statusless* now means the
         # ``status`` RELATIONSHIP is absent rather than the column.  Since plan
         # step X-au-c3 every valuation asks the status whether a row is worth
         # what it RECORDED or what it PLANS, so a stand-in without the column is
         # not a row any valuation could see -- and a test double built around a
         # missing attribute grades an impossible input.
-        self.status_id = None
+        #
+        # A salary-shaped row carries the PROJECTED id, because the salary
+        # half's own gate is ``is_projected(txn) and not txn.is_override``.
+        self.status_id = (
+            ref_cache.status_id(StatusEnum.PROJECTED) if salary_shaped else None
+        )
 
 
 class TestTheLiveOverride:
@@ -800,16 +816,29 @@ class TestTheLiveOverride:
     shape in which one leg is valued on a basis the other was not.
     """
 
-    def test_an_override_replaces_the_income_amount(self):
-        """An income row whose id is in the map contributes the override.
+    def test_an_override_replaces_the_income_amount(self, app):
+        """A salary row the derivation answers for contributes the override.
 
         Override $2473.38 wins over the stored $2000.00.  (Was asserted as
         anchor $100.00 + override = $2573.38.)
-        """
-        row = _FakeRow(txn_id=101, effective_amount="2000.00")
-        basis = _basis(row, overrides={101: Decimal("2473.38")})
 
-        assert income_amount(row, basis) == Decimal("2473.38")
+        **The row is SALARY-SHAPED and the app context is real since plan step
+        X-au-g-2c-2.**  A planted figure used to land on the LOAN half of the
+        seam, which took a row and was asked first, so a row carrying nothing
+        but an id reached it; that half is deleted, and the surviving half is
+        keyed on ``(template_id, pay_period_id)`` and gated on the row being a
+        PROJECTED income row -- which needs ``ref_cache`` and so needs a
+        context.  The claim under test is unchanged: an answer from the
+        derivation replaces the stored figure.
+        """
+        with app.app_context():
+            row = _FakeRow(
+                txn_id=101, effective_amount="2000.00",
+                salary_shaped=True, pay_period_id=7,
+            )
+            basis = _basis(row, overrides={(101, 7): Decimal("2473.38")})
+
+            assert income_amount(row, basis) == Decimal("2473.38")
 
     def test_an_empty_map_uses_the_stored_amount(self):
         """An empty override map is byte-identical pre-seam behaviour.
@@ -824,42 +853,78 @@ class TestTheLiveOverride:
 
         assert income_amount(row, basis) == Decimal("2000.00")
 
-    def test_an_unlisted_id_falls_back_to_the_stored_amount(self):
-        """A non-empty map overrides only the ids it lists.
+    def test_an_unlisted_id_falls_back_to_the_stored_amount(self, app):
+        """A non-empty map overrides only the pairs it lists.
 
-        The map keys id 999; row 101 keeps its stored $2000.00.
+        The map keys ``(999, 7)``; row 101 keeps its stored $2000.00.
         """
-        row = _FakeRow(txn_id=101, effective_amount="2000.00")
-        basis = _basis(row, overrides={999: Decimal("5.00")})
+        with app.app_context():
+            row = _FakeRow(
+                txn_id=101, effective_amount="2000.00",
+                salary_shaped=True, pay_period_id=7,
+            )
+            basis = _basis(row, overrides={(999, 7): Decimal("5.00")})
 
-        assert income_amount(row, basis) == Decimal("2000.00")
+            assert income_amount(row, basis) == Decimal("2000.00")
 
-    def test_an_override_wins_over_the_entry_formula(
+    # ``test_an_override_wins_over_the_entry_formula`` lived here until plan
+    # step X-au-g-2c-2, and the RULE it graded is deleted rather than the test
+    # being weakened.  It asserted that on the EXPENSE leg a live-derived
+    # amount short-circuits the three-bucket reservation, returning $123.45
+    # verbatim instead of the $50.00 the entry formula gives.
+    #
+    # The seam had two halves and the LOAN one was the only one an expense row
+    # could ever take -- a loan payment's cash debit sits on the funding
+    # account.  That half is gone: a transfer shadow is DERIVED, so there is no
+    # stored figure for an override to supersede, and ``_expense_amount`` no
+    # longer consults the seam at all.  The surviving salary half answers
+    # ``None`` for any row where ``txn.is_income`` is False, so no input can
+    # make the deleted branch fire -- and a test whose only possible outcome is
+    # a pass is not a test (finding **N-184**'s rule, the same one that retired
+    # ``test_manual_extra_keys_to_recurring_base_not_a_typed_actual``).
+    #
+    # What the case ALSO graded -- that ``_expense_amount`` answers the entry
+    # formula on an envelope carrying purchases -- is NOT covered by
+    # ``TestTheEntryAwareReservation``: that class asserts
+    # ``_entry_aware_amount`` directly, one function down, so deleting the case
+    # above would have left the public leg with no test at all.  A first draft
+    # of this note claimed otherwise; the case below is what makes the claim
+    # true rather than the note.
+
+    def test_the_expense_leg_answers_the_entry_formula(
         self, app, db, seed_user, seed_periods,
     ):
-        """On the EXPENSE leg an override short-circuits the reduction.
+        """``_expense_amount`` IS the entry-aware reservation, with nothing above it.
 
-        A live-derived amount is what the row is worth now and carries no
-        entries to reduce, so the override is returned verbatim rather than the
-        50.00 the three-bucket reservation would give (est=500, two debits of
-        200.00 and 250.00 both taken by the bank on 01-21, inside a balance read
-        for 01-22: max(500 - 450 - 0, 0) = 50.00).
+        The successor to the deleted override case, and the assertion that
+        survives it: est=500, two debits of 200.00 and 250.00 both taken by the
+        bank on 01-21, read for 01-22 -- ``max(500 - 450 - 0, 0) = 50.00``.
 
-        Both calls are made on the SAME basis except for the map, so the figure
-        that changes is attributable to the override alone.
+        It is a delegation test on purpose, and it is worth saying exactly how
+        weak that makes it, because a draft of this docstring overstated it.
+        It claimed *"a branch reintroduced above the delegation would have to
+        answer 50.00 to pass"*, and that is FALSE: ``_basis`` plants nothing, so
+        a reintroduced ``override = live_override(...); if override is not None:
+        return override`` answers ``None``, falls through, and returns 50.00.
+        The named mutation survives.
+
+        **No test at this seam can grade that claim**, which is the honest
+        statement: the surviving half of the seam is SALARY, and
+        ``income_service.salary_net_for`` refuses any row where ``is_income`` is
+        False, so no expense input can make an override arm fire.  What this
+        case actually holds is narrower and still worth holding -- that the
+        public expense leg answers the entry formula at all, which deleting the
+        override case would otherwise have left with no test, since
+        ``TestTheEntryAwareReservation`` asserts ``_entry_aware_amount`` one
+        function down.
         """
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
                 [("200.00", False, _POSTED_ON), ("250.00", False, _POSTED_ON)],
             )
-            no_override = _basis(txn)
-            overridden = _basis(
-                txn, overrides={txn.id: Decimal("123.45")},
-            )
 
-            assert _expense_amount(txn, no_override) == Decimal("50.00")
-            assert _expense_amount(txn, overridden) == Decimal("123.45")
+            assert _expense_amount(txn, _basis(txn)) == Decimal("50.00")
 
     def test_no_entries_short_circuits_before_the_status_read(
         self, monkeypatch,

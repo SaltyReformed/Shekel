@@ -365,7 +365,10 @@ def get_payment_history(
             :meth:`~app.services.cash_ledger.LoanPricing.live_cash` ->
             :func:`load_loan_context`; that edge is gone with the pricing cycle,
             so a settle now reaches pricing via ``transfer_service._settle`` ->
-            ``amount_basis`` -> ``live_cash`` and never loads a payment history.
+            ``amount_basis`` -> amount rule 4 and never loads a payment history.
+            *That path named ``live_cash`` until plan step X-au-g-2c-2 deleted
+            it with the read-time repair; the conclusion -- no payment history
+            on the settle path -- is unchanged.*
             The three remaining callers of :func:`load_loan_context` are
             ``routes/loan/_helpers.py`` (twice) and
             ``balance_at/_resolution.py``.

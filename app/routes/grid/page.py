@@ -16,7 +16,6 @@ from typing import NamedTuple
 
 from flask import redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from sqlalchemy.orm import selectinload
 
 from app.db_transaction import write_transaction
 from app.extensions import db
@@ -34,6 +33,7 @@ from app.services.account_resolver import (
     serves_cash_detail,
 )
 from app.services.balance_at import BalanceContext
+from app.utils.amount_relationships import valuation_load_options
 from app.services.cash_ledger import (
     display_amounts_by_id,
     settled_amounts_by_id,
@@ -311,10 +311,13 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
         txn_filters.append(Transaction.account_id == account.id)
     return (
         db.session.query(Transaction)
-        .options(
-            selectinload(Transaction.entries),
-            selectinload(Transaction.template),
-        )
+        # What a CONTRIBUTION pass reads, stated by the valuation rather than
+        # copied here (plan step X-au-g-2c-2).  It subsumes the bare
+        # ``selectinload(Transaction.template)`` this replaces and adds the
+        # ``transfer -> template -> settings`` chain every SHADOW in the window
+        # now walks: a shadow is DERIVED, so ``budgets`` below prices it
+        # through its parent rather than off its own column.
+        .options(*valuation_load_options())
         .filter(*txn_filters)
         .all()
     )

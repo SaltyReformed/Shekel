@@ -192,11 +192,16 @@ class TestTheSettleFreezeIsTheSERVICEs:
                 # Where the freeze lands today (N-241 is the open question
                 # about which column that should be; X-au-c owns it).
                 assert shadow.settled_amount == _LIVE_PITI
-                # The stored estimate is UNTOUCHED, which is what keeps the
-                # freeze idempotent: ``_manual_shadow_amount`` reads this
-                # column as its base, so a settle that wrote it would make a
-                # later settle derive from its own output.
-                assert shadow.estimated_amount == _STALE
+                # The shadow's PLAN column is empty, and that is what keeps
+                # the freeze idempotent (plan step X-au-g-2c-2).  It held the
+                # stale ``$1.00`` and had to be left untouched, because the
+                # deleted ``_manual_shadow_amount`` read it as its base -- a
+                # settle that wrote it would have made a later settle derive
+                # from its own output.  A derived shadow has no such column,
+                # so the cycle has nowhere to close; the stale figure it used
+                # to hold is on the PARENT, which a settle never writes.
+                assert shadow.estimated_amount is None
+                assert shadow.transfer.amount == _STALE
 
     def test_a_typed_figure_BEATS_the_freeze(
         self, app, db, seed_user, seed_periods,
@@ -678,6 +683,92 @@ class TestTheNamedVerbItself:
         ]
         assert len(frozen) == 1, "the freeze reports itself exactly once"
         assert frozen[0].frozen_amount == str(_LIVE_PITI)
+
+    def test_a_manual_payment_with_NO_extra_reports_no_freeze(
+        self, app, db, seed_user, seed_periods, caplog,
+    ):
+        """The event means a derivation DECIDED something, not "a loan settled".
+
+        A MANUAL payment with no standing extra books exactly what its transfer
+        states, so nothing was derived over the operator's head and there is
+        nothing to record.  The deleted ``LoanPricing.live_cash`` answered
+        ``None`` for this shape -- its candidate map admitted only derive-mode
+        payments and manual ones carrying an extra -- so the old
+        ``frozen is not None`` predicate emitted nothing here.
+
+        **A first replacement asked the amount model for the RULE**
+        (``AmountRule.LOAN_PAYMENT``), which is true of ANY transfer whose
+        template carries a settings row, so the event began firing on settles
+        where no derivation decided anything -- wider than what it replaced, and
+        contradicting the sentence the code writes about itself.  An adversarial
+        review of this step found it.  The predicate compares the BOOKED figure
+        against the transfer's own, which reproduces the old extension exactly.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer.template.settings.derive_from_loan = False
+            xfer.template.settings.extra_principal = Decimal("0.00")
+            db.session.commit()
+
+            with caplog.at_level(logging.INFO):
+                transfer_service.settle_transfer(xfer.id, seed_user["user"].id)
+                db.session.commit()
+
+            # It books the transfer's own figure, so nothing was derived over
+            # anybody's head.  Both halves asserted: a case that only checked
+            # the log would pass on a settle that booked the wrong number.
+            for shadow in _shadows(xfer.id):
+                assert shadow.settled_amount == _STALE
+
+        assert not [
+            record for record in caplog.records
+            if getattr(record, "event", None) == "transfer_amount_frozen"
+        ]
+
+    def test_a_re_settle_honouring_a_RETAINED_correction_reports_no_freeze(
+        self, app, db, seed_user, seed_periods, caplog,
+    ):
+        """A retained human figure is not a freeze, and must not be logged as one.
+
+        Settle with a correction, revert -- which RELEASES the assertion and
+        KEEPS what moved (plan step X-au-c3) -- then settle again with nobody
+        typing anything.  The second settle HONOURS the retained ``$1,512.44``,
+        so no derivation decided the figure.
+
+        **The guard did not test ``held`` until this step**, so that second
+        settle logged ``transfer_amount_frozen`` carrying the DERIVATION's
+        ``$1,499.10`` as though it were the booked figure -- two numbers apart,
+        in a record whose whole purpose is to say which was booked.  The fix
+        shipped with no test until this case; the ``frozen_amount`` assertion in
+        its sibling above cannot see it, because that path never retains.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            user_id = seed_user["user"].id
+            corrected = Decimal("1512.44")
+
+            transfer_service.settle_transfer(
+                xfer.id, user_id, submitted=corrected,
+            )
+            db.session.commit()
+            transfer_service.update_transfer(
+                xfer.id, user_id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+
+            with caplog.at_level(logging.INFO):
+                transfer_service.settle_transfer(xfer.id, user_id)
+                db.session.commit()
+
+            db.session.expire_all()
+            for shadow in _shadows(xfer.id):
+                assert settled_figure(shadow) == corrected
+
+        assert not [
+            record for record in caplog.records
+            if getattr(record, "event", None) == "transfer_amount_frozen"
+        ], "a retained correction is not a freeze"
 
     def test_a_settle_carrying_a_CORRECTION_is_not_reported_as_a_freeze(
         self, app, db, seed_user, seed_periods, caplog,

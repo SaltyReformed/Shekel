@@ -44,12 +44,14 @@ Three rule families live here, split by the question they answer.
 What a row is worth while it is still PROJECTED -- a reservation, money not yet
 gone -- is two of them, composing in one direction:
 
-  * :func:`live_override` asks the basis's two live DERIVATIONS what supersedes
+  * :func:`live_override` asks the basis's SALARY derivation what supersedes
     the row's stored figure; it IS the read-time repair ruling R-FI deletes, and
-    the per-kind cutovers take it with the producers it merges; and
-  * :func:`income_amount` / :func:`_expense_amount` CONSUME that lookup, falling
-    through to the valuation -- and, for an expense carrying entries, to the
-    entries-aware reservation formula :func:`_entry_checking_impact`.
+    the per-kind cutovers take it with the producers it merges -- plan step
+    X-au-g-2c-2 took its LOAN half, X-au-d takes what is left; and
+  * :func:`income_amount` CONSUMES that lookup, falling through to the
+    valuation.  :func:`_expense_amount` no longer asks it at all: the salary
+    half cannot answer for an expense row, so the branch went with the loan
+    half rather than standing as an unreachable rule.
 
 What a row is worth once it has SETTLED -- money that really moved -- is the
 third, and it is deliberately none of the above:
@@ -245,37 +247,28 @@ def live_override(txn, basis: AmountBasis):
     is that the per-row rules have ONE home, and two copies of the seam's
     entry condition is the shape that claim exists to prevent.
 
-    **This IS the read-time repair ruling R-FI deletes, and it is scheduled
-    rather than kept.**  A salary row and a derive-mode loan shadow both store a
-    figure the app also computes, so every balance surface shows the live
-    recompute while the column behind it goes stale (finding **N-224**).  The
-    per-kind cutovers end that by declaring those rows DERIVED -- at which point
-    the resolver answers them from the same producers and this lookup has
-    nothing left to find, so plan steps X-au-d (salary) and X-au-g (loan) delete
-    it with the producers it merges.  Until then it stays exactly where it was
-    and outranks everything below it, because moving it would change what a
-    balance says before the schema change that makes the new answer structural.
+    **This IS the read-time repair ruling R-FI deletes, and it is HALF gone.**
+    A salary row and a derive-mode loan shadow both stored a figure the app also
+    computes, so every balance surface showed the live recompute while the
+    column behind it went stale (finding **N-224**).  The per-kind cutovers end
+    that by declaring those rows DERIVED -- at which point the resolver answers
+    them from the same producers and this lookup has nothing left to find.
+    **Plan step X-au-g-2c-2 took the LOAN half**: a transfer shadow stores no
+    figure now, so there is no stale copy for an override to supersede and
+    ``LoanPricing.live_cash`` is deleted with the map it fired from.  What
+    remains is the SALARY half, which plan step **X-au-d** deletes the same way.
+    It stays exactly where it was and outranks everything below it, because
+    moving it would change what a balance says before the schema change that
+    makes the new answer structural.
 
-    The two halves are asked HERE rather than merged in the basis: which rule
-    prices a row is a fact about the row, never about which map its id turned up
-    in (ruling R-FI's refuted discriminator).
+    It is asked HERE rather than merged into the basis: which rule prices a row
+    is a fact about the row, never about which map its id turned up in (ruling
+    R-FI's refuted discriminator).
 
-    **It asks each derivation directly since plan step X-au-c2b**, where it used
-    to index a map :func:`live_amounts` had built for a whole row set.  The LOAN
-    half is asked first, preserving the precedence the flattened
-    ``{**salary_net, **loan_cash}`` had -- **and that precedence is now
-    UNREACHABLE, which an adversarial review of this step established.**  The
-    loan half needs a ``transfer_id`` and the salary half a ``template_id``, and
-    ``ck_transactions_one_pricing_link`` admits at most ONE of the three pricing
-    links per row (plan step X-au-c1, measured at 0 violations over 997 rows).
-    So the two candidate sets are disjoint by CONSTRAINT, where the paragraph
-    this replaces said they rested on a convention.  The order is kept because
-    an unreachable branch written in the safe order costs nothing and stating it
-    is how the next reader learns the constraint is what makes it unreachable --
-    but no test can construct the collision, and none pretends to.
-
-    Each half answers ``None`` from the row's own columns before it touches its
-    derivation, so a row set holding neither kind resolves nothing and issues no
+    **It asks the derivation directly since plan step X-au-c2b**, where it used
+    to index a map :func:`live_amounts` had built for a whole row set.  It
+    answers ``None`` from the row's own columns before it touches that
+    derivation, so a row set holding no paycheck resolves nothing and issues no
     query.
 
     Args:
@@ -297,18 +290,15 @@ def live_override(txn, basis: AmountBasis):
     # ``amount_basis`` lives in ``._amount_basis``.*
     # pylint: disable=import-outside-toplevel
     from app.services.income_service import live_projected_net
-    loan = basis.loans.live_cash(txn)
-    if loan is not None:
-        return loan
     return live_projected_net(txn, basis.salary)
 
 
 def live_amounts(basis: AmountBasis, rows) -> dict[int, Decimal]:
-    """Return both live derivations' answers over *rows* as ONE map.
+    """Return the live derivation's answers over *rows* as ONE map.
 
     The map form of :func:`live_override`, and it delegates to that per-row
-    question rather than restating the merge -- which is what keeps the two from
-    coming to disagree about precedence.  It exists for the surfaces that want a
+    question rather than restating it -- which is what keeps the two from coming
+    to disagree.  It exists for the surfaces that want a
     LOOKUP rather than a per-row question: the grid publishes it so a cell and
     the balance row beside it read one object (ruling R-Q), and the period
     figures carry it for the same reason.
@@ -828,28 +818,27 @@ def income_amount(txn, basis: AmountBasis):
 
 
 def _expense_amount(txn, basis: AmountBasis):
-    """Return the expense contribution for ``txn``, honoring a live override.
+    """Return the expense contribution for ``txn``, from the entry-aware formula.
 
-    The expense-leg analogue of :func:`income_amount`.  When a live producer
-    answered for the row -- e.g. a recurring loan-payment transfer whose cash
-    debit is derived from the destination loan via
-    :meth:`~app.services.cash_ledger.LoanPricing.live_cash` -- the
-    live amount replaces every other answer.  Otherwise it falls to
-    :func:`_entry_aware_amount`, preserving the entry-checking formula for
-    envelope expenses.
+    The expense-leg analogue of :func:`income_amount`, and the two are no
+    longer symmetric because the repair above them no longer is.
 
-    An override WINS over the entry formula: a live-derived amount is what
-    the row is worth now, and it carries no entries to reduce.
+    **It asked :func:`live_override` first until plan step X-au-g-2c-2, and
+    that branch is DELETED rather than left unreachable.**  The seam had two
+    halves and the loan one was the only one an EXPENSE row could take -- a
+    loan payment's cash debit sits on the funding account.  With the loan half
+    gone the seam is salary alone, and ``income_service.salary_net_for``
+    answers ``None`` for any row where ``txn.is_income`` is False, so the call
+    could not return a figure for any expense row that exists.  A dead branch
+    in a money path reads as a rule the reader must account for; deleting it
+    with the half that made it live is what keeps the file honest.
 
     Args:
         txn: An expense Transaction.
         basis: The account's :class:`~._amount_source.AmountBasis`.
 
     Returns:
-        Decimal -- the override amount when present, else
-        :func:`_entry_aware_amount`.
+        Decimal -- :func:`_entry_aware_amount`, which preserves the
+        entry-checking formula for envelope expenses.
     """
-    override = live_override(txn, basis)
-    if override is not None:
-        return override
     return _entry_aware_amount(txn, basis)

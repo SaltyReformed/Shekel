@@ -193,7 +193,8 @@ def _mark_done_shadow(txn, txn_id, submitted, target):
     """
     # **The capture-on-settle FREEZE left this route at plan step X-f2-c3**, and
     # its absence here is the fix rather than an omission.  This branch called
-    # ``loan_payment_service.live_loan_payment_amount`` and handed the answer
+    # ``loan_payment_service.live_loan_payment_amount`` (deleted; the rule is
+    # the amount model since plan step X-au-g-2c-2) and handed the answer
     # down as an ``actual_amount``, so an auto-derived loan payment recorded its
     # live payment-date cash through THIS door and the stale creation-time
     # escrow through the other three that can settle a transfer (the transfers

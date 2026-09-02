@@ -510,7 +510,7 @@ def _apply_override_payment(
     longer swallow the extra.  There is no double-count: the standing extra is
     NOT baked into the override amount (it is a live parameter,
     ``cash_ledger._loan_installment._shadow_live_amount`` /
-    ``_manual_shadow_amount``), so adding it here is its single application.
+    amount rule 4's MANUAL arm), so adding it here is its single application.
 
     Negative amortization (override below the period interest) is preserved as a
     negative principal portion.  The base principal absorbing the whole balance,

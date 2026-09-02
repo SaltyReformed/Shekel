@@ -654,13 +654,18 @@ def _freshest_amount(txn: Transaction, basis) -> Decimal | None:
     one row instead of reduced over a period, and plan step **X-au-d** deletes
     both by making the row's amount DERIVED rather than cached.
 
-    **It costs nothing on the rows it does not apply to.**  Both halves of the
-    basis filter their candidates in Python first and return an empty
-    dict with NO query: the loan half wants ``transfer_id IS NOT NULL``, which
-    :func:`settle_transaction` has already refused, and the salary half wants a
-    Projected, non-overridden, template-linked income row.  An expense, an
+    **It costs nothing on the rows it does not apply to.**  The seam filters
+    its candidates in Python first and returns nothing with NO query: it wants a
+    Projected, non-overridden, template-linked income row, so an expense, an
     ad-hoc row, an already-settled row and a manually-overridden paycheck each
-    leave here after two list comprehensions.
+    leave after two attribute reads.
+
+    *This said "BOTH halves of the basis" and named a LOAN half wanting
+    ``transfer_id IS NOT NULL`` "which ``settle_transaction`` has already
+    refused".  There is no loan half: plan step X-au-g-2c-2 deleted it with the
+    read-time repair, because a transfer shadow stores no figure for an override
+    to supersede.  The refusal it cited is still real and still first; what is
+    gone is the arm it was protecting.*
 
     **It carried a fourth guard until plan step X-au-c3 -- "a row carrying an
     ``actual_amount`` is NOT a candidate" -- and that guard is DELETED because
