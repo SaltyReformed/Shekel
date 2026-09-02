@@ -174,7 +174,7 @@ class _ProjectionContext:
             :attr:`~app.services.pay_calendar.PayCalendar.cadence` is total.*
             The resolution still happens in one place
             (:func:`.._orchestrator._build_projection_context`), which is where
-            ledger row **N-490** asks whether the emptying is intended.  An
+            ledger row **P81** asks whether the emptying is intended.  An
             empty tuple is a total answer, so no consumer needs a second
             nullable field to interpret.
     """

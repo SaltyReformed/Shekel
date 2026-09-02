@@ -102,7 +102,7 @@ def offered_spans(cadence: PayCadence, spans):
             that caller's own question: ``routes/accounts/detail`` still guards
             on a current period because ``_interest_next_year`` dereferences
             ``period_index``, and the savings cockpit's guard is ledger row
-            **N-490**.
+            **P81**.
         spans: ``(months, *label_fields)`` tuples.  The label fields are
             CARRIED, never read, so each surface passes whatever shape it
             renders -- one label for a chip, a button label plus a tooltip for

@@ -135,7 +135,7 @@ def _build_projection_context(
         # ``routes/accounts/detail`` guards for separately because
         # ``_interest_next_year`` dereferences ``current_period.period_index``.
         # Nothing here dereferences it, so the guard is dispositional alone.
-        # Ledger row **N-490** asks whether that disposition is intended, which
+        # Ledger row **P81** asks whether that disposition is intended, which
         # is a question for the savings surface rather than for this step:
         # C4-d deleted the guards whose subject it deleted and changed no
         # page's answer for an owner who HAS a schedule.
