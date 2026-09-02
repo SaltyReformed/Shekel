@@ -162,12 +162,46 @@ what it leaves a LATER step is on that step's own entry.
             ABSENCE is what it had to establish. Both hand-entry doors now take a MAGNITUDE and a
             Charge/Refund control; an envelope's budget is a NET target (**R-IK**); the spending
             share divides by what MOVED (**R-IL**); the grid cell goes through `money()` (**R-IM**).
-  - [ ] **X-gj-3** `feat(import): a rule names a row set` -- **R-HT(b)**: a payroll signature
-        pre-builds the group match (the period's payroll rows, the residue onto the named row per
-        **R-GD** or its own row per **R-FN**) as a solid suggestion, with the
-        *always, this signature is this period's payroll rows* checkbox the MATCH panel renders; it
-        MODIFIES rows, so it applies only on the owner's OK. **MOVES MONEY, OWN PR.** Interim for
-        **N-239**.
+  - [ ] **X-gj-3** `feat(import): a rule names a row set` -- the DECOMPOSED parent of **R-HT(b)**'s
+        group answer, split 2026-09-01 on the developer's ruling. The two halves differ in what they
+        NEED: the ACT of putting a group's difference on a named member is a door and a control and
+        ships on the schema the app already has; the RULE that remembers which member is a stored
+        answer naming a SET, which is a table. **Its interim is for `balance:N-391`** -- `N-239`,
+        which this step was minted against, was retired by `balance:X-aw` and split, and
+        `grep -c '| N-239 ' docs/plans/ledger.md` returns 0. Measured 2026-09-01 on a clone of the
+        developer's staged data, applying all seven payroll deposits through the real door on two
+        separate restores of one dump: with the residue on the salary row the salary rows move
+        `+$0.35` in total and **0** uncategorized rows are minted; with it on nothing they move
+        `$0.00` and **7** are minted. Trial balance `0.00` both ways.
+    - [x] **X-gj-3a -- a group's difference may land on a member the OWNER names.** `e42dcd6b`,
+          ruling **R-IU**. `bank_cash_for` becomes `DifferenceLanding`: the bank's total less the
+          OTHER members, which at a lone row is the bank total, so nothing shipped moves. No member
+          is pre-selected (**R-HX**). **A LATER step must obey:** the consent binds the FIGURE and
+          not the REMEDY, and `_moving.py` is now where a settle verb is called.
+    - [ ] **X-gj-3b** `feat(import): a rule names a row set` -- the standing rule: a payroll
+          signature pre-builds the group match (the period's payroll rows by TEMPLATE, since a
+          template is the only period-independent identity a budget row has) with the residue's
+          destination, applied only on the owner's OK because it MODIFIES rows.
+          **It opens with a fork the developer decides at the gate.** `steps.md` said the rule is
+          stated by an *always, this signature is this period's payroll rows* checkbox the MATCH
+          panel renders; ruling **R-IB** deleted exactly that shape for the ADD rule one day after
+          **R-HT** was written, because a rule is ONE fact per merchant and a card renders it once
+          per LINE. The cause reproduces here and harder: the account holds 13
+          `TOWN OF CLAYTON PAYROLL` lines and 3 `TOWN OF CLAYTON DIR DEP` lines, and because the
+          periods genuinely hold different row sets -- 4 of the 7 hold
+          `{Data Manager, Health Insurance Allowance}` and 3 hold those plus `{Phone Allowance}` --
+          the cards would state CONTRADICTORY answers, where R-IB's measured contradiction rate was
+          zero. A rule naming only 2 of the 3, met by a period holding the third, comes up `$39.59`
+          short and would re-price the salary row by that much on one OK. **MOVES MONEY, OWN PR.**
+          **It also OWNS a module split it cannot avoid.** `_variance.py` stands at **999** lines on
+          `X-gj-3a`'s tree against pylint's default ceiling of 1,000 (`max-module-lines` is set in
+          no config file) and C0302 fires at 1,001, so the headroom is TWO lines -- which a child
+          table plus the standing-rule machinery will not fit in. Ruling **balance:R-IR** puts the
+          split on the session that BREAKS the module, so plan it as part of this step rather than
+          meeting it as a commit refused for a reason unrelated to what it changed. *(Measured on
+          `53160470`. An earlier handover said 987, a figure read before `R-IV`'s paragraph and
+          before the merge-up -- an undated line count quoted as a reason, which is the shape
+          `docs/plans/lessons.md` already names.)*
   - [ ] **X-gj-4** `feat(import): skip, and the holding state` -- a SKIPPED line's disposition is
         recorded and undoable, which LIGHTS the SKIP verb the panel renders shut and fills the
         Skipped tab `X-gj-1b` draws for lines a standing *never a purchase* answer already disposes

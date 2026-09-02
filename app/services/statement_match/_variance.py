@@ -1,16 +1,28 @@
 """What a match's two sides come to, and the member that closes the gap.
 
-Plan step ``bank_import:X-f6d-4``, rulings **R-GD(a)** and **R-FN**.
+Plan steps ``bank_import:X-f6d-4`` and ``bank_import:X-gj-3a``; rulings
+**R-GD**, **R-FN** and **R-HT(b)**.
 
-**A GROUP cannot say WHICH member a difference belongs to -- and it does not
-have to.**  Three rows summing to one deposit, five cents short, is not five
-cents of error in one of them: it is five cents the bank moved that the app has
-no row for at all.  So the door does not apportion the difference and does not
-absorb it; it RECORDS the missing movement as an ordinary row with no category,
-and the row becomes a member of the match.  The identity
-``Sigma(lines) == Sigma(members)`` then holds BY CONSTRUCTION rather than by a
-refusal, which is the whole shape of this step: the balance test stops being a
-fence the door enforces and becomes an invariant it maintains.
+**THE DOOR cannot say which member a difference belongs to, and it does not
+guess.**  Three rows summing to one deposit, five cents short, is not five
+cents this module can attribute: nothing it reads says which of them the bank
+varied.  So where nothing says, it RECORDS the missing movement as an ordinary
+row with no category and the row becomes a member of the match -- the identity
+``Sigma(lines) == Sigma(members)`` holding BY CONSTRUCTION rather than by a
+refusal, which is the balance test ceasing to be a fence the door enforces and
+becoming an invariant it maintains.
+
+**THE OWNER can say, and since plan step ``bank_import:X-gj-3a`` they may**
+(ruling **R-HT(b)**: *where the residue lands -- onto a named row, re-pricing
+it, or its own uncategorized row*).  That is not the paragraph above being
+weakened: a stated attribution is a DECISION, and this module still derives
+none.  What it costs is one refusal the lone-row shape never needed
+(:func:`_reject_unrepresentable_landing`) and one thing this module must not
+claim -- that a group's gap is *five cents the bank moved that the app has no
+row for at all*.  It says that where the owner says nothing; it does not say
+it as a fact about the world.  An earlier version of this paragraph did, and
+:class:`DifferenceLanding`'s own measured population then asserted the
+negation eight hundred lines below it.
 
 **Ruling R-FN is what the row is**, and its mechanism already exists: an
 ordinary transaction with ``category_id`` NULL books to the per-owner
@@ -33,10 +45,20 @@ Income), rather than by a query that approximates the matcher: an adversarial
 review's own replay found six, missing the deposit whose rows settled five days
 after the line posted -- which the day window admits and a same-day heuristic
 does not.  Ruling **R-GD**'s "6 of 16" is an earlier, different count, taken
-before any of this arc's tiers existed.  ``paycheck_calculator``'s rounding
-residue is the cause and plan step ``balance:X-aw`` owns it; this makes the
-residue VISIBLE as seven named rows instead of six refusals, which is what
-ruling R-GD calls the louder instrument.
+before any of this arc's tiers existed.  this makes the residue VISIBLE as seven
+named rows instead of six refusals, which is what ruling R-GD calls the louder
+instrument.
+
+**The CAUSE sentence here read "``paycheck_calculator``'s rounding residue is
+the cause and plan step ``balance:X-aw`` owns it" and both halves are now
+false** (corrected at plan step ``bank_import:X-gj-3a``).  `N-239` called the
+calculator's residue-apportionment and the bank-side gap ONE mechanism, and
+`N-391` records that as MEASURED FALSE -- `X-aw` shipped and the gap did not
+move, because the residue rule's whole range was `{$3,525.96, $3,525.97}`.
+What `N-391` says instead is that ``salary_profiles.annual_salary`` divides to
+a per-paycheck gross four cents under the stub the employer issues, and its
+owner is ``balance:X-av``.  A cause sentence nobody re-checks is exactly the
+shape that decays.
 
 **Nothing PROPOSES a residual and nothing may.**  R-GD's own measurement is
 why: ``n choose k`` puts 20 leftover lines within 1% of some same-day row set,
@@ -72,6 +94,7 @@ commit -- the route owns the unit of work.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 
 from app.exceptions import ValidationError
@@ -345,17 +368,51 @@ def _reject_unaccepted_difference(
     separates them is what each predicate is ABOUT.  The old one predicted
     *what the screen had disclosed*, which this door cannot know and so had to
     proxy.  This one predicts *what this door is about to write*, which it can
-    check: at a zero difference :func:`corrected_figure` answers ``None`` for a
-    row already at the bank's figure, :func:`bank_cash_for` answers ``None``
-    for a group, and :func:`~._accept.accept_match` resolves no residual period
-    -- so the two writers a difference has are both provably idle and there is
-    no act to consent to.  **The rule is therefore "no figure is required
+    check.  At a zero difference the bank leaves the attributed member exactly
+    what it already holds -- :class:`DifferenceLanding` subtracts the OTHER
+    members from a bank total the two sides agree on -- so
+    :func:`corrected_figure` answers ``None`` whether a member is named or
+    not, and :func:`~._accept.record_match` resolves no residual period
+    because the difference is zero.  The two writers a difference has are both
+    provably idle and there is no act to consent to.
+
+    **That clause used to read "``bank_cash_for`` answers ``None`` for a
+    group", and plan step ``bank_import:X-gj-3a`` made it false** without
+    changing the conclusion: an ATTRIBUTED group does name a member.  Restated
+    against what the figure comes to rather than against which arm produced
+    it, because this is the stated reason a money control may be skipped and a
+    reason nobody re-checks is the one that decays.  **The rule is therefore "no figure is required
     exactly where no figure would be written", and it is not a shape.**
 
     Requiring one anyway would also have refused every exact match built with
     scripting off, where the panel never re-renders and so can state no figure
     -- a real capability, removed to gate a write that does not happen.
 
+    **WHAT THIS CONSENT BINDS IS THE FIGURE AND NOT THE REMEDY, and the
+    developer ruled that bound KNOWN AND ACCEPTED on 2026-09-01** (ruling
+    **R-IV**, plan step ``bank_import:X-gj-3a``; found by adversarial code
+    review).  **The ruling is a ROW and not only this paragraph**: a docstring
+    is where the next author of THIS gate meets a decision, and not where a
+    reviewer auditing consent handling looks.  Since that
+    step a submission carries two things -- the difference agreed to, and the
+    member it lands on -- and this gate compares only the first against
+    :attr:`MatchSides.difference`.  So a body CAN pair the consent rendered
+    under *record the difference as a row with no category* with a
+    ``difference_on`` that re-prices a budget row instead: two acts the
+    :class:`~._preview.HandTotals` docstring itself calls *different acts with
+    different consequences*, under one agreement.
+
+    **A browser cannot produce it, and that was verified rather than
+    assumed**: the attribution select sits inside ``.rec-match-picks``, whose
+    change swaps ``closest .rec-match`` with ``outerHTML``, and the consent box
+    is inside that element -- so changing where the money lands always
+    re-renders the box UNTICKED.  The only party who can craft such a body is
+    the account's own owner, on their own rows, and every act it could reach is
+    one they may perform through the screen anyway.  **Rejected: widening the
+    consent value to carry the remedy beside the figure.**  That is R-IA's rule
+    one field wider and it is not wrong -- it was refused because it changes
+    the wire format of a field two surfaces submit and one strict reader
+    grades, to close a path whose only traveller is the person consenting.
     **What this DID remove, stated because the paragraph above would otherwise
     read as though nothing was lost**: a one-line one-row NEAR MISS can no
     longer be corrected with scripting off.  That is the ruling working rather
@@ -387,9 +444,14 @@ def _reject_unaccepted_difference(
         return
     if accepted is None:
         remedy = (
-            "correct the one you know is wrong, or tick the box to record "
-            "the difference as a row with no category that you can "
-            "categorise later"
+            # **THREE remedies since plan step ``bank_import:X-gj-3a``**, and
+            # this sentence enumerates them because ruling **R-FZ(a)** makes a
+            # refusal the service's own words: a screen that offers a control
+            # the refusal does not mention teaches the owner that the app has
+            # fewer answers than it has.
+            "correct the one you know is wrong, say which of them the "
+            "difference belongs to, or tick the box to record it as a row "
+            "with no category that you can categorise later"
             if rows != 1
             else "tick the box to write your bank's figure to it"
         )
@@ -411,10 +473,79 @@ def _reject_unaccepted_difference(
         )
 
 
+def _reject_unrepresentable_landing(
+    landing: "DifferenceLanding", sides: MatchSides,
+) -> None:
+    """Refuse a difference the named member's own row cannot hold.
+
+    Plan step ``bank_import:X-gj-3a`` -- **and it is a refusal the LONE-ROW
+    shape never needed, which is why the widening had to bring one.**  A
+    transaction stores a non-negative GROSS whose direction comes from its
+    ``transaction_type_id`` and never from the figure
+    (:func:`corrected_figure`'s own note), so the only cash it can be moved to
+    is cash of the direction it already has.  For a match naming ONE row that
+    was guaranteed: :func:`_reject_opposed_movements` compares the two sums,
+    and with one row ``sides.app`` IS that row's cash, so the bank's figure
+    could never oppose it.
+
+    **A group breaks the guarantee, and this module's own docstring says
+    why**: *mixed signs WITHIN a group stay legal, because a net deposit
+    really is a gross income row less a deduction*.  So the select offers the
+    negative member too, and the bank can leave it a figure of the other sign.
+
+    Worked example, which is the shape it exists for.  A `+$2,060.00` deposit
+    against a `+$2,050.00` salary row and a `-$50.00` deduction row comes to
+    `+$2,000.00`, `$60.00` short.  Attribute that to the DEDUCTION and the bank
+    says that row is worth `+$10.00` -- and an expense row cannot be worth
+    `+$10.00`.  Without this refusal the door writes `$10.00` as a magnitude,
+    the row settles at `-$10.00`, and
+    :func:`~._accept._reject_drifted_under_the_act` catches the arithmetic and
+    reports *"Applying this match moved one of its own rows"* -- which is
+    false, nothing drifted, and it sends the owner to match the rows one at a
+    time when what they did was point at the wrong member.  **A guard that
+    catches the right state under the wrong name is not the guard**, which is
+    the shape finding **N-332** records one column over.
+
+    **A PURCHASE is asked only about ZERO**, because it stores a SIGNED amount
+    since ruling **R-II** -- a refund is a negative purchase -- so either
+    direction is representable and only *worth nothing* is not
+    (``ck_transaction_entries_positive_amount``, now ``amount <> 0``).
+
+    Args:
+        landing: Where this match's difference goes.
+        sides: What the two halves come to, for the figures in the sentence.
+
+    Raises:
+        ValidationError: When the named member cannot hold the figure the bank
+            leaves it.
+    """
+    row = landing.on_row
+    if row is None or landing.bank_cash is None:
+        return
+    if landing.bank_cash == 0:
+        raise ValidationError(
+            f"Your bank shows {sides.bank:+,.2f}, and the other rows you "
+            f"ticked already come to that -- so putting the difference on "
+            f'"{row.label}" would leave it worth nothing, which is not a row '
+            f"this app can hold.  Put the difference somewhere else, or untick "
+            f'"{row.label}".' + _NOTHING
+        )
+    if row.kind is RowKind.PURCHASE:
+        return
+    if (landing.bank_cash < 0) != (row.cash_amount < 0):
+        raise ValidationError(
+            f'Your bank leaves "{row.label}" at {landing.bank_cash:+,.2f}, '
+            f"and this row records money moving the other way -- so it cannot "
+            f"carry this difference.  Put it on a row that moves the same way, "
+            f"or record it as a row with no category." + _NOTHING
+        )
+
+
 def reject_unrecordable(
     rows: "list[CandidateRow]",
     sides: MatchSides,
     accepted: "Decimal | None",
+    landing: "DifferenceLanding | None" = None,
 ) -> None:
     """Refuse a match whose difference this door cannot honestly record.
 
@@ -426,24 +557,46 @@ def reject_unrecordable(
     * :func:`_reject_uncorrectable_row` is about each named ROW, and is asked
       of every member rather than only of a lone one;
     * :func:`_reject_unaccepted_difference` is about the OWNER's consent to
-      the gap, whichever way it would be written.
+      the gap, whichever way it would be written;
+    * :func:`_reject_unrepresentable_landing` is about whether the member the
+      gap is written TO can hold it (plan step ``bank_import:X-gj-3a``).
 
-    **FOUR refusals live in this module**, and they are the ones about the two
+    **WHETHER the attribution names a member of this match is NOT asked here**,
+    and a first version of that step did ask it.  The attribution is a pointer
+    into the SUBMITTED rows, so that refusal belongs where the submission's own
+    shape is graded -- :func:`~._resolve.resolve_rows`, beside *this match
+    names the same row more than once* -- and it is stronger there: that door
+    compares the whole reviewed value, so an attribution disagreeing with its
+    own row about the figure is refused too, where a check over these
+    already-resolved rows could only compare the subject.  Asking in both
+    places would have left this one unable to fire on any path, which is a
+    control that measures nothing.
+
+    **FIVE refusals live in this module**, and they are the ones about the two
     sides DISAGREEING.  :mod:`._accept` states its own and :mod:`._resolve`
     states its own; the counts are written down because this arc has shipped a
-    taxonomy that did not add up before, and a fifth added here is what has to
+    taxonomy that did not add up before, and a sixth added here is what has to
     change this sentence.
 
     Args:
         rows: The submitted app rows, already priced.
         sides: What the two halves come to, derived once for the whole act.
         accepted: The difference the owner agreed to, or ``None``.
+        landing: Where the difference would go
+            (:class:`DifferenceLanding`), or ``None`` where the caller has not
+            derived one.  **Defaulted, and it is the one argument here that
+            is**: the doors that take a SUBMISSION derive the landing before
+            they refuse, and the two that BUILD their own match name a single
+            row each, where ruling **R-GD**'s determinacy answers the question
+            and there is nothing about the landing to refuse.
 
     Raises:
         ValidationError: From whichever arm fires, with the figures in it.
     """
     _reject_opposed_movements(sides, len(rows))
     _reject_unstorable(sides)
+    if landing is not None:
+        _reject_unrepresentable_landing(landing, sides)
     if sides.difference:
         for row in rows:
             _reject_uncorrectable_row(row, sides)
@@ -455,53 +608,271 @@ def reject_unrecordable(
     _reject_unaccepted_difference(sides, len(rows), accepted)
 
 
-def bank_cash_for(
-    sides: MatchSides, rows: "list[CandidateRow]",
-) -> "Decimal | None":
-    """Return the cash the bank states for the ONE row this match names.
+@dataclass(frozen=True)
+class DifferenceLanding:
+    """Where a match's difference goes, decided ONCE for the whole act.
 
-    **Defined only where the bank's figure names a single row**, which is the
-    whole of ruling **R-GD(a)**'s determinacy: a match naming one row is an
-    assertion about that row and nothing has to be apportioned.  A GROUP is a
-    different question -- three rows summing to one deposit, with nothing
-    saying WHICH is the six cents wrong -- so this answers ``None`` there and
-    the difference becomes **R-FN**'s ordinary accepted row (:func:`mint`),
-    never a figure this door invents for a member.
+    **ONE rule, and it is the whole of ruling R-GD(a)'s determinacy:** the
+    difference this door would write goes to the member the match ATTRIBUTES it
+    to, and where it attributes it to none it becomes **R-FN**'s ordinary
+    accepted row (:func:`mint`).  A match attributes it
 
-    **The test is on the ROWS alone, and it was ``len(lines) != 1 or
-    len(rows) != 1`` until plan step ``bank_import:X-f6d-4``** (developer,
-    2026-08-23).  That extra clause contradicted this docstring's own
-    reasoning: two lines against one row apportion nothing either, because
-    their SUM is what the bank says that row is worth.
+    * to its SOLE row where it names one -- nothing has to be apportioned, so
+      the bank's figure is simply an assertion about that row;
+    * to the member the OWNER NAMED where it names several (plan step
+      ``bank_import:X-gj-3a``);
+    * to NONE where it names several and the owner named no member, which is
+      every match this screen submitted before that step.
 
-    **What the widening needed, and two reviews independently found missing, is
-    the CONSENT.**  Nothing bounds which lines an owner may tick, so without a
-    figure gate a mis-tick could rewrite a `$45.00` fee to `$1,950.00` in one
-    press with no undo.  :func:`_reject_unaccepted_difference` requires the
-    reviewed figure for EVERY shape as of plan step ``bank_import:X-gj-1b``;
-    it exempted the single-line one-row match until then, and that exemption
-    is what the Reconcile page's tickable proposal rows learned to
-    manufacture.  A first version of this step justified the widening by
-    *"0 such pairings exist on the developer's own data"*, which is vacuous:
-    no tier emits a multi-line proposal at all, so the population that reaches
-    this code is whatever the owner ticks.
+    **The middle arm is the step's whole change, and it does not weaken the
+    argument above it.**  This module's opening paragraph -- *three rows
+    summing to one deposit, five cents short, is not five cents of error in one
+    of them* -- is about what the DOOR can DERIVE, and it stands unamended:
+    nothing here apportions and nothing here guesses.  What is new is that the
+    owner may SAY which member the bank varied, and a stated attribution is a
+    decision rather than a derivation.  The developer ruled the control on
+    2026-09-01 and ruled its DEFAULT with it (**R-IU**): the panel offers NO
+    pre-selected member.
 
-    **It TAKES the bank total rather than summing one**, because the refusals
-    that let this run summed the same lines to test them: two derivations of
-    one money figure on the two sides of a gate is what :class:`MatchSides`
-    exists to remove.
+    **The ruling that settles the default is R-HX, not R-FZ(b)**, and the
+    difference is the one **R-HS** carves out in its own words: R-FZ(b) banned
+    the ARBITRARY default and *never meant a suggestion the app can justify*,
+    so citing it for a DERIVED pick would be citing the half that was carved
+    away.  R-HX is on point -- *an unmatched inflow is not pre-filled until a
+    rule can justify the destination*, and *being the ONLY act is not what
+    R-HS means by justified*.  The app is not without a CANDIDATE here:
+    ``salary_profiles.template_id`` names the member whose figure is computed
+    (:func:`~app.services.recurrence_engine._amounts._get_transaction_amount`
+    returns the paycheck's ``net_pay`` for it and ``template.default_amount``
+    for every other) so *which member rounds* is a stored fact.  What it lacks
+    is a JUSTIFICATION: finding `balance:N-391` reads *NOT yet attributed*,
+    and the thing that would supply one is the standing rule
+    ``bank_import:X-gj-3b`` ships.
+
+    **It is a GENERALISATION of ``bank_cash_for`` rather than a second arm
+    beside it, and the algebra is why that matters.**  That function answered
+    :attr:`~._sides.MatchSides.bank` for a lone row and ``None`` otherwise.
+    The figure here is *what the bank moved, less what the OTHER members come
+    to* -- and for a lone row there are no others, so the subtrahend is zero
+    and the answer IS the bank total, identically.  A version that had kept
+    the old function and added an ``elif`` for the named member would have
+    been two spellings of one money rule, which is this arc's own root cause 1.
+
+    **It is stated as a subtraction from the BANK and not as an addition to
+    the ROW, and the difference is a rounding one.**  ``row.cash_amount +
+    sides.difference`` is the same value in exact arithmetic and is what a
+    first version of this class computed -- but ``sides.app`` is ROUNDED
+    (:class:`~._sides.MatchSides`), so on a row whose cash carried sub-cent
+    places that spelling would return the bank's figure plus that row's own
+    rounding error, where this one returns the bank's figure exactly.  Every
+    figure the app can produce today descends from ``Numeric(12, 2)``, so the
+    two agree on all of them; ``MatchSides``' own docstring is what says a
+    derived price with more places is expressible, and a money rule that is
+    right only until then is not right.
+
+    **The two remedies stay EXCLUSIVE by construction rather than by care.**
+    :attr:`bank_cash` is a figure exactly where a member absorbs the gap and
+    ``None`` exactly where none does, so correcting a row and minting a member
+    for the same difference is unrepresentable -- the property
+    :func:`~._accept.record_match` used to get from ``bank_cash_for`` and which
+    a first version of that step lost by gating the mint on consent alone.
+
+    **The measured population is finding balance:N-391.**  On a production
+    clone carrying the developer's own 376 recorded lines, seven payroll
+    deposits are 2-3 app rows summing ``$0.04``-``$0.06`` under what the
+    employer paid, ``+$0.35`` across the span.  Before this step the only thing
+    this door could do with that gap was mint seven uncategorized rows.
+
+    **WHICH member it belongs to is NOT established, and this class does not
+    claim it is.**  An earlier draft of this paragraph said every cent of it
+    belongs to the salary row; `N-391`'s own last sentence says the opposite
+    -- *NOT yet attributed: a `$0.04` error in any of the 12 hand-entered
+    deductions reproduces the same net, and the gross is n=1*.  What was
+    measured on 2026-09-01 is narrower and is about the GROSS: the app derives
+    a per-paycheck gross by dividing ``salary_profiles.annual_salary``
+    (`$91,675.00` / 26 = `$3,525.96`) where the owner's stub states
+    `$3,526.00`, and re-running all seven paychecks through
+    :func:`~app.services.paycheck_calculator.calculate_paycheck` at the stub's
+    figure collapses the span from ``+$0.35`` to ``+$0.07``.  That is a fact
+    about the derivation and not a per-member attribution: the bank shows ONE
+    deposit, so no per-member bank figure exists to compare an allowance
+    against, and *the allowances match exactly* is ``bank less allowances =
+    salary`` restated.  The gross half is ``balance:X-av``'s, which
+    `N-391` already names.
+
+    Attributes:
+        on_row: The member the difference is written to, or ``None`` where it
+            has none and :func:`mint` is what closes the gap.  It is one of
+            the very rows handed to :meth:`of`, so the caller cannot be given
+            a row the act does not name.
+        bank_cash: What the bank states :attr:`on_row` is worth, signed on
+            :attr:`~._offers.CandidateRow.cash_amount`'s own convention, or
+            ``None`` beside a ``None`` row.  **The CASH figure and not the
+            figure to store**: :func:`corrected_figure` is what inverts it into
+            what the row's own column holds, which differs on a purchase and on
+            a transaction carrying entries.
+    """
+
+    on_row: "CandidateRow | None"
+    bank_cash: "Decimal | None"
+
+    @classmethod
+    def of(
+        cls,
+        sides: MatchSides,
+        rows: "list[CandidateRow]",
+        attributed: "tuple[RowKind, int] | None",
+    ) -> "DifferenceLanding":
+        """Return where this match's difference lands.
+
+        **Total over every submission this door accepts**, including the ones
+        with no difference at all: at zero what the bank left for the named
+        row IS what that row already holds, so :func:`corrected_figure`
+        answers ``None`` and an agreeing match writes nothing whichever arm it
+        takes -- which is what the lone-row path did before this step and is
+        why no arm here tests for zero.
+
+        Args:
+            sides: What the two halves come to, derived once for the whole act.
+            rows: The match's app rows, already priced.  A match with none is
+                refused before this runs
+                (:func:`~._accept._reject_empty_side`).
+            attributed: The ``(kind, row_id)`` of the member the owner named,
+                or ``None``.  Held to be one of *rows* by
+                :func:`~._resolve.resolve_rows`, so a body naming a row this
+                match does not carry is refused by name rather than falling
+                through to the mint -- which would let the SENDER choose the
+                remedy.  :func:`_named_member` raises rather than answering
+                ``None`` if that guard is ever bypassed.
+
+        Returns:
+            The :class:`DifferenceLanding`.
+        """
+        row = _named_member(rows, attributed)
+        if row is None:
+            return cls(on_row=None, bank_cash=None)
+        others = sum(
+            (
+                other.cash_amount for other in rows
+                if (other.kind, other.row_id) != (row.kind, row.row_id)
+            ),
+            Decimal("0.00"),
+        )
+        return cls(on_row=row, bank_cash=round_money(sides.bank - others))
+
+    @staticmethod
+    def offers_a_choice(rows: "list[CandidateRow]") -> bool:
+        """Return whether this match has a member for the owner to NAME.
+
+        **ONE statement of ruling R-GD's determinacy, read by both sides**
+        (plan step ``bank_import:X-gj-3a``, second pass).  The door's
+        :func:`_named_member` asks *is this already answered* to decide whether
+        to consult the attribution, and the panel asks the same question to
+        decide whether to render the control -- and a first version wrote it
+        out twice, once here and once as ``len(rows) > 1`` in
+        :func:`~._preview.preview_hand_build`.  Nothing in the tree fails when
+        two spellings of one predicate diverge: widen the panel's and it offers
+        a control the door ignores, widen the door's and it honours an
+        attribution no panel could have rendered.
+
+        Args:
+            rows: The match's app rows, already priced.
+
+        Returns:
+            ``False`` where the match names one row -- there is nothing to
+            apportion, so the answer is the row and no control is drawn --
+            and ``True`` where it names several.
+        """
+        return len(rows) > 1
+
+    @property
+    def mints_a_row(self) -> bool:
+        """Return whether a difference here becomes an ordinary accepted row.
+
+        Returns:
+            ``True`` where no member absorbs the difference, so **R-FN**'s row
+            is what makes the group add up.  It says nothing about whether
+            there IS a difference: the caller pairs it with
+            :attr:`~._sides.MatchSides.difference`, exactly as
+            :func:`~._accept.record_match` paired the old ``bank_cash is
+            None``.
+        """
+        return self.on_row is None
+
+    def figure_for(self, row: CandidateRow) -> "Decimal | None":
+        """Return what *row* should book, or ``None`` where it does not move.
+
+        **Asked of every member so the answer is one rule rather than a loop
+        with a condition in it.**  A member that is not the attributed one is
+        not re-priced, and the attributed one is re-priced only where the
+        bank's figure differs from what it already holds -- both of which
+        :func:`corrected_figure` already answers, given a ``None`` cash figure
+        for the first.
+
+        Args:
+            row: One member of the match.
+
+        Returns:
+            The figure to submit to that row's settle verb, or ``None``.
+        """
+        if self.on_row is None:
+            return None
+        if (row.kind, row.row_id) != (self.on_row.kind, self.on_row.row_id):
+            return None
+        return corrected_figure(row, self.bank_cash)
+
+
+def _named_member(
+    rows: "list[CandidateRow]",
+    attributed: "tuple[RowKind, int] | None",
+) -> "CandidateRow | None":
+    """Return the member a match attributes its difference to, or ``None``.
+
+    **The lone-row arm is a DETERMINACY argument and not a default**, and the
+    ruling that states it is **R-GD**'s fourth GROUP amendment, clause (ii) --
+    *one ROW is determinate however many LINES explain it, so
+    ``bank_cash_for``'s test is on the row rather than the lines*.  (Not
+    R-GD(a), which is the different proposition that a match RECORDS the
+    variance; the deleted ``bank_cash_for`` made the same conflation and it is
+    corrected here rather than inherited.)  Where a match names one row the
+    bank's figure is an assertion about that row and there is nothing to
+    apportion, so the screen offers no choice and none is submitted.  The test
+    was ``len(lines) != 1 or len(rows) != 1`` until plan step
+    ``bank_import:X-f6d-4``, and the lines half has been gone since.
 
     Args:
-        sides: What the two halves come to, derived once for the whole act.
-        rows: The app rows the match names.
+        rows: The match's app rows, already priced.
+        attributed: The ``(kind, row_id)`` the owner named, or ``None``.
 
     Returns:
-        The lines' signed total when the match names exactly one row, else
-        ``None``.
+        The member, or ``None`` where the difference has none.
+
+    Raises:
+        ValueError: When *attributed* names a row this match does not carry.
+            **Unconstructible from the wire rather than defensive, and stated
+            rather than left to fall out of a lookup's default**:
+            :func:`~._resolve.resolve_rows` refuses a submission whose
+            attribution is not one of its own rows, and refuses one whose rows
+            do not all resolve -- so on every path a submission takes, an
+            attributed subject IS a resolved row.  What this arm guards is the
+            other caller of :func:`~._accept.record_match`, which builds its
+            :class:`~._accept.MatchContent` in code.  Written as a raise
+            because the alternative spelling, ``next(..., None)``, would fall
+            through to the MINT: the remedy would have been chosen by naming a
+            row that is not there, which is the shape ruling **R-IA** measured
+            at `$2,572.36` one field over.
     """
-    if len(rows) != 1:
+    if not DifferenceLanding.offers_a_choice(rows):
+        return rows[0]
+    if attributed is None:
         return None
-    return sides.bank
+    for row in rows:
+        if (row.kind, row.row_id) == attributed:
+            return row
+    raise ValueError(
+        "A match's difference names a row the match does not carry, which "
+        "resolve_rows refuses for every submission."
+    )
 
 
 def corrected_figure(

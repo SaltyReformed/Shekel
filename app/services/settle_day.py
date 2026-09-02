@@ -154,7 +154,7 @@ def submitted_settle_day(
 
     **A door with real EVIDENCE does not come through here.**  The statement
     matcher confirms a day it has a bank line for and states ``observed``
-    directly (``statement_match._accept._apply_day``), which is how an
+    directly (``statement_match._moving._apply_day``), which is how an
     ``asserted`` bound the bank agrees with is raised rather than frozen.  The
     difference is not the day, it is that one caller read a document and the
     other re-posted a form.

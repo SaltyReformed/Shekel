@@ -158,8 +158,8 @@ def _choosing(fields, name, value):
     return replaced + [(name, value)]
 
 
-def _post(auth_client, seed_user, fields, page):
-    """Post *fields* to Apply, refusing anything *page* could not have sent.
+def _post(auth_client, seed_user, fields, page, pane=None):
+    """Post *fields* to Apply, refusing anything the owner could not have sent.
 
     **The refusal is the point, and it is structural rather than a rule to
     remember.**  Every acting case here appended ``("ok", str(line.id))`` to
@@ -187,15 +187,32 @@ def _post(auth_client, seed_user, fields, page):
         fields: The ``(name, value)`` pairs to submit, scraped and then
             pressed.
         page: The rendered page they were scraped from.
+        pane: A MATCH pane htmx has SWAPPED INTO that page, or ``None``.
+
+            **The pane's controls are the page's once it has loaded**, and
+            that is the document a browser submits: the fragment replaces the
+            placeholder inside the card, so its rows, its attribution select
+            and its consent box are all inside the cards form.  Without this
+            the refusal above would reject the very payload a browser sends
+            for the one act that needs the pane open -- a group whose
+            difference the owner directed at a member (plan step
+            ``bank_import:X-gj-3a``).
+
+            It is a SECOND document rather than a flag, so the universe stays
+            *what was actually rendered* rather than *what a caller says is
+            allowed*: a control in neither document is still refused.
 
     Returns:
         The response.
 
     Raises:
-        AssertionError: When a field names a control *page* did not render, or
-            gives a checkbox or radio a value it could not have sent.
+        AssertionError: When a field names a control neither document
+            rendered, or gives a checkbox or radio a value it could not have
+            sent.
     """
     offerable = reconcile_offerable(page)
+    if pane is not None:
+        offerable = offerable | reconcile_offerable(pane)
     for name, value in fields:
         if name == "csrf_token":
             continue
@@ -2010,3 +2027,328 @@ class TestTheBooksAlreadyHoldSentenceIsONESpelling:
             page = " ".join(_page(auth_client, seed_user).split())
 
             assert "This pay period already holds" not in page
+
+
+class TestThePaneOffersWHEREADifferenceGoes:
+    """Plan step **bank_import:X-gj-3a**; rulings **R-GD(a)** and **R-FN**.
+
+    A group's difference could only ever become an uncategorized row before
+    this step, whatever the owner knew about it.  On the developer's own data
+    that is seven payroll deposits and seven `$0.04`-`$0.06` rows a year, with
+    the salary row left permanently under what the employer paid -- while the
+    two flat allowances beside it matched the bank exactly in all eleven of
+    their occurrences, which is what makes *which member* an answerable
+    question for a person and an underivable one for the app.
+
+    **No member is pre-selected** (developer, 2026-09-01): a group has nothing
+    the app can point at to justify one, and an unjustified default on a money
+    control is what ruling **R-FZ(b)** removed from this screen.
+    """
+
+    @staticmethod
+    def _a_payroll_deposit(seed_user, db, amount="2573.43"):
+        """Stage one deposit against a salary row and a flat allowance.
+
+        Args:
+            seed_user: The seeded user bundle.
+            db: The session.
+            amount: What the bank deposited.  The two rows always come to
+                `$2,573.38`, so the default leaves the `$0.05` gap and an
+                exactly-equal figure leaves none.
+
+        Returns:
+            ``(line, salary, allowance)``.
+        """
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount=amount,
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="ACH DEPOSIT TOWN OF CLAYTON PAYROLL",
+        )
+        salary = a_transaction(
+            seed_user, name="Data Manager", amount="2473.38", income=True,
+        )
+        allowance = a_transaction(
+            seed_user, name="Health Insurance Allowance", amount="100.00",
+            income=True,
+        )
+        db.session.commit()
+        return line, salary, allowance
+
+    def _pane(self, auth_client, seed_user, line, rows=(), chosen=None):
+        """Render the MATCH pane as it stands with *rows* ticked.
+
+        Args:
+            auth_client: The logged-in client.
+            seed_user: The seeded user bundle.
+            line: The bank line whose card is open.
+            rows: The reviewed-row tokens the owner has ticked.
+            chosen: The token the attribution select names, or ``None``.
+
+        Returns:
+            The rendered pane, as text.
+        """
+        body = [("csrf_token", "x")]
+        body += [(f"rows-{line.id}", token) for token in rows]
+        if chosen is not None:
+            body.append((f"difference_on-{line.id}", chosen))
+        return auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data=MultiDict(body),
+        ).get_data(as_text=True)
+
+    def test_a_GROUP_with_a_difference_is_offered_the_choice(
+        self, auth_client, db, seed_user,
+    ):
+        """One option per ticked row, plus R-FN's ordinary row first."""
+        line, _, _ = self._a_payroll_deposit(seed_user, db)
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+
+        pane = self._pane(auth_client, seed_user, line, rows=tokens)
+
+        assert f'name="difference_on-{line.id}"' in pane
+        assert 'value=""' in pane, "R-FN's ordinary row must be an option"
+        for token in tokens:
+            assert f'value="{token}"' in pane, (
+                "every ticked row must be nameable as the one that carries it"
+            )
+
+    def test_NOTHING_is_pre_selected(self, auth_client, db, seed_user):
+        """The developer's ruling of 2026-09-01, read off the rendered select.
+
+        A browser submits the option carrying ``selected``, and its FIRST
+        option when none does -- so a pre-selected member would be a money
+        decision the page made and the owner never saw.
+        """
+        line, _, _ = self._a_payroll_deposit(seed_user, db)
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+
+        pane = self._pane(auth_client, seed_user, line, rows=tokens)
+
+        assert (f"difference_on-{line.id}", "") in reconcile_form_fields(pane)
+
+    def test_a_LONE_row_is_offered_NO_choice(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-GD(a)**'s determinacy: there is nothing to pick.
+
+        A match naming one row is an assertion about that row, so the pane
+        renders no control -- and a select with one real option would ask a
+        question whose answer is already known.
+        """
+        line, _, _ = self._a_payroll_deposit(seed_user, db)
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+
+        pane = self._pane(auth_client, seed_user, line, rows=tokens[:1])
+
+        assert f'name="difference_on-{line.id}"' not in pane
+
+    def test_a_group_that_ADDS_UP_is_offered_NO_choice(
+        self, auth_client, db, seed_user,
+    ):
+        """Nothing would be written wherever it landed."""
+        line, _, _ = self._a_payroll_deposit(seed_user, db, amount="2573.38")
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+
+        pane = self._pane(auth_client, seed_user, line, rows=tokens)
+
+        assert "These add up" in pane
+        assert f'name="difference_on-{line.id}"' not in pane
+
+    def test_choosing_a_member_states_THAT_ROWS_two_figures(
+        self, auth_client, db, seed_user,
+    ):
+        """`$2,473.43` in place of `$2,473.38`, not the deposit's own total.
+
+        **The sums would name the wrong figure by `$100.00` here.**  A lone
+        row's new figure IS the bank total and its old one IS the app total,
+        so a sentence written against the sums reads correctly on every match
+        that already worked and names a `$2,573.43` deposit as what gets
+        written to a `$2,473.38` salary row the moment a group can attribute.
+        """
+        line, salary, _ = self._a_payroll_deposit(seed_user, db)
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+        salary_token = next(
+            token for token in tokens if token.split(":")[1] == str(salary.id)
+        )
+
+        pane = self._pane(
+            auth_client, seed_user, line, rows=tokens, chosen=salary_token,
+        )
+
+        # The CONSENT SENTENCE alone.  The row list and the sums line above it
+        # legitimately print every figure in this match, so a search over the
+        # whole pane would pass whatever the sentence said.
+        sentence = pane.split(f'for="residual-{line.id}"')[-1]
+        assert "Data Manager" in sentence
+        assert "$2,473.43" in sentence
+        assert "$2,473.38" in sentence
+        assert "$2,573.43" not in sentence, (
+            "the sentence quoted the DEPOSIT's total as what gets written to "
+            "the salary row, which is wrong by $100.00"
+        )
+
+    def test_what_the_PANE_emitted_is_what_APPLY_writes(
+        self, auth_client, db, seed_user,
+    ):
+        """The whole loop, on the act this step exists for.
+
+        The page's bytes and the pane's bytes go back to the door together,
+        which is the document a browser holds once htmx has swapped the
+        fragment in.  **Nothing here is hand-picked**: the row tokens, the
+        attribution and the consent figure all come off what was rendered, so
+        a template that emitted a field name the schema does not read would
+        fail here rather than pass by agreement.
+        """
+        line, salary, allowance = self._a_payroll_deposit(seed_user, db)
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+        salary_token = next(
+            token for token in tokens if token.split(":")[1] == str(salary.id)
+        )
+        pane = self._pane(
+            auth_client, seed_user, line, rows=tokens, chosen=salary_token,
+        )
+        page = _page(auth_client, seed_user)
+        # The consent box is an UNTICKED checkbox, so the pane's own submitted
+        # set leaves it out; ticking it is the owner's act and its value is
+        # the server's own figure, read off what the pane rendered.
+        consent = next(
+            pair for pair in reconcile_offerable(pane)
+            if pair[0] == f"residual-{line.id}"
+        )
+        fields = _choosing(
+            reconcile_form_fields(page) + reconcile_form_fields(pane),
+            f"verb-{line.id}", "match",
+        ) + [consent, ("ok", str(line.id))]
+
+        response = _post(auth_client, seed_user, fields, page, pane=pane)
+
+        assert response.status_code == 200
+        db.session.expire_all()
+        assert db.session.query(StatementMatch).count() == 1
+        assert salary.settled_amount == Decimal("2473.43"), (
+            "the member the owner named must carry the difference"
+        )
+        assert allowance.settled_amount == Decimal("100.00"), (
+            "the member they did not name must not move"
+        )
+        assert not (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.account_id == seed_user["account"].id,
+                Transaction.category_id.is_(None),
+                Transaction.transfer_id.is_(None),
+            )
+            .all()
+        ), "nothing may be minted when a member carries the difference"
+
+    def test_UNTICKING_the_named_member_does_not_refuse_the_owner(
+        self, auth_client, db, seed_user,
+    ):
+        """The transition an owner actually performs, found by design review.
+
+        Name a member, then untick that member.  The change bubbles to
+        `.rec-match-picks` and fires this fragment, and the select -- which has
+        not been re-rendered yet -- posts its now-stale value beside a row list
+        that no longer holds it.  ``resolve_rows`` refuses exactly that shape,
+        correctly, so without ``_still_ticked`` the panel answers *"This match
+        says its difference belongs to a row it does not include.  Reload the
+        page and try again"* -- a sentence written for a crafted body, shown
+        for a legal click, on the screen whose whole job is to say what the
+        press would do.
+
+        **Three rows, so that unticking one leaves TWO** and the honest answer
+        is R-FN's ordinary row.  With two rows the untick leaves ONE, where
+        R-GD's determinacy answers the question and the panel says *corrects*
+        -- also right, and not the arm this case is about.
+        """
+        line, salary, _ = self._a_payroll_deposit(seed_user, db)
+        a_transaction(
+            seed_user, name="Phone Allowance", amount="39.54", income=True,
+        )
+        db.session.commit()
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+        salary_token = next(
+            token for token in tokens if token.split(":")[1] == str(salary.id)
+        )
+        kept = [token for token in tokens if token != salary_token]
+        assert len(kept) == 2, "this case needs two rows left after the untick"
+
+        pane = self._pane(
+            auth_client, seed_user, line, rows=kept, chosen=salary_token,
+        )
+
+        assert "does not include" not in pane
+        assert "Reload the page" not in pane
+        assert "row with no category" in pane, (
+            "the panel must say what Apply would actually do, which is mint"
+        )
+
+    def test_APPLY_refuses_an_attribution_naming_a_row_it_does_not_carry(
+        self, auth_client, db, seed_user, seed_second_user,
+    ):
+        """The ownership question asked of the NEW field, at the MONEY door.
+
+        **The pane is not where this is refused, and that is deliberate.**  A
+        fragment that writes nothing normalises a stale pointer rather than
+        refusing it (``_still_ticked``), because it cannot tell a crafted body
+        from an owner who has just unticked a row -- and for a read, both want
+        the same answer.  What must refuse is the door that WRITES, and it
+        does, before it reads the offer set at all.
+
+        The row named here is a second owner's, so it is out of reach two ways
+        over: not among the rows this body submitted, and not in this pass's
+        offer set.  Neither is stated about ``difference_on`` until something
+        asks, and a field added to a money door without an ownership case is
+        how the next one gets added without one.
+        """
+        line, salary, allowance = self._a_payroll_deposit(seed_user, db)
+        foreign = a_transaction(
+            seed_second_user, name="Someone else's salary", amount="2473.38",
+            income=True,
+        )
+        db.session.commit()
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+        pane = self._pane(auth_client, seed_user, line, rows=tokens)
+        page = _page(auth_client, seed_user)
+        consent = next(
+            pair for pair in reconcile_offerable(pane)
+            if pair[0] == f"residual-{line.id}"
+        )
+        crafted = _choosing(
+            reconcile_form_fields(page) + reconcile_form_fields(pane),
+            f"difference_on-{line.id}",
+            f"transaction:{foreign.id}:2473.38:{foreign.version_id}",
+        ) + [consent, ("ok", str(line.id))]
+        crafted = _choosing(crafted, f"verb-{line.id}", "match")
+
+        # POSTED DIRECTLY, not through ``_post``: this body names a control
+        # value the page could never have rendered, which is the whole point,
+        # and that helper exists to refuse exactly such a payload.
+        response = auth_client.post(
+            _url(seed_user["account"].id),
+            data=MultiDict([("csrf_token", "x")] + crafted),
+        )
+
+        assert response.status_code == 200
+        db.session.expire_all()
+        assert db.session.query(StatementMatch).count() == 0
+        assert salary.settled_amount is None
+        assert allowance.settled_amount is None
+        assert foreign.settled_amount is None

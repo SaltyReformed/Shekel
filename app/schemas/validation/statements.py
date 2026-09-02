@@ -363,6 +363,23 @@ class StatementMatchSchema(BaseSchema):
     #: figure the door was going to refuse anyway, since nothing is written
     #: unless this equals the door's own derivation.
     residual = ReviewedFigureField(required=False, load_default=None)
+    #: WHICH member of this match the difference belongs to (plan step
+    #: ``bank_import:X-gj-3a``), as that row's own reviewed token.
+    #:
+    #: **The same field type as a member of ``rows`` above, deliberately.**
+    #: The control's value IS one of the row tokens the same body carries, so
+    #: reading it through a second, looser field would let a body attribute a
+    #: difference to something the row list could not have contained -- and
+    #: ``resolve_rows`` compares the two as whole values, which only holds if
+    #: both were read by one reader.
+    #:
+    #: ``load_default=None`` is what every surface but the Reconcile card's
+    #: MATCH pane relies on: a match naming ONE row needs no attribution
+    #: (ruling **R-GD(a)**), and a match naming several with none named is the
+    #: shape that mints **R-FN**'s ordinary row, which is what this screen did
+    #: for every group before this step.  A ``required=True`` here would 400
+    #: the whole pass for a hand-built group nobody had to attribute.
+    difference_on = ReviewedRowField(required=False, load_default=None)
 
 
 class StatementMatchReleaseSchema(BaseSchema):

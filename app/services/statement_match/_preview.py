@@ -52,11 +52,12 @@ from decimal import Decimal
 from app.exceptions import ValidationError
 
 from ._candidates import matched_subjects
+from ._offers import CandidateRow
 from ._resolve import load_lines, resolve_rows
 from ._scope import ReviewScope
 from ._submission import MatchSubmission, spell_figure
 from ._sides import MatchSides
-from ._variance import bank_cash_for, reject_unrecordable
+from ._variance import DifferenceLanding, reject_unrecordable
 
 #: What the panel is doing about the gap, as one word the template dispatches
 #: on.  A STRING rather than a ref-table id because it names a state of this
@@ -68,6 +69,11 @@ CORRECTS_THE_ROW: str = "corrects"
 RECORDS_A_DIFFERENCE: str = "records"
 REFUSED: str = "refused"
 
+#: What a panel describing NO act reports for its two sides.  One value rather
+#: than two zeros written at each of the three sites that need them, so an
+#: empty panel and a refused one cannot come to report different nothings.
+_NO_SIDES: MatchSides = MatchSides(bank=Decimal("0.00"), app=Decimal("0.00"))
+
 
 @dataclass(frozen=True)
 class HandTotals:
@@ -77,12 +83,23 @@ class HandTotals:
     remedy in particular is a decision -- correcting the one row a match names
     and recording a group's difference are different acts with different
     consequences -- and deciding it in Jinja would be a second statement of
-    ``bank_cash_for``'s rule in a language nothing lints.
+    :class:`~._variance.DifferenceLanding`'s rule in a language nothing
+    lints.
+
+    **It stores the DOOR's own two answers rather than copies of their
+    parts** (plan step ``bank_import:X-gj-3a``).  It carried ``bank``, ``app``
+    and ``difference`` as three fields, which is :class:`~._sides.MatchSides`
+    written out twice -- the third of them being that class's own subtraction
+    -- and it grew a second pair, the row a correction names and the figure it
+    would write, which is :class:`~._variance.DifferenceLanding` written out
+    twice.  Both are now HELD and read through properties, so the panel's
+    figures and the door's cannot come apart, and every reader of
+    ``totals.bank`` or ``totals.difference`` is unchanged.
 
     Attributes:
-        bank: What the ticked statement lines come to, signed.
-        app: What the ticked rows come to, on the same convention.
-        difference: What the bank moved that those rows do not account for.
+        sides: What the two ticked halves come to
+            (:class:`~._sides.MatchSides`), which is where :attr:`bank`,
+            :attr:`app` and :attr:`difference` are read from.
         remedy: One of the module constants, saying what Apply would do.
         consent: The figure this panel submits as the difference it was
             reviewed against, as the plain decimal string the door will
@@ -101,14 +118,79 @@ class HandTotals:
             either way.
         refusal: Why Apply would refuse, in the door's own sentence, or
             ``None``.
+        landing: Where Apply would put the difference
+            (:class:`~._variance.DifferenceLanding`), or ``None`` where there
+            is no act to describe at all -- nothing ticked, one side ticked,
+            or a selection this door has already refused.  :attr:`corrects`
+            and :attr:`corrects_to` are what the pane reads off it.
+        choices: The members this panel may attribute the difference TO --
+            empty where there is no choice to make.  **A match naming ONE row
+            offers none**, because ruling **R-GD**'s group clause (ii) already
+            answers it, and a match whose sides AGREE offers none either,
+            because nothing would be written wherever it landed.  Asked of
+            :meth:`~._variance.DifferenceLanding.offers_a_choice`, which is the
+            value that owns the question, so the control the panel draws and
+            the attribution the door will honour cannot disagree.
+
+            Rendered as the select the owner picks from, with *a new row with
+            no category* as its unselected first option: the developer ruled on
+            2026-09-01 (**R-IU**) that NO member is pre-selected, on **R-HX**'s
+            reading of what justified means -- the app has a candidate here
+            (the member whose figure is computed rather than stored) and not a
+            justification, and the justification is what
+            ``bank_import:X-gj-3b``'s standing rule ships.
     """
 
-    bank: Decimal
-    app: Decimal
-    difference: Decimal
+    sides: MatchSides
     remedy: str
     consent: "str | None" = None
     refusal: "str | None" = None
+    landing: "DifferenceLanding | None" = None
+    choices: "tuple[CandidateRow, ...]" = ()
+
+    @property
+    def bank(self) -> Decimal:
+        """Return what the ticked statement lines come to, signed."""
+        return self.sides.bank
+
+    @property
+    def app(self) -> Decimal:
+        """Return what the ticked rows come to, on the same convention."""
+        return self.sides.app
+
+    @property
+    def difference(self) -> Decimal:
+        """Return what the bank moved that those rows do not account for."""
+        return self.sides.difference
+
+    @property
+    def corrects(self) -> "CandidateRow | None":
+        """Return the row Apply would write the bank's figure to, or ``None``.
+
+        **The ROW and not its name**, because the pane needs its label for the
+        consent sentence AND its reviewed token for the control's selected
+        option, and deriving either in Jinja would be a second spelling of the
+        wire format (:attr:`~._submission.ReviewedRow.token`).
+
+        Returns:
+            The member the difference lands on, or ``None`` where it lands on
+            none -- which is every remedy but :data:`CORRECTS_THE_ROW`.
+        """
+        return None if self.landing is None else self.landing.on_row
+
+    @property
+    def corrects_to(self) -> "Decimal | None":
+        """Return what the bank says :attr:`corrects` is worth.
+
+        On :attr:`~._offers.CandidateRow.cash_amount`'s own convention, so the
+        sentence quotes the ROW's two figures rather than the match's two
+        sums -- which for a lone row are the same two numbers and for a group
+        are not.
+
+        Returns:
+            The figure, or ``None`` beside a ``None`` row.
+        """
+        return None if self.landing is None else self.landing.bank_cash
 
     @property
     def needs_consent(self) -> bool:
@@ -135,10 +217,7 @@ class HandTotals:
     @classmethod
     def untouched(cls) -> "HandTotals":
         """Return the panel for a form with nothing ticked on one side."""
-        return cls(
-            bank=Decimal("0.00"), app=Decimal("0.00"),
-            difference=Decimal("0.00"), remedy=NOTHING_TICKED,
-        )
+        return cls(sides=_NO_SIDES, remedy=NOTHING_TICKED)
 
     @classmethod
     def refused(cls, sentence: str, sides: "MatchSides | None" = None):
@@ -158,11 +237,8 @@ class HandTotals:
         Returns:
             The :class:`HandTotals`.
         """
-        zero = Decimal("0.00")
         return cls(
-            bank=zero if sides is None else sides.bank,
-            app=zero if sides is None else sides.app,
-            difference=zero if sides is None else sides.difference,
+            sides=_NO_SIDES if sides is None else sides,
             remedy=REFUSED,
             refusal=sentence,
         )
@@ -179,6 +255,16 @@ def preview_hand_build(
             Apply now.  Its ``accepted_difference`` is IGNORED: this function
             computes the figure the owner is about to consent to, so reading
             one back would be the screen agreeing with itself.
+
+            **Its ``attributed_to`` is READ, and the asymmetry is the point.**
+            The difference is arithmetic this function performs, so agreeing
+            with a submitted copy of it would be agreeing with itself; WHICH
+            member carries it is a decision the owner made, which this
+            function has no way to derive and must be told.  It reaches
+            :func:`~._variance.reject_unrecordable` and
+            :class:`~._variance.DifferenceLanding` exactly as it will at the
+            press, so the remedy on screen and the remedy the door performs
+            are one derivation.
         scope: The pass's derived offer set.
 
     Returns:
@@ -205,10 +291,13 @@ def preview_hand_build(
         # to yet.  A first version returned the empty panel here and reported
         # `$0.00` for a `$2,573.43` line the owner had just ticked -- caught by
         # driving the real screen in a browser.
-        return HandTotals(
-            bank=sides.bank, app=sides.app, difference=sides.difference,
-            remedy=NOTHING_TICKED,
-        )
+        return HandTotals(sides=sides, remedy=NOTHING_TICKED)
+    # **DERIVED BEFORE THE REFUSALS, exactly as :func:`~._accept.record_match`
+    # derives it** (plan step ``bank_import:X-gj-3a``): one of them is about
+    # the landing itself, and the panel and the door must reach the same
+    # sentence for the same body or this function is a second opinion rather
+    # than the act asked what it would do.
+    landing = DifferenceLanding.of(sides, rows, submission.attributed_subject)
     try:
         # **Asked with the difference as the reviewed figure**, which is the
         # question the panel is for: *if you consented to this, what would
@@ -226,7 +315,7 @@ def preview_hand_build(
         # would now make the preview refuse every agreeing match.  It would
         # not; the claim was written against a version of the gate that did
         # require a figure at zero, and was not revisited when that changed.)
-        reject_unrecordable(rows, sides, sides.difference)
+        reject_unrecordable(rows, sides, sides.difference, landing)
     except ValidationError as exc:
         return HandTotals.refused(str(exc), sides)
 
@@ -239,19 +328,24 @@ def preview_hand_build(
     # is the tick box that says what would be written.
     if not sides.difference:
         return HandTotals(
-            bank=sides.bank, app=sides.app, difference=sides.difference,
-            remedy=AGREES, consent=spell_figure(sides.difference),
+            sides=sides, remedy=AGREES,
+            consent=spell_figure(sides.difference),
         )
+    # ONE rule for which remedy applies, read off the value that owns it: a
+    # named member means the bank's figure is written to that row, and none
+    # means nothing says which member the difference belongs to.
     return HandTotals(
-        bank=sides.bank,
-        app=sides.app,
-        difference=sides.difference,
-        # ONE rule for which remedy applies, read off the function that owns
-        # it: a figure means the difference names a single row, ``None`` means
-        # nothing says which member it belongs to.
+        sides=sides,
         remedy=(
-            CORRECTS_THE_ROW if bank_cash_for(sides, rows) is not None
-            else RECORDS_A_DIFFERENCE
+            RECORDS_A_DIFFERENCE if landing.mints_a_row else CORRECTS_THE_ROW
         ),
         consent=spell_figure(sides.difference),
+        landing=landing,
+        # **Offered only where there is a choice to make, asked of the value
+        # that owns the question.**  One row is answered by ruling **R-GD**'s
+        # group clause (ii), so the pane renders no control and the owner is
+        # shown what will happen instead; several is the case this step exists
+        # for.  A first version spelled ``len(rows) > 1`` here and the door
+        # spelled it again, which is one predicate in two modules.
+        choices=tuple(rows) if DifferenceLanding.offers_a_choice(rows) else (),
     )

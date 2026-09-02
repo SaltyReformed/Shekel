@@ -160,6 +160,56 @@
     above to reach every unexplained row on the account.
   </p>
   {% endif %}
+
+  {% if totals and totals.choices %}
+  {# WHERE THE DIFFERENCE GOES, when this match names more than one row.
+     Plan step bank_import:X-gj-3a, rulings R-GD(a) and R-FN.
+
+     THE SERVICE DECIDES WHETHER THIS RENDERS, not a Jinja count: `choices` is
+     empty for a match naming ONE row -- where R-GD(a)'s determinacy already
+     answers the question and there is nothing to pick -- and for a match
+     whose two sides agree, where nothing would be written wherever it landed.
+
+     NO MEMBER IS PRE-SELECTED (R-IU, developer 2026-09-01), on R-HX's reading of
+     what JUSTIFIED means rather than on R-FZ(b): R-HS says R-FZ(b) banned the
+     arbitrary default and never meant a suggestion the app can justify, and
+     R-HX is the one that bounds it -- being the only candidate is not being
+     justified. The app does have a candidate (the member whose figure is
+     computed rather than stored); the justification is what X-gj-3b's standing
+     rule ships. The first option is R-FN's ordinary row, which is what every
+     group did before this step.
+
+     IT IS INSIDE .rec-match-picks, which is what re-prices: changing where
+     the money lands changes the sentence the consent box carries, and the
+     swap that follows RESETS that box -- which is what changing this means.
+     The values are the very `rows-<line>` tokens above, so the pointer and
+     the row it points at are one string and the door compares them whole.
+
+     THE OPTIONS ARE THE TICKED ROWS in the order `resolve_rows` returns them,
+     which is NOT the order the tick list above renders (that list is a
+     proposal's rows, then the period's candidates or the search's). An
+     earlier version of this comment claimed the two read down the panel the
+     same way; they are different producers with different orders and nothing
+     holds them together. #}
+  <div class="rec-lands">
+    <label class="form-label small text-body-secondary mb-1"
+           for="lands-{{ line.line_id }}">
+      Where the difference goes
+    </label>
+    <select class="form-select form-select-sm"
+            id="lands-{{ line.line_id }}"
+            name="difference_on-{{ line.line_id }}">
+      <option value="">A new row with no category, to categorise later</option>
+      {% for row in totals.choices %}
+      <option value="{{ row | reviewed_token }}"
+              {% if totals.corrects and totals.corrects.kind == row.kind
+                    and totals.corrects.row_id == row.row_id %}selected{% endif %}>
+        {{ row.label }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
   </div>
 
   {% if refusal %}
@@ -212,8 +262,16 @@
       Record the {{ money(totals.difference) }} difference as a row with no
       category that you can categorise later.
       {% elif totals.remedy == 'corrects' %}
-      Write your bank's {{ money(totals.bank) }} to the row you ticked, in
-      place of the {{ money(totals.app) }} your records hold.
+      {# THE ROW'S OWN TWO FIGURES, not the match's two sums, since plan step
+         bank_import:X-gj-3a. For a match naming ONE row they are the same
+         two numbers -- the bank total IS that row's new figure and the app
+         total IS its old one -- so this sentence reads exactly as it did
+         before on every match that already worked. For a GROUP they are not,
+         and quoting the sums would have named a $2,573.43 deposit as the
+         figure written to a $2,473.38 salary row. #}
+      Write {{ money(totals.corrects_to) }} to
+      <strong>{{ totals.corrects.label }}</strong>, in place of the
+      {{ money(totals.corrects.cash_amount) }} your records hold.
       {% endif %}
     </label>
   </div>

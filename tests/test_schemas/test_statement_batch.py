@@ -124,6 +124,11 @@ class TestOnlyWhatWasTickedIsAnAct:
                 # tiers propose only where the two sides agree exactly (plan
                 # step bank_import:X-f6d-4).
                 "residual": None,
+                # ...and names no member for one either.  The batch form has
+                # no attribution control: only the Reconcile card's MATCH pane
+                # renders one, and only for a group (plan step
+                # bank_import:X-gj-3a).
+                "difference_on": None,
             },
         ]
 
@@ -192,7 +197,10 @@ class TestOnlyWhatWasTickedIsAnAct:
         loaded = _load(_form([("apply", "not-an-index")]))
 
         assert loaded["matches"] == [
-            {"line_ids": [], "rows": [], "residual": None},
+            {
+                "line_ids": [], "rows": [],
+                "residual": None, "difference_on": None,
+            },
         ]
 
     @pytest.mark.parametrize("token, why", [
@@ -223,7 +231,10 @@ class TestOnlyWhatWasTickedIsAnAct:
         ]))
 
         assert loaded["matches"] == [
-            {"line_ids": [5], "rows": [], "residual": None},
+            {
+                "line_ids": [5], "rows": [],
+                "residual": None, "difference_on": None,
+            },
         ], why
 
     def test_a_destination_KEY_that_isdigit_accepts_does_not_raise(self):

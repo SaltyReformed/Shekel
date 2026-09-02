@@ -888,6 +888,7 @@ def a_basis(seed_user):
 
 def a_submission(
     scope, *, lines=(), transactions=(), entries=(), residual=None,
+    attributed=None,
 ):
     """Return the submission a screen rendered from *scope* would post back.
 
@@ -921,6 +922,17 @@ def a_submission(
             construction and leave the reconciliation ungraded -- the same
             reason the reviewed row state is read off the scope rather than
             invented.
+        attributed: Which member carries that difference, as a
+            ``(kind, orm_row)`` pair, or ``None`` for the ordinary case where
+            the owner named none (plan step ``bank_import:X-gj-3a``).
+
+            **Resolved out of the rows this submission already carries**,
+            which is what the pane does: the select's options ARE the ticked
+            rows, so the pointer and the row it points at are one value.  A
+            pair naming a row this submission does not carry takes the same
+            not-offerable fallback the loop above takes -- deliberately, since
+            the cases asserting the door refuses such a pointer are the ones
+            that need to build it.
 
     Returns:
         The :class:`~app.services.statement_match.MatchSubmission`.
@@ -950,6 +962,32 @@ def a_submission(
         accepted_difference=(
             None if residual is None else Decimal(str(residual))
         ),
+        attributed_to=_attribution(rows, attributed),
+    )
+
+
+def _attribution(rows, attributed):
+    """Return the submitted row an attribution names, or ``None``.
+
+    Args:
+        rows: The reviewed rows this submission carries.
+        attributed: A ``(kind, orm_row)`` pair, or ``None``.
+
+    Returns:
+        The matching :class:`~app.services.statement_match.ReviewedRow` from
+        *rows*, so the pointer is one of the submission's own values; or one
+        built from the ORM row where the submission does not carry it, which
+        is the shape a crafted body has.
+    """
+    if attributed is None:
+        return None
+    kind, orm_row = attributed
+    for row in rows:
+        if row.kind is kind and row.row_id == orm_row.id:
+            return row
+    return ReviewedRow(
+        kind=kind, row_id=orm_row.id, cash_amount=Decimal("0.00"),
+        version_id=orm_row.version_id,
     )
 
 

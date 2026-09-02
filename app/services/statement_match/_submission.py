@@ -460,11 +460,50 @@ class MatchSubmission:
             the figure the door writes is its own
             (:attr:`~._variance.MatchSides.difference`), derived inside the
             same transaction from the rows the ids name.
+        attributed_to: The member the owner said the difference BELONGS to, as
+            the screen showed that row, or ``None`` where they named none
+            (plan step ``bank_import:X-gj-3a``).
+
+            **It is a POINTER into** :attr:`rows` **rather than a second copy
+            of a row**, and that is why it carries the whole reviewed value
+            instead of a bare ``(kind, row_id)``: a subject key would state
+            half of a row this submission already states whole, and the two
+            halves could then disagree about the figure the attribution was
+            chosen against.  Held to be one of :attr:`rows` by
+            :func:`~._resolve.resolve_rows`, so the pointer is exact --
+            equality over a frozen value, which compares the figure and the
+            revision too, so an option rendered against a stale row is refused
+            by the same guard that refuses the row.
+
+            **``None`` is what every surface but the Reconcile card's MATCH
+            pane sends, and it means what it always meant**: a match naming
+            several rows and no member has nothing to say which one the
+            difference belongs to, so it becomes **R-FN**'s ordinary accepted
+            row.  A match naming ONE row does not need it -- ruling
+            **R-GD(a)**'s determinacy answers it -- which is why the pane
+            renders the control only where there are several
+            (:class:`~._variance.DifferenceLanding`).
     """
 
     line_ids: "frozenset[int]"
     rows: "frozenset[ReviewedRow]"
     accepted_difference: "Decimal | None" = None
+    attributed_to: "ReviewedRow | None" = None
+
+    @property
+    def attributed_subject(self) -> "tuple[RowKind, int] | None":
+        """Return which row the difference is attributed to, or ``None``.
+
+        The ``(kind, row_id)`` key the offer set, the claims and
+        :attr:`subjects` all say WHICH ROW with, so the door compares one
+        spelling of a row identity rather than two.
+
+        Returns:
+            :attr:`ReviewedRow.subject` of :attr:`attributed_to`, or ``None``.
+        """
+        if self.attributed_to is None:
+            return None
+        return self.attributed_to.subject
 
     @property
     def subjects(self) -> "dict[tuple[RowKind, int], ReviewedRow]":
