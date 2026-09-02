@@ -699,6 +699,46 @@ moves -- nothing computes from the number -- so it is a migration and a form cha
 money step. Sequenced behind **R14**, which re-opens the same table for what a deduction is PRICED
 from.
 
+- [ ] **R18 -- a paycheck's EARNINGS side gets LINES, as its deductions side already has.**
+
+`paycheck_calculator.Earnings` is four scalars -- `annual_salary`, `gross_biweekly`,
+`taxable_income`, `net_pay` -- and `gross_biweekly` is
+`gross_per_paycheck(annual_salary, periods_per_year)`, a pure function of the salary and the
+cadence. `net_pay` then only ever SUBTRACTS. So there is no way to add a dollar to a paycheck that
+is not an annual-salary raise. `DeductionBreakdown` beside it holds LISTS of `DeductionLine`, each
+filtered by `_deduction_applies_at` on a `deductions_per_year` of 26 / 24 / 12 against
+`_is_third_paycheck`: **deductions have a cadence and earnings have none.** `PaycheckDeduction` also
+carries `ck_paycheck_deductions_positive_amount`, so a negative deduction -- the natural spelling of
+an employer-paid allowance -- is unrepresentable at the database, and
+`salary_profiles.additional_income` is W-4 Step 4(a) and feeds only withholding.
+
+**Measured on the developer's own data 2026-09-01, which is why this is a step and not a
+preference.** His Health Insurance Allowance is paid on 24 of 26 paychecks and his Phone Allowance
+on the first payday of each month -- *exactly* the two cadences `_deduction_applies_at` already
+implements, on the wrong side of the paycheck. Having nowhere to put them he modelled both as
+separate income templates, and it has cost twice: template 2 is a `period` / every-period rule with
+an end date, so a 24-of-26 benefit modelled as 26-of-26
+**would have generated a `$100.00` income row on 2026-07-30 the employer does not pay** -- the first
+three-payday month in the data, and it failed to fire only because the benefit ended 2026-06-30
+first -- and template 3's `month` / `period_starting_on_or_after` rule put rows in the wrong pay
+period **2 times out of 6**, both cancelled by hand.
+
+**What it would delete.** One deposit becomes one app row, so the exact tier explains the
+developer's payroll deposits with no group, no residue and no attribution control -- which is the
+entire population `bank_import:X-gj-3a` was built for and the whole of what `bank_import:X-gj-3b`'s
+group rule would be for. It does NOT delete `DifferenceLanding`: a genuine multi-row deposit (a
+paycheck plus a reimbursement, two jobs on one deposit) still needs it.
+**`X-gj-3a` is therefore a correct interim whose population would go to ZERO if this shipped**,
+which is the honest sequencing statement and is why this row exists rather than living in a commit
+message.
+
+**Its own ruling first**, and it shares R15's subject: whether an earnings line reuses
+`deductions_per_year`'s mode or the two are unified, whether an allowance is taxable, and what
+happens to the two live income templates and every row they have generated. Sequenced behind
+**R15**, which rules what that mode MEANS -- building earnings lines on a mode R15 may retire would
+be designing over a shape the next step deletes. **MOVES MONEY** (it changes `net_pay`), needs a
+migration, and needs its own review pass.
+
 - [ ] **R16 -- the DECOMPOSED parent of the ESTIMATED tier's summing.** Split into FOUR leaves
       2026-08-26 (**R-R36**) when a trace found the forward fold charging one month of interest per
       payment RECORD: while the accrual rode on the payment, no cadence could be honoured and no
