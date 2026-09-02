@@ -1114,11 +1114,17 @@ class TestThirdPaycheckDetection:
     def test_an_empty_calendar_holds_no_paydays_in_any_month(self, app):
         """An owner with no payday has no three-paycheck month.
 
-        A real answer rather than an error: a companion holds no schedule, and
-        production has one such user.
+        A real answer rather than an error.  *This said "a companion holds no
+        schedule, and production has one such user", which plan step
+        ``pay_calendar:C4-d`` made the wrong owner to name: a companion holds
+        no schedule ROW and therefore no calendar at all.  The owner this
+        builds is the one who HAS a rhythm and has recorded no payday under
+        it.*
         """
         with app.app_context():
-            calendar = PayCalendar.from_paydays([], None, user_id=1, history_opens_on=None)
+            calendar = PayCalendar.from_paydays(
+                [], 14, user_id=1, history_opens_on=None,
+            )
             assert self._three_paycheck_months(calendar, 2026) == set()
 
     def test_a_month_is_counted_in_its_own_year(self, app, seed_user, db):

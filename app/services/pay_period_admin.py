@@ -187,9 +187,10 @@ def extend_pay_periods(user_id, num_periods):
             "Generate your first pay-period schedule before extending it."
         )
 
-    # Not ``None`` here: a calendar's cadence is ``None`` only when it holds no
-    # payday at all (``derive_periods`` refuses the other pairing), which the
-    # refusal above has already excluded.
+    # An ``int``, since plan step pay_calendar:C4-d (ruling R-PC45): a calendar
+    # carries a cadence or it is not built.  This comment used to argue the
+    # value was not ``None`` HERE because the refusal above excluded the only
+    # calendar that could carry one, which was true and was not a property.
     cadence_days = calendar.cadence_days
     # The calendar's OWN answer to "where does the next paycheck land", not this
     # door's arithmetic on it.  The two are equal -- the first day past the

@@ -478,14 +478,17 @@ def _load_projection_context(
     )
     deductions = load_active_deductions_for_account(user_id, account.id)
     # The cadence is asked for only when there is a deduction to stamp it on
-    # (plan step R-F16).  ``PayCalendar.cadence`` REFUSES an owner who has
-    # never stated one, and this is a GET route -- so an unconditional read
-    # would 500 a page that rendered before the step.  Such an owner has no
-    # payday at all, hence no per-period contribution to model either way.
+    # (plan step R-F16).  **The second conjunct is DELETED at plan step
+    # pay_calendar:C4-d** (ruling R-PC45): it read ``and
+    # balance_ctx.calendar().cadence_days is not None``, because
+    # ``PayCalendar.cadence`` REFUSED an owner who had never stated one and
+    # this is a GET route.  Such an owner has no calendar at all now --
+    # ``pay_calendar.calendar_for`` refuses them -- so the conjunct guarded a
+    # state no ``balance_ctx.calendar()`` can return.  The ``if deductions``
+    # half stays: it is about having something to adapt, not about the cadence.
     adapted_deductions = (
         adapt_deductions(deductions, balance_ctx.calendar().cadence)
-        if deductions and balance_ctx.calendar().cadence_days is not None
-        else []
+        if deductions else []
     )
     acct_contributions = load_shadow_income_contributions_for_account(
         balance_ctx.amounts(),

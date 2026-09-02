@@ -28,7 +28,12 @@ from sqlalchemy.exc import IntegrityError
 from app.exceptions import ValidationError
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
-from app.services.pay_calendar import calendar_for, paydays_in_month_through
+from app.services.pay_calendar import (
+    PayCalendar,
+    PayCalendarError,
+    calendar_for,
+    paydays_in_month_through,
+)
 from app.services import (
     pay_period_admin,
     pay_period_write,
@@ -369,17 +374,60 @@ class TestResolveSchedule:
             assert facts.cadence_days == 9
             assert facts.history_opens_on is None
 
-    def test_no_row_and_no_periods_answers_a_pair_of_nones(
+    def test_no_row_answers_NO_FACTS_rather_than_a_pair_of_nones(
         self, app, bare_user,
     ):
-        """The companion's shape: nothing stored, and nothing to state."""
-        with app.app_context():
-            facts = pay_schedule_service.resolve_schedule(
-                bare_user["user"].id,
-            )
+        """The companion's shape: no row, so no facts -- ONE absence, not two.
 
-            assert facts.cadence_days is None
-            assert facts.history_opens_on is None
+        **This case inverted at plan step ``pay_calendar:C4-d``** (ruling
+        **R-PC45**) and is kept rather than deleted, because the inversion is
+        the step.  It asserted ``facts.cadence_days is None`` beside
+        ``facts.history_opens_on is None``: a ``ScheduleFacts`` in which BOTH
+        fields were optional, which made four pairs constructible where a row
+        can produce two.  The pair that could not exist was an absent cadence
+        beside a STATED opening -- ``cadence_days`` is ``NOT NULL``, so no row
+        says it -- and that ``int | None`` travelled into ``PayCalendar``,
+        ``derive_periods`` and three projection producers, each of which
+        policed the pairing in prose because the type would not.
+
+        The absence is this function's own return now.  There is no row, so
+        there are no facts, so there is no value -- one optional instead of two
+        independent ones.
+        """
+        with app.app_context():
+            assert pay_schedule_service.resolve_schedule(
+                bare_user["user"].id,
+            ) is None
+
+    def test_a_stated_history_beside_NO_cadence_is_UNCONSTRUCTIBLE(self):
+        """The pair no ``budget.pay_schedule`` row can produce, refused by the TYPE.
+
+        The defect plan step C4-d removes, graded at the value rather than at
+        one of its five consumers.  ``ScheduleFacts(None, date(...))`` says "I
+        do not know how often this owner is paid, and I do know their paychecks
+        reach back to 2020-06-01"; ``cadence_days`` is ``NOT NULL`` under
+        ``ck_pay_schedule_cadence_range``, so the database cannot say it.
+
+        **Asserted through the CALENDAR rather than on the annotation.**  A
+        frozen dataclass does not enforce its own type hints, so
+        ``ScheduleFacts(None, ...)`` still constructs at runtime and a test
+        reading ``__annotations__`` would grade a string.  What is actually
+        structural is that nothing downstream will take it: the calendar door
+        that consumes this value refuses, so the pair cannot become a calendar
+        however it was built.  That is the property the five prose
+        preconditions used to stand in for.
+        """
+        impossible = pay_schedule_service.ScheduleFacts(
+            cadence_days=None, history_opens_on=date(2020, 6, 1),
+        )
+
+        with pytest.raises(PayCalendarError, match="must be a plain int"):
+            PayCalendar.from_paydays(
+                paydays=[(1, date(2026, 1, 2))],
+                cadence_days=impossible.cadence_days,
+                user_id=1,
+                history_opens_on=impossible.history_opens_on,
+            )
 
     def test_the_facts_value_names_the_CALENDAR_columns(self, app, bare_user):
         """``ScheduleFacts.of`` is where "which columns" is stated.

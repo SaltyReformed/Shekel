@@ -35,7 +35,7 @@ from app.services import (
     pay_schedule_service,
 )
 from app.services.auth_service import hash_password
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import calendar_at_schedule
 from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
@@ -236,26 +236,60 @@ def _load_pay_periods_context(user_id):
     ``display_today`` rather than ``date.today``: the HISTORICAL badge says
     whether a paycheck is behind the OWNER, and the process clock is the
     container's (finding **balance:N-191**, ruled 2026-08-19).
+
+    **THIS SECTION IS THE REPAIR, so it may not REQUIRE what it repairs**
+    (plan step ``pay_calendar:C4-d``, ruling **R-PC45**).  It read
+    ``calendar_for(user_id)`` unconditionally, which was harmless while that
+    door answered an EMPTY calendar for an owner with no
+    ``budget.pay_schedule`` row.  That door refuses them now -- and
+    ``pay_periods.generate_form`` redirects HERE, and
+    ``errors/no_pay_calendar.html`` offers exactly that link -- so the
+    recovery page's own repair looped straight back to the recovery page.  An
+    adversarial review of this step drove it and measured the loop; the
+    template's promise that "it carries the REPAIR" was false for the one
+    owner it is written for.
+
+    So this is a SOFT-door caller by definition: it resolves the schedule ROW
+    and derives a calendar only when there is one to derive from.  Every door
+    that PUBLISHES a per-paycheck figure still refuses that owner, which is the
+    ruling; the door that CREATES their schedule cannot.
+
+    **It also collapses a redundant read.**  The row is fetched ONCE and both
+    answers come off it -- the calendar through
+    :func:`~app.services.pay_calendar.calendar_at_schedule`, and ``pp_schedule``
+    itself.  Before, ``calendar_for`` read the schedule and ``get_schedule``
+    read it again for the same render, which is the per-render duplicate ledger
+    rows **P68** and **P69** record.
+
+    Returns:
+        The section's context.  ``pp_periods`` is empty and ``pp_schedule`` is
+        ``None`` for an owner with no schedule row -- the state the generate
+        form exists to leave, and one the template already renders (it guards
+        every ``pp_schedule`` read).
     """
-    calendar = calendar_for(user_id)
-    locks = pay_period_locks.classify_schedule_locks(
-        calendar, as_of=display_today(),
-    )
+    schedule = pay_schedule_service.get_schedule(user_id)
     period_rows = []
-    for period in calendar.saved():
-        reason = locks[period.period_id]
-        badge_label, badge_class = _PP_LOCK_BADGES.get(
-            reason, _PP_MUTABLE_BADGE,
+    if schedule is not None:
+        calendar = calendar_at_schedule(
+            user_id, pay_schedule_service.ScheduleFacts.of(schedule),
         )
-        period_rows.append({
-            "period": period,
-            "locked": reason is not None,
-            "badge_label": badge_label,
-            "badge_class": badge_class,
-        })
+        locks = pay_period_locks.classify_schedule_locks(
+            calendar, as_of=display_today(),
+        )
+        for period in calendar.saved():
+            reason = locks[period.period_id]
+            badge_label, badge_class = _PP_LOCK_BADGES.get(
+                reason, _PP_MUTABLE_BADGE,
+            )
+            period_rows.append({
+                "period": period,
+                "locked": reason is not None,
+                "badge_label": badge_label,
+                "badge_class": badge_class,
+            })
     return {
         "pp_periods": period_rows,
-        "pp_schedule": pay_schedule_service.get_schedule(user_id),
+        "pp_schedule": schedule,
         "pp_can_reset": pay_period_admin.can_reset_pay_periods(user_id),
     }
 

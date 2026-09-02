@@ -9990,34 +9990,63 @@ class TestTheRangeSelectorIsDerivedFromTheOwnersCadence:
 
 
 class TestTheGridRefusesBeforeItReadsACadence:
-    """`/grid` answers the no-periods page rather than a 500 (plan step R-F17).
+    """`/grid` answers a repair page rather than a 500, for both no-rhythm owners.
 
     Both grid reads of the owner's cadence are UNGUARDED --
     ``_range_options(ctx.balance_ctx.calendar().cadence)`` in the render kwargs
-    and ``calendar.cadence.paychecks_within(...)`` in ``_build_plan_view`` --
-    and they are safe only because ``_resolve_visible_window`` has already
-    returned ``None`` for an owner with no covering paycheck, so ``index``
-    renders ``no_periods.html`` and never reaches them.
-    :attr:`~app.services.pay_calendar.PayCalendar.cadence` REFUSES a calendar
-    holding no paydays, so that ordering is what stands between this owner and
-    a 500.
+    and ``calendar.cadence.paychecks_within(...)`` in ``_build_plan_view``.
 
-    **Nothing pinned it.** The account page and the savings service each got an
-    explicit zero-payday case in this step and the grid did not, which an
-    adversarial test review measured: the existing ``test_grid_shows_no_periods_page``
-    uses bare ``seed_user``, and that fixture carries a bootstrap pay period --
-    so its calendar has a cadence and the refusal never fires.
+    **They used to be safe only by ORDERING**, and plan step
+    ``pay_calendar:C4-d`` (ruling **R-PC45**) removed the thing that ordering
+    was standing between.  ``PayCalendar.cadence`` REFUSED a calendar holding
+    no cadence, and these reads were reached only because
+    ``_resolve_visible_window`` had already returned ``None`` and ``index`` had
+    rendered ``no_periods.html``: a correctness property held up by the order
+    of two statements, which is what this class's own name records.  A calendar
+    cannot carry an absent cadence now, so those reads cannot raise whatever
+    order they run in.
+
+    **What the owner sees split in two, and each half is a case below.**  An
+    owner with a schedule row and no COVERING paycheck still gets
+    ``no_periods.html`` from ``index``'s early return -- unchanged, and it is
+    the state that page's copy is for.  An owner with no schedule ROW is
+    refused at ``calendar_for`` and gets the application-wide
+    ``errors/no_pay_calendar.html``, which carries the same repair link.  That
+    is one answer for one state instead of the grid improvising its own, and it
+    leaves ``no_periods.html`` naming a single state -- its copy currently
+    reads "No pay periods have been generated yet, OR there is no period
+    covering today's date", which is ``balance:X-x4``'s subject.
+
+    **Nothing pinned any of it.** The account page and the savings service each
+    got an explicit zero-payday case in plan step R-F17 and the grid did not,
+    which an adversarial test review measured: the existing
+    ``test_grid_shows_no_periods_page`` uses bare ``seed_user``, and that
+    fixture carries a bootstrap pay period.
     """
 
-    def test_an_owner_with_no_paydays_gets_the_no_periods_page(
+    def test_an_owner_with_no_SCHEDULE_ROW_gets_the_repair_page(
         self, app, auth_client, seed_user, db,
     ):
-        """Zero pay periods, zero schedule rows: 200 and the empty-state page.
+        """Zero pay periods, zero schedule rows: 200 and the repair page.
 
-        The cadence is genuinely unanswerable for this owner -- shown with a
-        real ``pytest.raises`` so the case cannot pass vacuously if
-        ``PayCalendar.cadence`` ever stops refusing -- and `/grid` must still
-        answer.
+        **This case changed its ANSWER at plan step ``pay_calendar:C4-d``**
+        (ruling **R-PC45**) and is kept rather than deleted, because the change
+        is the decision.  It asserted ``no_periods.html`` -- the grid's own
+        empty state -- which the route reached because ``calendar_for``
+        answered this owner an empty calendar carrying no cadence.  It now
+        asserts ``errors/no_pay_calendar.html``, the application-wide answer,
+        because ``calendar_for`` refuses them.
+
+        **What is NOT lost is what the assertion checks for.**  Both pages are
+        a 200 rather than a 500, both carry ``/pay-periods/generate``, and the
+        htmx-fragment behaviour the handler defines is graded in
+        ``test_pay_calendar_error_handler.py``.  What IS gained is that the
+        grid stops being one of three different answers to one state, and that
+        this class's ordering property -- see its docstring -- has no subject.
+
+        The ``pytest.raises`` is kept and moved onto ``calendar_for`` itself,
+        so this case still cannot pass vacuously: it fails if the loader ever
+        stops refusing, rather than reporting a repair page it did not earn.
         """
         from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
         from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
@@ -10043,12 +10072,13 @@ class TestTheGridRefusesBeforeItReadsACadence:
             db.session.commit()
 
             with pytest.raises(PayCalendarError):
-                _ = calendar_for(user_id).cadence
+                _ = calendar_for(user_id)
 
             response = auth_client.get("/grid")
 
             assert response.status_code == 200
-            assert b"no_periods" in response.data or b"Pay Period" in response.data
+            assert b"Pay Calendar Unavailable" in response.data
+            assert b"/pay-periods/generate" in response.data
 
 
 class TestThePlanWindowIsDerivedFromTheOwnersCadence:
