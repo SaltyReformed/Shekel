@@ -194,6 +194,18 @@ rather than appearing as skips, so a green `./scripts/test.sh` run is not a clai
 runs bare `pytest` and executes all 28.** `.claude/rules/testing.md` and `docs/testing-standards.md`
 carry the full guidance.
 
+**Concurrent worktrees must take the suite slot:** `./scripts/suite_slot.sh acquire <name>` before a
+gating run, `release <name>` after. The template is isolated per worktree (`TEST_TEMPLATE_DATABASE`)
+and the worker databases by `TEST_DB_PREFIX`, but **the postmaster is SHARED** -- `scripts/test.sh`
+restarts that container as its FIRST act, killing any in-flight run in every other worktree whatever
+prefix either side set. The hazard is ONE-DIRECTIONAL: a gating run destroys a targeted one, never
+the reverse, so "targeted runs are not gated" reads as symmetric and is not. Contention is measured
+at 859 s against 304 s alone, and both results are void. `acquire` refuses with exit 2, releasing
+what it just took, when a pytest is ALREADY live: the lock guards the START of a run and there is no
+retroactive move, so a run already in flight can only be coordinated, never protected. `release`
+warns but still frees the lock on a name mismatch, so copy your own name exactly. `--collect-only`
+is exempt in both directions.
+
 ## Deployment
 
 Docker (Gunicorn + Nginx + Cloudflare Tunnel) on bare-metal Arch Linux: no Ubuntu packages, no
