@@ -389,8 +389,11 @@ def _reject_unaccepted_difference(
     -- a real capability, removed to gate a write that does not happen.
 
     **WHAT THIS CONSENT BINDS IS THE FIGURE AND NOT THE REMEDY, and the
-    developer ruled that bound KNOWN AND ACCEPTED on 2026-09-01** (plan step
-    ``bank_import:X-gj-3a``; found by adversarial code review).  Since that
+    developer ruled that bound KNOWN AND ACCEPTED on 2026-09-01** (ruling
+    **R-IV**, plan step ``bank_import:X-gj-3a``; found by adversarial code
+    review).  **The ruling is a ROW and not only this paragraph**: a docstring
+    is where the next author of THIS gate meets a decision, and not where a
+    reviewer auditing consent handling looks.  Since that
     step a submission carries two things -- the difference agreed to, and the
     member it lands on -- and this gate compares only the first against
     :attr:`MatchSides.difference`.  So a body CAN pair the consent rendered
