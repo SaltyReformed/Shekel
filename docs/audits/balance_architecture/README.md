@@ -417,6 +417,35 @@ are NOT a partition over those two columns (ruling R-FI). Stored-vs-derived drif
 `../../plans/conventions.md` rule 8 says is not resolved, and which the read-time repair is what
 hides.
 
+**AND THE DISCRIMINATOR ITSELF IS AN OPEN QUESTION, opened at `X-au-k` on 2026-09-02 and recorded
+here because it is an argument about this phase rather than about one leaf.** `amount_source_id` is
+a STORED DISCRIMINATOR over an EXCLUSIVE ARC whose legs the row already carries -- `template_id`,
+`transfer_id`, `credit_payback_for_id`, which `ck_transactions_one_pricing_link` already makes
+mutually exclusive. That is a shape this codebase names and builds everywhere else
+(`statement_match.py`'s three typed FKs, `recurrence_rule.py`'s closing bound,
+`template_amount_version.py`'s two owners, and `X-ai-s` which converts `journal_entries` to it), and
+in every one of those the discriminator is DERIVED from which leg is set rather than stored beside
+it. Storing it costs a ref table, a reverse map rebuilt per dispatch
+(`_amount_source._declared_relation`), and a state where the two can disagree -- finding **N-440**,
+which `budget.transfers` forbids with `ck_transfers_adhoc_owns_amount` and `budget.transactions`
+does not.
+
+**What makes it non-redundant TODAY is that the arc is INCOMPLETE, and that is the honest statement
+of the question.** Two of the three links have no `AmountSourceEnum` member between them:
+`credit_payback_for_id` has none, and **N-264**'s finance charge would carry no link at all. So
+**N-264 has two readings and only one is written down.** As recorded it is a reason to keep the
+column forever -- *a derived row that no pricing link can reach*. Read the other way it says the arc
+is missing a leg, and the remedy is to give `CC4c` its own link (which fits
+`ck_transactions_one_pricing_link` unchanged) rather than to keep a derivable column on 997 live
+rows. **Nobody has ruled between those two readings**, and the card arc cannot be assumed into
+either.
+
+*One ground for keeping the column is REFUTED and must not be re-argued: that `template_id` is
+`ondelete="SET NULL"`, so a "derived rows have a link" CHECK would refuse a definition delete.
+`budget.transfers` already ships exactly that constraint, so this application already runs that
+behaviour on half its tables -- and the alternative it was preferred over is worse, because a
+persisted row with no link is unpriceable in silence where a refused DELETE is loud.*
+
 * [ ] **X-au** `feat(cash): a row's amount is either its own or derived` -- the DECOMPOSED parent
   (**R-FI**), carrying **N-40**, **N-224**, **N-228**, **N-238**. It ticks with the last of its
   leaves. **It SUPERSEDES X-ar**, whose two stated premises tracing also refuted: its deletion set was
