@@ -633,10 +633,23 @@ _FENCED_MODULE_RULINGS = {
             "walk_loan_ledger",
             # The real principal/interest/escrow split of a payment -- a
             # decomposition of CASH, not an account balance.  The whole-loan list,
-            # its per-payment step, and the two halves R16-a made of the arithmetic
-            # core (allocation alone; the month-charging composition over it) carry
-            # one ruling: cash in, four parts out, no balance-at-T.
-            "apply_payment_cash",
+            # its per-payment step, and the month-charging composition over the
+            # allocation carry one ruling: cash in, four parts out, no
+            # balance-at-T.
+            #
+            # ``apply_payment_cash`` LEFT this entry at plan step X-au-g-2c-3a and
+            # its ruling is DROPPED rather than moved, because there is nowhere to
+            # move it TO and nothing left for it to say.  The allocation now lives
+            # in ``app.utils.money``, which is not a fenced module and cannot
+            # become one: every fenced module is under ``app.services``, and that
+            # leaf's defining property -- the property the step exists to create,
+            # and which ``test_loan_allocation_is_one_rule`` pins -- is that it
+            # reaches NOTHING in ``app.services``.  A module structurally incapable
+            # of importing the seam is structurally incapable of producing a
+            # balance-at-T, so the classification is unnecessary rather than
+            # inconvenient.  This checker asks what a module DEFINES, not what it
+            # re-exports, so ``loan_ledger`` keeping the name in its public surface
+            # does not keep the ruling alive.  Same shape as `095ea62f`.
             "compute_loan_payment_splits",
             "split_one_payment",
             "split_payment_cash",
