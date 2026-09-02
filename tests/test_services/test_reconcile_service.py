@@ -25,7 +25,6 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
@@ -39,7 +38,6 @@ from app.services import (
 )
 from app.services.cash_ledger import amount_basis
 from app.services.pay_calendar import (
-    DerivedPeriod,
     PayCalendar,
     calendar_for,
 )
@@ -50,8 +48,9 @@ from app.utils.log_events import (
 )
 from tests._test_helpers import (
     an_entered_day,
-    open_books_before_the_first_assertion,
     count_amount_bases,
+    last_covered_day,
+    open_books_before_the_first_assertion,
     settle_day_columns,
     settlement_basis_id,
     settlement_if_settling,
@@ -896,7 +895,7 @@ class TestTheSetIsGroupedByItsParent:
                 seed_periods[0].start_date, seed_periods[1].start_date,
             ]
             assert [g.period.end_date for g in result.groups] == [
-                seed_periods[0].end_date, seed_periods[1].end_date,
+                last_covered_day(seed_periods[0]), last_covered_day(seed_periods[1]),
             ]
             assert [g.period.period_id for g in result.groups] == [
                 seed_periods[0].id, seed_periods[1].id,
@@ -1499,227 +1498,24 @@ class TestTheTransactionArm:
             assert self._settle(seed_user, []) == 0
 
 
-class TestThePanelIsDatedByTheDERIVEDSpan:
-    """Pay-calendar plan step **C4-a-2**: the panel comes off both columns.
-
-    ``_rows.attributed_on`` read ``txn.pay_period`` -- the STORED
-    ``budget.pay_periods.end_date`` -- and ``_assemble._block_headings``
-    SELECTed the same column, while the derivation
-    (``lead(start_date) - 1``) is what every other reader of this paycheck
-    already used.  Both now resolve the span through
-    ``PayCalendar.require_period``.
-
-    **These are FIRING controls, and they exist because nothing else in this
-    module could be one** (ledger row **P53**): every fixture builds its periods
-    through ``pay_period_write.record_paydays``, so the stored end and the
-    derived end AGREE by construction and a test written on one of them passes
-    against the other.  Each case below plants the disagreement directly --
-    the technique ``test_cash_fold`` uses for the sibling leaf C4-a-1 -- and
-    then asserts the answer the DERIVATION gives, which is the opposite of the
-    answer the column gives.
-
-    The plant is legal in the schema: ``ck_pay_periods_date_order`` requires
-    ``start_date < end_date`` and 01-08 satisfies it, so this is a state the
-    stored column can really hold.  Period 0 runs 01-02 to 01-15 derived (the
-    next payday is 01-16) and is pushed to a stored end of 01-08; the statement
-    day is 01-10, between the two.
-    """
-
-    #: The stored end planted on period 0, EARLIER than the derived 01-15 and
-    #: earlier than the statement day, so a clamp against it pulls a row
-    #: BACKWARDS into the offer set.
-    PLANTED_STORED_END = date(2026, 1, 8)
-
-    @staticmethod
-    def _plant(db_session, period):
-        """Push *period*'s STORED end back to :attr:`PLANTED_STORED_END`.
-
-        Written through the query rather than the ORM row so nothing in the
-        writer's own reconciliation can repair it -- the point is a column that
-        disagrees with the fact it derives from.
-
-        Args:
-            db_session: The test ``db.session``.
-            period: The ``PayPeriod`` row to corrupt.
-        """
-        db_session.query(PayPeriod).filter_by(id=period.id).update(
-            {"end_date": TestThePanelIsDatedByTheDERIVEDSpan.PLANTED_STORED_END},
-        )
-
-    @staticmethod
-    def _resolved(seed_user, observed_on=_OBSERVED_ON):
-        """Return the panel's whole offer set for the seed user's account."""
-        return reconcile_service.outstanding_set(
-            _reconciled(seed_user, observed_on=observed_on),
-        )
-
-    def test_the_plant_really_would_move_the_landing_day(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The control's own control: the two spans give different answers.
-
-        Without this the three cases below would pass vacuously on any fixture
-        whose two ends coincide -- which is every other fixture in this module.
-        It asks the SHARED clamp of each span in turn, so the day the stored
-        column produces is shown rather than argued.
-        """
-        with app.app_context():
-            self._plant(db.session, seed_periods[0])
-            db.session.commit()
-
-            derived = calendar_for(seed_user["user"].id).period_by_id(
-                seed_periods[0].id,
-            )
-            stored = DerivedPeriod(
-                period_id=seed_periods[0].id,
-                period_index=0,
-                start_date=seed_periods[0].start_date,
-                end_date=self.PLANTED_STORED_END,
-                end_is_projected=False,
-            )
-
-            assert derived.end_date == date(2026, 1, 15)
-            assert stored.attribution_day(date(2026, 1, 12)) == date(2026, 1, 8)
-            assert derived.attribution_day(date(2026, 1, 12)) == date(2026, 1, 12)
-
-    def test_a_row_the_statement_CANNOT_have_shown_is_not_offered(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The MONEY case, and it is the one that moves money.
-
-        A bill due 01-12 is not yet overdue against a 01-10 statement.  Clamped
-        against the STORED end it lands on 01-08 -- before the statement -- and
-        the panel offers it; ticking it would settle ``$180.00`` on a day the
-        bank never showed it, taking it out of the projection two days early
-        and stamping it against an assertion that did not contain it.  Clamped
-        against the DERIVED end it keeps 01-12 and stays out of the set.
-
-        **Measured at this shape on a clone of production 2026-08-28, with the
-        divergence PLANTED**: pushing one stored end back made the panel offer
-        **3 rows / `$588.33`** where the derived span offers **1 / `$40.43`** --
-        `$547.90` of money the statement could not have shown.  The plant is the
-        point: both databases hold **0 divergent periods of 62** (plan finding
-        **P70**), so the figure is what the defect COSTS where the state occurs,
-        never a live exposure today.
-
-        A second row, DUE BEFORE the statement, is offered in the same read.
-        Without it the assertion below would pass over an empty set for any
-        unrelated reason -- the vacuous-pass shape a negative membership test
-        always has.
-        """
-        with app.app_context():
-            future = self._bill_for(
-                seed_user, seed_periods[0], "Rent", date(2026, 1, 12),
-            )
-            due = self._bill_for(
-                seed_user, seed_periods[0], "Water", date(2026, 1, 9),
-            )
-            self._plant(db.session, seed_periods[0])
-            db.session.commit()
-
-            offered = {
-                group.settle.transaction_id
-                for group in self._resolved(seed_user).groups
-                if group.settle is not None
-            }
-            assert due.id in offered
-            assert future.id not in offered
-
-    def test_an_offered_rows_CAPTION_is_its_derived_landing_day(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The caption case: offered either way, dated differently.
-
-        A bill due 01-09 is overdue against the 01-10 statement under both
-        spans, so membership does not move and only the day the panel PRINTS
-        does -- 01-08 off the stored end against 01-09 off the derived one.
-        A figure and its caption never disagree is the rule; here the caption
-        and the reason the row was offered are the same value, so this grades
-        both.
-        """
-        with app.app_context():
-            due = self._bill_for(
-                seed_user, seed_periods[0], "Water", date(2026, 1, 9),
-            )
-            self._plant(db.session, seed_periods[0])
-            db.session.commit()
-
-            offers = {
-                group.settle.transaction_id: group.settle
-                for group in self._resolved(seed_user).groups
-                if group.settle is not None
-            }
-            assert offers[due.id].attributed_on == date(2026, 1, 9)
-
-    def test_the_block_HEADING_names_the_derived_span(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The second site: ``_block_headings`` SELECTed the doomed column.
-
-        The heading exists to tell two blocks of one NAME apart by which
-        paycheck each is budgeted in, so a heading printing a span the rest of
-        the app does not agree with is the denormalization this arc removes,
-        rendered.
-        """
-        with app.app_context():
-            self._bill_for(
-                seed_user, seed_periods[0], "Water", date(2026, 1, 9),
-            )
-            self._plant(db.session, seed_periods[0])
-            db.session.commit()
-
-            groups = self._resolved(seed_user).groups
-            assert [group.period.end_date for group in groups] == [
-                date(2026, 1, 15),
-            ]
-            assert [group.period.period_id for group in groups] == [
-                seed_periods[0].id,
-            ]
-
-    @staticmethod
-    def _bill_for(seed_user, period, name, due_date):
-        """Create one projected non-envelope row in *period*.
-
-        The twin of ``TestTheTransactionArm._bill``, carried here rather than
-        shared: these cases need only the row, and reaching across class
-        boundaries for a fixture is what couples two suites to one shape.
-
-        Args:
-            seed_user: The seeded owner bundle.
-            period: The ``PayPeriod`` to file the row in.
-            name: The row's name.
-            due_date: Its installment date.
-
-        Returns:
-            The flushed ``Transaction``.
-        """
-        type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=type_id,
-            name=name,
-            default_amount=Decimal("180.00"),
-            is_envelope=False,
-        )
-        db.session.add(template)
-        db.session.flush()
-        txn = Transaction(
-            template_id=template.id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            name=name,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=type_id,
-            estimated_amount=Decimal("180.00"),
-            due_date=due_date,
-        )
-        db.session.add(txn)
-        db.session.flush()
-        return txn
+# **``TestThePanelIsDatedByTheDERIVEDSpan`` was deleted at plan step
+# ``pay_calendar:C4-c``, and it is worth saying what it did rather than
+# leaving a gap.**  It was plan step C4-a-2's grade: four cases planted a
+# ``budget.pay_periods.end_date`` of 2026-01-08 on a period the paydays
+# end on 01-15, with a statement day of 01-10 between the two, and
+# asserted that the panel's caption, its block heading and its offer set
+# all answered from the DERIVATION -- one of them a control showing the
+# stored column really would have moved the landing day.  They were the
+# only FIRING controls this module could have (ledger row **P53**):
+# every fixture builds periods through ``pay_period_write``, so a stored
+# end and a derived end agree by construction and a case written on one
+# passes against the other.
+#
+# The column is dropped.  The plant is not expressible, the two answers
+# are one answer, and P53 closes with the class rather than being left
+# open under a test that can no longer be written.  The panel's dating is
+# still graded -- ``TestTheScopeIsTheCALENDARsNotTheTables`` below drives
+# the same three surfaces on ordinary schedules.
 
 
 class TestTheScopeIsTheCALENDARsNotTheTables:

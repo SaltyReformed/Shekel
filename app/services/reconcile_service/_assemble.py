@@ -91,7 +91,7 @@ def _block_headings(
 
     **The SPAN is DERIVED, and that is pay-calendar plan step C4-a-2's half of
     this function.**  It SELECTed ``pay_periods.start_date`` and ``end_date``
-    -- the second of those is a stored copy of a derivable fact and C4-c drops
+    -- the second of those is a stored copy of a derivable fact and C4-c dropped
     it, which was the one QUERY-position read of it plan finding **P70** had
     left in ``app/``.  The query now asks for the ``pay_period_id`` the row
     already carries and the owner's calendar answers the span, through

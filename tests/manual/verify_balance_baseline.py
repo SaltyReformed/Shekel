@@ -107,7 +107,10 @@ from app.services.account_projection import (
     classify_account,
 )
 
-from tests._test_helpers import current_pay_period, all_periods
+from tests._test_helpers import (
+    current_pay_period,
+    derived_span,
+)
 
 
 # Fixed valuation dates spanning the horizon, read by BOTH the cash-flow scalar
@@ -229,8 +232,10 @@ def _modelled_figures(account, ctx):
         AccountProjectionKind.APPRECIATING,
     ):
         return {}
+    # The DERIVED period, because that is the parameter's type since plan step
+    # ``pay_calendar:C4-c``: the ORM row carries no span any more.
     growth = balance_at.investment_growth_since_anchor(
-        account, ctx, current_pay_period(ctx.user_id),
+        account, ctx, derived_span(current_pay_period(ctx.user_id)),
     )
     return {
         # A ``(growth, contributed)`` pair, or None when the account models
@@ -286,7 +291,11 @@ def main(out_path):
             ctx = balance_at.BalanceContext.build(user.id)
             if ctx.scenario is None:
                 continue
-            periods = all_periods(user.id)
+            # The pass's own calendar rather than a second read of the
+            # table: ``_cash_figures`` wants a span, and a period's end
+            # is derived from the paydays since plan step
+            # ``pay_calendar:C4-c`` dropped the column.
+            periods = ctx.calendar().saved()
             accounts = (
                 db.session.query(Account)
                 .filter(Account.user_id == user.id)

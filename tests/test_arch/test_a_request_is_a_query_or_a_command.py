@@ -44,7 +44,7 @@ test carries its own planted defect (:func:`test_the_snapshot_control_fires`),
 because a test that would pass with the guarantee removed proves nothing.
 """
 
-from datetime import date, timedelta
+from datetime import date
 
 import psycopg2
 import pytest
@@ -203,10 +203,9 @@ class TestAQueryIsOneSnapshot:
             rival.autocommit = True
             with rival.cursor() as cur:
                 cur.execute(
-                    "insert into budget.pay_periods "
-                    "(user_id, start_date, end_date, period_index) "
-                    "values (%s, %s, %s, %s)",
-                    (user_id, start_date, start_date + timedelta(days=13), 900),
+                    "insert into budget.pay_periods (user_id, start_date) "
+                    "values (%s, %s)",
+                    (user_id, start_date),
                 )
         finally:
             rival.close()
@@ -344,8 +343,7 @@ class TestAQueryMayNotWrite:
             try:
                 connection.exec_driver_sql(
                     "insert into budget.pay_periods "
-                    "(user_id, start_date, end_date, period_index) "
-                    "values (1, '2099-06-01', '2099-06-14', 901)"
+                    "(user_id, start_date) values (1, '2099-06-01')"
                 )
                 attempted.append("allowed")
             except InternalError as exc:
@@ -548,8 +546,6 @@ class TestWriteTransaction:
                     db.session.add(PayPeriod(
                         user_id=seed_user["user"].id,
                         start_date=date(2099, 9, 1),
-                        end_date=date(2099, 9, 14),
-                        period_index=903,
                     ))
                     db.session.flush()
                     raise ZeroDivisionError("the render's write failed")
@@ -558,7 +554,7 @@ class TestWriteTransaction:
 
         db.session.rollback()
         assert db.session.query(PayPeriod).filter_by(
-            user_id=seed_user["user"].id, period_index=903,
+            user_id=seed_user["user"].id, start_date=date(2099, 9, 1),
         ).one_or_none() is None
 
 
@@ -578,8 +574,6 @@ class TestARequestArrivingOnAWrittenTransaction:
         db.session.add(PayPeriod(
             user_id=seed_user["user"].id,
             start_date=date(2099, 3, 1),
-            end_date=date(2099, 3, 14),
-            period_index=902,
         ))
         db.session.flush()
 
@@ -590,7 +584,7 @@ class TestARequestArrivingOnAWrittenTransaction:
         # boundary's to discard, so the teardown must not discard them one hook
         # later -- which is why the mode is recorded only AFTER the refusal.
         assert db.session.query(PayPeriod).filter_by(
-            user_id=seed_user["user"].id, period_index=902,
+            user_id=seed_user["user"].id, start_date=date(2099, 3, 1),
         ).one_or_none() is not None
 
     def test_an_unwritten_inherited_transaction_is_simply_ended(

@@ -1186,19 +1186,47 @@ def _category_id(user_id: int, group: str, item: str) -> int:
     ).scalar_one()
 
 
-def _period_holding(day: date) -> int:
-    """Return the pay period whose span contains *day*.
+def _period_holding(account_id: int, day: date) -> int:
+    """Return the pay period whose span contains *day*, for that account's owner.
+
+    **It asks the owner's CALENDAR since plan step ``pay_calendar:C4-c``.**  It
+    was ``select id from budget.pay_periods where :day between start_date and
+    end_date`` -- a raw span read off the row -- and that step dropped
+    ``end_date``, because a period's last covered day is the day before the
+    NEXT payday and is a property of the whole payday set rather than of one
+    row.  ``period_containing`` is the application's own answer to this
+    question, which is what the door this id is posted to will use.
+
+    It also gained the account, and that is a repair rather than plumbing: the
+    query it replaced was scoped by nothing at all, so on a database holding a
+    second owner it would have raised ``MultipleResultsFound`` -- or, worse,
+    have been made to work by dropping ``scalar_one`` and filed the row under
+    someone else's paycheck.
 
     Args:
+        account_id: The account the row will belong to; its owner is whose
+            calendar answers.
         day: A civil day.
 
     Returns:
         The ``budget.pay_periods`` id.
+
+    Raises:
+        AssertionError: No paycheck of that owner covers *day*, which would
+            otherwise post a ``period_id`` of ``None`` to the create door.
     """
-    return db.session.execute(db.text(
-        "select id from budget.pay_periods "
-        "where :day between start_date and end_date"
-    ), {"day": day}).scalar_one()
+    # Pylint: ``import-outside-toplevel`` -- this module is a runbook script
+    # rather than an importable unit, and its own imports are grouped at the
+    # top for the reader; the calendar is needed by this one helper.
+    from app.services.pay_calendar import calendar_for  # pylint: disable=import-outside-toplevel
+
+    owner_id = db.session.get(Account, account_id).user_id
+    period = calendar_for(owner_id).period_containing(day)
+    assert period is not None and period.period_id is not None, (
+        f"no saved paycheck of owner {owner_id} covers {day}, so this row "
+        f"has no period to be filed in"
+    )
+    return period.period_id
 
 
 def _record(
@@ -1244,7 +1272,7 @@ def _record(
     """
     form = op.form(
         f"/transactions/new/full?category_id={category_id}"
-        f"&period_id={_period_holding(day)}&account_id={account_id}"
+        f"&period_id={_period_holding(account_id, day)}&account_id={account_id}"
         f"&transaction_type_id={type_id}"
     )
     created = op.submit(form, {"estimated_amount": str(amount)})

@@ -34,9 +34,9 @@ from tests._test_helpers import (
     freeze_today,
     make_expense_template,
     make_transfer_template,
-    open_calendar_hole,
 )
 from app.services import cash_ledger
+from app.services.pay_calendar import calendar_for
 
 
 FROZEN_TODAY = date(2026, 6, 15)
@@ -65,11 +65,6 @@ def _period_count(db_session, user_id):
     return db_session.query(PayPeriod).filter_by(user_id=user_id).count()
 
 
-def _indices(user_id):
-    """The user's current period indices."""
-    return {p.period_index for p in all_periods(user_id)}
-
-
 def _starts(user_id):
     """The user's current period paydays.
 
@@ -80,16 +75,14 @@ def _starts(user_id):
     return {p.start_date for p in all_periods(user_id)}
 
 
-def _future_count(db_session, user_id):
-    """Current-and-future periods (``end_date >= FROZEN_TODAY``)."""
-    return (
-        db_session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == user_id,
-            PayPeriod.end_date >= FROZEN_TODAY,
-        )
-        .count()
-    )
+def _future_count(user_id):
+    """How many paychecks have not ENDED before ``FROZEN_TODAY``.
+
+    The rolling target's own question, asked of the derived calendar.  It
+    counted ``PayPeriod.end_date >= FROZEN_TODAY`` in SQL until plan step
+    ``pay_calendar:C4-c`` dropped that column.
+    """
+    return len(calendar_for(user_id).current_and_future(FROZEN_TODAY).periods)
 
 
 class TestExtendRoute:
@@ -602,8 +595,10 @@ class TestResetRoute:
             assert resp.status_code == 302
             assert "pay-periods" in resp.headers["Location"]
             db.session.expire_all()
-            periods = all_periods(user_id)
-            assert {p.period_index for p in periods} == {0, 1, 2, 3}
+            assert {p.start_date for p in all_periods(user_id)} == {
+                date(2026, 6, 5), date(2026, 6, 19),
+                date(2026, 7, 3), date(2026, 7, 17),
+            }
             account = db.session.get(Account, account_id)
             assert cash_ledger.resolve_anchor(account).balance == Decimal("1000.00")
 
@@ -612,7 +607,7 @@ class TestResetRoute:
         with app.app_context():
             user_id = seed_user["user"].id
             _future_periods(db.session, seed_user, count=4)
-            before = _indices(user_id)
+            before = _starts(user_id)
             resp = auth_client.post(
                 "/pay-periods/reset",
                 data={
@@ -624,7 +619,7 @@ class TestResetRoute:
             )
             assert resp.status_code == 200
             assert b"Confirm the reset" in resp.data
-            assert _indices(user_id) == before
+            assert _starts(user_id) == before
 
     def test_settled_blocks_reset(self, app, db, auth_client, seed_user):
         """A settled transaction makes the service refuse; nothing changes."""
@@ -636,7 +631,7 @@ class TestResetRoute:
                 status_enum=StatusEnum.RECEIVED, is_income=True,
             )
             db.session.commit()
-            before = _indices(user_id)
+            before = _starts(user_id)
             resp = auth_client.post(
                 "/pay-periods/reset",
                 data={
@@ -649,7 +644,7 @@ class TestResetRoute:
             )
             assert resp.status_code == 200
             assert b"settled transaction" in resp.data
-            assert _indices(user_id) == before
+            assert _starts(user_id) == before
 
     def test_schema_rejection_changes_nothing(
         self, app, db, auth_client, seed_user,
@@ -658,7 +653,7 @@ class TestResetRoute:
         with app.app_context():
             user_id = seed_user["user"].id
             _future_periods(db.session, seed_user, count=4)
-            before = _indices(user_id)
+            before = _starts(user_id)
             resp = auth_client.post(
                 "/pay-periods/reset",
                 data={
@@ -668,7 +663,7 @@ class TestResetRoute:
             )
             assert resp.status_code == 200
             assert b"correct the form" in resp.data
-            assert _indices(user_id) == before
+            assert _starts(user_id) == before
 
     def test_companion_cannot_reset(self, app, companion_client):
         """A companion is not the owner -- the reset route 404s (IDOR)."""
@@ -692,7 +687,7 @@ class TestRollingTriggerHooks:
         """Current + one future period, rolling on at ``target`` (a deficit).
 
         idx 1 spans the frozen today (06-08..06-21) so a current period
-        exists; idx 2 is the next future period.  ``end_date >= today``
+        exists; idx 2 is the next future period.  A period not yet ended
         counts both, so the window starts at 2 and is short of ``target``.
         """
         pay_period_write.record_paydays(
@@ -711,7 +706,7 @@ class TestRollingTriggerHooks:
             self._setup_rolling_with_deficit(db.session, seed_user, target=5)
             resp = auth_client.get("/grid")
             assert resp.status_code == 200
-            assert _future_count(db.session, seed_user["user"].id) == 5
+            assert _future_count(seed_user["user"].id) == 5
 
     def test_dashboard_load_tops_up_window(
         self, app, db, auth_client, seed_user,
@@ -721,7 +716,7 @@ class TestRollingTriggerHooks:
             self._setup_rolling_with_deficit(db.session, seed_user, target=5)
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
-            assert _future_count(db.session, seed_user["user"].id) == 5
+            assert _future_count(seed_user["user"].id) == 5
 
     def test_grid_load_disabled_creates_nothing(
         self, app, db, auth_client, seed_user,
@@ -788,10 +783,15 @@ class TestOwnerOnlyAndUi:
         shared sequence), so an ordinal render cannot coincidentally pass.
         """
         with app.app_context():
-            periods = _future_periods(db.session, seed_user, count=3)
+            _future_periods(db.session, seed_user, count=3)
             user_id = seed_user["user"].id
             owner_periods = all_periods(user_id)
-            assert [p.id for p in periods] != [p.period_index for p in periods]
+            # The ids are NOT the ordinals: the bootstrap period is created
+            # first and ids come from a shared sequence, so an ordinal render
+            # cannot coincidentally pass.
+            assert [period.id for period in owner_periods] != list(
+                range(len(owner_periods)),
+            )
 
             resp = auth_client.get("/settings?section=pay-periods")
 
@@ -892,42 +892,50 @@ class TestTheManageListIsTheDerivation:
     against the derivation -- so the list beside it has to describe the same
     periods or the confirmation is about a different schedule from the one that
     changes.  Both halves of a rendered row are graded: the LABEL, which the ORM
-    accessor built from the stored ``end_date``, and the lock BADGE, whose
+    accessor built from the stored ``end_date`` and now derives, and the lock
+    BADGE, whose
     "Past" chip was decided on the process clock.
+
+    *The label half no longer has TWO sources to choose between -- plan step
+    ``pay_calendar:C4-c`` deleted the stored column -- so it grades the two
+    DERIVATION rules against each other instead.*
     """
 
-    def test_the_label_follows_the_paydays_not_the_stored_end(
+    def test_the_label_ends_a_period_at_the_NEXT_PAYDAY(
         self, app, db, auth_client, seed_user,
     ):
-        """A shortened stored ``end_date`` does not move the rendered label.
+        """A period's label ends the day before its successor's payday.
 
-        The first generated period runs 2026-07-03 .. 2026-07-16, because the
-        next payday is 2026-07-17.  Its stored column is shortened to 07-05 --
-        the shape a row written before plan step C3-b can hold -- and the page
-        must still say 07/16, because that is when the paycheck actually ends.
-        Both strings are asserted, so a render that dropped the label entirely
-        cannot pass the negative half alone.
+        **The schedule is deliberately OFF-CADENCE, and that is the whole
+        control.**  Paydays 2026-07-03 and 2026-07-24 at a stored cadence of
+        14: the first paycheck runs to 07-23, because that is the day before
+        the next payday, while ``start + cadence - 1`` would say 07-16.  Both
+        strings are asserted, so a render that took the projection rule for
+        every period -- the pre-normalization defect -- fails on the negative
+        half, and one that dropped the label entirely fails on the positive.
+
+        *This case doctored a stored ``end_date`` down to 07-05 and asserted
+        the label ignored it, until plan step ``pay_calendar:C4-c`` dropped the
+        column.  There is no second value to ignore now, so the discriminator
+        moved to the two DERIVATION rules -- which is the sharper question the
+        doctored fixture was standing in for.*
         """
         with app.app_context():
-            periods = _future_periods(db.session, seed_user, count=3)
-            open_calendar_hole(db.session, periods[0], date(2026, 7, 5))
+            pay_period_write.record_paydays(
+                user_id=seed_user["user"].id, first_payday=date(2026, 7, 3),
+                num_periods=1, cadence_days=14,
+            )
+            pay_period_write.record_paydays(
+                user_id=seed_user["user"].id, first_payday=date(2026, 7, 24),
+                num_periods=1, cadence_days=14,
+            )
             db.session.commit()
-
-            # FIRING CONTROL, and an adversarial review of this step is why it
-            # is here: both assertions below are true of the UN-doctored row --
-            # the writer already materialises the derived end -- so with the
-            # fixture neutered this case was measured passing while grading
-            # nothing.  Re-read by primary key, because the plant is written
-            # through a re-loaded instance and the caller's is detached.
-            assert db.session.get(
-                PayPeriod, periods[0].id,
-            ).end_date == date(2026, 7, 5)
 
             resp = auth_client.get("/settings?section=pay-periods")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "07/03 - 07/16" in html
-            assert "07/03 - 07/05" not in html
+            assert "07/03 - 07/23" in html
+            assert "07/03 - 07/16" not in html
 
     def test_the_past_badge_follows_the_owners_civil_day(
         self, app, db, auth_client, seed_user, monkeypatch,

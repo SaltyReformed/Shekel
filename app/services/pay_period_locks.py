@@ -30,7 +30,7 @@ ORM rows.  Two things moved with that, and the second is what the first is for.
 
 **The HISTORICAL test reads the DERIVED end.**  It compared
 ``budget.pay_periods.end_date`` -- a stored copy of ``lead(start_date) - 1``
-that plan step **C4** drops and that nothing reconciles against the paydays it
+that plan step **C4-c** dropped and that nothing reconciles against the paydays it
 derives from.  A period this classifier calls historical is HARD-LOCKED, so a
 stale column was a paycheck the app either protected or offered to delete for
 the wrong reason.  Reading it off the derivation means the lock decision and
@@ -172,10 +172,10 @@ def classify_schedule_locks(
 
     **The HISTORICAL test reads the DERIVED end**: a period has ended when the
     day before its successor's payday is behind *as_of*.  That is the same
-    figure ``budget.pay_periods.end_date`` stores, read from the derivation
-    instead so this decision cannot be one a stale column moves -- and so plan
-    step **C4**, which drops the column, reaches this module with nothing to
-    change.
+    figure ``budget.pay_periods.end_date`` used to store, read from the
+    derivation instead so this decision could not be one a stale column moved
+    -- and so plan step **C4-c**, which dropped the column, reached this
+    module with nothing to change.
 
     Args:
         calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.

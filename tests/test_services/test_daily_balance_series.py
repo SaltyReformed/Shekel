@@ -57,6 +57,7 @@ from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     append_balance_assertion,
     default_settle_day,
+    last_covered_day,
     mark_purchase_settled,
     settle_day_columns,
     settle_instant_on,
@@ -178,11 +179,11 @@ class TestDailySeriesRunningBalance:
                 seed_user["account"], bctx, _APR_FIRST, _APR_LAST,
             )
             for period in seed_periods:
-                if _APR_FIRST <= period.end_date <= _APR_LAST:
+                if _APR_FIRST <= last_covered_day(period) <= _APR_LAST:
                     scalar = balance_at.cash_balance_at(
-                        seed_user["account"], bctx, period.end_date,
+                        seed_user["account"], bctx, last_covered_day(period),
                     )
-                    assert series[period.end_date] == scalar
+                    assert series[last_covered_day(period)] == scalar
 
     def test_daily_step_equals_that_days_net(
         self, app, seed_user, seed_periods, db,
@@ -340,7 +341,7 @@ class TestDailySeriesEdges:
             series = balance_at.cash_daily_balance_series(
                 seed_user["account"], bctx, _APR_FIRST, _APR_LAST,
             )
-            p6_end = seed_periods[6].end_date
+            p6_end = last_covered_day(seed_periods[6])
             # Entry-aware reservation ($200 held back), not the $500 estimate.
             assert series[date(2026, 4, 5)] == Decimal("800.00")
             assert series[p6_end] == Decimal("800.00")
@@ -370,7 +371,7 @@ class TestDailySeriesEdges:
                 seed_user["account"], bctx, _APR_FIRST, _APR_LAST,
             )
             # Period 6 end reflects the clamped -100 (1000 - 100 = 900).
-            p6_end = seed_periods[6].end_date
+            p6_end = last_covered_day(seed_periods[6])
             assert series[p6_end] == Decimal("900.00")
             # And it equals the seam scalar there (reconciliation holds).
             assert series[p6_end] == balance_at.cash_balance_at(

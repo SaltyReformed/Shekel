@@ -6,11 +6,17 @@ uses.  It divides the cash a payment moved into the four economic parts a loan
 payment consists of -- interest, escrow, principal, and a payoff overpayment's
 refund -- against the balance outstanding at that moment.
 
-**One ALLOCATION, every payment KIND.**  :func:`apply_payment_cash` takes plain
-data -- a cash amount, the balance before, and the interest and escrow already
-charged -- so it divides an ACTUAL settled payment (:func:`split_one_payment`,
-cash read from the settled shadow), a PLANNED projected payment (its live D3
-cash), and an ESTIMATED contractual installment exactly alike.  The cash the grid
+**One ALLOCATION, every payment KIND -- and since plan step X-au-g-2c-3a it
+lives at the LEAF, in :mod:`app.utils.money`, beside the accrual it is always
+paired with.**  :func:`~app.utils.money.apply_payment_cash` takes plain data --
+a cash amount, the balance before, and the interest and escrow already charged
+-- so it divides an ACTUAL settled payment (:func:`split_one_payment`, cash
+read from the settled shadow), a PLANNED projected payment (its live D3 cash),
+and an ESTIMATED contractual installment exactly alike.  It is re-exported
+through this package because every existing caller names it here; the MOVE is
+what lets ``amortization_engine`` and ``rate_period_engine`` -- both BELOW this
+module in the import graph, and so structurally unable to reach it before --
+call the same rule instead of restating it.  The cash the grid
 shows leaving checking is the cash the loan folds: because ``principal = cash -
 interest - escrow``, an extra or short payment lands in principal automatically,
 where the resolver's contractual replay discards the real cash and needs an
@@ -34,116 +40,13 @@ from decimal import Decimal
 from app.models.transaction import Transaction
 from app.services.rate_period_engine import RatePeriod, period_for_date
 from app.services.row_valuation import owned_contribution
-from app.utils.money import accrue_monthly_interest
+from app.utils.money import (
+    PaymentCashSplit,
+    accrue_monthly_interest,
+    apply_payment_cash,
+)
 
 _ZERO_MONEY = Decimal("0.00")
-
-
-@dataclass(frozen=True)
-class PaymentCashSplit:
-    """The four economic parts one payment's cash divides into, plus the balance after.
-
-    The pure result of :func:`split_payment_cash`, carrying NO source record --
-    so the same arithmetic serves a settled shadow, a projected shadow, and a
-    synthesized contractual installment.  :class:`LoanPaymentSplit` is the
-    posting-oriented wrapper that additionally carries the ACTUAL settled shadow
-    the correction books under.
-
-    Attributes:
-        interest: Accrued interest, ``round_money(balance_before * rate / 12)``
-            on the real running balance -- an Expense leg (``>= 0``).
-        escrow: The monthly escrow supplied for this payment, NO inflation -- an
-            Expense leg (``>= 0``).
-        principal: The real debt paid down, ``cash - interest - escrow``, capped
-            at the outstanding balance.  May be NEGATIVE (an underpayment that
-            grows the balance) -- surfaced, never clamped (plan D5).
-        excess: A payoff overpayment routed to a Refund Receivable (Asset) leg
-            (``>= 0``): cash beyond what closes the loan (plan D4).
-        balance_after: The outstanding balance after this payment
-            (``balance_before - principal``).
-    """
-
-    interest: Decimal
-    escrow: Decimal
-    principal: Decimal
-    excess: Decimal
-    balance_after: Decimal
-
-
-def apply_payment_cash(
-    cash: Decimal,
-    balance: Decimal,
-    charged_interest: Decimal,
-    charged_escrow: Decimal,
-) -> PaymentCashSplit:
-    """Allocate one payment's *cash* against charges ALREADY standing.
-
-    **The ALLOCATION rule alone, with no accrual inside it** (plan step
-    **R16-a**).  A loan payment's cash covers what the loan has charged -- the
-    escrow it impounds and the interest it has accrued -- and only the remainder
-    pays the debt down.  That rule is a function of the CASH and the CHARGES and
-    of nothing else.  WHICH charges stand is a different question, answered by
-    how much time has passed and at what rate.
-
-    **Fused, the two made the payment COUNT the clock.**  Measured on a
-    production clone: 30 payments of ``$531.94`` fourteen days apart charged the
-    same 30 months of interest as 30 a month apart -- ``$1,096.34`` either way,
-    split for split -- so the Van Loan paid off in half the time modelled the
-    identical interest.
-    With the accrual lifted out, a second payment inside one accrual period
-    arrives here with ``charged_interest = 0.00`` and pays pure principal, which
-    is what it does.
-
-    Two regimes (plan Section 6):
-
-    * **Loan already closed** (``balance <= 0``): nothing is owed, so the entire
-      cash is an overpayment routed to ``excess`` (a Refund) whatever the caller
-      computed, and the balance does not move.  This keeps every post-payoff cash
-      entry matched by a correction instead of a phantom paydown.
-    * **Open loan**: ``principal = cash - charged_interest - charged_escrow``; a
-      principal that would overrun the balance caps to it, the remainder going to
-      ``excess``.
-
-    Args:
-        cash: The cash this payment moved (settled actual, live planned, or
-            synthesized contractual).
-        balance: The outstanding balance before this payment.
-        charged_interest: The interest standing against the loan for this payment
-            to clear.  ``0.00`` for a payment that follows another inside one
-            accrual period.  Never re-derived here.
-        charged_escrow: The escrow standing against the loan for this payment to
-            clear -- ``0.00`` when the loan escrows nothing, or when an earlier
-            payment in the same accrual period already covered it.
-
-    Returns:
-        The :class:`PaymentCashSplit` for this payment.
-    """
-    if balance <= 0:
-        # Already paid off: a further payment is pure overpayment (refund), with no
-        # interest and no escrow due, and the balance does not move.
-        return PaymentCashSplit(
-            interest=_ZERO_MONEY,
-            escrow=_ZERO_MONEY,
-            principal=_ZERO_MONEY,
-            excess=cash,
-            balance_after=balance,
-        )
-    principal = cash - charged_interest - charged_escrow
-    if principal > balance:
-        # Payoff overpayment: principal caps at the remaining balance; the surplus
-        # is a refund the lender owes back (plan D4), never absorbed into principal
-        # or escrow.
-        excess = principal - balance
-        principal = balance
-    else:
-        excess = _ZERO_MONEY
-    return PaymentCashSplit(
-        interest=charged_interest,
-        escrow=charged_escrow,
-        principal=principal,
-        excess=excess,
-        balance_after=balance - principal,
-    )
 
 
 def split_payment_cash(

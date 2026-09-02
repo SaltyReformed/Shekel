@@ -309,7 +309,7 @@ class SalaryPricing:
                 # (pay-calendar plan step C2-f2d-3), so the periods this
                 # projection reconciles against carry the ends the whole payday
                 # set dictates rather than the stored ``end_date`` column plan
-                # step C4 drops.  **This one still DERIVES**, where
+                # step C4-c dropped.  **This one still DERIVES**, where
                 # :func:`get_current_gross_biweekly` above was given its
                 # calendar: the basis is built by ``cash_ledger.amount_basis``
                 # from an owner and a scenario alone, so there is no calendar to

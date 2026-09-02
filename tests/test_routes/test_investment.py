@@ -14,14 +14,10 @@ from app.enums import (
     DeductionTimingEnum,
     EmployerContributionTypeEnum,
 )
-from app.extensions import db
-from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.models.user import UserSettings
 from app.services import (
     account_service,
     balance_at,
@@ -41,6 +37,7 @@ from app.services.investment_projection import InvestmentInputs
 from app.utils.money import round_money
 from tests._test_helpers import (
     current_pay_period,
+    last_covered_day,
     reassert_balance_on,
     settle_day_columns,
     settle_instant_on,
@@ -705,94 +702,6 @@ class TestTheDefaultHorizonComesOffTheReadPass:
                 current_index=None, as_of=date(2026, 6, 15),
             ),
         ) == investment_cards._FALLBACK_HORIZON_YEARS
-
-
-class TestTheCutoverReadsTheDERIVEDPeriodEnd:
-    """The ONE axis on which this cutover can move a number.
-
-    Plan step C2-f2c swaps ``pay_period_service``'s ORM rows for the read
-    pass's own :class:`~app.services.pay_calendar.PayCalendar`, and the claim
-    that no figure moves rests on a PRECONDITION rather than on an identity:
-    the stored ``end_date`` / ``period_index`` columns equal what
-    :func:`~app.services.pay_calendar.derive_periods` computes from the
-    paydays.  ``pay_period_write`` has materialised that on every write since
-    plan step C3-b, and the production clone the cutover was verified against
-    carries ZERO mismatches -- which is exactly why a byte-identical harness
-    run cannot grade this: **the database it ran on cannot express the
-    disagreement.**  Neither can any fixture, since every one of them builds
-    its periods through that same writer.
-
-    So the disagreement is planted here by hand, and the assertion is which
-    column the code follows.  An adversarial review of this step found the
-    harness CLAIMING this axis was covered by hand-computed cases when it was
-    covered by nothing (2026-08-15).
-
-    It is not a reachable production state today; it is the state plan step
-    **C4** makes unreachable by DROPPING the column, and until then the only
-    door to it is ``resolve_cadence``'s legacy fallback (finding **P8**).  What
-    this case pins is the direction: this package reads the derivation.
-    """
-
-    def test_the_horizon_follows_the_DERIVED_end_not_the_stored_column(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A stored end five years out must not stretch the slider.
-
-        ``seed_periods`` runs ten biweekly periods from 2026-01-02, so the last
-        payday is 2026-05-08 and its DERIVED end is 2026-05-21 -- the cadence
-        projected past the final payday.  The stored column is then rewritten
-        to 2031-12-31, which is legal (``ck_pay_periods_date_order`` only wants
-        ``start < end``) and which no write door would produce.
-
-        The owner keeps their ``pay_schedule`` row, so
-        ``pay_schedule_service.resolve_cadence`` never reaches the legacy
-        fallback that would INFER a cadence from the length just corrupted --
-        without that the plant would move the derivation too and the case would
-        grade nothing.
-        """
-        with app.app_context():
-            user_id = seed_user["user"].id
-            last = seed_periods[-1]
-            assert last.start_date == date(2026, 5, 8), (
-                "this case hand-computes off the fixture's dates"
-            )
-            acct = _create_investment_account(
-                seed_user, db.session, name="Derived-end 401k",
-                balance="10000.00",
-            )
-            _create_investment_params(db.session, acct.id)
-            settings = db.session.query(UserSettings).filter_by(
-                user_id=user_id,
-            ).one_or_none()
-            if settings is not None:
-                settings.planned_retirement_date = None
-            db.session.commit()
-
-            # The plant, and the control that it took.
-            db.session.query(PayPeriod).filter_by(id=last.id).update(
-                {"end_date": date(2031, 12, 31)},
-            )
-            db.session.commit()
-            assert db.session.get(PayPeriod, last.id).end_date == (
-                date(2031, 12, 31)
-            )
-
-            ctx = _load_projection_context(
-                user_id, acct, _load_investment_params(acct.id),
-            )
-            derived_end = ctx.balance_ctx.reported_periods()[-1].end_date
-            assert derived_end == date(2026, 5, 21), (
-                "the derivation must be untouched by the stored column"
-            )
-
-            horizon = investment_cards._compute_default_horizon(ctx)
-            as_of = ctx.balance_ctx.as_of
-            # Reading the DERIVED end: (2026 - as_of.year) + 1, floored at 1.
-            assert horizon == max(1, (2026 - as_of.year) + 1)
-            # Reading the STORED column would answer this instead, and the two
-            # differ by five years -- so the assertion above is a real choice
-            # rather than a coincidence of the fixture's dates.
-            assert horizon != (2031 - as_of.year) + 1
 
 
 class TestTheChartMarkersAskTheWindowWhereTheDateFALLS:
@@ -2475,7 +2384,7 @@ class TestInvestmentEntryAwareRouting:
             # compounded over exactly one period.  With no contributions and no
             # employer match there is nothing else in the row.
             bctx = BalanceContext.build(user.id)
-            seed = balance_at.balance_at(acct, bctx, current_period.end_date)
+            seed = balance_at.balance_at(acct, bctx, last_covered_day(current_period))
             # The span is the axis's OWN first period -- the owner's next
             # paycheck, read off the same door the chart resolves its axis
             # through (plan step C2-e).  It used to be the CURRENT period's
@@ -2483,8 +2392,8 @@ class TestInvestmentEntryAwareRouting:
             # was hardcoded to the same 14 days.
             # 7.0% is ``_create_investment_params``' default assumed return.
             axis_head = bctx.calendar().projection_axis(
-                current_period.end_date + timedelta(days=1),
-                current_period.end_date + timedelta(days=365),
+                last_covered_day(current_period) + timedelta(days=1),
+                last_covered_day(current_period) + timedelta(days=365),
             )[0]
             rate = growth_engine.span_return_rate(
                 Decimal("0.07000"), axis_head.start_date, axis_head.end_date,
@@ -2930,7 +2839,7 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
         assert ctx.inputs.ytd_contributions_seed == Decimal("0.00")
         assert ctx.projection_ytd == Decimal("1000.00")
         # ...because the window opens past the current period (ruling R-AF).
-        assert ctx.projection_start > current.end_date
+        assert ctx.projection_start > last_covered_day(current)
 
 
 class TestTheProjectionMeetsItsSeedOnALapsedSchedule:
@@ -3090,7 +2999,7 @@ class TestTheProjectionContinuesTheHistory:
 
         bctx = BalanceContext.build(seed_user["user"].id)
         current = current_pay_period(seed_user["user"].id)
-        seed = balance_at.balance_at(acct, bctx, current.end_date)
+        seed = balance_at.balance_at(acct, bctx, last_covered_day(current))
         # The seed IS the history line's last point (ruling R-AE) ...
         assert Decimal(history[-1]) == seed
         # ... and the first projected point is that seed compounded over ONE
@@ -3098,8 +3007,8 @@ class TestTheProjectionContinuesTheHistory:
         # the same door the chart resolves its axis through (plan step C2-e).
         # 7.0% is ``_create_investment_params``' default assumed return.
         axis_head = bctx.calendar().projection_axis(
-            current.end_date + timedelta(days=1),
-            current.end_date + timedelta(days=365),
+            last_covered_day(current) + timedelta(days=1),
+            last_covered_day(current) + timedelta(days=365),
         )[0]
         rate = growth_engine.span_return_rate(
             Decimal("0.07000"), axis_head.start_date, axis_head.end_date,

@@ -381,7 +381,7 @@ def load_tax_configs_for_periods(user_id, profile, periods):
             :class:`~app.services.pay_calendar.PeriodWindow`, or any sequence
             of :class:`~app.services.pay_calendar.DerivedPeriod`.  Only
             ``start_date.year`` is read, so this never depended on the two
-            derived columns pay-calendar plan step C4 drops.
+            derived columns pay-calendar plan step C4-c dropped.
 
     Returns:
         dict: ``{tax_year: {bracket_set, state_config, fica_config}}`` for

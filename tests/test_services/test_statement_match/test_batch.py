@@ -51,7 +51,10 @@ from app.services.statement_match import (
 # module reaches into it, which is the allowance every sibling here takes.
 from app.services.statement_match import _create  # pylint: disable=protected-access
 
-from tests._test_helpers import count_amount_bases
+from tests._test_helpers import (
+    count_amount_bases,
+    last_covered_day,
+)
 
 from ._builders import (
     a_bank_line,
@@ -1054,8 +1057,8 @@ class TestABatchBooksWhatTheSameActsBookOneAtATime:
         days = [
             period.start_date,
             period.start_date + timedelta(days=7),
-            period.end_date,
-            period.end_date + timedelta(days=30),
+            last_covered_day(period),
+            last_covered_day(period) + timedelta(days=30),
         ]
         # **No surrogate keys.**  A row this pass CREATES gets a sequence
         # value, and a rolled-back sequence does not rewind -- so the two runs

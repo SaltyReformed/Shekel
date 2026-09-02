@@ -37,7 +37,11 @@ import pytest
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
 from app.services import pay_schedule_service
-from tests._test_helpers import governing_opening_row
+from tests._test_helpers import (
+    derived_span,
+    governing_opening_row,
+    last_covered_day,
+)
 from tests.conftest import (
     SEED_USER_BOOTSTRAP_START,
     SEED_USER_CADENCE_DAYS,
@@ -162,11 +166,11 @@ class TestTheOpeningPeriodIsTheRowItAlwaysWas:
         )
         assert len(periods) == 1
         assert periods[0].start_date == SEED_USER_BOOTSTRAP_START
-        assert periods[0].end_date == (
+        assert last_covered_day(periods[0]) == (
             SEED_USER_BOOTSTRAP_START
             + timedelta(days=SEED_USER_CADENCE_DAYS - 1)
         )
-        assert periods[0].period_index == 0
+        assert derived_span(periods[0]).period_index == 0
         assert periods[0].id == seed_user["bootstrap_period"].id
 
 
@@ -185,7 +189,7 @@ class TestTheResetLeavesTheWritersDerivation:
     ):
         """Ten periods, no residue of the opening one."""
         assert len(seed_periods) == 10
-        assert [period.period_index for period in seed_periods] == list(range(10))
+        assert [derived_span(period).period_index for period in seed_periods] == list(range(10))
         assert SEED_USER_BOOTSTRAP_START not in {
             period.start_date for period in seed_periods
         }
@@ -193,15 +197,27 @@ class TestTheResetLeavesTheWritersDerivation:
             user_id=seed_user["user"].id,
         ).count() == 10
 
-    def test_index_order_is_payday_order(
+    def test_the_fixture_returns_its_periods_in_PAYDAY_order(
         self, app, db, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """The returned order is the payday order, which is the index order."""
+        """The list a fixture hands a test is sorted by payday.
+
+        Every case that indexes ``seed_periods[3]`` means "the fourth
+        paycheck", so the order the fixture returns is load-bearing rather than
+        incidental.
+
+        **It asserted the ORDINAL order beside this until plan step
+        ``pay_calendar:C4-c``, and that second assertion became a theorem**
+        (adversarial review, 2026-09-01).  ``period_index`` is now the payday's
+        position in the owner's sorted set (``_derive.derive_periods``), and
+        ``uq_pay_periods_user_start`` makes paydays unique -- so the ordinal is
+        a strictly increasing function of ``start_date`` and sorting by one
+        cannot differ from sorting by the other, for any input.  What that
+        assertion used to grade was a STORED ordinal agreeing with payday
+        order, which is finding **P1**'s defect and is not expressible now.
+        """
         assert seed_periods == sorted(
             seed_periods, key=lambda period: period.start_date,
-        )
-        assert seed_periods == sorted(
-            seed_periods, key=lambda period: period.period_index,
         )
 
 

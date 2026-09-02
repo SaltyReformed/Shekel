@@ -1,5 +1,5 @@
 """
-Shekel Budget App -- Pay Period Writer Tests (plan step C3-b)
+Shekel Budget App -- Pay Period Writer Tests (plan steps C3-b and C4-c)
 
 ``pay_period_write`` is the one place in ``app/`` that changes
 ``budget.pay_periods``, so this is the one suite that grades what may be
@@ -7,13 +7,19 @@ written.  It came from ``test_pay_period_service.py`` when the writer left
 that module; the classes carried over unchanged are the batch-shape and
 refusal ones, and the classes below them are C3-b's own.
 
-**What C3-b changed, and therefore what these tests are about:**
+**What the writer DOES, and therefore what these tests are about:**
 
-* The stored ``end_date`` / ``period_index`` are no longer AUTHORED from
-  cadence arithmetic.  They are materialised from
-  ``pay_calendar.derive_periods`` over the owner's WHOLE payday set, every
-  write, so the columns cannot disagree with the paydays they derive from --
-  which is what makes plan step C4's ``DROP COLUMN`` a no-op.
+* **It writes one column.**  A row is one fact -- the payday -- since plan step
+  ``pay_calendar:C4-c`` dropped ``end_date`` and ``period_index``.  Recording a
+  payday INSERTs a row and touches no other; retiring one DELETEs it and
+  touches no other (``TestAWriteTouchesNoRowItDidNotName``).  C3-b's own
+  subject -- holding the two derived columns equal to
+  ``pay_calendar.derive_periods`` on every write -- has no subject left, and
+  the four cases that graded that machinery went with the columns.
+* Every three-tuple asserted below is therefore the owner's DERIVED calendar
+  (see :func:`_paydays`), which is what the writer's callers read.  The figures
+  are the ones those cases were hand-computed against and they did not move;
+  dropping the columns is only correct if they do not.
 * The old batch guard ``_reject_overlapping_batch`` split into TWO rules, and
   only ONE survives.  The forward-only FLOOR stays, and exists only to keep plan
   step C6's mid-schedule insert closed.  The COVERAGE rule -- which refused a
@@ -38,11 +44,10 @@ import pytest
 from app.exceptions import ValidationError
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.models.pay_period import MIN_MATERIALISABLE_CADENCE_DAYS, PayPeriod
+from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import CADENCE_DAYS_MIN, PaySchedule
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.schemas.validation.pay_periods import CADENCE_DAYS_FORM_MIN
 from app.services import (
     pay_period_admin,
     pay_period_rolling,
@@ -50,20 +55,21 @@ from app.services import (
     pay_schedule_service,
     transfer_service,
 )
+from app.schemas.validation import PayPeriodGenerateSchema
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
-    all_periods,
     add_txn,
+    all_periods,
     capture_sql_statements,
     create_savings_account,
     freeze_today,
-    open_calendar_hole,
 )
 
 
 #: Pinned "today", before every date this module writes.  The lock classifier
-#: calls a period whose ``end_date`` is in the past HISTORICAL and refuses to
-#: delete it, so the truncate tests below would refuse on the wall clock rather
-#: than on what they are grading.
+#: calls a period whose last covered day is in the past HISTORICAL and refuses
+#: to delete it, so the truncate tests below would refuse on the wall clock
+#: rather than on what they are grading.
 FROZEN_TODAY = date(2025, 12, 1)
 
 
@@ -81,21 +87,28 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def _paydays(user_id):
-    """Return the owner's ``(payday, end_date, period_index)`` rows, payday order."""
+    """Return the owner's ``(payday, last covered day, ordinal)`` rows in order.
+
+    **The last two are DERIVED and were columns until plan step
+    ``pay_calendar:C4-c``.**  Every assertion in this module that names a
+    three-tuple therefore says what the owner's CALENDAR looks like after the
+    write under test, which is what the writer's callers actually read: the
+    writer stores a payday and ``pay_calendar.derive_periods`` answers the
+    rest.  The tuple shape is unchanged, deliberately -- the figures these
+    cases were hand-computed against did not move, and dropping the columns is
+    only correct if they do not.
+    """
     return [
         (period.start_date, period.end_date, period.period_index)
-        for period in sorted(
-            all_periods(user_id),
-            key=lambda period: period.start_date,
-        )
+        for period in calendar_for(user_id).saved()
     ]
 
 
 class TestItRecordsPaydays:
-    """The batch shape: which paydays a call records, and what it stores on them."""
+    """The batch shape: which paydays a call records, and what the calendar says."""
 
     def test_it_records_the_requested_paydays(self, app, db, bare_user):
-        """Five paydays a fortnight apart, each period covering fourteen days."""
+        """Five paydays a fortnight apart, in the order they were asked for."""
         with app.app_context():
             periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
@@ -105,42 +118,25 @@ class TestItRecordsPaydays:
             )
             db.session.commit()
 
-            assert len(periods) == 5
-            for period in periods:
-                assert (period.end_date - period.start_date).days + 1 == 14
+            assert [period.start_date for period in periods] == [
+                date(2026, 1, 2), date(2026, 1, 16), date(2026, 1, 30),
+                date(2026, 2, 13), date(2026, 2, 27),
+            ]
 
-    def test_the_ordinal_is_the_position_in_payday_order(self, app, db, bare_user):
-        """Indices run 0..n-1, and they are READ off the derivation.
-
-        Before plan step C3-b the writer ASSIGNED ``max_index + 1``; now the
-        ordinal is the payday's position in the owner's sorted set, so index
-        order and date order cannot disagree -- there is no second value.
-        """
-        with app.app_context():
-            periods = pay_period_write.record_paydays(
-                user_id=bare_user["user"].id,
-                first_payday=date(2026, 1, 2),
-                num_periods=3,
-                cadence_days=14,
-            )
-            db.session.commit()
-
-            assert [p.period_index for p in periods] == [0, 1, 2]
-
-    def test_every_end_but_the_last_is_the_next_payday_minus_one(
+    def test_the_calendar_the_batch_leaves_runs_0_to_n_minus_1(
         self, app, db, bare_user,
     ):
-        """The definition, stored -- and the last end is the ONE projection.
+        """The owner's whole calendar, end to end through the writer.
 
-        This test replaced ``test_end_date_equals_start_plus_cadence_minus_one``
-        at plan step C3-b, and the replacement is the step in one assertion.
-        On an on-cadence batch the two rules give the same answer, which is
-        precisely why the old test could not tell them apart; what distinguishes
-        them is which rule the writer is FOLLOWING, and the classes below build
-        off-cadence schedules that make the difference visible.
+        The ordinal is the payday's position in the owner's sorted set and the
+        end is the day before the next payday, so index order and date order
+        cannot disagree -- there is no second value.  Before plan step C3-b the
+        writer ASSIGNED ``max_index + 1`` and ``start + cadence - 1``; plan step
+        ``pay_calendar:C4-c`` deleted both columns, so what the writer leaves
+        behind is a payday set and this is what it derives to.
         """
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=3,
@@ -148,11 +144,13 @@ class TestItRecordsPaydays:
             )
             db.session.commit()
 
-            for earlier, later in zip(periods, periods[1:]):
-                assert earlier.end_date == later.start_date - timedelta(days=1)
-            assert periods[-1].end_date == periods[-1].start_date + timedelta(
-                days=13,
-            )
+            # Each end is the day before the next payday; the LAST is the one
+            # projection, 2026-01-30 + 13.
+            assert _paydays(bare_user["user"].id) == [
+                (date(2026, 1, 2), date(2026, 1, 15), 0),
+                (date(2026, 1, 16), date(2026, 1, 29), 1),
+                (date(2026, 1, 30), date(2026, 2, 12), 2),
+            ]
 
     def test_an_existing_payday_is_skipped_rather_than_duplicated(
         self, app, db, bare_user,
@@ -175,8 +173,8 @@ class TestItRecordsPaydays:
             assert [p.start_date for p in again] == [
                 date(2026, 1, 30), date(2026, 2, 13),
             ]
-            assert [p.period_index for p in again] == [2, 3]
             assert len(all_periods(user_id)) == 4
+            assert [row[2] for row in _paydays(user_id)] == [0, 1, 2, 3]
 
     def test_a_second_batch_appends_and_keeps_payday_order(
         self, app, db, bare_user,
@@ -199,9 +197,9 @@ class TestItRecordsPaydays:
             assert [p.start_date for p in new] == [
                 date(2026, 2, 13), date(2026, 2, 27),
             ]
-            assert [p.period_index for p in new] == [3, 4]
             starts = [row[0] for row in _paydays(user_id)]
             assert starts == sorted(starts)
+            assert [row[2] for row in _paydays(user_id)] == [0, 1, 2, 3, 4]
 
     def test_num_periods_one_records_one_payday(self, app, db, bare_user):
         """The smallest legal batch."""
@@ -214,7 +212,9 @@ class TestItRecordsPaydays:
 
             assert len(periods) == 1
             assert periods[0].start_date == date(2026, 1, 2)
-            assert periods[0].end_date == date(2026, 1, 15)
+            assert _paydays(bare_user["user"].id) == [
+                (date(2026, 1, 2), date(2026, 1, 15), 0),
+            ]
 
     def test_a_large_batch_stays_correct_at_scale(self, app, db, bare_user):
         """104 periods -- two years of fortnights, the production shape."""
@@ -227,10 +227,11 @@ class TestItRecordsPaydays:
             db.session.commit()
 
             assert len(periods) == 104
-            assert periods[-1].period_index == 103
             assert periods[-1].start_date == start + timedelta(days=103 * 14)
-            for period in periods:
-                assert period.end_date == period.start_date + timedelta(days=13)
+            derived = _paydays(bare_user["user"].id)
+            assert [row[2] for row in derived] == list(range(104))
+            for payday, last_day, _ordinal in derived:
+                assert last_day == payday + timedelta(days=13)
 
     def test_a_non_date_payday_is_refused(self, app, db, bare_user):
         """A string, and a ``datetime``, are both refused as form errors.
@@ -256,7 +257,7 @@ class TestTheForwardOnlyFloor:
     """Ruling **R-PC1**'s structural half: no payday between two existing ones.
 
     It replaced ``_reject_overlapping_batch``, which bounded a batch on
-    ``max(end_date)`` -- a column plan step C4 drops -- and which was doing
+    ``max(end_date)`` -- a column plan step C4-c dropped -- and which was doing
     this job by accident.  **The only thing left to refuse is a payday landing
     inside a paycheck the owner already has**, because a gap and an overlap
     stopped being expressible once the columns are derived.  Plan step C6 owns
@@ -265,8 +266,8 @@ class TestTheForwardOnlyFloor:
 
     **The floor is ONE CADENCE, not two days, and this class carries the
     control for the correction.**  C3-b's first cut bounded at
-    ``latest_payday + MIN_MATERIALISABLE_CADENCE_DAYS``, which is a paycheck
-    too low: the LAST period runs to ``latest_payday + cadence - 1``, so every
+    ``latest_payday + 2`` (the writer's cadence floor, itself deleted at plan
+    step C4-c), which is a paycheck too low: the LAST period runs to ``latest_payday + cadence - 1``, so every
     day between the two split it -- reachable, and P10 says it is not.
     """
 
@@ -407,108 +408,66 @@ class TestTheForwardOnlyFloor:
             assert periods[0].start_date == date(2020, 3, 1)
 
 
-class TestItMaterialisesTheWholeDerivation:
-    """C3-b's subject: the stored columns ARE ``derive_periods``, every write.
+class TestAWriteTouchesNoRowItDidNotName:
+    """Recording a payday INSERTs one row; retiring one DELETEs it.  Nothing else.
 
-    The developer ruled the WHOLE payday list is rewritten (2026-08-10).  The
-    two stored columns are a cache of one function; a cache refreshed only at
-    its edge is a second source of truth, and an interior hole would then never
-    be repaired by any forward append -- so plan step C4 would silently move
-    that owner's figures.
+    **This class replaced ``TestItMaterialisesTheWholeDerivation`` at plan step
+    ``pay_calendar:C4-c``, and the replacement is that step in one sentence.**
+    While ``end_date`` and ``period_index`` were columns, every write had to
+    re-materialise the owner's WHOLE calendar -- a cache refreshed only at its
+    edge is a second source of truth, so an interior hole would survive every
+    forward append.  Four cases graded that machinery: a hole repaired by the
+    next batch, an INTERIOR hole repaired by an append at the far end (finding
+    **N-127**), the WARNING the repair logs, and the delete that re-projects
+    the newly-last end.  None of them can be written now: opening a hole meant
+    writing a stored end BELOW the next payday, and there is no stored end.
+
+    What replaces them is the property the deletion BUYS, which is stronger
+    than any of them and is not vacuous: a write to ``budget.pay_periods``
+    issues no ``UPDATE`` at all, so no row the operation did not name can move.
+    Graded as a statement census rather than argued.
     """
 
-    def test_a_hole_before_the_batch_is_repaired_by_it(self, app, db, bare_user):
-        """The preceding paycheck absorbs the days the old writer left uncovered.
+    def test_recording_a_payday_issues_no_UPDATE(self, app, db, bare_user):
+        """An append writes INSERTs, and touches no existing row.
 
-        Paydays 2026-01-02 and 2026-01-16 with a hand-punched hole after
-        2026-01-22 (the shape a pre-C3-b write left behind).  Recording
-        2026-02-13 rewrites the January paycheck to end the day before it.
-        """
-        with app.app_context():
-            user_id = bare_user["user"].id
-            created = pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=2, cadence_days=14,
-            )
-            open_calendar_hole(db.session, created[0], date(2026, 1, 8))
-            db.session.commit()
+        The whole-calendar rewrite this replaced emitted an ``UPDATE`` per row
+        whose stored columns disagreed with the derivation.  With nothing
+        derived stored there is nothing to rewrite, and a future writer that
+        started mutating a period in place -- the shape that would re-open
+        finding **P1** -- fails here.
 
-            pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 2, 13),
-                num_periods=1, cadence_days=14,
-            )
-            db.session.commit()
-
-            assert _paydays(user_id) == [
-                (date(2026, 1, 2), date(2026, 1, 15), 0),
-                (date(2026, 1, 16), date(2026, 2, 12), 1),
-                (date(2026, 2, 13), date(2026, 2, 26), 2),
-            ]
-
-    def test_an_INTERIOR_hole_is_repaired_by_a_forward_append(
-        self, app, db, bare_user,
-    ):
-        """Finding **N-127**: the hole with no working repair, now repaired.
-
-        The hole sits between the FIRST and SECOND paydays and the append lands
-        at the far end of the schedule, so nothing about the batch touches it.
-        Under "rewrite the preceding end only" it would survive every future
-        write; under the ruled whole-list rewrite the next write of any kind
-        closes it.  That is the whole reason the fork was ruled the way it was.
-        """
-        with app.app_context():
-            user_id = bare_user["user"].id
-            created = pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=4, cadence_days=14,
-            )
-            hole = open_calendar_hole(db.session, created[0], date(2026, 1, 8))
-            db.session.commit()
-            assert hole == (date(2026, 1, 9), date(2026, 1, 15))
-
-            pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 2, 27),
-                num_periods=1, cadence_days=14,
-            )
-            db.session.commit()
-
-            assert _paydays(user_id)[0] == (
-                date(2026, 1, 2), date(2026, 1, 15), 0,
-            )
-
-    def test_a_healthy_schedule_costs_no_UPDATE_at_all(
-        self, app, db, bare_user,
-    ):
-        """The rewrite is free where nothing disagrees, and that is measured.
-
-        SQLAlchemy compares each attribute against its committed state before
-        building an ``UPDATE``, so assigning an identical value emits no
-        statement.  Production is such a schedule -- 61 paydays, 0 index and 0
-        end mismatches, measured 2026-08-10 -- so the whole-list rewrite costs
-        one derivation and no SQL there.  Asserted rather than argued: without
-        this, "it writes nothing on a healthy schedule" is a claim about
-        SQLAlchemy that nothing in this repo checks.
+        Deliberately an OFF-cadence append: on-cadence, a writer that still
+        recomputed a stored end would coincidentally write the same value and
+        emit no statement, so the census would pass on the defect.
         """
         with app.app_context():
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=6, cadence_days=14,
+                num_periods=3, cadence_days=14,
             )
             db.session.commit()
 
-            # ON cadence: the sixth payday is 2026-03-13 and covers to
-            # 2026-03-26, so a payday on 2026-03-27 leaves every existing end
-            # exactly where it is.  An off-cadence append would move the
-            # previous last end legitimately and this would measure that
-            # instead.
-            _result, statements = capture_sql_statements(
+            created, statements = capture_sql_statements(
                 lambda: pay_period_write.record_paydays(
-                    user_id=user_id, first_payday=date(2026, 3, 27),
-                    num_periods=1, cadence_days=14,
+                    user_id=user_id, first_payday=date(2026, 2, 20),
+                    num_periods=1, cadence_days=7,
                 ),
             )
             db.session.commit()
+
+            # **The positive control, and an adversarial review of this step is
+            # why it is here** (2026-09-01).  ``updates == []`` is satisfied by
+            # a write that did NOTHING -- a batch that recorded no payday, or a
+            # capture whose listener never fired -- so the census had to say
+            # first that there was a write to census.
+            assert len(created) == 1
+            inserts = [
+                text for text, _params in statements
+                if text.lstrip().upper().startswith("INSERT INTO BUDGET.PAY_PERIODS")
+            ]
+            assert len(inserts) == 1, statements
 
             updates = [
                 text for text, _params in statements
@@ -516,54 +475,94 @@ class TestItMaterialisesTheWholeDerivation:
             ]
             assert updates == []
 
-    def test_a_repaired_row_is_logged_at_warning(
-        self, app, db, bare_user, caplog,
-    ):
-        """A silent repair is still a silent change to a paycheck's shape.
+    def test_retiring_a_payday_issues_no_UPDATE(self, app, db, bare_user):
+        """A truncate deletes rows, and touches no survivor.
 
-        The event names both values so an operator can see what moved; the
-        level is WARNING because the row it rewrites was a row whose stored
-        coverage disagreed with the owner's own paydays, which the model says
-        cannot happen.
+        The other direction, and it is the one the deleted machinery worked
+        hardest on: a delete used to leave the newly-last survivor a stored end
+        its own schedule no longer justified, so ``retire_paydays`` re-derived
+        what survived.  The survivor's end is derived on every read now, so the
+        delete is a delete.
         """
         with app.app_context():
             user_id = bare_user["user"].id
             created = pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=2, cadence_days=14,
+                num_periods=4, cadence_days=14,
             )
-            open_calendar_hole(db.session, created[0], date(2026, 1, 8))
             db.session.commit()
 
-            # ON cadence, so the ONLY row that moves is the repaired one:
-            # an off-cadence append would also move the last period's
-            # projected end and this would see two events.
-            with caplog.at_level("WARNING", logger="app.services.pay_period_write"):
-                pay_period_write.record_paydays(
-                    user_id=user_id, first_payday=date(2026, 1, 30),
-                    num_periods=1, cadence_days=14,
-                )
+            deleted, statements = capture_sql_statements(
+                lambda: pay_period_admin.truncate_pay_periods(
+                    user_id, keep_through_period_id=created[1].id,
+                ),
+            )
             db.session.commit()
 
-            repaired = [
-                record for record in caplog.records
-                if getattr(record, "event", None) == "pay_periods_rematerialised"
+            # The positive control, for the reason its sibling above states:
+            # a truncate that deleted nothing emits no DELETE and no UPDATE,
+            # and would pass an ``updates == []`` census on its own.
+            assert deleted == 2
+            deletes = [
+                text for text, _params in statements
+                if text.lstrip().upper().startswith("DELETE FROM BUDGET.PAY_PERIODS")
             ]
-            assert len(repaired) == 1
-            assert repaired[0].stored_end == "2026-01-08"
-            assert repaired[0].derived_end == "2026-01-15"
-            assert repaired[0].payday == "2026-01-02"
+            assert len(deletes) == 1, statements
+
+            updates = [
+                text for text, _params in statements
+                if text.lstrip().upper().startswith("UPDATE BUDGET.PAY_PERIODS")
+            ]
+            assert updates == []
+
+    def test_an_existing_period_keeps_its_id_and_its_transactions(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Identity survives a later write, which is what the FKs rest on.
+
+        ``budget.pay_periods.id`` is what three inbound foreign keys point at,
+        so a writer that recreated rows rather than appending beside them would
+        strand a transaction quietly.  Nothing here rewrites a row today; this
+        is the assertion that says so from the outside.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            txn = add_txn(
+                db.session, seed_user, seed_periods[0], "Rent", "1200.00",
+                due_date=date(2026, 1, 5),
+            )
+            db.session.commit()
+            period_id, txn_id = seed_periods[0].id, txn.id
+
+            pay_period_admin.extend_pay_periods(user_id, 1)
+            db.session.commit()
+
+            assert db.session.get(PayPeriod, period_id) is not None
+            assert db.session.get(
+                Transaction, txn_id,
+            ).pay_period_id == period_id
+
+
+class TestTheDerivedHorizonFollowsTheStoredCadence:
+    """The LAST period's end is a projection, and it reads one number.
+
+    Every other end is dictated by the next payday and is a fact.  The last has
+    no successor, so it is ``start_date + cadence_days - 1`` read from
+    ``budget.pay_schedule`` -- which is why finding **P28** ("the horizon the
+    app projects" disagreeing with "the end stored on the last row") has no
+    subject since plan step ``pay_calendar:C4-c``: there is one value and no
+    column for it to come apart from.
+    """
 
     def test_truncate_reprojects_the_new_last_end(self, app, db, bare_user):
-        """Deleting the tail re-derives what survives, and C1's claim needs it.
+        """Deleting the tail moves the survivor's end from a fact to a projection.
 
         Paydays ``[2026-01-02, 2026-01-16, 2026-02-11]``: the January 16
         paycheck runs to 2026-02-10 because its successor opens then.  Truncate
         that successor away and it is the LAST period, so its end falls back to
-        the cadence projection, 2026-01-29.  A delete re-derived nothing before
-        plan step C3-b, so the row kept an end its own schedule no longer
-        justified -- and an on-cadence fixture cannot see that, because
-        ``lead(start) - 1`` and ``start + cadence - 1`` coincide there.
+        the cadence projection, 2026-01-29.  An on-cadence fixture cannot see
+        this at all, because ``lead(start) - 1`` and ``start + cadence - 1``
+        coincide there.
         """
         with app.app_context():
             user_id = bare_user["user"].id
@@ -594,12 +593,9 @@ class TestItMaterialisesTheWholeDerivation:
     def test_the_last_end_follows_the_STORED_cadence(self, app, db, bare_user):
         """Finding **P28** closed at the root: one cadence, not two.
 
-        The recompute reads ``budget.pay_schedule`` AFTER the cadence rule has
-        run, so "the horizon the app projects" and "the end stored on the last
-        row" are the same number by construction.  Here the batch records
-        nothing new -- every payday already exists -- so the cadence rule does
-        NOT fire, and the stored 14 is what the last end keeps even though the
-        call named 30.
+        Here the batch records nothing new -- every payday already exists -- so
+        the cadence rule does NOT fire, and the stored 14 is what the horizon
+        keeps even though the call named 30.
         """
         with app.app_context():
             user_id = bare_user["user"].id
@@ -690,7 +686,9 @@ class TestACoverageWithdrawalIsAccepted:
                 db.session, seed_user, seed_periods[-1], date(2026, 5, 30),
             )
             db.session.commit()
-            assert seed_periods[-1].end_date == self._LAST_COVERED
+            assert _paydays(user_id)[-1] == (
+                self._LAST_PAYDAY, self._LAST_COVERED, 9,
+            )
 
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 5, 22),
@@ -1079,57 +1077,99 @@ class TestTheCadenceRule:
             )
 
 
-class TestTheWriterRefusesWhatItCannotMaterialise:
-    """``reject_unmaterialisable_batch`` -- plan step X-ad-a.
+class TestTheWriterBoundsWhatOneCallMayCreate:
+    """``reject_out_of_range_batch_size`` -- plan step X-ad-a, as C4-c left it.
 
-    Two preconditions this writer had never stated, both measured as real
-    failures rather than argued:
+    ``num_periods`` was bounded by no service at all, so a non-form caller
+    could ask for zero (failing several statements later under a message about
+    accounts) or for a hundred thousand.  That is the whole of what this door
+    refuses now.
 
-    * A cadence of 1 makes the last period's end its own ``start_date``, which
-      ``ck_pay_periods_date_order`` refuses -- an unhandled ``IntegrityError``
-      500 reproduced on both the settings form and the registration form.
-      **Not because a one-day pay cycle is illegitimate**: it is legal, and
-      pay-calendar step C4 legalises it by dropping the stored column.
-    * ``num_periods`` was bounded by no service at all, so a non-form caller
-      could ask for zero (failing several statements later under a message
-      about accounts) or for a hundred thousand.
+    **The cadence FLOOR that used to sit beside it is gone, and the first case
+    below is its inverse.**  It refused a cadence of 1 because the last
+    period's stored end would be its own ``start_date`` and
+    ``ck_pay_periods_date_order`` would refuse it -- an unhandled
+    ``IntegrityError`` 500, reproduced on both the settings form and the
+    registration form.  A one-day pay cycle was always legitimate; what could
+    not hold one was a stored column.  Plan step ``pay_calendar:C4-c`` dropped
+    it, closing pay-calendar findings **P9** and **P33**.
     """
 
-    def test_a_one_day_cadence_is_refused_before_the_check_sees_it(
-        self, app, db, bare_user,
-    ):
-        """Cadence 1 is a ValidationError, not a CheckViolation 500."""
-        with app.app_context():
-            with pytest.raises(ValidationError, match="at least 2"):
-                pay_period_write.record_paydays(
-                    user_id=bare_user["user"].id,
-                    first_payday=date(2026, 1, 2),
-                    num_periods=2,
-                    cadence_days=1,
-                )
-            db.session.rollback()
-            assert all_periods(
-                bare_user["user"].id,
-            ) == []
+    def test_a_one_day_cadence_is_ACCEPTED(self, app, db, bare_user):
+        """Finding **P9**, closed: two paydays a day apart are two paychecks.
 
-    def test_a_two_day_cadence_is_accepted(self, app, db, bare_user):
-        """The floor is INCLUSIVE, and this is the control for the test above.
-
-        Without it, a refusal that also rejected 2 -- or 30 -- would look
-        identical.  Two paydays two days apart give two-day periods:
-        01-02..01-03 and 01-04..01-05.
+        This case asserted a ``ValidationError`` until plan step
+        ``pay_calendar:C4-c``, and inverting it is the point.  Three paydays a
+        day apart derive three one-day periods -- each end is the day before
+        the next payday, and the LAST is ``start + (1 - 1)``, its own payday.
+        ``ck_pay_periods_date_order`` refused exactly this shape.
         """
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            pay_period_write.record_paydays(
+                user_id=bare_user["user"].id,
+                first_payday=date(2026, 1, 2),
+                num_periods=3,
+                cadence_days=1,
+            )
+            db.session.commit()
+
+            assert _paydays(bare_user["user"].id) == [
+                (date(2026, 1, 2), date(2026, 1, 2), 0),
+                (date(2026, 1, 3), date(2026, 1, 3), 1),
+                (date(2026, 1, 4), date(2026, 1, 4), 2),
+            ]
+
+    def test_a_one_day_cadence_survives_the_read_path_top_up(
+        self, app, db, bare_user,
+    ):
+        """Finding **P33**, closed structurally rather than swallowed.
+
+        ``top_up_rolling_window`` runs on ``/grid`` and ``/dashboard`` with no
+        handler of its own, so for an owner holding cadence 1 the writer's
+        refusal was a permanent 500 on both screens.  The refusal is gone, so
+        the top-up simply extends the schedule -- the state was never illegal,
+        only unstorable.
+
+        Both paydays fall after this module's frozen today (2025-12-01), so the
+        window holds two current-and-future paychecks against a target of four
+        and the deficit is two.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 2),
+                num_periods=2, cadence_days=1,
+            )
+            pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=4,
+            )
+            db.session.commit()
+
+            created = pay_period_rolling.top_up_rolling_window(user_id)
+            db.session.commit()
+
+            assert [period.start_date for period in created] == [
+                date(2026, 1, 4), date(2026, 1, 5),
+            ]
+
+    def test_a_two_day_cadence_is_accepted(self, app, db, bare_user):
+        """Two paydays two days apart give two-day periods.
+
+        01-02..01-03 and 01-04..01-05 -- the case that was the INCLUSIVE-floor
+        control while a floor existed, kept because it is the ordinary short
+        cycle and the arithmetic is worth pinning either way.
+        """
+        with app.app_context():
+            pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=2,
                 cadence_days=2,
             )
             db.session.commit()
-            assert [(p.start_date, p.end_date) for p in periods] == [
-                (date(2026, 1, 2), date(2026, 1, 3)),
-                (date(2026, 1, 4), date(2026, 1, 5)),
+            assert _paydays(bare_user["user"].id) == [
+                (date(2026, 1, 2), date(2026, 1, 3), 0),
+                (date(2026, 1, 4), date(2026, 1, 5), 1),
             ]
 
     @pytest.mark.parametrize("count", [0, -1, 261, 100_000])
@@ -1155,25 +1195,53 @@ class TestTheWriterRefusesWhatItCannotMaterialise:
                 bare_user["user"].id,
             ) == []
 
-    def test_the_form_bound_and_the_writer_bound_agree(self):
-        """The schema's cadence floor IS the writer's, not the column's.
+    def test_the_form_bound_and_the_writer_bound_accept_the_SAME_cadence(
+        self, app, db, bare_user,
+    ):
+        """What the generate form admits is exactly what the writer materialises.
 
-        This is what makes ``routes/pay_periods.generate``'s error attribution
-        provable: the schema bounds the cadence and the batch to exactly what
-        the writer accepts, so the only ``ValidationError`` that can reach that
-        handler is the forward-only one it renders on ``start_date``.
+        There were TWO cadence floors between plan steps X-ad-a and
+        ``pay_calendar:C4-c``: the column admitted 1 and the schema admitted 2,
+        because the writer could not put a one-day period into a stored
+        ``end_date``.  ``CADENCE_DAYS_FORM_MIN`` was that second number and it
+        is deleted -- a bound the schema restates is a bound that can drift
+        from the column.
+
+        Graded end to end rather than by comparing two constants: the schema's
+        own ``load`` produces the payload and the writer consumes it, so a
+        floor that came back on either side fails here.  It is also what keeps
+        ``routes/pay_periods.generate``'s error attribution provable -- the
+        schema bounds the cadence and the batch to exactly what the writer
+        accepts, so the only ``ValidationError`` that can reach that handler is
+        the forward-only one it renders on ``start_date``.
         """
-        assert CADENCE_DAYS_FORM_MIN == MIN_MATERIALISABLE_CADENCE_DAYS
-        assert CADENCE_DAYS_FORM_MIN > CADENCE_DAYS_MIN
+        with app.app_context():
+            loaded = PayPeriodGenerateSchema().load({
+                "start_date": "2026-01-02",
+                "num_periods": "2",
+                "cadence_days": str(CADENCE_DAYS_MIN),
+            })
+            pay_period_write.record_paydays(
+                user_id=bare_user["user"].id,
+                first_payday=loaded["start_date"],
+                num_periods=loaded["num_periods"],
+                cadence_days=loaded["cadence_days"],
+            )
+            db.session.commit()
+
+            assert loaded["cadence_days"] == 1
+            assert _paydays(bare_user["user"].id) == [
+                (date(2026, 1, 2), date(2026, 1, 2), 0),
+                (date(2026, 1, 3), date(2026, 1, 3), 1),
+            ]
 
     def test_an_unstorable_cadence_creates_no_periods(self, app, db, bare_user):
         """A cadence the schedule column refuses writes nothing at all.
 
-        The cadence rule runs BEFORE any row is added, so the refusal happens
-        with nothing to roll back -- which is what makes the generate route's
-        422 clean.  ``establish_schedule`` used to compose the two calls in the
-        other order, and a naive composition would have left the owner with
-        366-day pay periods and no schedule row.
+        The refusal happens before any row is added -- which is what makes the
+        generate route's 422 clean.  ``establish_schedule`` used to compose the
+        two calls in the other order, and a naive composition would have left
+        the owner with 366-day pay periods and no schedule row.
         """
         user_id = bare_user["user"].id
         with app.app_context():
@@ -1518,140 +1586,3 @@ class TestTheRetiredCountIsTheIntersection:
                 if getattr(record, "event", None) == "pay_periods_generated"
             ]
             assert retired[-1] == 1
-
-
-class TestThePeriodsAlwaysEqualTheirDerivation:
-    """The invariant, graded end-to-end through every door that writes.
-
-    Each door mutates the payday set and then the whole calendar is compared
-    against ``derive_periods`` over the owner's paydays and stored cadence.
-    This is what plan step C4 rests on: if the two agree everywhere, dropping
-    the columns cannot change a figure.
-    """
-
-    def _assert_stored_equals_derived(self, user_id):
-        """Compare every stored row against the derivation over the paydays."""
-        # pylint: disable=import-outside-toplevel
-        from app.services.pay_calendar import derive_periods
-
-        periods = sorted(
-            all_periods(user_id),
-            key=lambda period: period.start_date,
-        )
-        derived = derive_periods(
-            [(p.id, p.start_date) for p in periods],
-            pay_schedule_service.resolve_cadence(user_id),
-        )
-        assert [
-            (p.start_date, p.end_date, p.period_index) for p in periods
-        ] == [
-            (d.start_date, d.end_date, d.period_index) for d in derived
-        ]
-
-    def test_after_generate(self, app, db, bare_user):
-        """The first batch."""
-        with app.app_context():
-            pay_period_write.record_paydays(
-                user_id=bare_user["user"].id, first_payday=date(2026, 1, 2),
-                num_periods=4, cadence_days=14,
-            )
-            db.session.commit()
-            self._assert_stored_equals_derived(bare_user["user"].id)
-
-    def test_after_extend(self, app, db, bare_user):
-        """A forward append through the admin door."""
-        with app.app_context():
-            user_id = bare_user["user"].id
-            pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=4, cadence_days=14,
-            )
-            db.session.commit()
-            pay_period_admin.extend_pay_periods(user_id, 3)
-            db.session.commit()
-            self._assert_stored_equals_derived(user_id)
-
-    def test_after_truncate(self, app, db, bare_user):
-        """A tail delete, including the re-projection of the new last end."""
-        with app.app_context():
-            user_id = bare_user["user"].id
-            created = pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=4, cadence_days=14,
-            )
-            db.session.commit()
-            pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_period_id=created[1].id,
-            )
-            db.session.commit()
-            self._assert_stored_equals_derived(user_id)
-
-    def test_after_regenerate(self, app, db, seed_user, seed_periods):
-        """The door that RETIRES a tail and RECORDS a new one in one write."""
-        with app.app_context():
-            user_id = seed_user["user"].id
-            pay_period_admin.regenerate_pay_periods(
-                user_id, date(2026, 5, 22), 4, 7, confirm_discard=True,
-            )
-            db.session.commit()
-            self._assert_stored_equals_derived(user_id)
-
-    def test_after_reset(self, app, db, seed_user, seed_periods):
-        """The door that wipes every period and rebuilds from nothing."""
-        with app.app_context():
-            user_id = seed_user["user"].id
-            pay_period_admin.reset_pay_periods(
-                user_id, date(2026, 9, 4), 5, 14,
-            )
-            db.session.commit()
-            self._assert_stored_equals_derived(user_id)
-
-    def test_after_a_repair_of_pre_c3b_data(self, app, db, bare_user):
-        """A hole written before this step is gone after any door runs."""
-        with app.app_context():
-            user_id = bare_user["user"].id
-            created = pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=4, cadence_days=14,
-            )
-            open_calendar_hole(db.session, created[1], date(2026, 1, 20))
-            db.session.commit()
-            with pytest.raises(AssertionError):
-                self._assert_stored_equals_derived(user_id)
-
-            pay_period_admin.extend_pay_periods(user_id, 1)
-            db.session.commit()
-            self._assert_stored_equals_derived(user_id)
-
-
-class TestThePeriodRowsSurviveTheRewrite:
-    """A repair moves COLUMNS, never identity: every ``id`` and FK survives.
-
-    The whole reason plan step C4 is two ``DROP COLUMN``s rather than a
-    rewrite is that ``budget.pay_periods.id`` never moves, so all four inbound
-    foreign keys are untouched.  A recompute that recreated rows would break
-    that quietly -- a transaction would point at a period that no longer
-    exists, or at the wrong one.
-    """
-
-    def test_a_repaired_period_keeps_its_id_and_its_transactions(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The row is UPDATEd in place, and its rows still point at it."""
-        with app.app_context():
-            user_id = seed_user["user"].id
-            txn = add_txn(
-                db.session, seed_user, seed_periods[0], "Rent", "1200.00",
-                due_date=date(2026, 1, 5),
-            )
-            open_calendar_hole(db.session, seed_periods[0], date(2026, 1, 8))
-            db.session.commit()
-            period_id, txn_id = seed_periods[0].id, txn.id
-
-            pay_period_admin.extend_pay_periods(user_id, 1)
-            db.session.commit()
-
-            repaired = db.session.get(PayPeriod, period_id)
-            assert repaired is not None
-            assert repaired.end_date == date(2026, 1, 15)
-            assert db.session.get(Transaction, txn_id).pay_period_id == period_id

@@ -1,61 +1,33 @@
 """
 Shekel Budget App -- Pay Period Model (budget schema)
 
-Auto-generated biweekly date ranges that anchor every transaction
-to a specific paycheck.
+**One row is ONE FACT: the day money arrived.**  A pay period's ordinal is its
+position in its owner's payday order and its last covered day is the day before
+the next payday, and since plan step ``pay_calendar:C4-c`` neither is stored --
+:func:`app.services.pay_calendar.derive_periods` is the one place either is
+answered.  Until that step the table carried both as columns beside the fact
+they derive from, with nothing reconciling them, which is what made a gap, an
+overlap and an ordinal out of date order EXPRESSIBLE states that five separate
+runtime fences had to police (``docs/plans/implementation_plan_pay_calendar.md``
+section 1).  None of the three is expressible now, so none of the fences has a
+subject.
 """
 
 from app.extensions import db
 from app.models.mixins import CreatedAtMixin, UserScopedMixin
 
 
-#: The shortest cadence the CURRENT writer can materialise into this table.
-#:
-#: **Not a claim that a one-day pay cycle is illegitimate -- it is legal, and
-#: pay-calendar step C4 legalises it.**  ``ck_pay_periods_date_order`` below
-#: requires ``start_date < end_date``, while
-#: :func:`app.services.pay_period_write.record_paydays` STORES a last period
-#: whose end is ``start_date + (cadence_days - 1)``; at a cadence of 1 those
-#: two are the same day and the INSERT dies as a ``CheckViolation`` -- an
-#: unhandled 500 on both the settings form and, since plan step X-ad-a, the
-#: public registration form.  So this bound is a property of the
-#: REPRESENTATION, not of the schedule: a STORED ``end_date`` cannot hold a
-#: one-day period.  ``budget.pay_schedule.cadence_days`` still accepts 1 and
-#: :data:`app.services.pay_calendar.MIN_CADENCE_DAYS` still derives one
-#: correctly, because neither of those has a column to write it to.
-#:
-#: *Every other* end became ``next payday - 1`` at plan step C3-b, which is why
-#: the bound now reads off the last period alone: two paydays a day apart in
-#: the MIDDLE of a schedule derive a one-day period the same way, and the same
-#: CHECK refuses it, which is what ``_reject_backward_payday`` keeps out.
-#:
-#: **C4 deletes this constant with the column and the CHECK it mirrors**
-#: (pay-calendar finding **P9**): once ``end_date`` is derived rather than
-#: stored, two paydays a day apart define a one-day period and nothing has to
-#: refuse anything.  Until then the writer states what it cannot express, so
-#: the refusal is a form error rather than a stack trace.
-MIN_MATERIALISABLE_CADENCE_DAYS = 2
-
-
 class PayPeriod(UserScopedMixin, CreatedAtMixin, db.Model):
-    """A single pay period defined by start_date (payday) and end_date."""
+    """One payday, which is the whole of what this table records."""
 
     __tablename__ = "pay_periods"
     __table_args__ = (
+        # The payday model's exact key: one period per owner per opening day.
+        # It is the ONLY uniqueness rule the table needs since plan step
+        # ``pay_calendar:C4-c`` -- ``uq_pay_periods_user_index`` policed a
+        # duplicate ORDINAL, which is now a position in a sort rather than a
+        # value anything can repeat.
         db.UniqueConstraint("user_id", "start_date", name="uq_pay_periods_user_start"),
-        # ``period_index`` is unique per user: the balance resolver walks a
-        # user's periods ordered by ``period_index`` and trusts that order
-        # to be chronological, so a duplicate index would silently drop a
-        # period from as-of balances.  Enforced in the schema (migration
-        # f75485db6757) so every period-appending path -- extend,
-        # regenerate, rolling top-up -- is protected, not just one.  The
-        # backing index also serves the ``(user_id, period_index)`` lookups
-        # the old non-unique ``idx_pay_periods_user_index`` covered.
-        db.UniqueConstraint(
-            "user_id", "period_index", name="uq_pay_periods_user_index"
-        ),
-        db.CheckConstraint("start_date < end_date", name="ck_pay_periods_date_order"),
-        db.CheckConstraint("period_index >= 0", name="ck_pay_periods_positive_index"),
         # An owner holding a payday HAS a recorded cadence, guaranteed rather
         # than remembered (plan step C4-b-2, closing findings **P8** and
         # **P35**).  ``pay_period_write._apply`` upserts the schedule row
@@ -63,7 +35,7 @@ class PayPeriod(UserScopedMixin, CreatedAtMixin, db.Model):
         # but only for as long as every future writer remembered it, and the
         # state it forbids is one ``resolve_schedule`` had to carry a CIRCULAR
         # guess for: infer the cadence from the last period's stored length,
-        # which ``record_paydays`` derives FROM that same cadence.  With the
+        # which ``record_paydays`` derived FROM that same cadence.  With the
         # key there is nothing left to infer, so the guess is deleted rather
         # than left unreachable.
         #
@@ -100,8 +72,7 @@ class PayPeriod(UserScopedMixin, CreatedAtMixin, db.Model):
         #
         # No index is added.  A referencing-side index is what makes the
         # parent's delete check cheap, and ``uq_pay_periods_user_start``
-        # already leads with ``user_id`` -- it survives plan step C4-c, which
-        # drops ``uq_pay_periods_user_index``.
+        # already leads with ``user_id``.
         db.ForeignKeyConstraint(
             ["user_id"],
             ["budget.pay_schedule.user_id"],
@@ -112,9 +83,13 @@ class PayPeriod(UserScopedMixin, CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
+    #: The payday -- the day money arrived, and the only fact in the row.
+    #:
+    #: Everything a consumer used to read off a neighbouring column is derived
+    #: from this and its siblings by
+    #: :func:`app.services.pay_calendar.derive_periods`, whose answer is a
+    #: :class:`~app.services.pay_calendar.DerivedPeriod`.
     start_date = db.Column(db.Date, nullable=False)
-    end_date = db.Column(db.Date, nullable=False)
-    period_index = db.Column(db.Integer, nullable=False)
 
     # Relationships -- transactions loaded via back_populates on Transaction
     transactions = db.relationship(
@@ -122,4 +97,4 @@ class PayPeriod(UserScopedMixin, CreatedAtMixin, db.Model):
     )
 
     def __repr__(self):
-        return f"<PayPeriod {self.start_date} idx={self.period_index}>"
+        return f"<PayPeriod {self.start_date}>"

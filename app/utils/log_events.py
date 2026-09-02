@@ -399,19 +399,6 @@ EVT_PAY_PERIODS_GENERATED = _register(
     "pay_periods_generated", BUSINESS,
     "Pay-period service created one or more new biweekly periods.",
 )
-EVT_PAY_PERIODS_REMATERIALISED = _register(
-    "pay_periods_rematerialised", BUSINESS,
-    "A stored pay period's end_date or period_index disagreed with the owner's "
-    "own paydays and the writer rewrote it to match (plan step C3-b).  Those "
-    "two columns are derived from the payday set; a disagreement means the "
-    "schedule held a day no paycheck covered, or one covered twice, and the "
-    "row's money was reconciling wrongly until this fired -- possibly under "
-    "settled money.  Production is clean (61 paydays, 0 mismatches, measured "
-    "2026-08-10), so every occurrence names a schedule that had been quietly "
-    "wrong.  ALERT ON IT, and read the stored_* / derived_* fields to see what "
-    "moved.  Plan step C4 drops both columns, after which this event has no "
-    "subject.",
-)
 
 
 # ── Business events: recurrence engines (regenerate / resolve) ─────

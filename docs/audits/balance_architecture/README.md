@@ -333,6 +333,51 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   **N-169 closed already** at `C2-d` (`3e6cd4ec`). **GATES the recurrence redesign's `R5`**, which
   edits `cash_ledger/_events.py` inside this deletion set -- a column rename in a file this step
   deletes from is avoided by ordering rather than by merge.
+* [ ] **X-bj** `feat(cash): a level is an observation, never a reset` -- ruling **R-IS**. The
+  owner's true-ups and the bank's statement closings become ONE evidence-ranked relation of
+  `(account, day, amount, source, evidence)`, so **N-314** is closed by a schema rather than by a
+  precedence rule a reader has to remember. A level moves no balance; it yields
+  `discrepancy = observed - computed`, and zero is the healthy state. `StatementBalanceEvidenceEnum`
+  and `weaker_of` already rank exactly this. **The bank half cannot move in as it stands**: an
+  assertion is append-only at the DATABASE tier (**R-HY**, **R-IC**) while `release_anchors_from`
+  releases an anchor by UPDATE, so a release becomes an APPENDED superseding row -- which keeps the
+  audit trail the update destroys. The OPENING stays a separate constitutive fact (**R-GX**).
+* [ ] **X-bi** the DECOMPOSED parent of the MOVEMENT UNIFICATION (**R-IT**), split five ways by the
+  adversarial review of 2026-09-01 that refuted its first cut. **Every plan item is satisfied by
+  zero or more MOVEMENTS**: a bill is the one-movement case, an envelope the many-movement case,
+  `budget.transaction_entries` becomes the general movement table and the fold reads movements only.
+  The argument, the measured cost and the twelve refuted claims behind it are
+  `../../design/from_scratch_architecture.md`. **The root cause it removes** is that one table holds
+  a PLAN and a RECORD with a status column pretending one becomes the other -- 161 of 238 fold facts
+  on Checking are plan rows whose status was flipped, and the movement record is `$4,270.78` from
+  the bank over 155 days.
+  * [ ] **X-bi-1** `tracks_purchases` becomes a STORED column with one writer, backfilled from each
+    row's template. It is the app's own envelope predicate and it defers to the TEMPLATE, so keying
+    anything on `transactions.is_envelope` reads 4 envelopes where there are 238 -- the error a
+    first draft of this family's migration made, which would have over-minted 30 rows worth
+    `$7,680.86`.
+  * [ ] **X-bi-2** entries gain the full movement column set: a category, a type, `scenario_id` --
+    which `cash_ledger/_amount_source.py` REFUSES a mismatch on -- and the settle-day basis pair.
+    Additive; nothing reads them yet and the downgrade is a column drop.
+  * [ ] **X-bi-3** `settle_from_entries` becomes the ONLY settle path, its MANUAL branch writing one
+    covering movement THROUGH THE SERVICE DOOR, which is what **R-HJ** requires of any act that
+    writes money rows. **MOVES MONEY.** The 165 settled rows holding no entries include 14 with no
+    settle day and 38 transfer shadows under the four Transfer Invariants: 52 design questions a
+    human answers at a door, not a `WHERE` clause.
+  * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
+    After X-bi-3 every settled row has exactly one covering movement, so `opening + SUM(movements)`
+    is an identity provable against the pre-state. **A per-kind cut was REJECTED**: the fold's
+    predicate is kind-blind across 66 sites, so that cut would erect a discriminator only to delete
+    it, and run two balance semantics live on one account meanwhile.
+  * [ ] **X-bi-5** delete `is_envelope`, `tracks_purchases`'s branch sites and the template sites,
+    which is the fence this family makes structurally unnecessary rather than merely unused.
+* [ ] **X-bk** the ONE-TIME manual reconcile of the imported bank history against the app's own
+  rows, through the app's doors and into the post-restructure shape, so the whole history keeps its
+  plan-versus-actual comparison. **MOVES MONEY**, and it is an OPERATOR act -- a rehearsed runbook
+  and a re-measurement rather than a code change. Reconciling under the PRE-restructure shape was
+  rejected: it mutates plan rows to match the bank and destroys the comparison the restructure
+  exists to give. **It is what makes THE FLIP safe**, and its completion test is
+  `outstanding_difference.SpanAgreement.reconciles` rather than a judgement.
 *THIRTEEN of this span's shipped steps left under rule 5, indexed by `archive/README.md`: X-an, X-f2's four leaves, X-aq, X-as and X-ap (2026-08-13); X-f3a-1 and X-f3d (2026-08-16); X-f1 with five others (2026-08-26); X-f3b and X-i3 (2026-08-27). Sentences above name several of them for how the code came to be, which rule 15 sanctions. The statement importer moved to its own arc 2026-08-13: `../../plans/implementation_plan_bank_import.md`.*
 
 ### Phase X -- the amount model (ruling R-FI)

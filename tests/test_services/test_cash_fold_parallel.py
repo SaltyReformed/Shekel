@@ -40,6 +40,7 @@ from tests._test_helpers import (
     add_txn,
     append_balance_assertion,
     create_settled_cash_transaction,
+    last_covered_day,
 )
 from tests.test_services.test_cash_fold import _instant
 
@@ -120,7 +121,7 @@ class TestACleanShapeAgreesOnEveryDay:
         """
         account = seed_user["account"]
         as_of = _clean_shape(db.session, seed_user, seed_periods)
-        first_day, last_day = seed_periods[0].start_date, seed_periods[9].end_date
+        first_day, last_day = seed_periods[0].start_date, last_covered_day(seed_periods[9])
         days = _days(first_day, last_day)
         assert len(days) == 140  # the loop is not vacuous
 
@@ -147,7 +148,7 @@ class TestACleanShapeAgreesOnEveryDay:
         account = seed_user["account"]
         as_of = _clean_shape(db.session, seed_user, seed_periods)
         ctx = _context(seed_user, as_of)
-        ends = [period.end_date for period in seed_periods]
+        ends = [last_covered_day(period) for period in seed_periods]
         assert len(ends) == 10  # the loop is not vacuous
 
         folded = _folded(seed_user, account, as_of, ends)
@@ -176,11 +177,12 @@ class TestACleanShapeAgreesOnEveryDay:
 
         folded = _folded(
             seed_user, account, as_of,
-            [period.end_date for period in seed_periods],
+            [last_covered_day(period) for period in seed_periods],
         )
         for period in seed_periods:
-            assert folded[period.end_date] == mapped[period.id], (
-                f"diverged at period {period.id} ({period.end_date})"
+            assert folded[last_covered_day(period)] == mapped[period.id], (
+                f"diverged at period {period.id} "
+                f"({last_covered_day(period)})"
             )
 
 
@@ -238,7 +240,7 @@ class TestEveryFindingIsClosedAtTheSeam:
 
         mapped = balance_at.cash_balance_map(account, ctx)
         assert mapped[seed_periods[6].id] == Decimal("3644.27")
-        assert folded[seed_periods[6].end_date] == Decimal("3644.27")
+        assert folded[last_covered_day(seed_periods[6])] == Decimal("3644.27")
 
     def test_cash_d2_the_scalar_steps_on_the_day_the_money_moves(
         self, db, seed_user, seed_periods,
@@ -264,7 +266,7 @@ class TestEveryFindingIsClosedAtTheSeam:
         db.session.commit()
 
         ctx = _context(seed_user, as_of)
-        days = _days(seed_periods[6].start_date, seed_periods[6].end_date)
+        days = _days(seed_periods[6].start_date, last_covered_day(seed_periods[6]))
         assert len(days) == 14  # the loop is not vacuous
         folded = _folded(seed_user, account, as_of, days)
         series = balance_at.cash_daily_balance_series(
@@ -323,7 +325,7 @@ class TestEveryFindingIsClosedAtTheSeam:
         mapped = balance_at.cash_balance_map(account, ctx)
         for period in seed_periods[:4]:
             assert mapped[period.id] == Decimal("1000.00")
-            assert folded[period.end_date] == Decimal("1000.00")
+            assert folded[last_covered_day(period)] == Decimal("1000.00")
 
     def test_ruling_r_g_the_overdue_bill_the_producers_keep_in_the_past(
         self, db, seed_user, seed_periods,
@@ -366,6 +368,6 @@ class TestEveryFindingIsClosedAtTheSeam:
                 Decimal("1000.00") if day < date(2026, 4, 3)
                 else Decimal("950.00")
             ), f"daily series wrong on {day}"
-        assert folded[seed_periods[6].end_date] == series[
-            seed_periods[6].end_date
+        assert folded[last_covered_day(seed_periods[6])] == series[
+            last_covered_day(seed_periods[6])
         ]

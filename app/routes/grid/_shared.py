@@ -153,7 +153,7 @@ def _build_grid_view(account, balance_ctx):
             owner's whole pay calendar off it
             (``reported_periods()``) rather than taking a list of ORM rows,
             whose ``end_date`` and ``period_index`` are the two derived columns
-            plan step C4 drops.  Every period is answered -- there is no
+            plan step C4-c dropped.  Every period is answered -- there is no
             anchor-forward restriction to respect since plan step X-c2b2 --
             and each is valued off its OWN span, so each render window is a
             slice of the result rather than a re-based projection.

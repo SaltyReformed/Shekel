@@ -2130,7 +2130,14 @@ def posted_loan_balance_map(loan_account_id, scenario_id, periods):
     The per-period form of :func:`posted_loan_balance_at`, evaluated at each
     period's END date.  A posting can fall mid-period under the one clock (step
     C2), so a payment settled during period P must count in P's balance, which
-    ``entry_date <= period.end_date`` selects.
+    ``entry_date <= <the period's last covered day>`` selects.
+
+    **It DERIVES that day rather than reading it off the row** (plan step
+    ``pay_calendar:C4-c``, which dropped the column it used to read).  The
+    owner's calendar is resolved once and each requested period's derived twin
+    supplies the bound, which is :func:`period_window`'s shape and it is here
+    for the same reason: a period's end is the day before the NEXT payday, so
+    it is a property of the whole payday set rather than of one row.
 
     **It is the scalar per period, not an independent derivation.**  Comparing
     this against :func:`posted_loan_balance_at` at the same date is therefore
@@ -2148,23 +2155,54 @@ def posted_loan_balance_map(loan_account_id, scenario_id, periods):
     Args:
         loan_account_id: The loan account whose per-period balances to read.
         scenario_id: The budget scenario to scope to.
-        periods: The pay periods to key by (any order; the result keys by
-            ``period.id`` in the given order).  Postings in periods outside this
-            list are still counted -- each period's value is a cumulative, not a
-            slice.
+        periods: The ``PayPeriod`` rows to key by, in any order and all
+            belonging to one user.  Must be non-empty -- an empty request has
+            no owner to resolve a calendar for.  The result keys by
+            ``period.id`` in PAYDAY order, which is the calendar's.  Postings
+            in periods outside this list are still counted -- each period's
+            value is a cumulative, not a slice.
 
     Returns:
         A ``{period.id: Decimal}`` mapping, or ``None`` when the loan has no
         OPENING posting in the scenario.
     """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        calendar_for,
+    )
+
     if _posted_loan_linked_ledger(loan_account_id, scenario_id) is None:
         return None
-    return {
-        period.id: posted_loan_balance_at(
+    # Materialised once: the owner is read off the first row and the id set off
+    # all of them, so a generator argument would be half consumed by the time
+    # the owner is asked for.  Every caller passes a list today; this is what
+    # keeps that from being a precondition nobody states.
+    rows = tuple(periods)
+    assert rows, "posted_loan_balance_map needs at least one period to key by"
+    owners = {period.user_id for period in rows}
+    assert len(owners) == 1, (
+        f"posted_loan_balance_map resolves ONE owner's calendar and was given "
+        f"periods from {sorted(owners)}; the rest would be silently dropped"
+    )
+    wanted = {period.id for period in rows}
+    calendar = calendar_for(rows[0].user_id)
+    answer = {
+        period.period_id: posted_loan_balance_at(
             loan_account_id, scenario_id, period.end_date,
         )
-        for period in periods
+        for period in calendar.saved()
+        if period.period_id in wanted
     }
+    # **One key per REQUESTED period, which is the contract the stored-column
+    # version had for free.**  Selecting from the calendar means a period the
+    # calendar does not hold -- unflushed, or another owner's -- would simply
+    # vanish from the result, and only two of this helper's callers assert the
+    # length.  A short map is a caller reading a KeyError several lines later
+    # about a period it did pass in.
+    assert set(answer) == wanted, (
+        f"periods {sorted(wanted - set(answer))} are not in the owner's saved "
+        f"calendar, so they were never flushed or belong to someone else"
+    )
+    return answer
 
 
 def find_loan_ledger_account(db_session, loan_account_id, kind):
@@ -2230,6 +2268,113 @@ def loan_income_shadow(db_session, transfer_id, loan_account_id):
         )
         .one()
     )
+
+
+#: Plan step ``pay_calendar:C4-c``'s revision, whose ``downgrade()`` is the one
+#: statement in this repository that re-creates ``budget.pay_periods.end_date``
+#: and ``budget.pay_periods.period_index``.
+_C4C_REVISION_FILE = "b7a41e2c9d63_a_pay_period_is_one_fact.py"
+
+
+def restore_pay_period_derived_columns(db_session):
+    """Re-create the two ``budget.pay_periods`` columns C4-c dropped.
+
+    **For a test whose subject is an EARLIER revision's shipped SQL**, which is
+    the only reason this exists.  Plan step ``pay_calendar:C4-c`` dropped
+    ``end_date`` and ``period_index``; several migrations older than it read
+    those columns, and a test that drives one of their callables against the
+    test database therefore meets ``UndefinedColumn`` where it used to find the
+    schema it expected.
+
+    It runs that revision's own ``downgrade()`` rather than issuing DDL of its
+    own, so the columns come back with the constraints, the NOT NULLs and --
+    for every row already in the table -- the VALUES the shipped statement
+    rebuilds.  A hand-written ``ADD COLUMN`` here would be a second statement of
+    the schema that could drift from the migration without failing anything.
+
+    **What it does NOT do, stated because the difference is the whole risk.**
+    It does not put the database at any particular revision: everything else
+    stays at head, so this is head's schema plus two restored columns.  That is
+    enough for a test whose subject is a STATEMENT reading those two columns,
+    and it is not enough for one whose subject is the whole schema at its own
+    revision -- for that, every revision after it has to be undone in order,
+    which is what Alembic does and what no helper here pretends to.  *The
+    general shape -- migration tests in this suite drive their callables at
+    HEAD rather than at the revision's own parent -- is a latent category error
+    that C4-c is simply the first step to make fire; it is recorded as ledger
+    row ``pay_calendar:P79`` rather than fixed inside this step.*
+
+    No restore is needed afterwards: the ``db`` fixture drops and re-clones the
+    per-worker database for every test, so a schema this leaves off head cannot
+    reach the next one.
+
+    **Call it on the session whose transaction is the one holding locks**, and
+    in practice that means BEFORE entering a nested ``app.app_context()`` rather
+    than inside one.  ``ADD COLUMN`` takes ACCESS EXCLUSIVE; Flask-SQLAlchemy
+    scopes its session to the app context and a test already runs inside one,
+    so a NESTED context gets a second session on a second connection while the
+    outer one sits idle-in-transaction holding ACCESS SHARE on
+    ``budget.pay_periods`` from whatever its fixtures last read.  The two
+    conflict and the DDL dies on the cluster's 10-second ``lock_timeout`` --
+    measured rather than predicted, and a confusing failure to meet cold.  The
+    commit below ends the handed-in session's own transaction, which is every
+    conflict this function can reach; a session in another scope is not
+    addressable from here.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that currently holds
+            this table's locks.
+    """
+    run_migration_callable(
+        load_migration_module(_C4C_REVISION_FILE).downgrade, db_session,
+    )
+
+
+def run_migration_callable(callable_, db_session):
+    """Run one migration ``upgrade``/``downgrade`` against the test connection.
+
+    **The one statement of this bootstrap.**  Eighteen files under
+    ``tests/test_models/`` hand-copy a ``MigrationContext`` / ``Operations`` /
+    ``patch.object(op, "get_bind")`` block; consolidating all of them is ledger
+    row **P79**'s territory rather than a column drop's, so this is the copy
+    the files that plan step ``pay_calendar:C4-c`` touches share, and it exists
+    because that step had otherwise written a second one three lines from
+    :func:`restore_pay_period_derived_columns`'s (adversarial review,
+    2026-09-01).  The two had already drifted: one committed before configuring
+    the context and the other relied on every caller having done so.
+
+    It commits FIRST, and that is the lock rather than tidiness: DDL takes
+    ACCESS EXCLUSIVE, and a session left idle-in-transaction holding ACCESS
+    SHARE on the table blocks it until the cluster's ``lock_timeout``.
+    Committing ends the handed-in session's own transaction, which is every
+    conflict this function can reach; a session in another app-context scope is
+    not addressable from here, so a caller inside a NESTED ``app.app_context()``
+    must have committed the outer one.
+
+    Args:
+        callable_: The migration module's ``upgrade`` or ``downgrade``.
+        db_session: The test ``db.session``, in the scope that holds the
+            table's locks.
+    """
+    # Pylint: ``import-outside-toplevel`` -- alembic's operation plumbing is
+    # needed by this one helper, and importing it at module scope would put it
+    # in the import path of every test that touches this file.
+    from alembic import op  # pylint: disable=import-outside-toplevel
+    from alembic.operations import (  # pylint: disable=import-outside-toplevel
+        Operations,
+    )
+    from alembic.runtime.migration import (  # pylint: disable=import-outside-toplevel
+        MigrationContext,
+    )
+    from unittest.mock import patch  # pylint: disable=import-outside-toplevel
+
+    db_session.commit()
+    connection = db_session.connection()
+    ctx = MigrationContext.configure(connection=connection)
+    with Operations.context(ctx):
+        with patch.object(op, "get_bind", return_value=connection):
+            callable_()
+    db_session.commit()
 
 
 def load_migration_module(filename):
@@ -4362,127 +4507,6 @@ def append_balance_assertion(
     return row
 
 
-def open_calendar_hole(db_session, period, last_covered_day):
-    """Shorten one period's stored ``end_date`` so a calendar hole opens after it.
-
-    **The hole is HAND-BUILT, and since plan step C3-b that is the only way to
-    build one.**  Five suites need a schedule with a day no pay period covers,
-    because that is the state ledger row D7 / finding **P2** describes.  They
-    used to reach it through the REAL writer -- append a batch starting later
-    than the current coverage ends -- deliberately, so that "can this state
-    exist?" was proven rather than assumed.
-
-    **What a hole MEANS to a reader changed at plan step C2-b2**, and the
-    callers changed with it.  The recurrence engine used to answer
-    ``PlacementOutcome.SCHEDULE_GAP`` and log the orphaned dates; it now reads
-    the DERIVED calendar, in which the preceding paycheck runs to the day
-    before the next payday and so absorbs them.  The state is reported by
-    ``scripts/integrity_check.py`` **BA-07** instead, which reads the very
-    column this writes.
-
-    ``pay_period_write`` closed that door: it materialises the payday
-    derivation, in which a period ends the day before the next payday, so an
-    append now ABSORBS the days it used to leave behind.  What the suites are
-    about is unchanged -- how a READER behaves when a day belongs to no
-    paycheck -- and that state is still reachable in the wild, from rows written
-    before C3-b.  So the fixture writes the column directly, and the writer's
-    own tests carry the other half: that no door can produce this any more, and
-    that the next write through one REPAIRS it.
-
-    Args:
-        db_session: The test ``db.session``.
-        period: The :class:`~app.models.pay_period.PayPeriod` to shorten -- the
-            one immediately before the intended hole.
-        last_covered_day: The new stored ``end_date``.  Must be on or after
-            *period*'s ``start_date`` (``ck_pay_periods_date_order`` requires
-            strictly after) and before the next period's payday, or no hole
-            opens.
-
-    Returns:
-        The inclusive ``(first_uncovered_day, last_uncovered_day)`` span, so a
-        caller asserts against the fixture's own arithmetic rather than
-        restating it.
-    """
-    # pylint: disable=import-outside-toplevel
-    from app.models.pay_period import PayPeriod
-
-    # Re-read by primary key rather than writing through the handed-in object.
-    # Callers typically hold a period from a FIXTURE built in an earlier app
-    # context, which is DETACHED: assigning to it writes nothing, the hole
-    # silently fails to open, and the test then measures a contiguous schedule
-    # while claiming to measure a hole.  ``Session.get`` returns the
-    # identity-mapped instance without copying the detached one's (possibly
-    # stale) state over it, which ``merge`` would.
-    period = db_session.get(PayPeriod, period.id)
-    assert last_covered_day > period.start_date, (
-        f"a period must cover at least two days "
-        f"(ck_pay_periods_date_order); {period.start_date} .. "
-        f"{last_covered_day} does not"
-    )
-    following = (
-        db_session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == period.user_id,
-            PayPeriod.start_date > period.start_date,
-        )
-        .order_by(PayPeriod.start_date)
-        .first()
-    )
-    assert following is not None, (
-        "no period follows the one being shortened, so this opens no hole -- "
-        "it moves the schedule's horizon"
-    )
-    period.end_date = last_covered_day
-    db_session.flush()
-    first_uncovered = last_covered_day + _real_timedelta(days=1)
-    last_uncovered = following.start_date - _real_timedelta(days=1)
-    assert first_uncovered <= last_uncovered, "the fixture built no hole"
-    return first_uncovered, last_uncovered
-
-
-def _pp_assert_structure(periods, user_id):
-    """Assert the index/calendar invariants over an ordered period list.
-
-    Invariants 1-3 of :func:`assert_pay_period_invariants`, factored out
-    because they are pure in-memory checks over the already-loaded,
-    index-ordered ``periods`` and need no database access.
-
-    Args:
-        periods: The user's :class:`PayPeriod` rows ordered by
-            ``period_index`` ascending.
-        user_id: The owning user's id, used only in diagnostics.
-    """
-    # 1. Index uniqueness (the schema enforces this; re-checking catches
-    #    any path that bypasses the ORM).
-    indices = [p.period_index for p in periods]
-    assert len(indices) == len(set(indices)), (
-        f"user {user_id}: duplicate period_index among {indices}"
-    )
-
-    for prev, cur in zip(periods, periods[1:]):
-        # 2. Index order == calendar order (strictly ascending dates).
-        assert cur.start_date > prev.start_date, (
-            f"user {user_id}: period_index {cur.period_index} starts "
-            f"{cur.start_date}, not after index {prev.period_index} "
-            f"({prev.start_date}) -- index order != calendar order"
-        )
-        assert cur.end_date > prev.end_date, (
-            f"user {user_id}: period_index {cur.period_index} ends "
-            f"{cur.end_date}, not after index {prev.period_index} "
-            f"({prev.end_date}) -- index order != calendar order"
-        )
-        # 3a. No index gaps (contiguous sequence).
-        assert cur.period_index - prev.period_index == 1, (
-            f"user {user_id}: period_index gap between {prev.period_index} "
-            f"and {cur.period_index}"
-        )
-        # 3b. No date overlap (each period starts after the prior ends).
-        assert cur.start_date > prev.end_date, (
-            f"user {user_id}: period {cur.period_index} ({cur.start_date}) "
-            f"overlaps period {prev.period_index} (ends {prev.end_date})"
-        )
-
-
 def assert_pay_period_invariants(db_session, user_id):
     """Assert a user's pay-period structure is not corrupt (Discipline 1).
 
@@ -4498,16 +4522,31 @@ def assert_pay_period_invariants(db_session, user_id):
     Raises ``AssertionError`` (with a diagnostic) on the first violated
     invariant:
 
-      1. ``period_index`` is unique per user.
-      2. ``period_index`` order == calendar order (strictly ascending
-         ``start_date`` AND ``end_date``) -- the exact property the
-         balance resolver walks and trusts.
-      3. No ``period_index`` gaps and no date overlaps (the BA-03 /
-         BA-04 anomalies the production integrity checker flags).
-      4. Every account's anchor points at a live period owned by the user.
-      5. Every transfer has exactly two shadow transactions, both in the
+      1. Every account carries at least one balance ASSERTION, so a producer
+         can resolve a balance for it.
+      2. Every transfer has exactly two shadow transactions, both in the
          transfer's (still-existing) period.
-      6. No transaction references a pay period that no longer exists.
+      3. No transaction references a pay period that no longer exists.
+
+    **FOUR invariants were DELETED at plan step ``pay_calendar:C4-c``, and
+    none of them was replaced.**  They asserted that ``period_index`` was
+    unique per user, that ordinal order matched payday order on BOTH
+    ``start_date`` and ``end_date``, that the ordinals were contiguous, and
+    that no two periods' spans overlapped -- the same functional dependency
+    ``integrity_check`` BA-03 / BA-04 policed in weekly SQL and
+    ``recurrence._calendar.PeriodCalendar.__post_init__`` policed at the value
+    boundary.  All four read columns that no longer exist: a period's ordinal
+    is now its position in payday order and its end is the day before the next
+    payday, so a duplicate ordinal, an ordinal gap, an order disagreement and
+    an overlap are not states this database can hold.  ``uq_pay_periods_user_
+    start`` is what remains, and it is a KEY rather than an assertion.
+
+    *This helper carried the WRITE DOOR's exact blind spot while it existed*
+    (finding **P5**): it asserted ``cur.start_date > prev.end_date`` and
+    nothing about contiguity, so no case in this suite could have failed on a
+    gapped write -- which is why finding **P2** was found by reading rather
+    than by the suite.  Deleting the four is not a loss of that coverage; it is
+    the removal of the state they were the wrong instrument for.
 
     Args:
         db_session: The test ``db.session``.
@@ -4522,17 +4561,12 @@ def assert_pay_period_invariants(db_session, user_id):
     from app.models.transaction import Transaction
     from app.models.transfer import Transfer
 
-    periods = (
-        db_session.query(PayPeriod)
-        .filter_by(user_id=user_id)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
-    _pp_assert_structure(periods, user_id)
+    period_ids = {
+        row.id for row in
+        db_session.query(PayPeriod.id).filter_by(user_id=user_id)
+    }
 
-    period_ids = {p.id for p in periods}
-
-    # 4. Anchor integrity: every account carries at least one balance
+    # 1. Anchor integrity: every account carries at least one balance
     #    ASSERTION (E-19 / Commit 3).  It used to assert that the account's
     #    ``current_anchor_period_id`` named one of the user's live periods;
     #    rulings R-EH and R-EO deleted both that column and the assertion's own
@@ -4547,7 +4581,7 @@ def assert_pay_period_invariants(db_session, user_id):
             "assertion, so no producer can resolve a balance for it"
         )
 
-    # 5. Transfer invariant: exactly two shadows, both in the transfer's
+    # 2. Transfer invariant: exactly two shadows, both in the transfer's
     #    own (surviving) period.
     for transfer in db_session.query(Transfer).filter_by(user_id=user_id):
         shadows = transfer.shadow_transactions
@@ -4566,7 +4600,7 @@ def assert_pay_period_invariants(db_session, user_id):
                 f"transfer's period {transfer.pay_period_id}"
             )
 
-    # 6. No transaction (scoped via its account) references a period that
+    # 3. No transaction (scoped via its account) references a period that
     #    no longer exists -- the CASCADE FK enforces this; re-checking
     #    catches an ORM bypass after a bulk delete.
     orphans = (
@@ -6830,13 +6864,12 @@ def all_periods(user_id):
     settled where the replacement lives: one shared helper here, never a
     ``for_test`` door on the real API.
 
-    **Ordered by ``start_date``, not by ``period_index``**, which is the same
-    order the retired reader produced on every schedule this application can
-    write (``pay_period_write`` derives the stored ordinal from payday order)
-    and the only one plan step **C4** leaves expressible.  A test that
-    deliberately corrupts the stored ordinal and wants to SEE the corruption
-    must query it itself; ``test_asset_fold`` and ``test_generation_schedule``
-    each do, and each says why at the call.
+    **Ordered by ``start_date``, and since plan step ``pay_calendar:C4-c``
+    there is no other order to ask for**: ``period_index`` was a column until
+    that step dropped it, and a row is now the payday alone.
+
+    A row carries no SPAN either.  A caller that wants one asks
+    :func:`derived_span`, which is the calendar's answer for that row.
 
     Args:
         user_id: The owning user.
@@ -6856,6 +6889,64 @@ def all_periods(user_id):
         .order_by(PayPeriod.start_date)
         .all()
     )
+
+
+def derived_span(period):
+    """Return the :class:`DerivedPeriod` the application answers for *period*.
+
+    **The suite's one door onto "how far does this paycheck run", and plan step
+    ``pay_calendar:C4-c`` is why it has to be a door at all.**  A test read
+    ``period.end_date`` and ``period.period_index`` off the ORM row until that
+    step dropped both columns.  Neither is a property of a row: the ordinal is
+    the payday's position in the owner's sorted set and the end is the day
+    before the NEXT payday, so both are answers about the WHOLE payday set and
+    ``pay_calendar.calendar_for`` is what computes them.
+
+    Resolving through the owner's real calendar rather than constructing a
+    :class:`DerivedPeriod` by hand is what keeps a case from asserting against
+    bounds the application never computes -- the property
+    :func:`period_window` exists for one level up.
+
+    Args:
+        period: A saved :class:`~app.models.pay_period.PayPeriod` row.
+
+    Returns:
+        Its :class:`~app.services.pay_calendar.DerivedPeriod` -- ``start_date``,
+        ``end_date``, ``period_index`` and ``end_is_projected``.
+
+    Raises:
+        AssertionError: *period* is not in its own owner's calendar, which
+            means it was never flushed or belongs to another owner.  A silent
+            ``None`` here would make every assertion downstream vacuous.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        calendar_for,
+    )
+
+    resolved = calendar_for(period.user_id).period_by_id(period.id)
+    assert resolved is not None, (
+        f"pay period {period.id} is not in user {period.user_id}'s own "
+        f"calendar -- it was never flushed, or it belongs to someone else"
+    )
+    return resolved
+
+
+def last_covered_day(period):
+    """Return the last day *period* covers, DERIVED.
+
+    ``period.end_date`` until plan step ``pay_calendar:C4-c`` dropped that
+    column; :func:`derived_span` carries why it is a question about the whole
+    payday set.  This spelling exists because most callers want the DAY and
+    reading ``derived_span(p).end_date`` at every one of them puts the word
+    ``end_date`` back on a page where the column no longer exists.
+
+    Args:
+        period: A saved :class:`~app.models.pay_period.PayPeriod` row.
+
+    Returns:
+        The inclusive last day of its span.
+    """
+    return derived_span(period).end_date
 
 
 def open_owner_calendar(user_id, first_payday, num_periods=1, cadence_days=14):

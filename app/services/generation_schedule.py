@@ -126,9 +126,8 @@ class GenerationSchedule:
     ``fk_pay_periods_schedule`` requires the row, so no cadence is read off an
     ordinal any more.  That closes ledger row **P8**, and it retires one of
     row **P70**'s query-position reads with it -- the fallback's own
-    ``ORDER BY period_index DESC``.  What is left of P70 is the other reads of
-    the two derived columns, which belong to ``C4-c``, the leaf that drops
-    them.
+    ``ORDER BY period_index DESC``.  The rest of P70 went with plan step
+    ``C4-c``, which dropped both columns.
 
     Measured direction of the R4b-1 change, over every contiguous window of the
     production schedule -- 86,986 ``(rule, window)`` pairs: the whole-schedule

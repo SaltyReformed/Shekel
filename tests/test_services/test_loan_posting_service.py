@@ -72,6 +72,7 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     insert_trueup_event,
+    last_covered_day,
     ledger_accounts_for_account,
     ledger_net,
     linked_net_by_date,
@@ -1845,7 +1846,7 @@ class TestLoanAnchorPeriodAttribution:
             stale_period = seed_periods[-1]
             # The precondition: no seeded period contains the anchor date, so
             # the true-up landed on the last one by fallback.
-            assert stale_period.end_date < self._LATE_ANCHOR_DATE
+            assert last_covered_day(stale_period) < self._LATE_ANCHOR_DATE
             assert _anchor_net_in_period(
                 loan.id, scenario_id,
                 PostingSourceEnum.LOAN_TRUEUP, stale_period.id,
@@ -1857,7 +1858,7 @@ class TestLoanAnchorPeriodAttribution:
                 period for period in new_periods
                 if period.start_date
                 <= self._LATE_ANCHOR_DATE
-                <= period.end_date
+                <= last_covered_day(period)
             )
 
             loan_posting_service.sync_loan_anchor_corrections(
@@ -1906,7 +1907,7 @@ class TestLoanAnchorPeriodAttribution:
                 period for period in new_periods
                 if period.start_date
                 <= self._LATE_ANCHOR_DATE
-                <= period.end_date
+                <= last_covered_day(period)
             )
             loan_posting_service.sync_loan_anchor_corrections(
                 loan.id, scenario_id,
@@ -2251,10 +2252,10 @@ class TestPostedLoanBalanceSums:
                 )
 
             # P1 settled on period 1's start; period 0 ends the day before.
-            assert read(seed_periods[0].end_date) == Decimal("100000.00")
+            assert read(last_covered_day(seed_periods[0])) == Decimal("100000.00")
             assert read(seed_periods[_P1].start_date) == Decimal("99500.00")
             # Through P1's period its settle (the period start) is past -> 99500.
-            assert read(seed_periods[_P1].end_date) == Decimal("99500.00")
+            assert read(last_covered_day(seed_periods[_P1])) == Decimal("99500.00")
             assert read(seed_periods[_P2].start_date) == Decimal("98997.50")
             assert read(seed_periods[_P3].start_date) == Decimal("98492.49")
             assert read(_AS_OF) == Decimal("98492.49")

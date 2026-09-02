@@ -102,7 +102,7 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     the ORM row before applying it, so both halves read the same STORED
     ``end_date`` -- and an adversarial review of C2-f3c corrected a draft of
     this paragraph that claimed otherwise.  What changed is that both now read
-    the DERIVED end, off the same calendar, because plan step **C4** drops the
+    the DERIVED end, off the same calendar, because plan step **C4-c** dropped the
     column they used to agree on.
 
     What ``regeneration_bound`` actually existed for was narrower: the sweep

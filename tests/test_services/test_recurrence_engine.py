@@ -70,9 +70,10 @@ from tests._test_helpers import (
     all_periods,
     an_entered_day,
     derived_calendar,
+    derived_span,
+    last_covered_day,
     make_cadence_rule,
     make_every_period_rule,
-    open_calendar_hole,
     rebuild_calendar_from_spans,
     settlement_basis_id,
     settlement_if_settling,
@@ -336,7 +337,7 @@ class TestRecurrenceGeneration:
                     __import__("app.models.pay_period", fromlist=["PayPeriod"]).PayPeriod,
                     txn.pay_period_id,
                 )
-                assert (period.period_index - 1) % 2 == 0
+                assert (derived_span(period).period_index - 1) % 2 == 0
 
     def test_a_rule_less_template_generates_nothing(
         self, app, db, seed_user, seed_periods,
@@ -1108,7 +1109,7 @@ class TestGenerateForTemplate:
             # strictly after the latest existing end_date.
             long_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                first_payday=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=4,
                 cadence_days=90,
             )
@@ -1153,11 +1154,11 @@ class TestGenerateForTemplate:
                 for day in (
                     date(year, month, 15)
                     for year in range(
-                        paycheck.start_date.year, paycheck.end_date.year + 1,
+                        paycheck.start_date.year, last_covered_day(paycheck).year + 1,
                     )
                     for month in range(1, 13)
                 )
-                if paycheck.start_date <= day <= paycheck.end_date
+                if paycheck.start_date <= day <= last_covered_day(paycheck)
             )
             assert len(expected_dates) == 3, (
                 "a 90-day paycheck must cover the 15th of three months, or this "
@@ -1192,7 +1193,7 @@ class TestGenerateForTemplate:
         with app.app_context():
             long_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                first_payday=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=4,
                 cadence_days=90,
             )
@@ -1236,7 +1237,7 @@ class TestGenerateForTemplate:
         with app.app_context():
             long_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                first_payday=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=4,
                 cadence_days=90,
             )
@@ -1341,9 +1342,9 @@ class TestGenerateForTemplate:
             # Determine expected unique months from periods.
             unique_months = set()
             for p in seed_periods:
-                for dt in (p.start_date, p.end_date):
+                for dt in (p.start_date, last_covered_day(p)):
                     target = date(dt.year, dt.month, 15)
-                    if p.start_date <= target <= p.end_date:
+                    if p.start_date <= target <= last_covered_day(p):
                         unique_months.add((dt.year, dt.month))
             assert len(created) == len(unique_months)
 
@@ -1437,7 +1438,7 @@ class TestThePlacedPeriodsBound:
             schedule = GenerationSchedule.for_pass(BalanceContext.build(template.user_id))
             straddled = seed_periods[3]
             bound = straddled.start_date + timedelta(days=1)
-            assert bound < straddled.end_date
+            assert bound < last_covered_day(straddled)
 
             plan = recurrence_engine.resolve_generation_plan(
                 template, schedule, seed_user["scenario"].id, bound,
@@ -1485,6 +1486,27 @@ class TestThePlacedPeriodsBound:
         return template
 
 
+def _paycheck_covering(seed_user, day):
+    """Return the ``budget.pay_periods.id`` of the paycheck covering *day*.
+
+    ``txn.pay_period.start_date <= day <= txn.pay_period.end_date`` until plan
+    step ``pay_calendar:C4-c`` dropped ``end_date``.  Containment is the
+    calendar's question -- :meth:`DerivedPeriod.covers` is the one rule
+    (**R-PC31**) -- and reaching it through ``period_containing`` is what keeps
+    a test from open-coding a fourth copy of that comparison.
+
+    Args:
+        seed_user: The seeded owner fixture.
+        day: The civil day to place.
+
+    Returns:
+        The covering period's id.
+    """
+    covering = calendar_for(seed_user["user"].id).period_containing(day)
+    assert covering is not None, f"no paycheck covers {day}"
+    return covering.period_id
+
+
 class TestALegacyScheduleHole:
     """A day no pay period covers: ABSORBED by the paycheck before it.
 
@@ -1502,15 +1524,14 @@ class TestALegacyScheduleHole:
     **Two writers had to close before the reader could stop looking, and both
     have**: ``balance:X-ad-a`` deleted the registration bootstrap payday, and
     plan step **C3-b** replaced the batch guard with a writer that materialises
-    the derivation.  The first test below is the CONTROL for that closure.  The
-    stored rows can still HOLD a hole -- written before C3-b, or written
-    directly, which is what ``_test_helpers.open_calendar_hole`` does -- so
-    what these tests pin now is what a READER does with one.
+    the derivation.  The first test below is the CONTROL for that closure.
 
-    **What replaces the alert is a query**: ``scripts/integrity_check.py``
-    **BA-07** reports any owner whose stored ``end_date`` is not the day before
-    the next payday, and dies with that column at plan step C4.
-    ``tests/test_scripts/test_integrity_check.py`` grades it.
+    **And since plan step ``pay_calendar:C4-c`` the stored rows cannot hold a
+    hole either.**  ``end_date`` is dropped, so a period's last covered day is
+    the day before the next payday and nothing else; the only shape left is a
+    payday JUMP, which is what the fixture below builds and which the writer
+    accepts.  ``scripts/integrity_check.py`` **BA-07** reported the stored
+    state while it was expressible and went with the column.
 
     **The absorption is not free, and the third test says so.**  An absorbed
     hole leaves an OVER-LONG paycheck, and a monthly bill can fall inside one
@@ -1528,28 +1549,33 @@ class TestALegacyScheduleHole:
 
     #: Days after the seed schedule's last covered day that the second batch
     #: opens.  Large enough that a whole calendar month (June 2026) falls in
-    #: the hole, so a monthly rule has exactly one occurrence with nowhere to
-    #: live and the assertions below are about that one date.
+    #: the jump, so a monthly rule has exactly one occurrence the preceding
+    #: paycheck has to absorb and the assertions below are about that one date.
     _GAP_DAYS = 43
 
     #: The rule's scheduling day, and therefore the day every occurrence and
     #: every generated ``due_date`` falls on.
     _DAY_OF_MONTH = 15
 
-    def _schedule_with_a_gap(self, seed_user, seed_periods):
-        """Append a second batch, then re-open the hole the writer absorbs.
+    def _schedule_with_a_payday_jump(self, seed_user, seed_periods):
+        """Append a second batch 43 days after the schedule's horizon.
 
-        The append is still the real writer's, so the schedule's SHAPE is one
-        the app produces; the last line puts back the hole plan step C3-b's
-        recompute closes, because that hole is what these tests are about.
-        Doing it in this order rather than hand-inserting every row keeps the
-        fixture one line away from the production path.
+        The whole fixture is the real writer's, which is the point: the shape
+        these tests are about is one the app produces.
+
+        *It re-opened a stored hole on the last line until plan step
+        ``pay_calendar:C4-c``.*  While ``end_date`` was a column, the writer's
+        own recompute closed the hole this appended, so the fixture had to put
+        it back to reach the state a pre-C3-b row could hold.  The column is
+        gone: the days between the horizon and the new payday belong to the
+        preceding paycheck, and there is no second value that could say
+        otherwise.
 
         Returns:
-            ``(later_periods, gap_start, gap_end)`` -- the appended batch and
-            the inclusive span of days no period covers.
+            ``(later_periods, jump_start, jump_end)`` -- the appended batch and
+            the inclusive span of days the preceding paycheck absorbs.
         """
-        last_covered = seed_periods[-1].end_date
+        last_covered = self._horizon(seed_user)
         later_start = last_covered + timedelta(days=self._GAP_DAYS)
         later = pay_period_write.record_paydays(
             user_id=seed_user["user"].id,
@@ -1557,10 +1583,21 @@ class TestALegacyScheduleHole:
             num_periods=6,
             cadence_days=14,
         )
-        gap_start, gap_end = open_calendar_hole(
-            db.session, seed_periods[-1], last_covered,
+        return (
+            later,
+            last_covered + timedelta(days=1),
+            later_start - timedelta(days=1),
         )
-        return later, gap_start, gap_end
+
+    @staticmethod
+    def _horizon(seed_user):
+        """Return the owner's last covered day, DERIVED.
+
+        ``seed_periods[-1].end_date`` until plan step ``pay_calendar:C4-c``
+        dropped the column; the horizon is the last payday plus the cadence,
+        and the calendar is what answers it.
+        """
+        return calendar_for(seed_user["user"].id).horizon()
 
     def _days_between(self, first, last, day=None):
         """Every *day* of the month in ``first..last``, inclusive, ascending.
@@ -1597,7 +1634,7 @@ class TestALegacyScheduleHole:
         would satisfy a single-day check.
         """
         with app.app_context():
-            last_covered = seed_periods[-1].end_date
+            last_covered = self._horizon(seed_user)
             later_start = last_covered + timedelta(days=self._GAP_DAYS)
             later = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
@@ -1608,21 +1645,17 @@ class TestALegacyScheduleHole:
             assert later[0].start_date == later_start
 
             # The days the OLD writer would have left behind.
-            periods = all_periods(seed_user["user"].id)
+            calendar = calendar_for(seed_user["user"].id)
             day = last_covered + timedelta(days=1)
             while day < later_start:
-                assert any(
-                    period.start_date <= day <= period.end_date
-                    for period in periods
-                ), f"{day} is covered by no pay period"
+                assert calendar.period_containing(day) is not None, (
+                    f"{day} is covered by no pay period"
+                )
                 day += timedelta(days=1)
-            # And it is the PRECEDING paycheck that absorbed them, stretched to
-            # the day before the new payday rather than left at its old end.
-            # Read off the re-queried list: the fixture's own objects were
-            # built in an earlier app context and do not see the UPDATE.
-            preceding = next(
-                p for p in periods if p.start_date == seed_periods[-1].start_date
-            )
+            # And it is the PRECEDING paycheck that absorbed them, running to
+            # the day before the new payday rather than stopping at its old
+            # horizon.
+            preceding = calendar.period_containing(seed_periods[-1].start_date)
             assert preceding.end_date == later_start - timedelta(days=1)
 
     def test_the_calendar_absorbs_the_hole_into_the_preceding_paycheck(
@@ -1644,7 +1677,7 @@ class TestALegacyScheduleHole:
         """
         absorbed_day = 5
         with app.app_context():
-            _later, gap_start, gap_end = self._schedule_with_a_gap(
+            _later, gap_start, gap_end = self._schedule_with_a_payday_jump(
                 seed_user, seed_periods,
             )
             template = self._make_template_with_rule(
@@ -1676,11 +1709,12 @@ class TestALegacyScheduleHole:
                 f"{[row.occurrence for row in plan.placements]}"
             )
             assert in_hole[0].period.period_id == absorbing.id
-            assert absorbing.end_date < in_hole[0].occurrence, (
-                "the STORED end must still precede the occurrence -- that is "
-                "what makes this an absorption by the derivation rather than a "
-                "period that genuinely contains the day"
-            )
+            # What makes this an ABSORPTION rather than an ordinary
+            # containment: the paycheck spans far more than one cadence,
+            # because it ran on to the day before the next payday.
+            assert (
+                in_hole[0].period.end_date - in_hole[0].period.start_date
+            ).days + 1 > 14
 
             # **The COUNT, and it is load-bearing** -- the assertion an
             # adversarial review of plan step C2-b2 caught this test dropping
@@ -1725,19 +1759,20 @@ class TestALegacyScheduleHole:
         paycheck is in BOTH halves.
 
         **And that is the correct answer, not merely a consistent one.** The
-        absorbing paycheck's derived span runs to 2026-07-02, so it is the
-        paycheck the owner's money on 2026-06-01 actually lives in.  A
-        regeneration effective from that date must maintain it.  The old
-        behaviour skipped it because a stored column said the paycheck had
-        ended six weeks earlier -- a column plan step **C4** drops, and which
-        no writer has produced since plan step C3-b.
+        absorbing paycheck's span runs to 2026-07-02, so it is the paycheck the
+        owner's money on 2026-06-01 actually lives in.  A regeneration
+        effective from that date must maintain it.  The old behaviour skipped
+        it because a stored column said the paycheck had ended six weeks
+        earlier -- a column plan step ``pay_calendar:C4-c`` DROPPED, and which
+        no writer had produced since plan step C3-b.
 
-        The fixture builds the only disagreement this schedule can express: the
-        absorbing paycheck's stored end is 2026-05-21 and its derived end
-        2026-07-02, so a bound of 2026-06-01 falls between them.
+        The bound falls deep INSIDE the absorbing paycheck rather than near a
+        boundary, which is what makes the two memberships below a real
+        question: the paycheck opens 2026-05-08 and runs to 2026-07-02, and
+        the bound is 2026-06-01.
         """
         with app.app_context():
-            self._schedule_with_a_gap(seed_user, seed_periods)
+            self._schedule_with_a_payday_jump(seed_user, seed_periods)
             template = self._make_template_with_rule(
                 seed_user, MONTHLY, fires_on_day=5,
             )
@@ -1752,12 +1787,11 @@ class TestALegacyScheduleHole:
             )
             bound = date(2026, 6, 1)
 
-            # The premise: the bound really does fall between the two ends.
-            assert absorbing.end_date < bound
-            derived_end = schedule.calendar.period_by_id(
-                absorbing.id,
-            ).end_date
-            assert derived_end >= bound
+            # The premise: the bound really does fall inside the absorbing
+            # paycheck, and past where an un-absorbed one would have ended.
+            absorbing_span = schedule.calendar.period_by_id(absorbing.id)
+            assert absorbing_span.start_date < bound <= absorbing_span.end_date
+            assert bound > absorbing_span.start_date + timedelta(days=13)
 
             # Give the paycheck a row, so the sweep has something to collect.
             recurrence_engine.generate_for_template(
@@ -1852,7 +1886,7 @@ class TestALegacyScheduleHole:
         """
         absorbed_day = 5
         with app.app_context():
-            _later, gap_start, gap_end = self._schedule_with_a_gap(
+            _later, gap_start, gap_end = self._schedule_with_a_payday_jump(
                 seed_user, seed_periods,
             )
             template = self._make_template_with_rule(
@@ -1918,7 +1952,7 @@ class TestALegacyScheduleHole:
         periods, 0 index mismatches, 0 end mismatches, measured 2026-08-10).
         """
         with app.app_context():
-            _later, gap_start, gap_end = self._schedule_with_a_gap(
+            _later, gap_start, gap_end = self._schedule_with_a_payday_jump(
                 seed_user, seed_periods,
             )
             template = self._make_template_with_rule(
@@ -1977,13 +2011,13 @@ class TestALegacyScheduleHole:
             # still inside the schedule's covered span.
             tail = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                first_payday=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=1,
                 cadence_days=14,
             )
             db.session.flush()
             last = tail[-1]
-            assert last.start_date.month != last.end_date.month, (
+            assert last.start_date.month != last_covered_day(last).month, (
                 "the control needs a final period straddling a month boundary"
             )
 
@@ -4277,7 +4311,9 @@ class TestDueDateGeneration:
             # Find the transaction assigned to the period containing Jan 15.
             jan_txns = [
                 txn for txn in created
-                if txn.pay_period.start_date <= date(2026, 1, 15) <= txn.pay_period.end_date
+                if txn.pay_period_id == _paycheck_covering(
+                    seed_user, date(2026, 1, 15),
+                )
             ]
             assert len(jan_txns) == 1
             assert jan_txns[0].due_date == date(2026, 1, 15)
@@ -4477,7 +4513,9 @@ class TestDueDateGeneration:
 
             jan_txns = [
                 txn for txn in created
-                if txn.pay_period.start_date <= date(2026, 1, 15) <= txn.pay_period.end_date
+                if txn.pay_period_id == _paycheck_covering(
+                    seed_user, date(2026, 1, 15),
+                )
             ]
             assert len(jan_txns) == 1
             assert jan_txns[0].due_date == date(2026, 1, 15)
@@ -4504,7 +4542,9 @@ class TestDueDateGeneration:
 
             jan_txns = [
                 txn for txn in created
-                if txn.pay_period.start_date <= date(2026, 1, 15) <= txn.pay_period.end_date
+                if txn.pay_period_id == _paycheck_covering(
+                    seed_user, date(2026, 1, 15),
+                )
             ]
             assert len(jan_txns) == 1
             assert jan_txns[0].due_date == date(2026, 1, 15)

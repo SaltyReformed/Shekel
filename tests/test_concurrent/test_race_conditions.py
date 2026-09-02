@@ -38,6 +38,7 @@ from app.services import (
 )
 from tests._test_helpers import (
     assert_pay_period_invariants,
+    last_covered_day,
     linked_ledger_total,
     open_books_before_the_first_assertion,
     open_owner_calendar,
@@ -601,12 +602,36 @@ class TestConcurrentRollingTopUp:
 
         db.session.expire_all()
         periods = db.session.query(PayPeriod).filter_by(user_id=user_id).all()
-        indices = [p.period_index for p in periods]
-        assert len(indices) == len(set(indices)), (
-            f"duplicate period_index landed: {sorted(indices)}"
+        # **Keyed on the PAYDAY, which is the only thing a race can duplicate
+        # since plan step ``pay_calendar:C4-c``.**  This asserted that the
+        # ORDINALS were distinct, and that became a theorem the moment the
+        # ordinal stopped being a column: it is the row's position in the
+        # owner's sorted payday set, so over an owner's COMPLETE set it is
+        # exactly ``0..n-1`` and the assertion could not fail for any database
+        # state -- including one where two appenders had both landed.  The
+        # payday is what ``uq_pay_periods_user_start`` protects and what a
+        # racing append can really collide on (adversarial review, 2026-09-01).
+        paydays = [period.start_date for period in periods]
+        assert len(paydays) == len(set(paydays)), (
+            f"two appends landed the same payday: {sorted(paydays)}"
+        )
+        # And the schedule the race leaves behind is still ON CADENCE -- a
+        # second appender computing its floor from a stale read would append at
+        # some other spacing, which distinct paydays alone would not catch.
+        gaps = {
+            (later - earlier).days
+            for earlier, later in zip(sorted(paydays), sorted(paydays)[1:])
+        }
+        # The OWNER's own stored cadence, not a constant restated here: it is
+        # what the top-up appends at and what the derivation projects the last
+        # period from, so this cannot go stale if the fixture's cadence moves.
+        cadence = pay_schedule_service.resolve_cadence(user_id)
+        assert gaps == {cadence}, (
+            f"the race left an off-cadence schedule: gaps {sorted(gaps)} "
+            f"against a stored cadence of {cadence}"
         )
         # The same clock the door counted with; see ``_create_user_with_data``.
-        future = [p for p in periods if p.end_date >= display_today()]
+        future = [p for p in periods if last_covered_day(p) >= display_today()]
         assert len(future) == 5, (
             f"window should hold exactly the target of 5, found {len(future)}"
         )
@@ -637,12 +662,36 @@ class TestConcurrentRollingTopUp:
 
         db.session.expire_all()
         periods = db.session.query(PayPeriod).filter_by(user_id=user_id).all()
-        indices = [p.period_index for p in periods]
-        assert len(indices) == len(set(indices)), (
-            f"duplicate period_index landed: {sorted(indices)}"
+        # **Keyed on the PAYDAY, which is the only thing a race can duplicate
+        # since plan step ``pay_calendar:C4-c``.**  This asserted that the
+        # ORDINALS were distinct, and that became a theorem the moment the
+        # ordinal stopped being a column: it is the row's position in the
+        # owner's sorted payday set, so over an owner's COMPLETE set it is
+        # exactly ``0..n-1`` and the assertion could not fail for any database
+        # state -- including one where two appenders had both landed.  The
+        # payday is what ``uq_pay_periods_user_start`` protects and what a
+        # racing append can really collide on (adversarial review, 2026-09-01).
+        paydays = [period.start_date for period in periods]
+        assert len(paydays) == len(set(paydays)), (
+            f"two appends landed the same payday: {sorted(paydays)}"
+        )
+        # And the schedule the race leaves behind is still ON CADENCE -- a
+        # second appender computing its floor from a stale read would append at
+        # some other spacing, which distinct paydays alone would not catch.
+        gaps = {
+            (later - earlier).days
+            for earlier, later in zip(sorted(paydays), sorted(paydays)[1:])
+        }
+        # The OWNER's own stored cadence, not a constant restated here: it is
+        # what the top-up appends at and what the derivation projects the last
+        # period from, so this cannot go stale if the fixture's cadence moves.
+        cadence = pay_schedule_service.resolve_cadence(user_id)
+        assert gaps == {cadence}, (
+            f"the race left an off-cadence schedule: gaps {sorted(gaps)} "
+            f"against a stored cadence of {cadence}"
         )
         # The same clock the door counted with; see ``_create_user_with_data``.
-        future = [p for p in periods if p.end_date >= display_today()]
+        future = [p for p in periods if last_covered_day(p) >= display_today()]
         assert len(future) >= 5, (
             f"window should be filled to at least the target of 5, "
             f"found {len(future)}"

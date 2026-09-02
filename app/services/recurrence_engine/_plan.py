@@ -216,7 +216,7 @@ def resolve_generation_plan(
     # than merely recreated.  ``_recurrence_common.rows_this_pass_may_maintain``
     # now selects on a period-id set filtered by the same derived end this line
     # reads, off the same calendar, so the two halves are one predicate rather
-    # than two that have to agree.  Plan step C4 drops the column both used to
+    # than two that have to agree.  Plan step C4-c dropped the column both used to
     # read.
     window = schedule.write_period_ids
     placements = []
@@ -278,7 +278,7 @@ def compute_due_date(rule, period):
             transaction was assigned to.  It reads that period's payday and its
             last covered day; both are DERIVED from the owner's payday set
             since pay-calendar plan step C2-f3c, where they were the stored
-            columns plan step **C4** drops.  Measured equal on production the
+            columns plan step **C4-c** dropped.  Measured equal on production the
             same day: 62 periods, zero disagreements.
 
     Returns:

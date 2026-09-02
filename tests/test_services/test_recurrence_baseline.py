@@ -169,13 +169,18 @@ class TestRecurrenceBaseline:
         )
 
         assert len(periods) == recurrence_baseline.SCHEDULE_PERIOD_COUNT
+        # **The paydays ARE the contiguity** since plan step
+        # ``pay_calendar:C4-c``: a period runs to the day before the next one,
+        # so paydays exactly one cadence apart tile the calendar and there is
+        # no second column that could disagree.  This asserted stored ends
+        # abutting stored starts before that step.
         for earlier, later in zip(periods, periods[1:]):
-            assert later.start_date == earlier.end_date + timedelta(days=1), (
-                f"gap or overlap between period {earlier.period_index} "
-                f"(ends {earlier.end_date}) and {later.period_index} "
-                f"(starts {later.start_date})"
+            assert (later.start_date - earlier.start_date).days == (
+                recurrence_baseline.SCHEDULE_CADENCE_DAYS
+            ), (
+                f"gap or overlap between the payday {earlier.start_date} and "
+                f"the payday {later.start_date}"
             )
-            assert later.period_index == earlier.period_index + 1
 
     def test_the_schedule_covers_a_leap_day(self):
         """February 29 is inside the captured span.
@@ -190,11 +195,16 @@ class TestRecurrenceBaseline:
             recurrence_baseline.SCHEDULE_PERIOD_COUNT,
         )
         leap_day = date(2024, 2, 29)
+        horizon = recurrence_baseline.schedule_horizon(
+            periods, recurrence_baseline.SCHEDULE_CADENCE_DAYS,
+        )
 
-        assert any(
-            period.start_date <= leap_day <= period.end_date
-            for period in periods
-        ), "no period contains 2024-02-29"
+        # The schedule is contiguous (the case above), so containment is the
+        # span as a whole: any day between the first payday and the horizon
+        # falls in exactly one period.
+        assert periods[0].start_date <= leap_day <= horizon, (
+            f"2024-02-29 is outside {periods[0].start_date}..{horizon}"
+        )
 
 
 class TestBaselineFiringControls:

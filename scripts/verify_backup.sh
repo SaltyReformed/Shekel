@@ -165,16 +165,21 @@ run_sanity_checks() {
         failures=$((failures + 1))
     fi
 
-    # Check 2: budget.pay_periods row count and date range.
+    # Check 2: budget.pay_periods row count and payday range.
+    #
+    # MIN/MAX of start_date, not of end_date: plan step pay_calendar:C4-c
+    # dropped end_date, because a period's last covered day is the day before
+    # the next payday and is derived rather than stored.  The paydays ARE the
+    # range this check reports.
     local period_info
     period_info=$(docker exec "${DB_CONTAINER}" psql -U "${PGUSER}" -d "${VERIFY_DB}" -t -c \
-        "SELECT COUNT(*), MIN(start_date), MAX(end_date) FROM budget.pay_periods;" | tr -d ' ')
+        "SELECT COUNT(*), MIN(start_date), MAX(start_date) FROM budget.pay_periods;" | tr -d ' ')
     local period_count min_date max_date
     period_count=$(echo "${period_info}" | cut -d'|' -f1)
     min_date=$(echo "${period_info}" | cut -d'|' -f2)
     max_date=$(echo "${period_info}" | cut -d'|' -f3)
     if [[ "${period_count}" -gt 0 ]]; then
-        log "INFO" "  [PASS] budget.pay_periods: ${period_count} periods (${min_date} to ${max_date})"
+        log "INFO" "  [PASS] budget.pay_periods: ${period_count} periods (paydays ${min_date} to ${max_date})"
     else
         log "INFO" "  [INFO] budget.pay_periods: 0 periods (may be expected for a fresh database)"
     fi

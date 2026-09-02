@@ -9,10 +9,11 @@ start_date (payday) and an end_date (the day before the next payday).
 :mod:`app.services.pay_period_write`, which is now the one place in ``app/``
 that changes ``budget.pay_periods``.  The reason is C3-a's, one level up --
 deciding that a schedule should change and changing it are two concerns, and
-the invariant that the stored ``end_date`` / ``period_index`` equal the
-derivation over the owner's paydays needs exactly one home for plan steps C4,
-C6 and C7 to inherit.  What is left here is the read side, which plan step
-**C2-f** points at ``pay_calendar.PayCalendar``.
+the invariant that the stored ``end_date`` / ``period_index`` equalled the
+derivation over the owner's paydays needed exactly one home for plan steps C4,
+C6 and C7 to inherit.  C4-c has since dropped both columns, so what those
+later steps inherit is a table with one fact in it.  What is left here is the
+read side, which plan step **C2-f** points at ``pay_calendar.PayCalendar``.
 
 **Three of that step's six readers are GONE at C2-f1** and their questions are
 now the calendar's, each answered by ONE derivation over the owner's paydays
@@ -35,7 +36,7 @@ with ``+ 1`` changed to ``- 1`` -- went with them.
 
 **A FOURTH is gone at C2-f2b**, and it went whole rather than by call
 site: ``get_periods_in_range`` -- a window selected by ``period_index``,
-which is one of the two derived columns plan step **C4** drops -- had all
+which is one of the two derived columns plan step **C4-c** dropped -- had all
 three of its ``app/`` call sites in the grid route -- ``page.py`` twice and
 ``partials.py`` once, that module having become the ``app/routes/grid/``
 package the same branch -- so moving the grid onto
@@ -82,7 +83,7 @@ retired reader                          what answers it now
 ======================================= ==================================
 
 It answered "every pay period this owner has" as ORM rows ordered by the
-stored ``period_index`` -- one of the two columns plan step **C4** drops -- and
+stored ``period_index`` -- one of the two columns plan step **C4-c** dropped -- and
 its last caller was the recurrence generation seam's ``GenerationSchedule``,
 which read it BESIDE the calendar and then had to reconcile the two.  C2-f3c
 deleted the second read; a calendar is the owner's whole schedule already, in

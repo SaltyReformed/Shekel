@@ -4,20 +4,24 @@ Shekel Budget App -- Pay Schedule Model (budget schema)
 One row per user holding the persisted pay-period cadence plus the
 continuous-rolling-window configuration.
 
-A pay period stores only ``(start_date, end_date, period_index)`` --
-its cadence is never recorded on the period itself (it is an argument to
-``pay_period_write.record_paydays``, which spaces the batch's paydays by
-it and then persists it here).  That means the extend / regenerate /
+A pay period stores only its ``start_date`` -- the payday, and since plan
+step ``pay_calendar:C4-c`` the whole of what that row records.  Its cadence
+is not on the period either (it is an argument to
+``pay_period_write.record_paydays``, which spaces the batch's paydays by it
+and then persists it here).  That means the extend / regenerate /
 rolling-top-up paths have nothing to continue an existing schedule FROM
 unless the cadence is persisted somewhere.  This table is that storage:
 the genuinely non-derivable configuration a user's schedule needs to grow
 itself forward.
 
-**Since plan step C3-b it is also an INPUT to the last period's stored
-``end_date``**, the derivation's one projected value -- every other end is
-the day before the next payday.  So a write to this column moves the
+**It is also the INPUT to the last period's PROJECTED end**, the one value
+in a derived calendar that does not come from a payday -- every other end
+is the day before the next one.  So a write to this column moves the
 schedule's horizon, which is why only a batch that RECORDS a payday may
-make one (the cadence rule; findings **P12** and **P29**).
+make one (the cadence rule; findings **P12** and **P29**).  *It was the
+input to a stored ``end_date`` between plan steps C3-b and C4-c; the column
+is gone and the derivation reads this one directly, so the value's job did
+not change but the thing it feeds did.*
 
 **Since plan step balance:X-bh-2 it holds a SECOND non-derivable fact**
 (ruling **balance:R-IA**, amended 2026-08-31): ``history_opens_on``, how far

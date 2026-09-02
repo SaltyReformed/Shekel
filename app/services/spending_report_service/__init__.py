@@ -40,7 +40,7 @@ is the S-P1 gate ruling deferring the pay-period and year pickers rather than
 cancelling them -- so `/analytics/spending` builds only month windows and
 :func:`app.routes.analytics_view.serialize_spending_chart` has only a month
 branch.  A pay-period report is therefore computable and not renderable today.
-The arm is maintained rather than deleted because plan step **C4** drops the
+The arm is maintained rather than deleted because plan step **C4-c** dropped the
 ``period_index`` column every "which paycheck precedes this one" answer used to
 read, and an arm that reads it owes that conversion whichever surface reaches it
 (developer ruling 2026-08-19, at plan step C2-f3d).
