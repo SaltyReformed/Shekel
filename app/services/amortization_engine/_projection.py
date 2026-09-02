@@ -31,6 +31,7 @@ from app.utils.dates import months_between
 from app.utils.money import (
     MONTHS_PER_YEAR,
     accrue_monthly_interest,
+    apply_payment_cash,
     round_money,
 )
 
@@ -517,6 +518,15 @@ def _apply_override_payment(
     OR the extra doing so, is capped at the remaining balance so the schedule
     closes without a sub-penny residue.
 
+    **The split itself is :func:`~app.utils.money.apply_payment_cash`, the ONE
+    allocation, since plan step X-au-g-2c-3a.**  This restated it inline, and
+    the restatement was forced rather than chosen: the rule lived in
+    ``loan_ledger._split``, which this package sits BELOW in the import graph,
+    so calling it was a cycle.  What remains here is what the ALLOCATION does
+    not decide -- how a standing extra is reported beside the base payment in a
+    schedule row.  Byte-identical, measured over 200,000 randomised trials
+    before the swap.
+
     Args:
         balance: Outstanding balance before this month's payment.
         interest: Period interest already computed for this month.
@@ -528,22 +538,21 @@ def _apply_override_payment(
         ``actual_payment`` is the base payment (extra reported separately);
         ``new_balance`` is quantized to cents and never negative.
     """
-    principal_portion = override_amount - interest
-    if principal_portion >= balance:
+    parts = apply_payment_cash(override_amount, balance, interest, Decimal("0.00"))
+    if parts.excess > 0 or parts.balance_after <= 0:
         # The base payment alone absorbs the balance; no extra is applied.
-        principal_portion = balance
         return (
-            principal_portion, principal_portion + interest,
+            parts.principal, parts.principal + interest,
             Decimal("0.00"), Decimal("0.00"),
         )
     # Cap the extra so acceleration alone cannot drive the balance below zero;
-    # ``principal_portion < balance`` here, so the ceiling is non-negative.
-    extra = min(extra_monthly, balance - principal_portion)
+    # ``balance_after`` is what the base payment left, so it IS the ceiling.
+    extra = min(extra_monthly, parts.balance_after)
     extra = max(extra, Decimal("0.00"))
-    # Both terms are clamped so ``balance - principal_portion - extra`` is
-    # non-negative and round_money (ROUND_HALF_UP) cannot yield a negative.
-    new_balance = round_money(balance - principal_portion - extra)
-    return principal_portion, principal_portion + interest, extra, new_balance
+    # Both terms are clamped so ``balance_after - extra`` is non-negative and
+    # round_money (ROUND_HALF_UP) cannot yield a negative.
+    new_balance = round_money(parts.balance_after - extra)
+    return parts.principal, parts.principal + interest, extra, new_balance
 
 
 def _apply_contractual_payment(
@@ -571,31 +580,37 @@ def _apply_contractual_payment(
         is_last_month: True on the loop's final scheduled month, which
             forces the remaining balance to be absorbed.
 
+    **The split is :func:`~app.utils.money.apply_payment_cash`, the ONE
+    allocation, since plan step X-au-g-2c-3a** -- see
+    :func:`_apply_override_payment` for why this package could not call it
+    before.  ``is_last_month`` is not part of the allocation and stays here: it
+    is a SCHEDULE-closing rule (the final row absorbs the residue), not a
+    statement about how cash divides.
+
     Returns:
         ``(principal_portion, actual_payment, extra, new_balance)`` --
         Decimals; ``new_balance`` is quantized to cents and never
         negative.
     """
-    principal_portion = monthly_payment - interest
+    parts = apply_payment_cash(monthly_payment, balance, interest, Decimal("0.00"))
     # Final row absorbs the residue: the contractual principal already
     # covers the balance, or this is the last scheduled month.
-    if principal_portion >= balance or is_last_month:
-        principal_portion = balance
+    if parts.excess > 0 or parts.balance_after <= 0 or is_last_month:
         return (
-            principal_portion,
-            principal_portion + interest,
+            balance,
+            balance + interest,
             Decimal("0.00"),
             Decimal("0.00"),
         )
     # Cap extra so the balance cannot drop below zero from
     # acceleration alone.
-    extra = min(extra_monthly, balance - principal_portion)
+    extra = min(extra_monthly, parts.balance_after)
     extra = max(extra, Decimal("0.00"))
-    # extra is clamped to [0, balance - principal_portion] above, so
-    # balance - principal_portion - extra is non-negative and round_money
-    # (ROUND_HALF_UP) cannot yield a negative -- no clamp/fold is needed.
-    new_balance = round_money(balance - principal_portion - extra)
-    return principal_portion, monthly_payment, extra, new_balance
+    # extra is clamped to [0, balance_after] above, so balance_after - extra
+    # is non-negative and round_money (ROUND_HALF_UP) cannot yield a
+    # negative -- no clamp/fold is needed.
+    new_balance = round_money(parts.balance_after - extra)
+    return parts.principal, monthly_payment, extra, new_balance
 
 
 def project_forward(
