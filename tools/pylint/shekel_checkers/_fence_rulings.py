@@ -539,30 +539,34 @@ _FENCED_MODULE_RULINGS = {
         # amount rule 4's producer, moved DOWN into this package from
         # ``loan_payment_service`` because the amount model is the lower tier
         # and should not reach up into a loan service to price a row (the
-        # unwind :mod:`app.services.row_valuation` says ``X-au-g`` owes).  All
-        # four rulings are the ones the ``loan_payment_service`` entry carried,
-        # and their STANDING is unchanged -- but the first one's wording is
-        # TIGHTENED rather than copied, and saying "verbatim" here would be a
-        # claim licensing a reader not to diff.  What changed: "current escrow"
-        # became "that installment's escrow", because ``_shadow_live_amount``
-        # resolves it on the shadow's own due date (ruling D5), never on a
-        # current one.  ``config_by_transfer`` / ``loan_pricing`` below ARE
-        # word for word:
+        # unwind :mod:`app.services.row_valuation` says ``X-au-g`` owes).
         #
-        # A projected payment's LIVE cash (P&I + that installment's escrow +
-        # standing extra) -- what a PAYMENT is worth, not what an account owes.
-        # Plan step X-au-c2b collapsed the two functions that answered this
-        # into ``LoanPricing``: ``live_cash`` is the rule both the display and
-        # the settle freeze ask, ``derive_cash`` its derive-mode arm.  Same
-        # standing as the pair they replaced.
-        "live_cash",
+        # **FOUR names were ruled here at X-au-g-2a and TWO remain**: plan step
+        # X-au-g-2c-2 deleted ``live_cash`` and ``config_by_transfer`` with the
+        # read-time repair they existed for, and their entries are removed here
+        # in the same edit rather than left standing.  A ruling for a function
+        # its module no longer defines is not inert -- it would silently
+        # un-fence whatever name later takes it, which is findings N-28 / N-31's
+        # shape, and it is what
+        # ``test_classification_sets_match_the_real_fenced_modules`` caught.
+        #
+        # The derive-mode arm of a projected payment's LIVE cash (P&I + that
+        # installment's escrow + standing extra) -- what a PAYMENT is worth, not
+        # what an account owes.  Its wording is TIGHTENED from the
+        # ``loan_payment_service`` ruling rather than copied, and saying
+        # "verbatim" would be a claim licensing a reader not to diff: "current
+        # escrow" became "that installment's escrow", because the derivation
+        # resolves it on the shadow's own due date (ruling D5), never on a
+        # current one.  ``live_cash`` was the non-derive arm beside it and is
+        # gone; a shadow DECLARES ``parent_transfer`` now and the amount model
+        # answers what the override used to.
         "derive_cash",
-        # The scenario's loan-payment CONFIG map (which transfers are loan
-        # payments, in which mode, with what standing extra) and the named
-        # constructor for the derivation holding it.  Configuration and
-        # ingredients; no figure at all in the first, and the second resolves
-        # nothing when it is called.
-        "config_by_transfer",
+        # The named constructor for the derivation.  Ingredients; it resolves
+        # nothing when it is called.  Word for word from the
+        # ``loan_payment_service`` entry.  ``config_by_transfer`` -- the
+        # scenario-wide loan-payment CONFIG map that sat beside it -- went with
+        # ``live_cash``, and it was the cash-ledger package's ONLY
+        # ``budget.transfers`` query.
         "loan_pricing",
         # ``_clearing`` (plan step X-f3a-1, ruling **R-FL**) -- WHICH STATEMENT
         # showed a line, which is the recorded fact that replaced ``covers``'
@@ -787,7 +791,9 @@ _FENCED_MODULE_RULINGS = {
         "prepare_payments_for_engine",
         # ``live_cash`` / ``derive_cash`` / ``config_by_transfer`` /
         # ``loan_pricing`` were ruled HERE until plan step X-au-g-2a moved
-        # amount rule 4's producer down into ``cash_ledger``.  Their rulings
+        # amount rule 4's producer down into ``cash_ledger`` -- and X-au-g-2c-2
+        # then DELETED two of the four, so only ``derive_cash`` and
+        # ``loan_pricing`` still have entries anywhere.  Their rulings
         # moved with them to the ``app.services.cash_ledger`` entry above --
         # the names did not change STANDING, only address, and the one wording
         # change is named there rather than passed off as a copy.  Said out
