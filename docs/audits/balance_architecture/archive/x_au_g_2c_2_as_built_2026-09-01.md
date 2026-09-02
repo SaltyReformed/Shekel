@@ -26,7 +26,82 @@ its config map removed the cash-ledger package's ONLY `budget.transfers` query.
 
 So it moved `$0.00`, and the loan arm is graded on a seeded mortgage rather than on live data.
 
-## What two adversarial reviews found, and what each cost
+## THREE fixes for one defect, and the first two were each half of it
+
+**A period move through the FORM reverted an owner's typed figure to the contract.** The review
+recorded below stopped the echoed amount from TAKING ownership of a derived leg; it did not ask
+what the same echo does to a leg the owner had ALREADY taken. It handed it back. On the
+derive-mode mortgage the owner's typed `$1,325.00` reverted to the contract's `$1,499.10` the
+moment the row was moved to another pay period -- the `$174.10` ruling **R-IO** exists to keep,
+discarded by an edit that never touched the amount box.
+
+**Reproduced through the real door before it was fixed**, not argued:
+`assert Decimal('1499.10') == Decimal('1325.00')`, one failing case beside seven passing siblings
+in the same class.
+
+**Why the two existing cases could not see it, and it is the same hole in both directions.**
+`test_a_bare_period_move_does_not_TAKE_a_leg_back_either` starts from a TAKEN leg but sends the
+CARRY-FORWARD payload, which states no amount. `test_the_FORM_s_period_move_echoes_the_amount_and_takes_nothing`
+sends the BROWSER's payload but starts from a DERIVED leg -- and re-declaring a leg that is
+already derived is a no-op, so its assertion held on the one row the defect could not move. The
+intersection, a TAKEN leg moved by the FORM, was covered by neither.
+
+**Root cause: the rule had TWO answers where it needs THREE.** A write could TAKE ownership or
+RESTORE the derivation, and every write that was not a take fell into restore -- including the
+writes that assert nothing about authorship at all. A human write that moves no figure now SAYS
+NOTHING and leaves each leg as it stands, which is the answer the bare-flag arm already gave; the
+defect was that the echoed-amount arm gave only half of it, refusing to take while still giving
+back. The two payloads that express one act now reach one answer by one test.
+
+**AND THAT FIX WAS ITSELF HALF A FIX**, which a fourth review -- the neutral one, on the fix rather
+than on the step -- found within the hour. It was written INSIDE the `is_override` branch, so it
+closed the period-move door and left the one that gets used. The route raises `is_override` only on
+an amount or period DELTA, and `is_override` is not a field on `TransferUpdateSchema`, so **a save
+that changes NOTES, CATEGORY or STATUS carries the echoed amount and no flag at all** and never
+reached the guard. Reproduced the same way: `assert Decimal('1499.10') == Decimal('1325.00')` on a
+notes-only save. **Worse than its sibling**, because ownership is decided at
+`_update._apply_transfer_updates` BEFORE `_dispatch_settle` runs -- so a status-only save to Done
+restored the legs and then booked the contract.
+
+**What was actually wrong was WHERE the question was asked, not what it asked.** *Did the figure
+move* now runs ONCE, first, for every caller, and the three answers fall out of it: a figure that
+moved decides ownership, an explicit `is_override=False` hands the pair back, and everything else
+says nothing. Asking it inside one branch answers it for one door -- which is the whole lesson, and
+the reason two successive fixes each looked complete.
+
+**Six mutations, one per arm and one per direction, no test standing in for another:**
+
+| mutation | fails |
+|---|---|
+| take on the flag alone | 2 -- both definition-driven cases |
+| hand-back arm deleted | 1 -- `test_clearing_the_flag_hands_a_taken_leg_back_with_no_new_amount` |
+| definition arm silenced | 1 -- `test_a_later_definition_write_hands_a_taken_leg_back` |
+| the ORIGINAL shipped body | 2 -- both new cases |
+| **the FIRST fix (half)** | **1 -- the notes-only case ONLY** |
+| say-nothing exit deleted | 2 -- the echo, through both doors |
+| restored | **17 passed** |
+
+The fifth row is the one that matters: grading a fix's own earlier version as a mutation is what
+PROVES it was incomplete rather than asserting it.
+
+**Both new cases now assert their own premise** -- that the period actually moved -- because
+neither did, and a regression that silently dropped `pay_period_id` would have left them green
+while they graded a no-op save.
+
+**Opened by this pass: N-436.** `figure_moved` compares against `budget.transfers.amount`, which
+`X-au-f` NULLs for a generated parent -- at which point the predicate is VACUOUSLY TRUE and every
+`is_override=True` save takes ownership on the flag alone. It fails by always PERMITTING, so no
+test that expects it to permit can see it. Filed before its own defect exists, owned by X-au-f.
+
+**It moves `$0.00` on production**, and both figures behind that are QUOTED rather than re-taken
+here, so each carries its date. `budget.loan_payment_settings` held zero rows when this step
+measured it (2026-09-01, stamp `a4c6f1d92b73` -- the table above), so no live transfer is a
+derive-mode loan payment, and on a plain transfer a derived leg's figure IS its parent's, which the
+echo restores to the same number. The exposure is one `track_payment` click away: **47 projected
+transfers across the two active loan-payment templates, measured 2026-08-12** and recorded in
+finding **N-263**, which is three weeks old and was not re-counted for this note.
+
+## What the FIRST TWO adversarial reviews found, and what each cost
 
 * **A money defect this step was ADDING.** `routes/transfers/mutations.py` raises `is_override`
   when the amount changed OR THE PERIOD DID, and that form posts every input it renders -- so a
@@ -36,7 +111,8 @@ So it moved `$0.00`, and the loan arm is graded on a seeded mortgage rather than
   Ownership now requires the figure to have MOVED. **No test could see it** -- both cases written
   for period moves sent the carry-forward payload -- so a case now PATCHes the real form.
   Confirmed by mutation: with ownership on the flag alone, that case is the ONLY failure and its
-  six siblings pass.
+  six siblings pass. **This fix was HALF a fix** and the section above is the other half: it
+  stopped the echo TAKING and left it GIVING BACK.
 * **The freeze log event was WIDER than the producer it replaced.** A first replacement asked the
   amount model for the RULE, which is true of any loan payment; the deleted producer's candidate
   map admitted only derive-mode payments and manual ones with a standing extra. It compares the

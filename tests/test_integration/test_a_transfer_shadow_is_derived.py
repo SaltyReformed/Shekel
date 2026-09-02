@@ -357,12 +357,136 @@ class TestWhoOwnsTheFigureAfterAnEdit:
             assert resp.status_code == 200, resp.data
 
             db.session.expire_all()
+            # The PREMISE of this case: the period really did move.  Without
+            # it, a regression that silently dropped ``pay_period_id`` would
+            # leave the case green while it graded a no-op save.
+            assert db.session.get(Transfer, xfer_id).pay_period_id == (
+                seed_periods[1].id
+            )
+            assert all(
+                leg.pay_period_id == seed_periods[1].id
+                for leg in _shadows(xfer_id)
+            )
             for leg in _shadows(xfer_id):
                 assert owns_its_amount(leg) is False, (
                     "an echoed amount is not an authored one"
                 )
                 assert leg.estimated_amount is None
                 assert shadow_amount(leg) == _CONTRACT
+
+    def test_the_FORMs_period_move_does_not_HAND_BACK_a_taken_leg(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """PROBE: the intersection neither period-move case above covers.
+
+        ``test_a_bare_period_move_does_not_TAKE_a_leg_back_either`` starts from
+        a TAKEN leg but sends the CARRY-FORWARD payload (no ``amount``).
+        ``test_the_FORM_s_period_move_echoes_the_amount_and_takes_nothing``
+        sends the BROWSER's payload but starts from a DERIVED leg.  Neither
+        grades a taken leg moved by the form.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer_id = xfer.id
+
+            # 1. The owner types $1,325.00 through the real form.
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer_id}",
+                data={
+                    "version_id": str(xfer.version_id),
+                    "amount": str(_TYPED),
+                    "pay_period_id": str(xfer.pay_period_id),
+                    "status_id": str(xfer.status_id),
+                    "notes": "",
+                },
+            )
+            assert resp.status_code == 200, resp.data
+            db.session.expire_all()
+            for leg in _shadows(xfer_id):
+                assert owns_its_amount(leg) is True, "the typed figure is owned"
+                assert shadow_amount(leg) == _TYPED
+
+            # 2. The owner moves ONLY the period, through the same form -- so
+            #    the amount box echoes the $1,325.00 it now renders.
+            xfer = db.session.get(Transfer, xfer_id)
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer_id}",
+                data={
+                    "version_id": str(xfer.version_id),
+                    "amount": str(xfer.amount),
+                    "pay_period_id": str(seed_periods[1].id),
+                    "status_id": str(xfer.status_id),
+                    "notes": "",
+                },
+            )
+            assert resp.status_code == 200, resp.data
+
+            db.session.expire_all()
+            # The PREMISE of this case: the period really did move.  Without
+            # it, a regression that silently dropped ``pay_period_id`` would
+            # leave the case green while it graded a no-op save.
+            assert db.session.get(Transfer, xfer_id).pay_period_id == (
+                seed_periods[1].id
+            )
+            assert all(
+                leg.pay_period_id == seed_periods[1].id
+                for leg in _shadows(xfer_id)
+            )
+            for leg in _shadows(xfer_id):
+                assert shadow_amount(leg) == _TYPED, (
+                    "a period move must not revert the owner's typed figure "
+                    "to the contract"
+                )
+                assert owns_its_amount(leg) is True
+
+    def test_an_UNRELATED_field_save_does_not_HAND_BACK_a_taken_leg(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """PROBE: the echo WITHOUT the flag -- the door the period move does not use.
+
+        The route raises ``is_override`` only on an amount or period DELTA
+        (``mutations.py``), so a save that changes NOTES, CATEGORY or STATUS
+        carries the echoed amount and NO flag at all.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer_id = xfer.id
+
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer_id}",
+                data={
+                    "version_id": str(xfer.version_id),
+                    "amount": str(_TYPED),
+                    "pay_period_id": str(xfer.pay_period_id),
+                    "status_id": str(xfer.status_id),
+                    "notes": "",
+                },
+            )
+            assert resp.status_code == 200, resp.data
+            db.session.expire_all()
+            for leg in _shadows(xfer_id):
+                assert shadow_amount(leg) == _TYPED
+
+            # A NOTES-only save: same amount, same period, same status.
+            xfer = db.session.get(Transfer, xfer_id)
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer_id}",
+                data={
+                    "version_id": str(xfer.version_id),
+                    "amount": str(xfer.amount),
+                    "pay_period_id": str(xfer.pay_period_id),
+                    "status_id": str(xfer.status_id),
+                    "notes": "escrow went up in March",
+                },
+            )
+            assert resp.status_code == 200, resp.data
+
+            db.session.expire_all()
+            for leg in _shadows(xfer_id):
+                assert shadow_amount(leg) == _TYPED, (
+                    "a notes-only save must not revert the owner's figure"
+                )
+                assert owns_its_amount(leg) is True
 
     def test_a_later_definition_write_hands_a_taken_leg_back(
         self, app, db, seed_user, seed_periods,
