@@ -97,6 +97,11 @@ from ._walk import (
     dated_deltas,
     walk_loan_ledger,
 )
+from ._charges import (
+    AccrualCharge,
+    charges_for_due_dates,
+    installment_slot,
+)
 from ._split import (
     LoanPaymentSplit,
     PaymentCashSplit,
@@ -110,15 +115,18 @@ from ._visible import (
 )
 
 __all__ = [
+    "AccrualCharge",
     "LoanAnchorCorrection",
     "LoanLedgerWalk",
     "LoanPaymentSplit",
     "PaymentCashSplit",
     "anchor_visible_on",
     "apply_payment_cash",
+    "charges_for_due_dates",
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
     "dated_deltas",
+    "installment_slot",
     "merge_anchor_and_payment_events",
     "payment_visible_on",
     "split_one_payment",
