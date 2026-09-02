@@ -203,8 +203,11 @@ the reverse, so "targeted runs are not gated" reads as symmetric and is not. Con
 at 859 s against 304 s alone, and both results are void. `acquire` refuses with exit 2, releasing
 what it just took, when a pytest is ALREADY live: the lock guards the START of a run and there is no
 retroactive move, so a run already in flight can only be coordinated, never protected. `release`
-warns but still frees the lock on a name mismatch, so copy your own name exactly. `--collect-only`
-is exempt in both directions.
+warns but still frees the lock on a name mismatch, so copy your own name exactly.
+**Releasing is the HOLDER's job and no timeout makes it safe for anyone else:** a lock held 600 s
+with no process running is indistinguishable from one whose holder is merely slow to start, which is
+why `status` reports POSSIBLY stale only past 900 s AND with nothing running anywhere, and says to
+ask the holder even then. `--collect-only` is exempt in both directions.
 
 ## Deployment
 

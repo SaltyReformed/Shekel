@@ -29,7 +29,10 @@ rationale).
   alone, both results void. `acquire` exits 2 and releases what it took when a pytest is
   already live -- it guards the START of a run, so one in flight can only be coordinated,
   not protected. `release` frees the lock even on a name mismatch, so copy your name
-  exactly. `--collect-only` is exempt both directions.
+  exactly. **Only the HOLDER releases** -- a lock held 600 s with nothing running looks
+  identical to one whose holder is slow to start, so `status` calls a lock possibly-stale
+  only past 900 s AND with no pytest anywhere, and says to ask the holder even then.
+  `--collect-only` is exempt both directions.
 - **Zero tolerance:** every batch must end in `<N> passed`. Any `failed`,
   `errors`, or unexpected `xfailed` blocks a "done" report -- investigate, do not
   dismiss as "pre-existing" (rule 4). Show the actual pass/fail summary as evidence.
