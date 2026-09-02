@@ -70,6 +70,21 @@ enforcement); where a gate enforces a rule, fix what it flags at the root rather
     scenarios. If a simpler approach exists, propose it before building the complex one. If 200
     lines could be 50, rewrite it.
 
+14. **ONE SOURCE OF TRUTH FOR ANY VALUE.** A value is either DERIVED or STORED, and each kind has
+    exactly one home. **Derived: ONE WALK** -- one producer, and every caller reaches it. Two
+    spellings that agree today are still two spellings, so agreement is not the test: a fifth
+    spelling of one interest expression agreed over 200,000 randomised draws and parted at 500,000,
+    `$565.37` against `$565.36`. Where a layer puts the shared leaf out of reach, MOVE THE LEAF --
+    the placement is the root cause and the duplication is its symptom. **Stored: ONE PLACE** -- the
+    same fact in two columns is two sources, so delete one. A value that is derived AND stored has
+    both problems, and the stored copy is a stale cache with no reconciler: that is what the
+    cash-balance arc exists to delete. **The tell is an INVARIANT** -- where a rule says two places
+    must always agree, they are one value with two homes and a maintenance contract, and the remedy
+    is to delete a home rather than keep them in step. An invariant that cannot be violated because
+    there is nothing to violate is worth more than one a reconciler enforces. Rulings `balance:R-JA`
+    (the rule), `R-IZ` (the derived half) and `R-IY` (a derivable column is deleted, not
+    maintained), developer 2026-09-02.
+
 ## Automated enforcement
 
 Many rules above are backed by deterministic gates, not just prose. Fix what a gate flags at the
@@ -174,6 +189,25 @@ A task is NOT complete until ALL of these are true:
 4. No code path directly mutates a shadow. All mutations go through the transfer service.
 5. Balance calculator queries ONLY budget.transactions. NEVER also query budget.transfers.
 
+**Invariant 3 is an instance of rule 14 and its THREE clauses are in three different states.** It is
+one value with two homes and a maintenance contract, and the work of making it structural is "delete
+a home", not "enforce it harder".
+
+- **Amounts -- PARTLY structural.** A DERIVED shadow stores no figure at all since plan step
+  `X-au-g-2c-2`, so there is nothing to disagree. An OWNER-PRICED shadow still stores one:
+  `transfer_service/_amount.apply_amount_ownership`'s TAKE arm calls `state_own_amount` on both the
+  parent and each leg, so the duplicate survives on exactly that branch.
+- **Statuses and periods -- NOT structural.** `budget.transactions` and `budget.transfers` each
+  store `status_id` and `pay_period_id`, and the transfer service keeps the pair equal by hand.
+- **And they cannot simply be dropped: invariant 5 is WHY they exist.** The shadow mirrors its
+  parent so the balance fold can read `budget.transactions` alone. Removing the mirror needs the
+  fold to read something else first, which is plan step `X-bi-4`'s re-point to movements. This is
+  the movement family's work, not an amount cutover's.
+
+**Until then it is enforced exactly as written above**, and the step that finally deletes a home
+owes this section a rewrite from a rule someone maintains into a fact the schema makes
+unrepresentable.
+
 ## Standards
 
 Full standards: `docs/coding-standards.md` and `docs/testing-standards.md`. They are not
@@ -193,21 +227,6 @@ DESELECTS 28 container-spawning `tests/test_deploy` tests -- they vanish from th
 rather than appearing as skips, so a green `./scripts/test.sh` run is not a claim about them; CI
 runs bare `pytest` and executes all 28.** `.claude/rules/testing.md` and `docs/testing-standards.md`
 carry the full guidance.
-
-**Concurrent worktrees must take the suite slot:** `./scripts/suite_slot.sh acquire <name>` before a
-gating run, `release <name>` after. The template is isolated per worktree (`TEST_TEMPLATE_DATABASE`)
-and the worker databases by `TEST_DB_PREFIX`, but **the postmaster is SHARED** -- `scripts/test.sh`
-restarts that container as its FIRST act, killing any in-flight run in every other worktree whatever
-prefix either side set. The hazard is ONE-DIRECTIONAL: a gating run destroys a targeted one, never
-the reverse, so "targeted runs are not gated" reads as symmetric and is not. Contention is measured
-at 859 s against 304 s alone, and both results are void. `acquire` refuses with exit 2, releasing
-what it just took, when a pytest is ALREADY live: the lock guards the START of a run and there is no
-retroactive move, so a run already in flight can only be coordinated, never protected. `release`
-warns but still frees the lock on a name mismatch, so copy your own name exactly.
-**Releasing is the HOLDER's job and no timeout makes it safe for anyone else:** a lock held 600 s
-with no process running is indistinguishable from one whose holder is merely slow to start, which is
-why `status` reports POSSIBLY stale only past 900 s AND with nothing running anywhere, and says to
-ask the holder even then. `--collect-only` is exempt in both directions.
 
 ## Deployment
 
