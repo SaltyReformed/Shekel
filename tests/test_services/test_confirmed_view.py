@@ -780,20 +780,29 @@ class TestConfirmedViewShapeMatrix:
         """The split keys on the DUE date; visibility keys on the SETTLED date.
 
         Both payments satisfy the SAME 2026-02-01 installment (periods 1 and 2
-        start 01-16 and 01-30, and payment_day 1 makes both due 02-01), and the
-        walk runs them in pay-period order:
+        start 01-16 and 01-30, and payment_day 1 makes both due 02-01), so since
+        plan step X-au-g-2c-3b-2 that month is charged ONCE and the walk runs
+        them in pay-period order:
 
-          first (period 1): interest 500.00, principal 500.00 -> 99,500.00
-          second (period 2): interest round(99500 x 0.005) = 497.50, principal
-            502.50 -> 98,997.50
+          charge 02-01: interest round(100,000.00 x 0.005) = 500.00
+          first (period 1): clears it -> principal 500.00 -> 99,500.00
+          second (period 2): nothing stands -> principal 1,000.00 -> 98,500.00
 
         Period 1's payment is settled LATE, on 2026-02-13; period 2's settles on
         its own 01-30 start.  So on 2026-02-01 only the SECOND is visible, and
-        the view re-accumulates over that visible subset alone: 100000 - 502.50 =
-        99,497.50 -- NOT the walk's 98,997.50, which would double-count a payment
+        the view re-accumulates over that visible subset alone: 100,000 - 1,000 =
+        99,000.00 -- NOT the walk's 98,500.00, which would double-count a payment
         that has not happened yet.  From 02-13 both are visible and the balance
-        is 98,997.50, with the late payment still dated at the 02-01 installment
+        is 98,500.00, with the late payment still dated at the 02-01 installment
         it paid.
+
+        **The visible-subset re-accumulation is what this test is FOR, and the
+        charge rule does not disturb it**: the split each payment carries is a
+        fact about the whole walk, and the view sums only the ones that have
+        happened.  Note the consequence the charge rule adds -- the payment that
+        OPENS the accrual period is the one that carries its interest, so a
+        visible subset excluding it shows 0.00 interest and the full cash as
+        principal, which is what the first assertion below now reads.
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -805,32 +814,43 @@ class TestConfirmedViewShapeMatrix:
 
             mid = _view(loan, seed_user, date(2026, 2, 1))
             assert _economics(mid) == [
-                (date(2026, 2, 1), Decimal("497.50"),
-                 Decimal("502.50"), Decimal("99497.50")),
+                (date(2026, 2, 1), Decimal("0.00"),
+                 Decimal("1000.00"), Decimal("99000.00")),
             ]
-            assert mid.balance == Decimal("99497.50")
+            assert mid.balance == Decimal("99000.00")
 
             after = _view(loan, seed_user, date(2026, 2, 13))
             assert _economics(after) == [
                 (date(2026, 2, 1), Decimal("500.00"),
                  Decimal("500.00"), Decimal("99500.00")),
-                (date(2026, 2, 1), Decimal("497.50"),
-                 Decimal("502.50"), Decimal("98997.50")),
+                (date(2026, 2, 1), Decimal("0.00"),
+                 Decimal("1000.00"), Decimal("98500.00")),
             ]
-            assert after.balance == Decimal("98997.50")
+            assert after.balance == Decimal("98500.00")
 
     def test_two_payments_in_one_due_month_show_as_two_rows_in_that_month(
         self, app, db, seed_user, seed_periods,
     ):
-        """A biweekly collision keeps BOTH rows at the true due date.
+        """A biweekly collision keeps BOTH rows at the true due date, and the
+        month is charged ONCE.
 
         Periods 3 (02-13..) and 4 (02-27..) both start in February, so payments
         budgeted to them satisfy the SAME 2026-03-01 installment.  The confirmed
         view keeps the true due date -- two rows in one month, more truthful --
-        where the resolver's DISPLAY redistribution shifts the second to March:
+        where the resolver's DISPLAY redistribution shifts the second to March.
 
+        **Since plan step X-au-g-2c-3b-2 the second payment clears no fresh
+        charge** (developer-ruled 2026-09-02: interest is the price of time, not
+        of a transaction), so it pays pure principal:
+
+          charge 03-01: interest round(100,000.00 x 0.005) = 500.00
           first: interest 500.00, principal 500.00 -> 99,500.00
-          second: interest 497.50, principal 502.50 -> 98,997.50
+          second: interest 0.00, principal 1,000.00 -> 98,500.00
+
+        Per PAYMENT -- the rule this replaced -- the second accrued
+        round(99,500.00 x 0.005) = 497.50 and paid only 502.50 down, leaving
+        98,997.50.  The owner is 497.50 better off, and that difference is the
+        whole of what this step moves.
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -842,8 +862,8 @@ class TestConfirmedViewShapeMatrix:
             assert _economics(view) == [
                 (date(2026, 3, 1), Decimal("500.00"),
                  Decimal("500.00"), Decimal("99500.00")),
-                (date(2026, 3, 1), Decimal("497.50"),
-                 Decimal("502.50"), Decimal("98997.50")),
+                (date(2026, 3, 1), Decimal("0.00"),
+                 Decimal("1000.00"), Decimal("98500.00")),
             ]
 
     def test_a_pre_anchor_payment_accrues_on_origination_then_is_reset(
@@ -986,7 +1006,8 @@ class TestSplitInputsKeyOnTheDueDate:
     Ruling D5 (and R-A, which restates it) says the split INPUTS -- ordering,
     rate, AND escrow -- key on the payment's DUE date, "so out-of-order or late
     settlement can never re-split an installment".  ORDERING moved to the due
-    date at step C2 (``loan_ledger.merge_anchor_and_payment_events``) and
+    date at step C2 (``loan_ledger.loan_event_stream``, which was
+    ``merge_anchor_and_payment_events`` until plan step X-au-g-2c-3b-2) and
     VISIBILITY to the settled date, but the RATE and the ESCROW were left on the
     payment's ``pay_period.start_date`` until finding **N-34** measured the gap;
     these two tests are the fix's pins, replacing the control that pinned the

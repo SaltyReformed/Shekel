@@ -61,6 +61,22 @@ class ScheduleFacts:
     which is exactly the redundant-schedule-read defect ledger rows **P68** and
     **P69** record.
 
+    **It is the facts OF A ROW, and since plan step C4-d it cannot say
+    otherwise** (ruling **R-PC45**).  ``cadence_days`` was typed ``int | None``
+    beside a nullable ``history_opens_on``, which made four pairs constructible
+    where a row can produce two: absence of a cadence beside a STATED opening
+    said "I do not know how often this owner is paid, and I do know their
+    paychecks reach back to June 2020", and ``ck_pay_schedule_cadence_range``
+    sits on a ``NOT NULL`` column, so no row can say it.  That is the defect
+    plan step C4-b-2 removed from the SCHEMA surviving one tier up in the TYPE.
+    "This owner has no schedule at all" is now :func:`resolve_schedule`
+    answering ``None``, which is one optional rather than two independent ones,
+    and the ``int | None`` that used to travel from here into
+    :class:`~app.services.pay_calendar.PayCalendar`,
+    :func:`~app.services.pay_calendar.derive_periods` and three projection
+    producers -- policed at each by prose and by two runtime raises -- has no
+    subject at any of them.
+
     **It carries the calendar facts and NOT the rolling ones.**
     ``rolling_enabled`` and ``rolling_target_periods`` configure a WRITE
     (the on-request top-up); these two describe the owner's rhythm, which is
@@ -68,22 +84,23 @@ class ScheduleFacts:
     the row itself (:func:`get_schedule`), because it is about to write.
 
     Attributes:
-        cadence_days: Days between paydays, or ``None`` for an owner with no
-            ``budget.pay_schedule`` row -- which since plan step C4-b-2 IMPLIES
-            an owner with no pay periods, ``fk_pay_periods_schedule`` refusing
-            a period whose owner holds no row.  It is the STORED value and
-            never an inferred one; the arm that inferred it closed findings
-            **P8** and **P35** on its way out (see :func:`resolve_schedule`).
+        cadence_days: Days between paydays.  The STORED value and never an
+            inferred one; the arm that inferred it closed findings **P8** and
+            **P35** on its way out (see :func:`resolve_schedule`).  Not
+            optional, because the column is ``NOT NULL``: a row states its
+            cadence or it is not a row.
         history_opens_on: How far back this owner's paychecks reach, or
             ``None`` for NOT STATED (ruling **balance:R-IA**, amended
             2026-08-31) -- an absence rather than a claim, and one the
-            backward rhythm answers by counting only the record.  There is NO
+            backward rhythm answers by counting only the record.  It stays
+            optional where the cadence above did not, and the asymmetry is the
+            COLUMN's: this one is nullable and that one is not.  There is NO
             fallback for it: an owner with no schedule row has stated nothing,
             and the first recorded payday is a record boundary rather than an
             answer.
     """
 
-    cadence_days: int | None
+    cadence_days: int
     history_opens_on: date | None
 
     @classmethod
@@ -483,7 +500,7 @@ def set_rolling(user_id: int, enabled: bool, target_periods: int) -> PaySchedule
     return schedule
 
 
-def resolve_schedule(user_id: int) -> ScheduleFacts:
+def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
     """Resolve the two facts a pay calendar is derived from, in ONE read.
 
     Plan step **balance:X-bh-2**.  :func:`resolve_cadence`'s body, widened to
@@ -512,34 +529,54 @@ def resolve_schedule(user_id: int) -> ScheduleFacts:
     unreachable branch is a claim nothing grades, and the next reader cannot
     tell it from a live one.
 
-    **``None`` is still a real answer, and it now means one thing rather than
-    two.**  Before, it meant "no schedule row AND no period to infer from";
-    now it means "no schedule row", which the key makes sufficient -- such an
-    owner has no pay periods either.  That is an ordinary owner: a companion
-    account
+    **``None`` is still a real answer, and since plan step C4-d it is the
+    WHOLE answer rather than a pair of them** (ruling **R-PC45**).  Before, it
+    meant "no schedule row AND no period to infer from"; then C4-b-2 narrowed
+    it to "no schedule row", which the key makes sufficient -- such an owner has
+    no pay periods either.  What this step changed is where that absence is
+    SPELT.  It used to be a ``ScheduleFacts`` with both fields ``None``, so the
+    absence of a row and the absence of a stated history shared one encoding
+    and a THIRD pair -- no cadence beside a stated opening -- was constructible
+    and unrepresentable.  Now the absence is this function's own return: there
+    is no row, so there are no facts, so there is no value.
+
+    That is an ordinary owner: a companion account
     (``routes/settings.companion_create`` writes neither), or any user before
     registration records their first batch.  The extend path reads it as
     "generate your first schedule first".
 
+    **The two doors above the calendar refuse it and this one does not**, which
+    is the split C4-d makes explicit rather than leaves to chance.  This is the
+    SOFT door: it answers "does this owner have a schedule" and a caller decides
+    what that means, which is what ``routes/salary/profiles._paychecks_per_year``
+    needs -- a FORM must not 500 on the state the form itself repairs.  The HARD
+    doors are :func:`app.services.pay_calendar.calendar_for` and
+    :func:`app.services.pay_calendar.cadence_for`, which answer or raise
+    ``PayCalendarError``, because every figure they feed is a per-paycheck one.
+    Before C4-d the two calendar doors disagreed about this owner -- the cadence
+    door refused and the calendar door quietly answered an EMPTY calendar
+    carrying no cadence -- and that split is why some screens showed a repair
+    page for them and others showed a blank one.
+
     **``history_opens_on`` never had a fallback and that asymmetry was the
     point.**  Nothing in ``budget.pay_periods`` says when a job began -- the
-    first recorded payday is a record boundary, not an answer -- so a row-less
-    owner has stated nothing, and ``None`` reads as exactly that (ruling
-    **balance:R-IA**, amended 2026-08-31).  The deletion above makes the two
-    fields agree about what an absent row means, where one used to guess and
-    the other did not.
+    first recorded payday is a record boundary, not an answer -- so an owner who
+    HAS a row and has stated nothing carries ``None`` there, and it reads as
+    exactly that (ruling **balance:R-IA**, amended 2026-08-31).  It is the one
+    optional left on :class:`ScheduleFacts`, and it is optional because its
+    column is.
 
     Args:
         user_id: The owning user's id.
 
     Returns:
-        The :class:`ScheduleFacts`.  Both fields are ``None`` when the user has
-        no ``budget.pay_schedule`` row, which by ``fk_pay_periods_schedule`` is
+        The :class:`ScheduleFacts`, or ``None`` when the user has no
+        ``budget.pay_schedule`` row -- which by ``fk_pay_periods_schedule`` is
         an owner with no pay periods either.
     """
     schedule = get_schedule(user_id)
     if schedule is None:
-        return ScheduleFacts(cadence_days=None, history_opens_on=None)
+        return None
     return ScheduleFacts.of(schedule)
 
 
@@ -553,6 +590,13 @@ def resolve_cadence(user_id: int) -> int | None:
     pair, and leaving this reading the row itself would have been two answers
     to "what cadence does this owner have" the moment one of them changed.
 
+    **It is the SOFT door's cadence half**, and since plan step C4-d that is
+    what distinguishes it from :func:`app.services.pay_calendar.cadence_for`
+    rather than how much of the schedule each reads.  Both cost one query of
+    one row; this one ANSWERS ``None`` for an owner with no schedule row and
+    that one REFUSES them.  ``routes/salary/profiles._paychecks_per_year`` is
+    why the soft half exists: a form must not 500 on the state it repairs.
+
     Args:
         user_id: The owning user's id.
 
@@ -562,4 +606,5 @@ def resolve_cadence(user_id: int) -> int | None:
         statement as "no pay periods" (``fk_pay_periods_schedule``).  The
         extend path treats ``None`` as "generate your first schedule first".
     """
-    return resolve_schedule(user_id).cadence_days
+    facts = resolve_schedule(user_id)
+    return None if facts is None else facts.cadence_days

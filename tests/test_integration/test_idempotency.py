@@ -32,6 +32,7 @@ from tests._test_helpers import (
     make_every_period_rule,
 )
 from app.services.balance_at import BalanceContext
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -535,7 +536,7 @@ class TestMarkDoneDoubleSubmit:
                 name="Electricity",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("120.00"),
+                amount_ownership=AmountOwnership.own(Decimal("120.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -593,7 +594,7 @@ class TestCarryForwardDoubleSubmit:
                     name=f"Item {i}",
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=amount,
+                    amount_ownership=AmountOwnership.own(amount),
                 )
                 db.session.add(txn)
             db.session.commit()

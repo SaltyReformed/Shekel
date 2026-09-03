@@ -25,10 +25,12 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import TransactionType, Status
 from app import ref_cache
 from app.enums import (
+    AmountSourceEnum,
     BusinessDayShiftEnum,
     RecurrenceUnitEnum,
     SettlementBasisEnum,
     StatusEnum,
+    TxnTypeEnum,
 )
 from app.services import (
     entry_service,
@@ -69,7 +71,6 @@ from tests.oracles.recurrence_baseline import (
 from tests._test_helpers import (
     all_periods,
     an_entered_day,
-    derived_calendar,
     derived_span,
     last_covered_day,
     make_cadence_rule,
@@ -79,6 +80,8 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 # --- Rule / period objects for the pure pattern-matching tests ---------------
@@ -418,7 +421,7 @@ class TestRecurrenceGeneration:
 
             # Override one entry.
             created[0].is_override = True
-            created[0].estimated_amount = Decimal("999.99")
+            state_own_amount(created[0], Decimal("999.99"))
             db.session.flush()
 
             # Regenerate -- the overridden entry should be preserved.
@@ -1257,7 +1260,7 @@ class TestGenerateForTemplate:
                     status_id=projected_id,
                     name=template.name,
                     transaction_type_id=template.transaction_type_id,
-                    estimated_amount=Decimal("100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
                     is_override=False,
                     is_deleted=False,
                 ))
@@ -2873,7 +2876,7 @@ class TestRegenerateForTemplate:
                 name=template.name,
                 category_id=template.category_id,
                 transaction_type_id=template.transaction_type_id,
-                estimated_amount=Decimal("55.00"),
+                amount_ownership=AmountOwnership.own(Decimal("55.00")),
                 is_override=True,
                 is_deleted=False,
             )
@@ -3044,7 +3047,7 @@ class TestResolveConflicts:
             # Override one entry.
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # Resolve as 'keep'.
@@ -3076,7 +3079,7 @@ class TestResolveConflicts:
             # Override one entry.
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # Resolve as 'update' with new amount.
@@ -3111,7 +3114,7 @@ class TestResolveConflicts:
             # Override one entry with a custom amount.
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # Resolve as 'update' with no new amount.
@@ -3145,7 +3148,7 @@ class TestResolveConflicts:
 
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # Attempt resolve as second_user -- should be blocked.
@@ -3177,7 +3180,7 @@ class TestResolveConflicts:
 
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # 'keep' with wrong user -- no-op by design (keep never modifies).
@@ -3208,7 +3211,7 @@ class TestResolveConflicts:
 
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             recurrence_engine.resolve_conflicts(
@@ -3239,7 +3242,7 @@ class TestResolveConflicts:
             db.session.flush()
             txn_a = created_a[0]
             txn_a.is_override = True
-            txn_a.estimated_amount = Decimal("999.99")
+            state_own_amount(txn_a, Decimal("999.99"))
 
             # Create template and transaction for user B (second_user).
             # second_user needs their own periods and template.
@@ -3260,7 +3263,7 @@ class TestResolveConflicts:
             db.session.flush()
             txn_b = created_b[0]
             txn_b.is_override = True
-            txn_b.estimated_amount = Decimal("888.88")
+            state_own_amount(txn_b, Decimal("888.88"))
             db.session.flush()
 
             # Resolve as user A -- only txn_a should be modified.
@@ -3477,7 +3480,7 @@ class TestResolveConflictsShadowGuard:
                 "Pre-condition: regular transaction must not be a shadow."
             )
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             recurrence_engine.resolve_conflicts(
@@ -3850,139 +3853,110 @@ class TestNegativePaths:
             assert preserved.id == target_id
 
 
-class TestPaycheckAmountFallback:
-    """Tests for _get_transaction_amount exception narrowing (C-01).
+class TestWhatAGeneratedRowsAmountOWNERSHIPIs:
+    """Plan step **balance:X-au-d**: generation states OWNERSHIP, not a figure.
 
-    Verifies that the recurrence engine only catches specific recoverable
-    exceptions from the paycheck calculator, and lets unexpected errors
-    propagate instead of silently falling back to template.default_amount.
+    **This class was ``TestPaycheckAmountFallback`` and its subject is
+    deleted.**  It graded ``_get_transaction_amount``'s exception narrowing --
+    that a ``ZeroDivisionError`` or an ``InvalidOperation`` out of the paycheck
+    calculator fell back to ``template.default_amount`` while an
+    ``AttributeError`` propagated (C-01).  Generation does not run the paycheck
+    calculator any more: a salary-linked definition's rows DECLARE it and are
+    priced by ``income_service.SalaryPricing`` through amount rule 2, so there
+    is no call to raise and no fallback to narrow.  A test whose subject has no
+    code left is deleted rather than weakened.
+
+    What replaced it is the one question generation still answers about an
+    amount, and it is a question about the DEFINITION rather than about a
+    figure: does this definition STATE its price, or is its price COMPUTED?
+    ``_generated_amount_ownership`` asks
+    ``template_amount_service.owns_its_amount`` -- the app's single eligibility
+    test for a stated price, shared with the write door, the backfill and the
+    conflict chooser -- so there is one statement of it rather than a second
+    salary test written here.
     """
 
-    @staticmethod
-    def _fake_tax_configs(*args, **kwargs):
-        """Stub the RESOLVING loader to avoid DB hits in unit tests.
+    def test_a_salary_linked_definition_gives_its_rows_a_DECLARATION(
+        self, app, db, seed_user,
+    ):
+        """A definition an ACTIVE profile names prices its rows by computing.
 
-        Patched at ``load_tax_configs_for_year`` -- the function
-        ``_get_transaction_amount`` actually calls -- rather than at the
-        exact-year primitive beneath it.  The resolver reads the profile's
-        filing status and state to build its candidate set, which these
-        deliberately minimal fakes do not carry; stubbing the entry point
-        keeps the test hermetic and on the narrowing behaviour it is about.
+        So the row names the definition and holds no figure: the state that
+        makes a stale paycheck unrepresentable rather than merely unlikely.
         """
-        return {
-            "bracket_set": "fake", "state_config": "fake",
-            "fica_config": "fake",
-        }
-
-    def test_returns_default_on_zero_division(
-        self, app, db, seed_user, monkeypatch
-    ):
-        """ZeroDivisionError from paycheck calc falls back to default_amount."""
-        monkeypatch.setattr(
-            "app.services.paycheck_calculator.calculate_paycheck",
-            lambda *a, **kw: (_ for _ in ()).throw(
-                ZeroDivisionError("division by zero")),
-        )
-        monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs_for_year",
-            self._fake_tax_configs,
-        )
-        from app.services.recurrence_engine._amounts import _get_transaction_amount
-
-        class FakeTemplate:
-            default_amount = Decimal("1500.00")
-
-        class FakeProfile:
-            id = 1
-            user_id = seed_user["user"].id
-            calibration = None
-
-        class FakePeriod:
-            start_date = date(2026, 1, 2)
-
-        result = _get_transaction_amount(
-            FakeTemplate(), FakeProfile(), FakePeriod(),
-            derived_calendar([date(2026, 1, 2)]),
-        )
-        assert result == Decimal("1500.00")
-
-    def test_returns_default_on_invalid_operation(
-        self, app, db, seed_user, monkeypatch
-    ):
-        """InvalidOperation from bad Decimal data falls back to default_amount."""
-        from decimal import InvalidOperation
-
-        def _boom(*args, **kwargs):
-            raise InvalidOperation("bad decimal")
-
-        monkeypatch.setattr(
-            "app.services.paycheck_calculator.calculate_paycheck", _boom,
-        )
-        monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs_for_year",
-            self._fake_tax_configs,
-        )
-        from app.services.recurrence_engine._amounts import _get_transaction_amount
-
-        class FakeTemplate:
-            default_amount = Decimal("2000.00")
-
-        class FakeProfile:
-            id = 1
-            user_id = seed_user["user"].id
-            calibration = None
-
-        class FakePeriod:
-            start_date = date(2026, 1, 2)
-
-        result = _get_transaction_amount(
-            FakeTemplate(), FakeProfile(), FakePeriod(),
-            derived_calendar([date(2026, 1, 2)]),
-        )
-        assert result == Decimal("2000.00")
-
-    def test_propagates_unexpected_exception(
-        self, app, db, seed_user, monkeypatch
-    ):
-        """Unexpected exceptions (e.g., AttributeError) are NOT caught."""
-        def _boom(*args, **kwargs):
-            raise AttributeError("profile has no attribute 'raises'")
-
-        monkeypatch.setattr(
-            "app.services.paycheck_calculator.calculate_paycheck", _boom,
-        )
-        monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs_for_year",
-            self._fake_tax_configs,
-        )
-        from app.services.recurrence_engine._amounts import _get_transaction_amount
-
-        class FakeTemplate:
-            default_amount = Decimal("1500.00")
-
-        class FakeProfile:
-            id = 1
-            user_id = seed_user["user"].id
-            calibration = None
-
-        class FakePeriod:
-            start_date = date(2026, 1, 2)
-
-        with pytest.raises(AttributeError, match="raises"):
-            _get_transaction_amount(
-                FakeTemplate(), FakeProfile(), FakePeriod(),
-                derived_calendar([date(2026, 1, 2)]),
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- the salary models are not
+            # this module's subject and importing them at the top would put the
+            # paycheck stack on every recurrence test's load path.
+            from app.models.ref import FilingStatus  # pylint: disable=import-outside-toplevel
+            # Pylint: ``import-outside-toplevel`` -- see above.
+            from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
+            # Pylint: ``import-outside-toplevel`` -- the producer under test is
+            # private to its own module.
+            from app.services.recurrence_engine._amounts import (  # pylint: disable=import-outside-toplevel
+                _generated_amount_ownership,
             )
 
-    def test_returns_default_amount_when_no_salary_profile(self, app, db):
-        """When salary_profile is None, returns template.default_amount directly."""
-        from app.services.recurrence_engine._amounts import _get_transaction_amount
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=next(iter(seed_user["categories"].values())).id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                name="Paycheck",
+                default_amount=Decimal("1500.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            db.session.add(SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=db.session.query(FilingStatus).first().id,
+                template_id=template.id,
+                name="X-au-d Salary",
+                annual_salary=Decimal("104000.00"),
+                state_code="NC",
+                is_active=True,
+            ))
+            db.session.flush()
 
-        class FakeTemplate:
-            default_amount = Decimal("500.00")
+            ownership = _generated_amount_ownership(template)
 
-        result = _get_transaction_amount(FakeTemplate(), None, None, [])
-        assert result == Decimal("500.00")
+            assert ownership.figure is None
+            assert ownership.source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+
+    def test_a_definition_that_STATES_its_price_gives_its_rows_that_figure(
+        self, app, db, seed_user,
+    ):
+        """The partner case, and the one the deleted class ended on.
+
+        Its last test asserted that a ``None`` salary profile returned
+        ``template.default_amount``; this is the same claim about the same
+        input, asked of the producer that replaced it.  Without it, a producer
+        that declared EVERY row would pass the case above.
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- see the case above.
+            from app.services.recurrence_engine._amounts import (  # pylint: disable=import-outside-toplevel
+                _generated_amount_ownership,
+            )
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=next(iter(seed_user["categories"].values())).id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                name="Rent",
+                default_amount=Decimal("500.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            ownership = _generated_amount_ownership(template)
+
+            assert ownership.source_id is None
+            assert ownership.figure == Decimal("500.00")
 
 
 class TestEndDate:

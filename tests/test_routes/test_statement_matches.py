@@ -81,6 +81,7 @@ from tests.test_services.test_statement_match._builders import (
 from tests._test_helpers import (
     last_covered_day,
 )
+from app.services.amount_ownership import state_own_amount
 
 
 def _review_url(account_id):
@@ -518,7 +519,7 @@ class TestWhatTheTEMPLATEEmittedIsWhatTheDOORAccepts:
 
         # ...and the row moves behind the page's back, as another tab would.
         txn.settled_amount = Decimal("500.00")
-        txn.estimated_amount = Decimal("500.00")
+        state_own_amount(txn, Decimal("500.00"))
         db.session.commit()
 
         response = auth_client.post(

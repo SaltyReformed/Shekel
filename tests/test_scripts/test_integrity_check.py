@@ -35,6 +35,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
     run_all_checks,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── CheckResult dataclass ────────────────────────────────────────
@@ -589,7 +590,7 @@ class TestDataConsistency:
             status_id=status_done.id,
             name="Done No Correction",
             transaction_type_id=txn_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
             **settle_day_columns(settled_on),
             **settlement_columns(settled_on, Decimal("50.00")),
         )
@@ -707,7 +708,7 @@ class TestDataConsistency:
             name="DC06 Template",
             category_id=category.id,
             transaction_type_id=txn_type.id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             is_override=False,
         )
         db.session.add(generated)
@@ -738,7 +739,7 @@ class TestDataConsistency:
             name="DC06 Template (carried forward)",
             category_id=generated.category_id,
             transaction_type_id=generated.transaction_type_id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             is_override=True,
         )
         db.session.add(override_sibling)
@@ -842,7 +843,7 @@ class TestDataConsistency:
             name="DC06 Template (second occurrence)",
             category_id=generated.category_id,
             transaction_type_id=generated.transaction_type_id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             occurs_on=date(2026, 2, 15),
             is_override=False,
         )

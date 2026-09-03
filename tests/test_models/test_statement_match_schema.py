@@ -59,6 +59,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import account_service
 from app.services.statement_match import matched_subjects
 from tests._test_helpers import load_migration_module
+from app.models.amount_ownership import AmountOwnership
 
 _MIGRATION = load_migration_module("c1e7d4b3a850_a_bank_line_is_this_row.py")
 
@@ -284,7 +285,7 @@ def _a_transaction(db, seed_user, name="Electricity"):
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=type_id,
-        estimated_amount=Decimal("25.00"),
+        amount_ownership=AmountOwnership.own(Decimal("25.00")),
     )
     db.session.add(txn)
     db.session.flush()

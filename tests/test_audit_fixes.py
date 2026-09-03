@@ -30,6 +30,7 @@ from app.services.balance_at import BalanceContext
 from app.services import account_service
 from app.services.cash_ledger import resolve_transfer_amount
 from app.services.row_valuation import owned_contribution
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -143,7 +144,7 @@ class TestEffectiveAmountDecimal:
             name="Test Credit",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -164,7 +165,7 @@ class TestEffectiveAmountDecimal:
             name="Test Cancelled",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -193,7 +194,7 @@ class TestEffectiveAmountDecimal:
             scenario_id=seed_user["scenario"].id,
             status_id=cancelled.id,
             name="Cancelled Transfer",
-            amount=Decimal("200.00"),
+            amount_ownership=AmountOwnership.own(Decimal("200.00")),
         )
         db.session.add(xfer)
         db.session.flush()
@@ -214,7 +215,7 @@ class TestEffectiveAmountDecimal:
             scenario_id=seed_user["scenario"].id,
             status_id=projected.id,
             name="Active Transfer",
-            amount=Decimal("200.00"),
+            amount_ownership=AmountOwnership.own(Decimal("200.00")),
         )
         db.session.add(xfer)
         db.session.flush()

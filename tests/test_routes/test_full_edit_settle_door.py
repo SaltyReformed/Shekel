@@ -55,6 +55,7 @@ from tests._test_helpers import (
 )
 from app.services import status_seam, transaction_service
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.models.amount_ownership import AmountOwnership
 
 
 def _gas_envelope(seed_user, period):
@@ -342,7 +343,7 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
                 name=source.name,
                 category_id=source.category_id,
                 transaction_type_id=source.transaction_type_id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
             db.session.add(occupant)
             db.session.commit()

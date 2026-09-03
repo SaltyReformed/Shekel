@@ -5,8 +5,15 @@ Shekel Budget App -- Recurrence Engine: applying the owner's conflict decisions
 the chooser a :class:`~app.exceptions.RecurrenceConflict` raised.
 
 **Nothing here deletes.**  "Keep" leaves the row untouched and "use" clears the
-override / soft-delete flags and applies the template's amount, so a row that
-reaches the chooser survives whichever branch the owner picks.
+override / soft-delete flags and re-applies the template's amount, so a row
+that reaches the chooser survives whichever branch the owner picks.
+
+**"The template's amount" is a statement of OWNERSHIP rather than a figure**
+(plan step **X-au-d**).  A definition that STATES its price gives the row that
+figure to own; one whose price is COMPUTED gives the row a declaration and no
+figure at all.  Writing the figure unconditionally is finding **N-437**: it
+hands a derived row back to its owner silently, where the two-column model it
+was written under made the same write an ``IntegrityError``.
 
 **It answers the OVERRIDDEN and SOFT-DELETED conflicts only, never a RETAINED
 one.**  ``RecurrenceConflict.retained`` (plan step R10-a) names rows a maintain
@@ -19,10 +26,12 @@ retained id cannot reach this module even from a crafted form.
 """
 import logging
 
+from app.enums import AmountSourceEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.exceptions import ValidationError
-from app.services import posting_service
+from app.services import posting_service, template_amount_service
+from app.services.amount_ownership import declare_derived, state_own_amount
 from app.services._recurrence_common import log_resource_access_denied
 from app.utils.log_events import (
     BUSINESS,
@@ -117,7 +126,41 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
             txn.is_override = False
             txn.is_deleted = False
             if new_amount is not None:
-                txn.estimated_amount = new_amount
+                # **"Use the template's amount" is answered by the DEFINITION,
+                # and after plan step X-au-d the answer is not always a
+                # figure** (finding **N-437**).  The chooser offers one
+                # decision -- keep your figure, or move to the template's --
+                # and it is offered only where the template's own scalar
+                # actually prices its rows: ``regenerate_or_conflict_chooser``
+                # suppresses it for a salary-linked definition, whose
+                # ``default_amount`` is vestigial.  This arm is still
+                # REACHABLE for such a definition, because that route applies
+                # submitted decisions before it consults that suppression, so
+                # a crafted POST reaches here.  Writing the figure then handed
+                # a DERIVED paycheck back to OWN in silence -- legal,
+                # flushable, and a plan nothing recomputes again, which is
+                # exactly the stale cache ruling R-FI deletes.
+                #
+                # ``template_amount_service.owns_its_amount`` is the app's one
+                # eligibility test for a STATED price, shared with the write
+                # door, the backfill and generation's own
+                # ``_amounts._generated_amount_ownership``; a definition it
+                # answers False for prices its rows by computing, so the row
+                # goes back to DECLARING that definition and holds no figure.
+                #
+                # A row carrying no template at all is priced by no definition,
+                # so a figure applied to it is simply its own -- the same
+                # ``template is None`` arm ``cash_ledger._amount_source._stated_amount``
+                # carries, and for the same reason: asking the predicate about
+                # ``None`` is an ``AttributeError`` where every other
+                # unanswerable shape here is a designed outcome.
+                if (
+                    txn.template is None
+                    or template_amount_service.owns_its_amount(txn.template)
+                ):
+                    state_own_amount(txn, new_amount)
+                else:
+                    declare_derived(txn, AmountSourceEnum.TEMPLATE)
             restored.append(txn)
             resolved_count += 1
         db.session.flush()

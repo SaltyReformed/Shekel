@@ -25,7 +25,13 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.services import template_amount_service
+from app.enums import (
+    AmountSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.services import (
     account_service,
     balance_at,
@@ -63,6 +69,8 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 #: Where the grid route's source lives, for the three STATIC guards below.
 #: It was the single file ``app/routes/grid.py`` until plan step C2-f2b split
@@ -165,7 +173,7 @@ class TestGridRowScoping:
             name=name,
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal(amount),
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
         )
         db.session.add(txn)
         db.session.flush()
@@ -497,7 +505,7 @@ class TestSubtotalRowsEndpoint:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=income,
+                amount_ownership=AmountOwnership.own(income),
             ),
             Transaction(
                 pay_period_id=period_id,
@@ -507,7 +515,7 @@ class TestSubtotalRowsEndpoint:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=expense,
+                amount_ownership=AmountOwnership.own(expense),
             ),
         ])
         db.session.commit()
@@ -680,7 +688,7 @@ class TestSubtotalRowsEndpoint:
                 name="Other Paycheck",
                 category_id=seed_second_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("9999.00"),
+                amount_ownership=AmountOwnership.own(Decimal("9999.00")),
             ))
             db.session.commit()
 
@@ -712,7 +720,7 @@ class TestTransactionCRUD:
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("123.45"),
+            amount_ownership=AmountOwnership.own(Decimal("123.45")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -920,7 +928,7 @@ class TestTransactionCRUD:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -997,7 +1005,7 @@ class TestTransactionCRUD:
         """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
-            txn.estimated_amount = Decimal("0.00")
+            state_own_amount(txn, Decimal("0.00"))
             txn.is_envelope = True
             db.session.commit()
 
@@ -1033,7 +1041,7 @@ class TestTransactionCRUD:
         """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
-            txn.estimated_amount = Decimal("100.00")
+            state_own_amount(txn, Decimal("100.00"))
             txn.is_envelope = True
             db.session.add(TransactionEntry(
                 transaction_id=txn.id,
@@ -1607,7 +1615,7 @@ class TestTransactionNegativePaths:
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("123.45"),
+            amount_ownership=AmountOwnership.own(Decimal("123.45")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -2225,7 +2233,7 @@ class TestAccountIdColumn:
             name="Account Test",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -2251,7 +2259,7 @@ class TestAccountIdColumn:
             name="No Account",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         with pytest.raises(IntegrityError):
@@ -2293,7 +2301,7 @@ class TestAccountIdColumn:
             name="Test Expense for Credit",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("75.00"),
+            amount_ownership=AmountOwnership.own(Decimal("75.00")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -2466,7 +2474,7 @@ class TestAccountScopedGrid:
             name=name,
             category_id=category.id if category else None,
             transaction_type_id=txn_type.id,
-            estimated_amount=Decimal(str(amount)),
+            amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         )
         db.session.add(txn)
         return txn
@@ -2941,7 +2949,7 @@ class TestInlineSubtotalRows:
                 name="Salary",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             txn_exp = Transaction(
                 pay_period_id=current.id,
@@ -2951,7 +2959,7 @@ class TestInlineSubtotalRows:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             db.session.add_all([txn_inc, txn_exp])
             db.session.commit()
@@ -2987,7 +2995,7 @@ class TestInlineSubtotalRows:
                     name=name,
                     category_id=seed_user["categories"][cat].id,
                     transaction_type_id=typ,
-                    estimated_amount=Decimal(amt),
+                    amount_ownership=AmountOwnership.own(Decimal(amt)),
                 )
                 db.session.add(txn)
             db.session.commit()
@@ -3019,7 +3027,7 @@ class TestInlineSubtotalRows:
                 name="Good Pay",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             )
             txn_bad = Transaction(
                 pay_period_id=current.id,
@@ -3029,7 +3037,7 @@ class TestInlineSubtotalRows:
                 name="Cancelled Pay",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add_all([txn_ok, txn_bad])
             db.session.commit()
@@ -3078,7 +3086,7 @@ class TestNetCashFlowRow:
                 name="Income",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal(income_amt),
+                amount_ownership=AmountOwnership.own(Decimal(income_amt)),
             ))
         if expense_amt:
             txns.append(Transaction(
@@ -3089,7 +3097,7 @@ class TestNetCashFlowRow:
                 name="Expense",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal(expense_amt),
+                amount_ownership=AmountOwnership.own(Decimal(expense_amt)),
             ))
         db.session.add_all(txns)
         db.session.commit()
@@ -3198,7 +3206,7 @@ class TestFooterCondensation:
                 name="Pay",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -3430,7 +3438,7 @@ class TestPeriodHeaderDateFormat:
                 name="Test Bill",
                 category_id=first_cat.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -3601,7 +3609,7 @@ class TestTransactionNameRows:
                 name="State Farm",
                 category_id=auto_insurance.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
             txn_geico = Transaction(
                 template_id=tmpl_geico.id,
@@ -3612,7 +3620,7 @@ class TestTransactionNameRows:
                 name="Geico",
                 category_id=auto_insurance.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("120.00"),
+                amount_ownership=AmountOwnership.own(Decimal("120.00")),
             )
             db.session.add_all([txn_sf, txn_geico])
             db.session.commit()
@@ -3653,7 +3661,7 @@ class TestTransactionNameRows:
                 name="Car Repair",
                 category_id=seed_user["categories"]["Car Payment"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("450.00"),
+                amount_ownership=AmountOwnership.own(Decimal("450.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -3713,7 +3721,7 @@ class TestTransactionNameRows:
                 pay_period_id=current.id,
                 status_id=projected.id,
                 name="To Savings",
-                amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 from_account_id=seed_user["account"].id,
                 to_account_id=savings_acct.id,
             )
@@ -3729,7 +3737,7 @@ class TestTransactionNameRows:
                 name="Transfer to Savings",
                 category_id=out_cat.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(shadow)
             db.session.commit()
@@ -3767,7 +3775,7 @@ class TestTransactionNameRows:
                 name="Electric Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("120.00"),
+                amount_ownership=AmountOwnership.own(Decimal("120.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -3800,7 +3808,7 @@ class TestTransactionNameRows:
                 name="Rent Payment",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             )
             txn_auto = Transaction(
                 pay_period_id=current.id,
@@ -3810,7 +3818,7 @@ class TestTransactionNameRows:
                 name="Car Loan",
                 category_id=seed_user["categories"]["Car Payment"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("400.00"),
+                amount_ownership=AmountOwnership.own(Decimal("400.00")),
             )
             db.session.add_all([txn_home, txn_auto])
             db.session.commit()
@@ -3844,7 +3852,7 @@ class TestTransactionNameRows:
                 name="Phone Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("80.00"),
+                amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -3882,7 +3890,7 @@ class TestTransactionNameRows:
                 name="Internet Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("60.00"),
+                amount_ownership=AmountOwnership.own(Decimal("60.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -3934,7 +3942,7 @@ class TestTransactionNameRows:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             # Expense in the "Home" group so a real (non-suppressed) group
             # header renders -- the "Income" group header is dropped as
@@ -3947,7 +3955,7 @@ class TestTransactionNameRows:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
             )
             db.session.add_all([income_txn, expense_txn])
             db.session.commit()
@@ -4004,7 +4012,7 @@ class TestTransactionNameRows:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             expense1 = Transaction(
                 pay_period_id=current.id,
@@ -4014,7 +4022,7 @@ class TestTransactionNameRows:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             )
             expense2 = Transaction(
                 pay_period_id=current.id,
@@ -4024,7 +4032,7 @@ class TestTransactionNameRows:
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add_all([income, expense1, expense2])
             db.session.commit()
@@ -4066,7 +4074,7 @@ class TestTransactionNameRows:
                 name="Past Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
             income_txn = Transaction(
                 pay_period_id=current.id,
@@ -4076,7 +4084,7 @@ class TestTransactionNameRows:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             exp_done = Transaction(
                 pay_period_id=current.id,
@@ -4086,7 +4094,7 @@ class TestTransactionNameRows:
                 name="Electric Bill",
                 category_id=seed_user["categories"]["Car Payment"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             exp_credit = Transaction(
                 pay_period_id=current.id,
@@ -4096,7 +4104,7 @@ class TestTransactionNameRows:
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
             db.session.add_all([past_exp, income_txn, exp_done, exp_credit])
             db.session.commit()
@@ -4176,7 +4184,7 @@ class TestTransactionNameRows:
                     name="Paycheck",
                     category_id=seed_user["categories"]["Salary"].id,
                     transaction_type_id=income_type.id,
-                    estimated_amount=Decimal("2000.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 ),
                 Transaction(
                     pay_period_id=current.id,
@@ -4186,7 +4194,7 @@ class TestTransactionNameRows:
                     name="Rent",
                     category_id=seed_user["categories"]["Rent"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("1000.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1000.00")),
                 ),
                 Transaction(
                     pay_period_id=current.id,
@@ -4196,7 +4204,7 @@ class TestTransactionNameRows:
                     name="Groceries",
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("200.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
                 ),
                 Transaction(
                     pay_period_id=current.id,
@@ -4206,7 +4214,7 @@ class TestTransactionNameRows:
                     name="Car Loan",
                     category_id=seed_user["categories"]["Car Payment"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("400.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("400.00")),
                 ),
             ]
             db.session.add_all(txns)
@@ -4249,7 +4257,7 @@ class TestTransactionNameRows:
                 name="Restaurant",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4294,7 +4302,7 @@ class TestTransactionNameRows:
                 name="Cancelled Item",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4362,7 +4370,7 @@ class TestTooltipContent:
                 name="Test Tooltip Amount",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1234.56"),
+                amount_ownership=AmountOwnership.own(Decimal("1234.56")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4401,7 +4409,7 @@ class TestTooltipContent:
                 name="Test Est Comparison",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 settled_amount=Decimal("487.32"),
                 settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
@@ -4438,7 +4446,7 @@ class TestTooltipContent:
                 name="Test Equal Amounts",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 settled_amount=Decimal("500.00"),
                 settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
@@ -4476,7 +4484,7 @@ class TestTooltipContent:
                 name="Test Paid Status",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 settled_amount=Decimal("100.00"),
                 settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
@@ -4507,7 +4515,7 @@ class TestTooltipContent:
                 name="Test Projected Status",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4536,7 +4544,7 @@ class TestTooltipContent:
                 name="Test Notes Tooltip",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 notes="Auto-pay on the 15th",
             )
             db.session.add(txn)
@@ -4568,7 +4576,7 @@ class TestTooltipContent:
                 name="Test No Trailing Sep",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4604,7 +4612,7 @@ class TestTooltipContent:
                 name="Test Zero Amount",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("0.00"),
+                amount_ownership=AmountOwnership.own(Decimal("0.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4633,7 +4641,7 @@ class TestTooltipContent:
                 name="Test Large Amount",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("12345.67"),
+                amount_ownership=AmountOwnership.own(Decimal("12345.67")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4664,7 +4672,7 @@ class TestTooltipContent:
                 name="Test Credit Tooltip",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4701,7 +4709,7 @@ class TestTooltipContent:
                 name="Test HTMX Update",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("80.00"),
+                amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4738,7 +4746,7 @@ class TestTooltipContent:
                 name="State Farm",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4785,7 +4793,7 @@ class TestSubtotalDecimalPrecision:
                     name=f"Expense {i}",
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=amt,
+                    amount_ownership=AmountOwnership.own(amt),
                 )
                 db.session.add(txn)
                 expected_expense += amt
@@ -4802,7 +4810,7 @@ class TestSubtotalDecimalPrecision:
                     name=f"Income {i}",
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=income_type.id,
-                    estimated_amount=amt,
+                    amount_ownership=AmountOwnership.own(amt),
                 )
                 db.session.add(txn)
                 expected_income += amt
@@ -4885,7 +4893,7 @@ class TestGridSubtotalsRegressionBaseline:
                 name="Regression Subtotal Income",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 **settle_day_columns(current.start_date),
                 **settlement_columns(
                     current.start_date, Decimal("500.00"),
@@ -4976,7 +4984,7 @@ class TestGridPeriodSubtotalCanonical:
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -5126,7 +5134,7 @@ class TestGridPeriodSubtotalCanonical:
                 name="Groceries window",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -5412,7 +5420,7 @@ class TestGridMatchedByRowPeriod:
                 name="Weekly Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("123.45"),
+                amount_ownership=AmountOwnership.own(Decimal("123.45")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -5503,7 +5511,7 @@ class TestGridMatchedByRowPeriod:
                 name="Biweekly Salary",
                 category_id=salary_cat.id,
                 transaction_type_id=income_type_id,
-                estimated_amount=Decimal("2500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
                 template_id=salary_template.id,
             )
             # (b) Standalone expense.
@@ -5515,7 +5523,7 @@ class TestGridMatchedByRowPeriod:
                 name="Adhoc Groceries",
                 category_id=groceries_cat.id,
                 transaction_type_id=expense_type_id,
-                estimated_amount=Decimal("85.00"),
+                amount_ownership=AmountOwnership.own(Decimal("85.00")),
             )
             # (c) Cancelled expense.
             txn_c = Transaction(
@@ -5526,7 +5534,7 @@ class TestGridMatchedByRowPeriod:
                 name="Cancelled Groceries",
                 category_id=groceries_cat.id,
                 transaction_type_id=expense_type_id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             # (d) Soft-deleted expense.
             txn_d = Transaction(
@@ -5537,7 +5545,7 @@ class TestGridMatchedByRowPeriod:
                 name="Deleted Groceries",
                 category_id=groceries_cat.id,
                 transaction_type_id=expense_type_id,
-                estimated_amount=Decimal("60.00"),
+                amount_ownership=AmountOwnership.own(Decimal("60.00")),
                 is_deleted=True,
             )
             db.session.add_all([txn_a, txn_b, txn_c, txn_d])
@@ -5683,7 +5691,7 @@ class TestSettleDayLifecycle:
             name="Test Expense",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense_type_id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             due_date=seed_periods_today[0].start_date,
         )
         db.session.add(txn)
@@ -5706,7 +5714,7 @@ class TestSettleDayLifecycle:
             name="Test Income",
             category_id=seed_user["categories"]["Salary"].id,
             transaction_type_id=income_type_id,
-            estimated_amount=Decimal("2000.00"),
+            amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             due_date=seed_periods_today[0].start_date,
         )
         db.session.add(txn)
@@ -7013,7 +7021,7 @@ class TestMobileCardActionBar:
                 name="C7-3 Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("42.00"),
+                amount_ownership=AmountOwnership.own(Decimal("42.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -7055,7 +7063,7 @@ class TestMobileCardActionBar:
                 name="C7-4 Paid Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("42.00"),
+                amount_ownership=AmountOwnership.own(Decimal("42.00")),
                 # A settled row carries the day its money moved and a RECORD
                 # of what moved (plan step X-au-c3); a bare fixture states both
                 # through the one door, ``settlement_columns``.
@@ -7095,7 +7103,7 @@ class TestMobileCardActionBar:
                 name="C7-4b Done Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("42.00"),
+                amount_ownership=AmountOwnership.own(Decimal("42.00")),
                 # A settled row carries the day its money moved and a RECORD
                 # of what moved (plan step X-au-c3); a bare fixture states both
                 # through the one door, ``settlement_columns``.
@@ -7146,7 +7154,7 @@ class TestMobileCardActionBar:
                 name="C7-4c Received Salary",
                 category_id=salary_cat.id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("2500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
                 # A settled row carries the day its money moved and a RECORD
                 # of what moved (plan step X-au-c3); a bare fixture states both
                 # through the one door, ``settlement_columns``.
@@ -7192,7 +7200,7 @@ class TestMobileCardActionBar:
                 name="C7-5 Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("99.00"),
+                amount_ownership=AmountOwnership.own(Decimal("99.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -7242,7 +7250,7 @@ class TestMobileCardActionBar:
                 name="C7-6 Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("42.00"),
+                amount_ownership=AmountOwnership.own(Decimal("42.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -7286,7 +7294,7 @@ class TestMobileCardActionBar:
                 name="C7-integration Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("31.00"),
+                amount_ownership=AmountOwnership.own(Decimal("31.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -7351,7 +7359,7 @@ class TestMobileCardActionBar:
                 name="C7-prefix Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("17.00"),
+                amount_ownership=AmountOwnership.own(Decimal("17.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -7524,7 +7532,7 @@ class TestMobileNoSwipeAffordances:
                 name="No-swipe Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("23.00"),
+                amount_ownership=AmountOwnership.own(Decimal("23.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -7837,7 +7845,7 @@ class TestMobilePlanTab:
                 transaction_type_id=ref_cache.txn_type_id(
                     TxnTypeEnum.EXPENSE,
                 ),
-                estimated_amount=Decimal("88.00"),
+                amount_ownership=AmountOwnership.own(Decimal("88.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -9444,22 +9452,26 @@ class TestGridInterestAccrual:
         assert resp.status_code == 200
         assert b"modelled-accrual-row" not in resp.data
 
-    def test_refresh_uses_live_income_matching_full_render(
-        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
+    def test_refresh_uses_the_same_income_basis_as_the_full_render(
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The balance-row refresh uses LIVE income, matching the full render.
+        """The balance-row refresh and the full render fold ONE income basis.
 
-        Ruling R-Q retired the caller's choice: the SEAM builds the live
-        override map, so an interest account cannot be projected on the stored
-        estimate by a caller that forgot to thread one.  Before it,
-        ``grid_balance_view`` fell back to the STORED amount on a bare
-        ``None`` for the interest path, so a refresh after a mark-paid could
-        revert the balance to the stored figure while the full page showed the
-        live one -- a flicker with no argument to fix it at the call site.
-        Forces live ($5,000) != stored ($1,000) on an income transaction and
-        asserts the live-income accrued balance appears in BOTH the full
-        ``/grid`` render AND the ``/grid/balance-row`` refresh, with NO
-        override passed anywhere.
+        Ruling R-Q retired the caller's choice: the SEAM owns the basis, so an
+        interest account cannot be projected on a different income figure by a
+        caller that forgot to thread one.  Before it, ``grid_balance_view``
+        fell back to the STORED amount on a bare ``None`` for the interest
+        path, so a refresh after a mark-paid could revert the balance to the
+        stored figure while the full page showed the live one -- a flicker with
+        no argument to fix it at the call site.
+
+        **The divergent figure is a real DATA state since plan step
+        balance:X-au-d**, where it was a monkeypatched read-time repair: the
+        income row DECLARES a definition whose price series states ``$5,000``
+        and stores no figure itself, so a surface reading the column would
+        contribute ``None`` and one asking the amount model contributes
+        ``$5,000``.  Both surfaces must render the same accrued balance, with
+        no override passed anywhere -- there is none to pass.
         """
         hysa = create_hysa_account(
             seed_user, db.session, seed_periods_today[0], Decimal("10000.00"),
@@ -9471,32 +9483,49 @@ class TestGridInterestAccrual:
         income_type = (
             db.session.query(TransactionType).filter_by(name="Income").one()
         )
+        period = seed_periods_today[2]
+        template = TransactionTemplate(
+            user_id=user_id,
+            account_id=hysa.id,
+            category_id=next(iter(seed_user["categories"].values())).id,
+            transaction_type_id=income_type.id,
+            name="Paycheck",
+            # NOT the graded figure: the series states $5,000 and this states
+            # something else, so a producer reading the scalar instead of the
+            # series answers a number no assertion here expects.  A first
+            # version set both to $5,000 and an adversarial review of plan step
+            # X-au-d showed that makes ``_stated_amount``'s empty-series
+            # refusal invisible.
+            default_amount=Decimal("7.77"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        template_amount_service.set_amount(
+            template, Decimal("5000.00"), effective_on=period.start_date,
+        )
         income = Transaction(
             account_id=hysa.id,
-            pay_period_id=seed_periods_today[2].id,
+            template_id=template.id,
+            pay_period_id=period.id,
             scenario_id=scenario.id,
             status_id=status.id,
             name="Paycheck",
+            due_date=period.start_date,
             transaction_type_id=income_type.id,
-            estimated_amount=Decimal("1000.00"),
+            amount_ownership=AmountOwnership.derived(
+                ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+            ),
         )
         db.session.add(income)
         db.session.commit()
-
-        # The live recompute revalues this income at $5,000 (vs $1,000 stored).
-        monkeypatch.setattr(
-            income_service, "live_projected_net",
-            lambda txn, pricing: (
-                Decimal("5000.00") if txn.id == income.id else None
-            ),
-        )
+        assert income.estimated_amount is None
         current = current_pay_period(user_id)
         # The seam builds the live map itself (ruling R-Q), so no override is
         # threaded here or by the route -- this IS the live figure.
         live_view = balance_at.grid_balance_view(hysa, bctx)
         accrued_live = live_view.columns[current.id].balance
-        # Sanity: the live $5,000 (not the $1,000 stored) is reflected -- the
-        # balance clears the $10,000 anchor + the live deposit.
+        # Sanity: the definition's $5,000 is reflected -- the balance clears
+        # the $10,000 anchor + the deposit.
         assert accrued_live > Decimal("15000.00")
 
         full = auth_client.get(f"/grid?account_id={hysa.id}").data.decode()
@@ -9615,7 +9644,7 @@ class TestTheAddPurchaseFormReadsTheUsersClock:
             name="Two-clock Groceries",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
             is_envelope=True,
         )
         db.session.add(txn)
@@ -9706,7 +9735,7 @@ class TestARevertedRowShowsWhatARePayWillBook:
             name="Reverted Bill",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -9795,7 +9824,7 @@ class TestARevertedRowShowsWhatARePayWillBook:
                 name="Ordinary Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -9990,34 +10019,63 @@ class TestTheRangeSelectorIsDerivedFromTheOwnersCadence:
 
 
 class TestTheGridRefusesBeforeItReadsACadence:
-    """`/grid` answers the no-periods page rather than a 500 (plan step R-F17).
+    """`/grid` answers a repair page rather than a 500, for both no-rhythm owners.
 
     Both grid reads of the owner's cadence are UNGUARDED --
     ``_range_options(ctx.balance_ctx.calendar().cadence)`` in the render kwargs
-    and ``calendar.cadence.paychecks_within(...)`` in ``_build_plan_view`` --
-    and they are safe only because ``_resolve_visible_window`` has already
-    returned ``None`` for an owner with no covering paycheck, so ``index``
-    renders ``no_periods.html`` and never reaches them.
-    :attr:`~app.services.pay_calendar.PayCalendar.cadence` REFUSES a calendar
-    holding no paydays, so that ordering is what stands between this owner and
-    a 500.
+    and ``calendar.cadence.paychecks_within(...)`` in ``_build_plan_view``.
 
-    **Nothing pinned it.** The account page and the savings service each got an
-    explicit zero-payday case in this step and the grid did not, which an
-    adversarial test review measured: the existing ``test_grid_shows_no_periods_page``
-    uses bare ``seed_user``, and that fixture carries a bootstrap pay period --
-    so its calendar has a cadence and the refusal never fires.
+    **They used to be safe only by ORDERING**, and plan step
+    ``pay_calendar:C4-d`` (ruling **R-PC45**) removed the thing that ordering
+    was standing between.  ``PayCalendar.cadence`` REFUSED a calendar holding
+    no cadence, and these reads were reached only because
+    ``_resolve_visible_window`` had already returned ``None`` and ``index`` had
+    rendered ``no_periods.html``: a correctness property held up by the order
+    of two statements, which is what this class's own name records.  A calendar
+    cannot carry an absent cadence now, so those reads cannot raise whatever
+    order they run in.
+
+    **What the owner sees split in two, and each half is a case below.**  An
+    owner with a schedule row and no COVERING paycheck still gets
+    ``no_periods.html`` from ``index``'s early return -- unchanged, and it is
+    the state that page's copy is for.  An owner with no schedule ROW is
+    refused at ``calendar_for`` and gets the application-wide
+    ``errors/no_pay_calendar.html``, which carries the same repair link.  That
+    is one answer for one state instead of the grid improvising its own, and it
+    leaves ``no_periods.html`` naming a single state -- its copy currently
+    reads "No pay periods have been generated yet, OR there is no period
+    covering today's date", which is ``balance:X-x4``'s subject.
+
+    **Nothing pinned any of it.** The account page and the savings service each
+    got an explicit zero-payday case in plan step R-F17 and the grid did not,
+    which an adversarial test review measured: the existing
+    ``test_grid_shows_no_periods_page`` uses bare ``seed_user``, and that
+    fixture carries a bootstrap pay period.
     """
 
-    def test_an_owner_with_no_paydays_gets_the_no_periods_page(
+    def test_an_owner_with_no_SCHEDULE_ROW_gets_the_repair_page(
         self, app, auth_client, seed_user, db,
     ):
-        """Zero pay periods, zero schedule rows: 200 and the empty-state page.
+        """Zero pay periods, zero schedule rows: 200 and the repair page.
 
-        The cadence is genuinely unanswerable for this owner -- shown with a
-        real ``pytest.raises`` so the case cannot pass vacuously if
-        ``PayCalendar.cadence`` ever stops refusing -- and `/grid` must still
-        answer.
+        **This case changed its ANSWER at plan step ``pay_calendar:C4-d``**
+        (ruling **R-PC45**) and is kept rather than deleted, because the change
+        is the decision.  It asserted ``no_periods.html`` -- the grid's own
+        empty state -- which the route reached because ``calendar_for``
+        answered this owner an empty calendar carrying no cadence.  It now
+        asserts ``errors/no_pay_calendar.html``, the application-wide answer,
+        because ``calendar_for`` refuses them.
+
+        **What is NOT lost is what the assertion checks for.**  Both pages are
+        a 200 rather than a 500, both carry ``/pay-periods/generate``, and the
+        htmx-fragment behaviour the handler defines is graded in
+        ``test_pay_calendar_error_handler.py``.  What IS gained is that the
+        grid stops being one of three different answers to one state, and that
+        this class's ordering property -- see its docstring -- has no subject.
+
+        The ``pytest.raises`` is kept and moved onto ``calendar_for`` itself,
+        so this case still cannot pass vacuously: it fails if the loader ever
+        stops refusing, rather than reporting a repair page it did not earn.
         """
         from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
         from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
@@ -10043,12 +10101,13 @@ class TestTheGridRefusesBeforeItReadsACadence:
             db.session.commit()
 
             with pytest.raises(PayCalendarError):
-                _ = calendar_for(user_id).cadence
+                _ = calendar_for(user_id)
 
             response = auth_client.get("/grid")
 
             assert response.status_code == 200
-            assert b"no_periods" in response.data or b"Pay Period" in response.data
+            assert b"Pay Calendar Unavailable" in response.data
+            assert b"/pay-periods/generate" in response.data
 
 
 class TestThePlanWindowIsDerivedFromTheOwnersCadence:

@@ -53,6 +53,7 @@ from app.services.entry_credit_workflow import sync_entry_payback
 from app.services import account_service
 from app.utils.dates import display_today
 from tests._test_helpers import open_owner_calendar
+from app.models.amount_ownership import AmountOwnership
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +83,7 @@ def _make_projected_expense(seed_user, seed_periods, amount="100.00", period_ind
         name="Test Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal(amount),
+        amount_ownership=AmountOwnership.own(Decimal(amount)),
     )
     db.session.add(txn)
     db.session.flush()
@@ -112,7 +113,7 @@ def _insert_payback_directly(
         name=f"CC Payback: {source_txn.name}",
         category_id=category_id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal(amount),
+        amount_ownership=AmountOwnership.own(Decimal(amount)),
         credit_payback_for_id=source_txn.id,
         is_deleted=is_deleted,
     )
@@ -671,7 +672,7 @@ class TestSyncEntryPaybackTOCTOUPrevention:
             category_id=cat.id,
             transaction_type_id=expense_type.id,
             name="Tracked Groceries",
-            estimated_amount=Decimal("400.00"),
+            amount_ownership=AmountOwnership.own(Decimal("400.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -773,7 +774,7 @@ class TestSyncEntryPaybackTOCTOUPrevention:
             category_id=data["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
             name="Concurrent Tracked",
-            estimated_amount=Decimal("400.00"),
+            amount_ownership=AmountOwnership.own(Decimal("400.00")),
         )
         db.session.add(txn)
         db.session.commit()

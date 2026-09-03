@@ -39,6 +39,7 @@ from app.services.pay_calendar import (
     PayCalendar,
     PayCalendarError,
     cadence_for,
+    calendar_for,
 )
 from app.services import pay_schedule_service
 from app.utils.dates import add_months
@@ -507,10 +508,7 @@ class TestBothDoorsReachOneDerivation:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
-                calendar_for as _calendar_for,
-            )
-            assert cadence_for(user_id) == _calendar_for(user_id).cadence
+            assert cadence_for(user_id) == calendar_for(user_id).cadence
 
     def test_the_loader_reads_the_stored_schedule_row(
         self, app, db, seed_user, seed_periods,
@@ -539,16 +537,37 @@ class TestAnAbsentCadenceIsRefusedRatherThanDefaulted:
     figure at half its true value with nothing on the page saying so.
     Unreachable for a registered owner since plan step X-ad-a, which made
     registration write the ``budget.pay_schedule`` row.
+
+    **Where the refusal LIVES moved at plan step ``pay_calendar:C4-d``**
+    (ruling **R-PC45**), and only that.  It was ``PayCalendar.cadence``, which
+    raised when the calendar carried no cadence; a calendar cannot carry that
+    now, so the refusal sits at the two loader doors -- the only place that
+    knows whether the owner has a ``budget.pay_schedule`` row at all -- and
+    ``PayCalendar.cadence`` is total.  The disposition above is unchanged: the
+    owner is refused, never defaulted.
     """
 
-    def test_the_calendar_refuses_when_it_holds_no_cadence(self):
-        """An empty calendar has no cadence, and says so rather than guessing."""
+    def test_an_EMPTY_calendar_still_answers_its_cadence(self):
+        """The case that inverted at plan step C4-d, kept so the inversion is graded.
+
+        This asserted ``PayCalendar.cadence`` REFUSED an empty calendar, which
+        was true while an empty one could carry ``cadence_days=None``.  An
+        empty calendar is now an owner who HAS a schedule row and zero paydays
+        -- ``pay_period_admin.reset_pay_periods`` passes through exactly that
+        -- and their cadence is a stated fact, so refusing it would be refusing
+        something the owner has told the application.
+
+        A ``cadence_days`` that is not 14 is deliberate: 14 is what most of
+        this file's fixtures carry, so a totality check at 14 could pass
+        against a producer reading somebody else's schedule.
+        """
         empty = PayCalendar.from_paydays(
-            paydays=(), cadence_days=None, user_id=42,
+            paydays=(), cadence_days=7, user_id=42,
             history_opens_on=None,
         )
-        with pytest.raises(PayCalendarError, match="no pay cadence"):
-            _ = empty.cadence
+
+        assert empty.periods == ()
+        assert empty.cadence == PayCadence(cadence_days=7)
 
     def test_the_loader_refuses_an_owner_with_no_schedule_and_no_periods(
         self, app, bare_user,
@@ -558,7 +577,7 @@ class TestAnAbsentCadenceIsRefusedRatherThanDefaulted:
         ``bare_user`` rather than ``seed_user``, and the difference is the
         whole case: ``seed_user`` carries a bootstrap pay period (its default
         account's NOT NULL anchor needs one), so ``resolve_cadence``'s legacy
-        fallback measures that period's length and answers 14 -- this test
+        fallback measured that period's length and answered 14 -- this test
         would then pass its ``raises`` for no reason at all.  Production's
         user 2, the companion role, is the live instance of the state actually
         under test: zero periods, no ``budget.pay_schedule`` row.
@@ -570,5 +589,32 @@ class TestAnAbsentCadenceIsRefusedRatherThanDefaulted:
             # assertion is what caught it.
             assert pay_schedule_service.resolve_cadence(user_id) is None
 
-            with pytest.raises(PayCalendarError, match="no pay cadence"):
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
+                cadence_for(user_id)
+
+    def test_the_CALENDAR_door_refuses_that_owner_TOO(
+        self, app, bare_user,
+    ):
+        """The other door, and the disagreement plan step C4-d closed.
+
+        ``cadence_for`` has refused this owner since plan step R7a-2a.
+        ``calendar_for`` ANSWERED them -- an empty ``PayCalendar`` carrying
+        ``cadence_days=None`` -- so the refusal was not avoided, it was
+        DEFERRED to whichever method first read the cadence.  That is why
+        ``/savings`` showed the repair page for this owner while ``/grid`` and
+        the account detail page each showed a blank render of their own: three
+        answers to one state.
+
+        Graded on the two doors together rather than on ``calendar_for``
+        alone: what the ruling decided is that they AGREE, and a case that
+        watched only the door that changed would still pass if the other one
+        stopped refusing.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            assert pay_schedule_service.resolve_schedule(user_id) is None
+
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
+                calendar_for(user_id)
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
                 cadence_for(user_id)

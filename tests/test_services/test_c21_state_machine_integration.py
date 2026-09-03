@@ -24,6 +24,7 @@ from app.models.category import Category
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.services import transfer_service
+from app.models.amount_ownership import AmountOwnership
 
 
 UNIQUE_INDEX_NAME = "uq_transactions_transfer_type_active"
@@ -281,7 +282,7 @@ class TestPartialUniqueIndexBehaviour:
             name="Rogue extra shadow",
             category_id=td["categories"]["Rent"].id,
             transaction_type_id=txn_type_id,
-            estimated_amount=Decimal("250.00"),
+            amount_ownership=AmountOwnership.own(Decimal("250.00")),
             transfer_id=xfer.id,
             is_deleted=False,
         )
@@ -367,7 +368,7 @@ class TestPartialUniqueIndexBehaviour:
                 name="Regular A",
                 category_id=td["categories"]["Rent"].id,
                 transaction_type_id=expense_type_id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 transfer_id=None,
             )
             txn_b = Transaction(
@@ -378,7 +379,7 @@ class TestPartialUniqueIndexBehaviour:
                 name="Regular B",
                 category_id=td["categories"]["Rent"].id,
                 transaction_type_id=expense_type_id,
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
                 transfer_id=None,
             )
             db.session.add_all([txn_a, txn_b])

@@ -30,8 +30,9 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import companion_service
 from app.services.auth_service import hash_password
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import PayCalendarError, calendar_for
 from tests._test_helpers import open_owner_calendar
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -91,7 +92,7 @@ def _make_txn(seed_user, period, template, *, name=None, amount=None):
 
     txn = Transaction(
         name=name or template.name,
-        estimated_amount=amount or template.default_amount,
+        amount_ownership=AmountOwnership.own(amount or template.default_amount),
         transaction_type_id=expense_type.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         pay_period_id=period.id,
@@ -236,7 +237,7 @@ class TestVisibilityFiltering:
         category = list(seed_user["categories"].values())[0]
         txn = Transaction(
             name="Ad-hoc",
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             transaction_type_id=expense_type.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             pay_period_id=seed_periods_today[0].id,
@@ -303,7 +304,7 @@ class TestVisibilityFiltering:
         category = list(seed_user["categories"].values())[0]
         carried = Transaction(
             name="Groceries",
-            estimated_amount=template.default_amount,
+            amount_ownership=AmountOwnership.own(template.default_amount),
             transaction_type_id=expense_type.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             pay_period_id=seed_periods_today[0].id,
@@ -731,6 +732,14 @@ class TestPeriodNavigationMovedToTheCalendar:
             assert view.period.period_id == seed_periods_today[1].id
             assert view.previous is not None and view.next_period is not None
 
-            # The control: the requester's OWN calendar is empty, so a read
-            # built from ``current_user`` would hide both links.
-            assert calendar_for(companion.id).periods == ()
+            # The control, STRENGTHENED by plan step ``pay_calendar:C4-d``
+            # (ruling R-PC45).  It read ``calendar_for(companion.id).periods
+            # == ()``: the requester's own calendar was EMPTY, so a read built
+            # from ``current_user`` would have hidden both links.  A companion
+            # holds no ``budget.pay_schedule`` row -- production's user 2 is
+            # exactly this -- and ``calendar_for`` refuses that owner now, so
+            # the same mistake is a 500 rather than a silently empty nav.  The
+            # control is the stronger claim, and it is the one the ruling
+            # bought: the wrong owner cannot be resolved quietly.
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
+                calendar_for(companion.id)

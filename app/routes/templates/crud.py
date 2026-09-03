@@ -22,8 +22,6 @@ from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
-from app.models.category import Category
-from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
 from app import ref_cache
@@ -39,11 +37,8 @@ from app.services import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.account_projection import (
-    AccountProjectionKind,
-    classify_account,
-)
 from app.utils.balance_predicates import is_projected_clause
+from app.routes.templates._validation import validate_template_form
 from app.routes._commit_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
@@ -118,128 +113,6 @@ _AMOUNT_VERSION_ACTION = AmountVersionAction(
 # entry and a hand-crafted request) falls back to expense, the most common
 # recurring definition.
 _NEW_TYPE_INCOME = "income"
-
-def _is_tracking_on_non_expense(data, template=None):
-    """Check whether tracking is being set on a non-expense template.
-
-    Defense-in-depth fallback for the cross-field schema validator
-    ``validate_envelope_only_on_expense``.  The schema validator catches
-    the bug whenever both ``is_envelope`` and ``transaction_type_id``
-    appear in the deserialized payload (the normal HTML form path); this
-    helper closes the gap on partial updates that omit one field by
-    falling back to the existing template's stored value.
-
-    Args:
-        data: Deserialized form data from Marshmallow schema.
-        template: Existing TransactionTemplate (for updates) or None (for creates).
-
-    Returns:
-        True if the combination is invalid (tracking on non-expense), False otherwise.
-    """
-    track = data.get(
-        "is_envelope",
-        getattr(template, "is_envelope", False),
-    )
-    if not track:
-        return False
-    type_id = data.get(
-        "transaction_type_id",
-        getattr(template, "transaction_type_id", None),
-    )
-    return type_id != ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-
-
-def _validate_template_form(data, on_invalid, template=None):
-    """Validate submitted template data against ownership and tracking rules.
-
-    Shared by :func:`create_template` and :func:`update_template`, whose
-    create-vs-update difference is only that the create schema makes
-    ``account_id`` / ``category_id`` required (always present) while the
-    update schema makes them optional -- so guarding each check with
-    ``in data`` is correct for both paths.  Checks, in order:
-
-      1. ``account_id`` (when present) names an Account the user owns.
-      2. ``account_id`` (when present) is NOT an amortizing loan -- a
-         template on a loan would have the recurrence engine generate raw
-         transactions onto it (finding N-11 / ruling D4; the create routes
-         refuse the same shape via
-         :func:`app.routes.transactions.create._reject_transaction_on_loan`).
-      3. ``category_id`` (when present) names a Category the user owns.
-      4. The resulting envelope-tracking state is expense-only
-         (:func:`_is_tracking_on_non_expense`).
-
-    Args:
-        data: Deserialized form data (post ``schema.load``).
-        on_invalid: Redirect destination for the first failed check.
-        template: Existing TransactionTemplate for an update, or ``None``
-            for a create, so the tracking check can fall back to the
-            stored value on a partial update.
-
-    Returns:
-        A redirect ``Response`` for the first failed check, or ``None``
-        when every check passes.
-    """
-    if "account_id" in data:
-        acct = db.session.get(Account, data["account_id"])
-        if not acct or acct.user_id != current_user.id:
-            flash("Invalid account.", "danger")
-            return on_invalid.to_response()
-        if classify_account(acct) is AccountProjectionKind.AMORTIZING:
-            # N-11 / ruling D4: a loan's balance is ledger-derived, not a
-            # transaction sum.  A template targeting a loan would have the
-            # recurrence engine generate raw transactions onto the loan
-            # account (``recurrence_engine`` copies ``template.account_id``),
-            # posting a bare cash leg the fold cannot see -- the same shape
-            # the create routes refuse (``_reject_transaction_on_loan``) and
-            # the transfer service forbids for a transfer out of a loan (R6).
-            flash(
-                "A loan's balance is not a transaction sum, so a template "
-                "cannot target a loan account. Record loan payments as "
-                "transfers.",
-                "danger",
-            )
-            return on_invalid.to_response()
-        # **MOVING a template between accounts is refused while a standing
-        # merchant rule names it** (plan step ``bank_import:X-gd-2``).
-        # ``fk_merchant_rules_template_account`` is composite over
-        # ``(template_id, account_id)`` with no ``ON UPDATE``, so the move
-        # orphans the rule and PostgreSQL raises -- an IntegrityError that
-        # ``commit_or_handle_stale`` does not catch and no handler renders,
-        # i.e. an unhandled 500 with a logged traceback.  Cascading the
-        # account onto the rule instead would be worse than the error: the
-        # rule's merchant belongs to the OLD account
-        # (``fk_merchant_rules_merchant_account``), so the row would move to
-        # an account whose statements never showed that merchant.
-        #
-        # The owner's route out is to restate the rule first, which the
-        # sentence says.  **That route used to be a withdrawal**, which ruling
-        # R-GS removed in this same step -- so the 500 was pre-existing and
-        # this step is what made it unrecoverable.  Found by an adversarial
-        # security review 2026-08-26 and measured on the developer's own data:
-        # template 19 is one edit away from it.
-        if (
-            template is not None
-            and acct.id != template.account_id
-            and archive_helpers.template_has_standing_rule(template.id)
-        ):
-            flash(
-                f"'{template.name}' is where a merchant's bank spending goes "
-                "on its current account, so it cannot be moved to another "
-                "one. Change that merchant's answer on the statement review "
-                "screen first.",
-                "danger",
-            )
-            return on_invalid.to_response()
-    if "category_id" in data:
-        cat = db.session.get(Category, data["category_id"])
-        if not cat or cat.user_id != current_user.id:
-            flash("Invalid category.", "danger")
-            return on_invalid.to_response()
-    if _is_tracking_on_non_expense(data, template):
-        flash("Purchase tracking is only available for expense templates.", "danger")
-        return on_invalid.to_response()
-    return None
-
 
 def _apply_fields_and_propagate_rename(template, data):
     """Apply allowlisted field updates, propagating a rename to instances.
@@ -325,7 +198,7 @@ def create_template():
     data = payload
 
     # Validate account/category ownership + expense-only tracking.
-    invalid = _validate_template_form(
+    invalid = validate_template_form(
         data, on_invalid=RedirectTarget("templates.new_template"),
     )
     if invalid is not None:
@@ -571,7 +444,7 @@ def update_template(template_id):
 
     # Validate account/category ownership + expense-only tracking on the
     # resulting state.  Shared with create_template via _validate_template_form.
-    invalid = _validate_template_form(
+    invalid = validate_template_form(
         data,
         on_invalid=RedirectTarget(
             "templates.edit_template", {"template_id": template_id},

@@ -86,7 +86,8 @@ def _reject_payment_before_origination(
     * the fold orders events by installment and applies each anchor as a RESET,
       with a payment sorting BEFORE an anchor on a shared date, so a payment due
       at or before origination splits against a running balance of ZERO.
-      ``split_payment_cash``'s closed-loan branch routes the entire cash to
+      The ONE allocation's closed-loan arm
+      (``app.utils.money.apply_payment_cash``) routes the entire cash to
       ``excess`` -- measured $0.00 interest, $0.00 principal, $1,200.00 to a
       Refund Receivable -- and the origination anchor then resets the balance to
       the full principal over the top of it.
@@ -101,7 +102,7 @@ def _reject_payment_before_origination(
     **The boundary is ``<=``, not ``<``.**  A payment due exactly ON the
     origination date is subsumed by that anchor's reset -- the same strict
     ``anchor_date < due_date`` post-anchor rule
-    (:func:`~app.services.loan_ledger.merge_anchor_and_payment_events`) -- so it
+    (:func:`~app.services.loan_ledger.replay_loan_events`) -- so it
     is erased identically.  Swept and measured: due 02-01, 02-28 and 03-01
     against a 03-01 origination all book $0.00 principal; 03-02 pays down
     $366.67.

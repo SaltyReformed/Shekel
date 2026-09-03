@@ -67,6 +67,7 @@ from ._builders import (
     an_answers,
     an_import,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _batch(seed_user, matches=(), creations=(), incomes=()):
@@ -611,7 +612,7 @@ class TestASIBLINGWriteCannotBookAgainstAStalePrice:
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
             # DRIFTED off the sum of its card entries, which is what an owner
             # correcting a projected payback to their card statement produces.
-            estimated_amount=Decimal("60.00"),
+            amount_ownership=AmountOwnership.own(Decimal("60.00")),
             credit_payback_for_id=envelope.id,
         )
         _db.session.add(payback)
@@ -1784,7 +1785,7 @@ class TestThePassHoldsONEAmountBasis:
             # ONE for the pass, plus ONE per SETTLED ROW -- and the second term
             # is a different question that this step does not answer.  A settle
             # is a single-row WRITE and resolves its own basis by design
-            # (``transaction_service._settle._manual_branch_figures``: "ONE
+            # (``transaction_service._settle.settle_transaction``: "ONE
             # settle resolves ONE basis"); what X-au-j fixes is the READ under
             # it, which used to build one per row PRICED on top of all of that.
             #

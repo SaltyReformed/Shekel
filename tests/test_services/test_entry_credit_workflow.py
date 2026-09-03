@@ -28,6 +28,7 @@ from app.services.entry_credit_workflow import sync_entry_payback
 from tests._test_helpers import (
     an_entered_day,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 class TestSyncEntryPayback:
@@ -252,7 +253,7 @@ class TestSyncEntryPayback:
                 name="Last Period Expense",
                 category_id=seed_entry_template["category"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -634,7 +635,7 @@ class TestPaybackCorrectness:
                 name="Weekly Groceries",
                 category_id=seed_entry_template["category"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(txn2)
             db.session.flush()
@@ -1068,7 +1069,7 @@ class TestLegacyCreditGuard:
                 name="Non-Tracked Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -1102,7 +1103,7 @@ class TestLegacyCreditGuard:
                 name="Legacy Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             db.session.add(txn)
             db.session.flush()

@@ -371,6 +371,13 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     it, and run two balance semantics live on one account meanwhile.
   * [ ] **X-bi-5** delete `is_envelope`, `tracks_purchases`'s branch sites and the template sites,
     which is the fence this family makes structurally unnecessary rather than merely unused.
+  * [ ] **X-bi-6** delete the shadow's stored `status_id` and `pay_period_id` -- Transfer Invariant
+    3's other two clauses (**R-JA**, `CLAUDE.md` rule 14). `transfer_service` keeps them equal to
+    the parent's BY HAND, which is one value with two homes and a maintenance contract. **It runs
+    after X-bi-4 and the ordering is the substance: INVARIANT 5 IS WHY THE MIRROR EXISTS** -- the
+    shadow duplicates its parent so the fold can read `budget.transactions` alone, so the mirror is
+    droppable only once the fold reads movements. Rewrites Transfer Invariant 3 in `CLAUDE.md` from
+    a rule someone maintains into a fact the schema makes unrepresentable.
 * [ ] **X-bk** the ONE-TIME manual reconcile of the imported bank history against the app's own
   rows, through the app's doors and into the post-restructure shape, so the whole history keeps its
   plan-versus-actual comparison. **MOVES MONEY**, and it is an OPERATOR act -- a rehearsed runbook
@@ -417,6 +424,58 @@ are NOT a partition over those two columns (ruling R-FI). Stored-vs-derived drif
 `../../plans/conventions.md` rule 8 says is not resolved, and which the read-time repair is what
 hides.
 
+**AND THE DISCRIMINATOR ITSELF IS RULED OUT, at `X-au-k` on 2026-09-02 (`R-IY`, `R-IZ`).**
+`amount_source_id` is a STORED DISCRIMINATOR over an EXCLUSIVE ARC whose legs the row already
+carries -- `template_id`, `transfer_id`, `credit_payback_for_id`, which
+`ck_transactions_one_pricing_link` already makes exclusive. It is the shape this codebase builds
+everywhere else (`statement_match.py`, `recurrence_rule.py`, `template_amount_version.py`, and
+`X-ai-s` converting `journal_entries`), and in all of them the discriminator is DERIVED from which
+leg is set. Storing it buys a ref table, a reverse map rebuilt per dispatch, and a state where the
+two disagree -- **N-440**, which `budget.transfers` forbids and `budget.transactions` does not.
+
+**What made it look necessary is that the ARC IS INCOMPLETE**: `credit_payback_for_id` has no
+`AmountSourceEnum` member and **N-264**'s finance charge would carry no link at all. N-264 had two
+readings -- a reason to keep the column, or a missing leg -- and **the developer ruled the second**:
+`CC4d` gives CC4c its own link, `X-au-l` DELETES the column. That is the END STATE; both sit behind
+this phase's cutovers, which create the population it must be true across.
+
+**The rule is general and its BOUNDARY is part of it** (`R-IY`): *every derivable column is deleted,
+because a stored copy is a stale cache -- which is what started this arc.* It does NOT reach a
+CONSTITUTIVE fact: opening equity (**R-GX**), an asserted balance and
+`pay_schedule.history_opens_on` (**R-IA**) are stored because nothing computes them. Those are
+INPUTS; the rule bites on COPIES.
+
+**THE RULE ABOVE IS ONE HALF OF A WIDER ONE** (**R-JA**, the same day): *a value has exactly one
+source of truth -- if it is a derivation then one walk, if it is stored then it is stored in one
+place.* The stored arm is not hypothetical and this phase is already paying it off: Transfer
+Invariant 3 is a maintained DUPLICATE written into `CLAUDE.md` as an invariant, and `X-au-g-2c-2`
+made the shadow half structural while `X-au-f` takes the parent half. **The tell is an invariant** --
+where a rule says two places must always agree, they are one value with two homes, and the remedy is
+to delete a home rather than keep them in step.
+
+**AND EVERY DERIVED VALUE HAS EXACTLY ONE PRODUCER** (**R-IZ**, R-JA's derived half): *one walk, one
+answer that can never disagree with itself* -- for ANY derivation, not only one replacing a deleted
+column. A second walk is a cache with no column, and
+the cost is not the wasted pass but that the two can PART. **Agreement is not the test**:
+`X-au-g-2c-3c`'s fifth spelling of one interest expression agreed over 200,000 randomised draws and
+was REFUTED at 500,000, `$565.37` against `$565.36`. **Where a layer puts the shared leaf out of
+reach, MOVE THE LEAF** -- `X-au-g-2c-3a` deleted three restatements that placement had FORCED, two
+walks sitting BELOW the allocation so that reaching it was an import cycle. This phase does not own
+the rule but carries instances of it: **N-409**'s escrow floor is a SECOND allocation rule for a
+question the fold already answers, and the two DISAGREE.
+
+**One ground is REFUTED and must not be re-argued**: that `ondelete="SET NULL"` on the template link
+would make a "derived rows have a link" CHECK refuse a definition delete. `budget.transfers` already
+ships that constraint, and the alternative is worse -- a persisted row with no link is unpriceable
+in SILENCE where a refused DELETE is loud.
+
+**IT BEARS ON A RANKED STEP, FLAGGED NOT RESOLVED.** `X-bi-1` makes `tracks_purchases` a STORED
+column *backfilled from each row's template*, and that value DERIVES -- the property defers to the
+TEMPLATE's `is_envelope` for a generated row. A template edit would stale every stored row, which is
+the class `R-IY` deletes. *Backfilled* is a cache word; a FREEZE would be a record, and the step
+does not claim one. **The developer has not been asked whether X-bi-1 survives R-IY**, and this
+sentence exists so nobody builds it believing the question was never raised.
+
 * [ ] **X-au** `feat(cash): a row's amount is either its own or derived` -- the DECOMPOSED parent
   (**R-FI**), carrying **N-40**, **N-224**, **N-228**, **N-238**. It ticks with the last of its
   leaves. **It SUPERSEDES X-ar**, whose two stated premises tracing also refuted: its deletion set was
@@ -448,48 +507,16 @@ hides.
   producer-free arms live in `row_valuation.py`; and the amount rules read no STATUS, the basis
   pinning `date.today()` being `X-i2`'s money rather than theirs.
   * [x] **X-au-c3** `3d1379d1` -- a settle RECORDS what moved rather than refreshing an amount. What a later leaf must obey is in this phase's preamble, not here. Record in `archive/eight_shipped_steps_2026-09-01.md`.
-* [ ] **X-au-k** `refactor(models): a row's amount ownership is ONE attribute` -- make
-  `amount_ownership.py`'s opening claim, *"The ONE writer of a row's amount-ownership pair"*,
-  STRUCTURALLY true. **It is a census today, not a structure** (developer, 2026-09-02). The figure
-  and `amount_source_id` are two independently mapped columns, so any code can write one of them;
-  `ck_transactions_amount_ownership` / `ck_transfers_amount_ownership` catch the half-write at
-  FLUSH, and what keeps live code away from that failure is a guard somewhere else plus a census
-  that has to be re-run every time the derived population grows. Measured 2026-09-02: the pair is
-  written outside the seam at **five modules / six lines** -- `entry_credit_workflow.py:192`,
-  `routes/transactions/mutations.py:228`, `carry_forward_service/_execute.py:404` and `:407`,
-  `recurrence_engine/_conflicts.py:120`, `transaction_service/_settle.py:633` -- of which **three
-  write ONE column** and rely on an upstream refusal never to meet a derived row, plus two
-  `setattr` splat sites (`_maintain.py:354`, `mutations.py:214`).
-  * **It runs BEFORE the three cutovers, and that is the whole point of its rank.** `X-au-d`,
-    `X-au-e` and `X-au-f` each NULL a figure and set a source across a live row population, and
-    finding **N-293** is precisely the defect waiting for them: a field splat that writes one
-    column of the pair and aborts the entire template edit at flush. If the pair is atomic first,
-    that class cannot be written; if it is not, three cutovers hand-maintain what the type should
-    have made unrepresentable. Carries **N-293**, whose closure depends on which fork is ruled.
-  * **OPENS WITH A DESIGN FORK, ruled at the gate BEFORE any code is written**, so a session that
-    picks this up at `#10` does not start by editing models. (a) PRIVATE columns
-    (`_estimated_amount`, `_amount_source_id`) behind read-only properties, so a direct write
-    raises `AttributeError` -- simplest to reason about, but every query that filters or orders on
-    those names has to move, and it makes the illegal write *fail* rather than *unsayable*.
-    (b) A SQLAlchemy `composite()` mapping both columns onto ONE value object
-    (`AmountOwnership.own(figure)` / `.derived(relation)`), so the half-write has no expression at
-    all because there is one attribute to assign -- the most structural answer, and the one that
-    dissolves the splat class outright, at the cost of care in queries and in the
-    `DerivedRowFields` / `DerivedTransferFields` records. (c) Something better.
-  * **The database CHECKs STAY under whichever fork wins.** They are the backstop against a writer
-    that is not this application at all -- a migration, a `psql` session, a trigger -- which is the
-    one surface no Python-side structure can reach. Deleting them would be trading a real guarantee
-    for a tidier diagram.
-  * **What it does NOT do:** it does not decide who OWNS a figure. That question is
-    `transfer_service/_amount.apply_amount_ownership`'s and `X-au-h`'s; this step only makes the
-    two-column WRITE atomic, so a caller can state the wrong ownership but can no longer state half
-    of one.
-
-* [ ] **X-au-d** `refactor(salary): a projected paycheck is not stored` -- the SALARY cutover. The
-  recurrence engine stops pricing salary rows, the 51 live rows go NULL, and
-  `income_service.live_projected_net`, `transaction_service._freshest_amount` and
-  `_reconcile_cached_amount` are deleted. Closes **N-224** and **N-228** (the batch producer called
-  with a one-element list, which disappears with the mechanism rather than by threading a map).
+* [x] **X-au-k** `7315ecd9` -- a row's amount ownership is ONE mapped attribute over a value
+  object total across ruling R-FI's two states (**R-IW**); the `_FIGURE_COLUMNS` registry is
+  gone and no migration was needed. Closed **N-293**, opened **N-437** and **N-440**. Record in
+  `archive/x_au_k_as_built_2026-09-02.md`.
+* [x] **X-au-d** `ed06acf6` -- a paycheck's amount is its salary profile's, and it stores none.
+  59 non-override salary rows declared (**R-JB**: settled ones too), the read-time repair and
+  its whole seam deleted, and FOUR dormant defects the stored figure was absorbing closed or
+  filed -- the archive re-price (**N-261**, `-$9,677.24`), a templates-form 500 (**N-253**),
+  `_freshest_amount`'s conjunct, and **N-444**. Two engines, one pass, one fence fewer.
+  Record in `archive/x_au_d_as_built_2026-09-03.md`.
 * [ ] **X-au-e** `refactor(recurrence): a template row reads its template's series` -- the TEMPLATE
   cutover, onto X-au-a's series. Generation stops pricing, 511 rows go NULL, and regeneration's amount
   arm plus the conflict chooser's keep-vs-use decision are deleted: a hand-edited month owns its
@@ -506,26 +533,11 @@ hides.
     `cash_ledger._loan_installment` / `._loan_pricing`, so the arrow runs one way.
     **A LATER step must obey:** the loan READING tier may now import the amount model, which
     is what `X-au-g-2c` needs.  Byte-identical, AST-verified; opened **N-416**.
-  * [x] **X-au-g-2b** `6cd0ad44` -- a loan payment resolves on its own DUE date (**R-IJ**) at
-    three sites plus a fourth nobody had filed, so `LoanPricing` takes no `as_of` and
-    **`cash_ledger` makes no clock call at all** (AST census, thirteen modules, pinned by
-    `test_amount_source.TestTheAmountModelReadsNoClock`). Closed **N-40** and **N-410**.
-    **A LATER step must obey:** the escrow-threshold site was BUILT, measured a REGRESSION and
-    reverted -- **N-409** stands with its remedy withdrawn, re-owned to `X-au-g-2c`.
+  * [x] **X-au-g-2b** `6cd0ad44` -- a loan payment resolves on its OWN due date (**R-IJ**) and `cash_ledger` makes no clock call at all. Closed **N-40**, **N-410**; **N-409** stands, re-owned. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
   * [ ] **X-au-g-2c** the DECOMPOSED parent of the CUTOVER, split 2026-09-01 into the readers,
     the declaration, and the escrow rule. It ticks with the last of its three leaves.
-    * [x] **X-au-g-2c-1** `cdc2c7d9` -- BOTH readers of a projected loan-side shadow take the
-      amount model. **N-266 said ONE unrouted reader; the census says TWO of NINE, seven
-      settled-only.** The second is `_plan._planned_from_shadows`, and `loan_payment_settings` is
-      EMPTY on production, so 47 of 58 projected shadows take its fallback -- `2c-2` would have
-      shipped an `AmountUnresolvable` on `/savings`. Closed **N-266**; opened **N-432**. The ledger
-      fence is a VALUE control now, with a static check reading W9908's own allowlist.
-    * [x] **X-au-g-2c-2** `1f2b98a4` -- EVERY transfer shadow is DERIVED (**R-IN**), so Transfer
-      Invariant 3 is STRUCTURAL and both repairs that maintained it go with `live_cash`,
-      `_manual_shadow_amount` and `frozen_amount`. **Absorbs X-au-f's SHADOW half.** 350 rows,
-      `$0.00`, downgrade byte-identical on a production copy. Closed **N-401**. Record in
-      `archive/x_au_g_2c_2_as_built_2026-09-01.md`. **A LATER step must obey:** **R-IO** takes
-      ownership only when the figure MOVED, so X-au-h inherits that conflation, not a defect.
+    * [x] **X-au-g-2c-1** `cdc2c7d9` -- BOTH readers of a projected loan-side shadow take the amount model, not one. Closed **N-266**; opened **N-432**. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
+    * [x] **X-au-g-2c-2** `1f2b98a4` -- EVERY transfer shadow is DERIVED (**R-IN**), which is Transfer Invariant 3's AMOUNT clause made structural. Closed **N-401**. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
     * [ ] **X-au-g-2c-3** the DECOMPOSED parent of the escrow rule, split 2026-09-02. It ticks
       with the last of its leaves.
       **N-409 named ONE floor; the trace found the defect is a CLASS, and the class is a LAYERING
@@ -539,42 +551,16 @@ hides.
       P&I to the cent, so the schedule and its 2048-12-01 payoff are byte-identical to an
       on-schedule month while the seam's fold puts the owner `$210.95` further behind and dates the
       payoff 2049-01-01. Two answers, one screen.
-      * [x] **X-au-g-2c-3a** `becf76f8` -- the ONE allocation moves to `app/utils/money.py`, beside
-        the accrual, and the three restatements it forced are DELETED. `$0.00`; 0 differences over
-        200,000 trials against `HEAD`. **A LATER step must obey:**
-        `test_loan_allocation_is_one_rule` pins that the leaf reaches NOTHING in `app.services` --
-        the property that makes it callable from every walk, so moving the rule back up re-forces
-        the duplication.
-      * [x] **X-au-g-2c-3c** `cb6469b2` -- `debt_strategy_service._accrue_interest` routes through
-        the ONE accrual primitive, deleting a FIFTH spelling that associated `(b*r)/12` against
-        `b*(r/12)`. **`recurrence:D52`'s "agree on 200,000 randomised draws" is REFUTED**: at
-        500,000 they part, `$565.37` against `$565.36`. `$0.00` on both live loans.
-        **`D52`'s duplicate half dies here; its CONVENTION half stays `recurrence:R16-d`'s.**
+      * [x] **X-au-g-2c-3a** `becf76f8` -- the ONE allocation moved to `app/utils/money.py`, the leaf every walk reaches, deleting the three restatements its old placement FORCED. Its obligation now lives in ruling **R-IZ**, which is the rule it is evidence for. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
+      * [x] **X-au-g-2c-3c** `cb6469b2` -- a FIFTH spelling of the accrual deleted; `recurrence:D52`'s 200,000-draw agreement REFUTED at 500,000, `$565.37` against `$565.36`. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
       * [ ] **X-au-g-2c-3b** the DECOMPOSED parent of the CHARGE-CALENDAR half, split 2026-09-02.
-        * [x] **X-au-g-2c-3b-1** `fd3afc59` -- the CHARGE calendar moves to `loan_ledger._charges`,
-          the same inversion one tier up: it sat in `balance_at._plan`, which REACHES the settled
-          walk, so that walk restated it. `$0.00`; 0 mismatches over 20,000 trials.
-          **This is what makes `3b-2` a TAKING rather than a rebuild. A LATER step must obey:**
-          `D53` and `D55` are deliberately NOT taken here and the docstrings say so.
-        * [ ] **X-au-g-2c-3b-2** `fix(loans): the settled walk charges once per installment` --
-          the walk takes the calendar, so ONE interest accrual and ONE escrow stand per
-          INSTALLMENT rather than per PAYMENT, and `split_payment_cash` is DELETED (one caller; its
-          own docstring concedes it is correct only while a loan takes one payment per accrual
-          period). Carries **N-409**'s second half and satisfies **recurrence:D51**, whose remedy
-          `R16-c` states as deletion -- after this the two walks agree on the RULE, so that merge
-          becomes behaviour-neutral. **MOVES POSTED MONEY.** `$0.00` on production: 0 due-month
-          collisions on either live loan, measured on a clone at `b7a41e2c9d63`; `$1,631.05` on one
-          colliding pair (`$616.99` escrow + `$1,014.06` interest).
-          **TWO OBLIGATIONS IT MUST NOT DISCOVER MID-BUILD.** (a) `split_payment_cash` is an
-          ORACLE, not only a producer: `test_loan_payoff_date_oracle._clears_within` and
-          `test_loan_interest_in_year` re-fold through it DELIBERATELY as the retired
-          one-payment-per-month composition, so agreement is *"the equivalence claim itself"*.
-          Deleting it naively leaves the producer grading itself -- move the composition INTO the
-          tests, still calling `accrue_monthly_interest`, since spelling the primitive inline
-          re-creates the association `2c-3c` just deleted. (b) An ANCHOR reset and a standing
-          charge need a ruling: an anchor is an authoritative balance that already includes accrued
-          interest, so a charge standing at one should be DISCARDED rather than carried across it.
-          Order `charge -> payment -> anchor`. **Both are open developer questions.**
+        * [x] **X-au-g-2c-3b-1** `fd3afc59` -- the CHARGE calendar moved to `loan_ledger._charges`, the same inversion one tier up. **D53** and **D55** deliberately not taken. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
+        * [x] **X-au-g-2c-3b-2** `3b7716f8` -- ONE interest accrual and ONE escrow per
+          INSTALLMENT, `split_payment_cash` deleted, both tiers folded onto the ONE replay
+          `loan_ledger._replay.replay_loan_events` (rule 14). `$0.00` on production, `$1,631.05`
+          on a forced collision. Closes **recurrence:D51**, carries **N-409**'s second half, rules
+          **R-IX**, files **N-439**. As built: `archive/x_au_g_2c_3b_2_2026-09-02.md`. **A later
+          step must NOT delete `tests/oracles/loan_monthly_composition.py`.**
         * [ ] **X-au-g-2c-3b-3** `fix(loans): the engine feed states no allocation` -- the feed
           passes the CASH and `project_forward` charges the month's escrow, which DELETES the floor
           rather than re-dating it. Two earlier remedies were measured wrong first: re-keying the
@@ -590,6 +576,23 @@ hides.
           amount, and `cash - escrow` goes negative on a payment below its escrow -- measured live
           at `-416.99` by typing `$200.00` into a projected mortgage payment. Passing the CASH is
           what keeps that invariant TRUE rather than relaxing it.
+* [ ] **X-au-m** `fix(transfers): an owner-priced pair states its figure ONCE` -- Transfer Invariant
+  3's AMOUNT clause, the half `X-au-g-2c-2` did not reach (**R-JA**).
+  `transfer_service/_amount.apply_amount_ownership`'s TAKE arm calls `state_own_amount` on the
+  parent AND each leg, so an owner-priced pair keeps one figure in two places where a derived pair
+  keeps it in one. The leg should DERIVE from the parent it already names --
+  **except on a DERIVE-MODE LOAN PAYMENT, the one case where a leg's derivation is NOT its parent's
+  amount**: handing that back reverted an owner's `$1,325.00` to the contract's `$1,499.10`, twice,
+  `$174.10` each. **That exception is this step's whole design question and it is UNRULED**; do not
+  assume the simple answer.
+* [ ] **X-au-l** `refactor(cash): the LINK is the relation` -- DELETE `amount_source_id`
+  (**R-IY**, **R-IZ**). The relation is derivable from which pricing link the row carries and
+  `ck_transactions_one_pricing_link` already makes those exclusive, so the column, `ref.amount_sources`,
+  `AmountSourceEnum` and `_declared_relation`'s per-dispatch reverse map all go, and `amount_rule`
+  reads the LINK -- ONE walk. Both ownership CHECKs become *a figure OR exactly one pricing link*,
+  which makes **N-440**'s disagreement state unrepresentable rather than guarded. A migration; moves
+  no money. **Gated on `credit_card:CC4d`**, which gives the one derived row that carries no link
+  today its own. Closes **N-440**.
 * [ ] **X-au-f** `refactor(transfers): a generated transfer's amount is its definition's` -- the
   PARENT half of the transfer cutover. `transfers.amount` resolves from the template series for a
   generated transfer.

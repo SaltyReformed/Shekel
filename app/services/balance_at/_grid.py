@@ -296,15 +296,16 @@ class GridBalanceView:
             a real balance beside its real subtotals -- which is why this is one
             map rather than a balance map that omitted periods and a subtotal
             map that did not.
-        amount_overrides: The live ``{transaction_id: Decimal}`` map this
-            projection was computed with (recomputed salary income and derived
-            loan debits).  Carried so the grid's CELLS render from the same map
-            its balance row folded (ruling R-Q) instead of the route building a
-            second one, which made them identical only by argument.
+    **The ``amount_overrides`` field is GONE (plan step X-au-d)**, with the
+    producer behind it: see :class:`._cash_periods.CashPeriodView` for the
+    census that found nothing had read it since plan step X-au-c2b routed the
+    grid through the amount model's own map.  Ruling **R-Q** -- a cell and the
+    balance row beside it price one row one way -- is unchanged and is now
+    structural: both read ``cash_ledger.amounts_by_id`` over the pass's basis,
+    and a derived row has no second figure to disagree with.
     """
 
     columns: "OrderedDict[int, GridColumn]"
-    amount_overrides: "dict[int, Decimal]"
 
     def row_flags(self, periods: "Iterable[DerivedPeriod]") -> GridRowFlags:
         """Return which conditional rows *periods* renders (ruling R-O).
@@ -524,7 +525,6 @@ def grid_balance_view(
     )
     return GridBalanceView(
         columns=_assemble_columns(window, view.columns, modelled),
-        amount_overrides=view.amount_overrides,
     )
 
 
@@ -540,6 +540,6 @@ def empty_grid_view() -> GridBalanceView:
     endpoints each had one.
 
     Returns:
-        A :class:`GridBalanceView` with no columns and no overrides.
+        A :class:`GridBalanceView` with no columns.
     """
-    return GridBalanceView(columns=OrderedDict(), amount_overrides={})
+    return GridBalanceView(columns=OrderedDict())

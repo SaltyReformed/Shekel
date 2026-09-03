@@ -24,6 +24,7 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     shadow_amount,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_savings(seed_user):
@@ -85,7 +86,7 @@ def _create_regular_txn(seed_user, seed_periods_today):
         name="Regular Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("50.00"),
+        amount_ownership=AmountOwnership.own(Decimal("50.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -505,7 +506,7 @@ class TestDueDatePatch:
                 status_id=projected.id,
                 name="Test Bill",
                 transaction_type_id=expense.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 due_date=date(2026, 1, 15),
             )
             db.session.add(txn)
@@ -556,7 +557,7 @@ class TestDueDatePatch:
                 status_id=projected.id,
                 name="Stable",
                 transaction_type_id=expense.id,
-                estimated_amount=Decimal("750.00"),
+                amount_ownership=AmountOwnership.own(Decimal("750.00")),
                 notes="original note",
                 due_date=date(2026, 1, 5),
             )
@@ -585,7 +586,7 @@ class TestDueDatePatch:
                 status_id=projected.id,
                 name="With Due",
                 transaction_type_id=expense.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 due_date=date(2026, 1, 10),
             )
             db.session.add(txn)

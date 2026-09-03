@@ -58,6 +58,7 @@ from tests._test_helpers import (
 from tests._test_helpers import create_transfer
 from app.services.row_valuation import owned_contribution, settled_figure
 from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_entry(transaction, user, amount="50.00", description="Kroger",
@@ -426,7 +427,7 @@ class TestTheOutstandingSet:
                 transaction_type_id=(
                     seed_entry_template["transaction"].transaction_type_id
                 ),
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 is_envelope=True,
             )
             db.session.add(txn_b)
@@ -473,7 +474,7 @@ class TestTheOutstandingSet:
                 transaction_type_id=(
                     seed_entry_template["transaction"].transaction_type_id
                 ),
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 is_envelope=True,
             )
             db.session.add(other_txn)
@@ -533,7 +534,7 @@ class TestTheOutstandingSet:
                 transaction_type_id=(
                     seed_entry_template["transaction"].transaction_type_id
                 ),
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 is_envelope=True,
             )
             db.session.add(crossed)
@@ -774,7 +775,7 @@ class TestTheSetIsGroupedByItsParent:
             name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=template.transaction_type_id,
-            estimated_amount=Decimal("80.00"),
+            amount_ownership=AmountOwnership.own(Decimal("80.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -873,7 +874,7 @@ class TestTheSetIsGroupedByItsParent:
                 name=first.name,
                 category_id=first.category_id,
                 transaction_type_id=first.transaction_type_id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(second)
             db.session.flush()
@@ -1086,7 +1087,7 @@ class TestTheTransactionArm:
             name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=type_id,
-            estimated_amount=Decimal(amount),
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
             due_date=due_date,
         )
         db.session.add(txn)
@@ -1570,7 +1571,7 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
             name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=type_id,
-            estimated_amount=Decimal("180.00"),
+            amount_ownership=AmountOwnership.own(Decimal("180.00")),
             due_date=period.start_date,
         )
         db.session.add(txn)

@@ -401,6 +401,16 @@ EVT_PAY_PERIODS_GENERATED = _register(
 )
 
 
+# ── Business events: the salary profile lifecycle ──────────────────
+
+EVT_SALARY_ROWS_FROZEN = _register(
+    "salary_rows_frozen", BUSINESS,
+    "Archiving a salary profile recorded what each row it priced was last "
+    "worth, because the producer behind amount rule 2 is going away "
+    "(finding N-261, plan step balance:X-au-d).",
+)
+
+
 # ── Business events: recurrence engines (regenerate / resolve) ─────
 
 EVT_RECURRENCE_REGENERATED = _register(

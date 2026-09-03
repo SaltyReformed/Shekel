@@ -41,10 +41,11 @@ from app.services import loan_ledger, transfer_service
 from app.services.amount_ownership import owns_its_amount
 from app.services.cash_ledger import (
     amount_basis,
-    display_amounts_by_id,
+    amounts_by_id,
     pricing_load_options,
 )
 from tests._test_helpers import (
+    write_past_the_amount_seam,
     capture_sql_statements,
     create_transfer,
     shadow_amount,
@@ -53,6 +54,7 @@ from tests.test_integration.test_transfer_settle_freeze import (
     _derived_loan_transfer,
     _shadows,
 )
+from app.services.amount_ownership import state_own_amount
 
 #: P&I 1,199.10 + escrow 300.00 on the seeded $200k / 6% / 360mo mortgage.
 _CONTRACT = Decimal("1499.10")
@@ -119,11 +121,18 @@ class TestAShadowIsBornDerived:
         This is the whole of "structural rather than maintained": there is no
         window -- soft-deleted, mid-edit or otherwise -- in which a leg's figure
         can disagree with its transfer, because the pair cannot be written.
+
+        **The rival figure is written past the MAPPING since plan step
+        X-au-k**, and it has to be: the pair is one attribute now, so
+        ``state_own_amount`` would release the leg's declaration and produce a
+        leg that legitimately owns the figure -- a different row, and not the
+        drifted one this case is about. Reaching the private column is the only
+        way left to construct the drift, and the database still refuses it.
         """
         with app.app_context():
             _xfer, legs = _plain_pair(seed_user, seed_periods)
 
-            legs[0].estimated_amount = Decimal("999.00")
+            write_past_the_amount_seam(legs[0], Decimal("999.00"))
             # ``match`` names the constraint, because the constraint IS the
             # claim: a bare ``IntegrityError`` would be satisfied by an FK, a
             # NOT NULL or a unique index just as well.
@@ -540,7 +549,7 @@ class TestALoanPaymentsLegsReadTheLoan:
             )
 
             assert xfer.amount == Decimal("1.00")
-            priced = display_amounts_by_id(legs, basis)
+            priced = amounts_by_id(legs, basis)
             assert set(priced.values()) == {_CONTRACT}
             for leg in legs:
                 assert leg.estimated_amount is None
@@ -610,7 +619,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
         ``LOAN_PAYMENT`` would book the right figure and show the wrong one for
         every day between the edit and the settle.
 
-        ``display_amounts_by_id`` is what the grid publishes (ruling **R-Q**),
+        ``amounts_by_id`` is what the grid publishes (ruling **R-Q**),
         so it is what is asked here.
         """
         with app.app_context():
@@ -619,7 +628,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
             basis = amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
-            assert set(display_amounts_by_id(legs, basis).values()) == {
+            assert set(amounts_by_id(legs, basis).values()) == {
                 _CONTRACT,
             }
 
@@ -632,7 +641,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
             fresh = amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
-            shown = display_amounts_by_id(_shadows(xfer.id), fresh)
+            shown = amounts_by_id(_shadows(xfer.id), fresh)
             assert set(shown.values()) == {_TYPED}
 
 
@@ -733,10 +742,10 @@ class TestTheAmountModelsOwnEagerLoad:
             )
             # The LOAN resolve is a query and is not what this measures, so it
             # is paid once outside the capture.
-            display_amounts_by_id(legs[:1], basis)
+            amounts_by_id(legs[:1], basis)
 
             priced, statements = capture_sql_statements(
-                lambda: display_amounts_by_id(legs, basis),
+                lambda: amounts_by_id(legs, basis),
             )
 
             assert statements == [], (
@@ -772,10 +781,10 @@ class TestTheAmountModelsOwnEagerLoad:
             basis = amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
-            display_amounts_by_id(legs[:1], basis)
+            amounts_by_id(legs[:1], basis)
 
             _priced, statements = capture_sql_statements(
-                lambda: display_amounts_by_id(legs, basis),
+                lambda: amounts_by_id(legs, basis),
             )
 
             assert statements, (

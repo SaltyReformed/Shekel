@@ -70,6 +70,7 @@ from ._builders import (
 from tests._test_helpers import (
     last_covered_day,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _submit(
@@ -1502,7 +1503,7 @@ class TestTheACTS_OWN_WRITES_CannotMoveAMemberUnderIt:
             # DRIFTED off the sum of its card entries, which is what an owner
             # correcting a projected payback to their card statement produces.
             # Settling the debit purchase is what snaps it back to 50.00.
-            estimated_amount=Decimal("60.00"),
+            amount_ownership=AmountOwnership.own(Decimal("60.00")),
             credit_payback_for_id=envelope.id,
         )
         db.session.add(payback)

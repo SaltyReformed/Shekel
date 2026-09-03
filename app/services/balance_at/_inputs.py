@@ -191,20 +191,17 @@ def _contribution_inputs_for_accounts(
     # this loader is where a pass with a memoized calendar is in scope; the
     # consumer below the seam is pure.
     #
-    # **Asked only when it can be ANSWERED, and that is not a nicety.**
-    # ``PayCalendar.cadence`` REFUSES an owner who has never stated one, and
-    # this loader is on the SEAM -- the grid, /savings and /investments all
-    # reach it -- so resolving it unconditionally would turn a rendering page
-    # into a 500 for that owner.  It costs no figure to skip: an owner with no
-    # resolvable cadence has no ``budget.pay_schedule`` row and therefore no
-    # pay period either -- one fact rather than two since plan step C4-b-2,
-    # where it took ``fk_pay_periods_schedule`` to make it so and
-    # ``resolve_cadence`` used to infer a cadence off the last period instead.
-    # So there is no period for a per-period
-    # contribution to be modelled over and the fold reads nothing here either
-    # way.  Measured at R-F16: the unconditional form raised
-    # ``PayCalendarError`` for exactly this owner where the pre-step code
-    # returned a balance.
+    # **The guard that used to stand here is DELETED at plan step
+    # pay_calendar:C4-d** (ruling R-PC45), and it is deleted rather than
+    # satisfied.  It read ``if ctx.calendar().cadence_days is not None else
+    # {}``, because ``PayCalendar.cadence`` REFUSED an owner who had never
+    # stated one and this loader is on the SEAM -- the grid, /savings and
+    # /investments all reach it -- so an unconditional read turned a rendering
+    # page into a 500 for that owner (measured at R-F16).  That owner has no
+    # CALENDAR now: they hold no ``budget.pay_schedule`` row, and
+    # ``pay_calendar.calendar_for`` refuses them at the door rather than
+    # answering an empty calendar carrying no cadence.  So ``cadence_days`` is
+    # an ``int`` here by construction and the branch could not fire.
     #
     # The comprehension iterates every key rather than filtering on a truthy
     # row list, because ``load_active_deductions_for_accounts`` builds its map
@@ -215,7 +212,7 @@ def _contribution_inputs_for_accounts(
     adapted_by_account = {
         acct_id: adapt_deductions(rows, ctx.calendar().cadence)
         for acct_id, rows in deductions_by_account.items()
-    } if ctx.calendar().cadence_days is not None else {}
+    }
     return {
         account.id: ContributionInputs(
             investment_params=investment_params_map.get(account.id),

@@ -1035,7 +1035,7 @@ class TestTheSpanADestinationCarriesIsDERIVED:
                 seed_user, name="Groceries", amount="500.00", is_envelope=True,
             )
             empty = pay_calendar.PayCalendar.from_paydays(
-                [], None, seed_user["user"].id, history_opens_on=None,
+                [], 14, seed_user["user"].id, history_opens_on=None,
             )
 
             assert statement_match.destinations_for(

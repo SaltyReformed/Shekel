@@ -228,7 +228,7 @@ class TestTheEmptySchedule:
         """
         with app.app_context():
             empty = PayCalendar.from_paydays(
-                paydays=(), cadence_days=None, user_id=_USER_ID,
+                paydays=(), cadence_days=14, user_id=_USER_ID,
                 history_opens_on=None,
             )
             rule = _rule(MONTHLY)
@@ -239,7 +239,7 @@ class TestTheEmptySchedule:
         """No meaning and no placements, never a meaning without placements."""
         with app.app_context():
             empty = PayCalendar.from_paydays(
-                paydays=(), cadence_days=None, user_id=_USER_ID,
+                paydays=(), cadence_days=14, user_id=_USER_ID,
                 history_opens_on=None,
             )
             rule = _rule(EVERY_PERIOD)
@@ -253,7 +253,7 @@ class TestTheEmptySchedule:
         """The shape three surfaces and the baseline take is unchanged."""
         with app.app_context():
             empty = PayCalendar.from_paydays(
-                paydays=(), cadence_days=None, user_id=_USER_ID,
+                paydays=(), cadence_days=14, user_id=_USER_ID,
                 history_opens_on=None,
             )
             rule = _rule(EVERY_PERIOD)

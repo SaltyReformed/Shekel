@@ -73,6 +73,7 @@ from tests._test_helpers import (
     settlement_columns,
     settlement_if_settling,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -110,7 +111,7 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         name=name,
         category_id=cat_id,
         transaction_type_id=ref_cache.txn_type_id(type_enum),
-        estimated_amount=planned,
+        amount_ownership=AmountOwnership.own(planned),
         due_date=due_date or period.start_date,
         is_deleted=is_deleted,
         **settle_day_columns(settled_day),

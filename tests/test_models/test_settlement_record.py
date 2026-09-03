@@ -67,6 +67,7 @@ from app.enums import AmountSourceEnum, SettlementBasisEnum, StatusEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.ref import TransactionType
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.services.posting_reads import settled_figure_clause
 from app.services.row_valuation import settled_figure
@@ -75,6 +76,7 @@ from tests._test_helpers import (
     load_migration_module,
     settle_day_columns,
 )
+from app.services.amount_ownership import declare_derived
 
 _MIGRATION = load_migration_module("e4b8a71c0f36_settlement_record.py")
 
@@ -124,6 +126,10 @@ def _make_transaction(seed_user, seed_periods, **overrides):
     # break it says ``settled_day_basis_id`` outright.
     if "settled_day_basis_id" not in overrides:
         fields.update(settle_day_columns(fields.get("settled_on")))
+    # **The amount-ownership pair is ONE attribute** (plan step X-au-k), so the
+    # figure this builder splats becomes the row's OWNERSHIP at the last
+    # moment -- after every line above that reads it as a column.
+    fields["amount_ownership"] = AmountOwnership.own(fields.pop("estimated_amount"))
     return Transaction(**fields)
 
 
@@ -605,10 +611,7 @@ class TestTheUpgradeRefusesASettledRowWithNoFigure:
                 settled_amount=None,
                 settled_basis_id=None,
             )
-            txn.estimated_amount = None
-            txn.amount_source_id = ref_cache.amount_source_id(
-                AmountSourceEnum.TEMPLATE,
-            )
+            declare_derived(txn, AmountSourceEnum.TEMPLATE)
             db.session.add(txn)
             db.session.flush()
             txn_id = txn.id

@@ -39,8 +39,9 @@ from app.services import (
     pay_period_admin,
     pay_period_locks,
     pay_period_write,
+    pay_schedule_service,
 )
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import PayCalendarError, calendar_for
 from app.services.pay_period_locks import PeriodLockReason
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.utils.dates import display_today
@@ -293,11 +294,20 @@ class TestClassifyScheduleLocks:
     ``.get``-ing it, and that every reason is reachable.*
     """
 
-    def test_an_owner_with_no_paydays_gets_an_empty_map(self, app, bare_user):
-        """No periods -> empty dict, and no queries to issue."""
+    def test_an_owner_with_no_paydays_gets_an_empty_map(
+        self, app, bare_user_with_cadence,
+    ):
+        """No periods -> empty dict, and no queries to issue.
+
+        ``bare_user_with_cadence`` since plan step ``pay_calendar:C4-d``: an
+        owner with no ``budget.pay_schedule`` row has no calendar to classify,
+        so this case would be grading ``calendar_for``'s refusal rather than
+        the classifier's empty branch.
+        """
         with app.app_context():
             assert pay_period_locks.classify_schedule_locks(
-                calendar_for(bare_user["user"].id), as_of=display_today(),
+                calendar_for(bare_user_with_cadence["user"].id),
+                as_of=display_today(),
             ) == {}
 
     def test_it_keys_every_saved_period_and_nothing_else(
@@ -494,24 +504,50 @@ class TestAnOwnerWithNoPaydaysReachesEveryDoor:
     """The cardinality no other case varies (adversarial review, 2026-08-19).
 
     Every other case here runs on four or more periods.  An owner with NONE is
-    an ordinary state since plan step ``balance:X-ad-a`` stopped writing a
-    bootstrap payday at registration, and it is the state each door's empty
-    branch exists for: ``calendar.saved()`` is empty, ``classify_schedule_locks``
-    returns ``{}`` without a query, and ``_regenerate_keep_through_period``
-    answers ``None`` from its own ``if not periods``.
+    ordinary -- ``pay_period_admin.reset_pay_periods`` passes through exactly
+    that state, and so does any owner between their schedule row being written
+    and their first batch landing -- and it is the state each door's empty
+    branch exists for: ``calendar.saved()`` is empty,
+    ``classify_schedule_locks`` returns ``{}`` without a query, and
+    ``_regenerate_keep_through_period`` answers ``None`` from its own
+    ``if not periods``.
+
+    **The fixture is ``bare_user_with_cadence`` since plan step
+    ``pay_calendar:C4-d``** (ruling **R-PC45**), and the swap is what keeps
+    these cases about the doors.  "No paydays" used to be one state; it is two
+    now, and only one of them is this class's subject:
+
+    * a schedule row and zero paydays -- ORDINARY, every door answers, and it
+      is what this fixture builds;
+    * no schedule row at all -- the companion, whom ``calendar_for`` refuses
+      outright, so a door that builds a calendar raises ``PayCalendarError``
+      before it reaches its own empty branch.  That is
+      :meth:`test_a_row_less_owner_is_REFUSED_before_any_empty_branch` below
+      rather than a silent change of what these four grade.
+
+    *The class docstring also said the state was ordinary "since plan step
+    ``balance:X-ad-a`` stopped writing a bootstrap payday at registration",
+    which X-ad-a falsified when it shipped: it writes the schedule row AND
+    ``num_periods`` real paydays.*
     """
 
-    def test_extend_refuses_and_names_the_remedy(self, app, bare_user):
+    def test_extend_refuses_and_names_the_remedy(
+        self, app, bare_user_with_cadence,
+    ):
         """Extend has nothing to continue from, so it refuses."""
         with app.app_context():
             with pytest.raises(ValidationError) as excinfo:
-                pay_period_admin.extend_pay_periods(bare_user["user"].id, 2)
+                pay_period_admin.extend_pay_periods(
+                    bare_user_with_cadence["user"].id, 2,
+                )
             assert "Generate" in str(excinfo.value)
 
-    def test_regenerate_appends_rather_than_rebuilding(self, app, db, bare_user):
+    def test_regenerate_appends_rather_than_rebuilding(
+        self, app, db, bare_user_with_cadence,
+    ):
         """With no tail to retire, regenerate degrades to a plain append."""
         with app.app_context():
-            user_id = bare_user["user"].id
+            user_id = bare_user_with_cadence["user"].id
             created = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=date(2026, 9, 4), num_periods=3,
                 cadence_days=14,
@@ -521,10 +557,12 @@ class TestAnOwnerWithNoPaydaysReachesEveryDoor:
                 date(2026, 9, 4), date(2026, 9, 18), date(2026, 10, 2),
             ]
 
-    def test_reset_builds_a_schedule_from_nothing(self, app, db, bare_user):
+    def test_reset_builds_a_schedule_from_nothing(
+        self, app, db, bare_user_with_cadence,
+    ):
         """Reset retires an empty set and records the batch."""
         with app.app_context():
-            user_id = bare_user["user"].id
+            user_id = bare_user_with_cadence["user"].id
             created = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=date(2026, 9, 4), num_periods=2,
                 cadence_days=14,
@@ -532,12 +570,79 @@ class TestAnOwnerWithNoPaydaysReachesEveryDoor:
             db.session.commit()
             assert len(created) == 2
 
-    def test_the_lock_door_answers_without_a_query(self, app, bare_user):
+    def test_the_lock_door_answers_without_a_query(
+        self, app, bare_user_with_cadence,
+    ):
         """An empty calendar classifies to ``{}`` -- there is nothing to ask about."""
         with app.app_context():
             assert pay_period_locks.classify_schedule_locks(
-                calendar_for(bare_user["user"].id), as_of=display_today(),
+                calendar_for(bare_user_with_cadence["user"].id),
+                as_of=display_today(),
             ) == {}
+
+    def test_a_row_less_owner_is_REFUSED_before_any_empty_branch(
+        self, app, bare_user,
+    ):
+        """The OTHER half of "no paydays", and it is a refusal (plan step C4-d).
+
+        ``bare_user`` holds no ``budget.pay_schedule`` row, which is the
+        companion's shape and production's user 2.  THREE of the four doors
+        above build a calendar first, so the refusal arrives before the empty
+        branch each of them documents -- which is the point of the ruling: one
+        answer for one state, at one door, instead of each door improvising
+        past it.
+
+        **``reset_pay_periods`` is the fourth and it builds NO calendar**,
+        which an adversarial review of this step measured and an earlier draft
+        of this docstring denied by writing "every door above".
+        ``pay_period_admin`` calls ``calendar_for`` at extend, truncate and
+        regenerate and NOT in reset.  That is not an oversight to fix here: it
+        is the property that makes reset the one door a row-less owner can
+        still reach, and it is what
+        :meth:`test_reset_repairs_a_row_less_owner` grades below.
+
+        Graded on ``extend`` because it is the door whose empty branch has its
+        OWN message ("Generate your first pay-period schedule..."), so it is
+        where a refusal and an empty branch are most easily confused.  The
+        assertion is on the exception TYPE rather than on that text: the two
+        say much the same thing to a user, and matching the text would pass
+        against either.
+        """
+        with app.app_context():
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
+                pay_period_admin.extend_pay_periods(bare_user["user"].id, 2)
+
+    def test_reset_repairs_a_row_less_owner(self, app, db, bare_user):
+        """The one door that must work WITHOUT a calendar, because it makes one.
+
+        Plan step ``pay_calendar:C4-d`` gave the application one answer for "no
+        pay calendar" -- ``errors/no_pay_calendar.html``, carrying a link to
+        the pay-periods settings section.  A page that offers a repair has to
+        HAVE one, and reset is it: an owner with no ``budget.pay_schedule`` row
+        cannot extend, regenerate or truncate, because all three derive a
+        calendar to decide what they may touch.
+
+        Nothing graded this before -- the sibling cases all moved to
+        ``bare_user_with_cadence``, so the row-less owner reached no write door
+        at all -- and an adversarial review found the gap by measuring which
+        doors read a calendar.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            assert pay_schedule_service.resolve_schedule(user_id) is None
+
+            created = pay_period_admin.reset_pay_periods(
+                user_id, new_start_date=date(2026, 9, 4), num_periods=2,
+                cadence_days=14,
+            )
+            db.session.commit()
+
+            assert [period.start_date for period in created] == [
+                date(2026, 9, 4), date(2026, 9, 18),
+            ]
+            # The repair is COMPLETE: the owner now has a calendar, so every
+            # door that refused them above is open.
+            assert calendar_for(user_id).cadence.cadence_days == 14
 
 
 class TestTruncateResolvesItsFactsOnce:

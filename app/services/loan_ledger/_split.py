@@ -1,36 +1,37 @@
-"""The loan fold's per-payment split: how one payment's CASH divides.
+"""The loan walk's per-payment FACT: what one payment's cash turned out to be.
 
-The pure per-payment step of the fold's running-balance walk
-(:func:`.._fold.walk_loan_ledger`), and the ONE split the whole architecture
-uses.  It divides the cash a payment moved into the four economic parts a loan
-payment consists of -- interest, escrow, principal, and a payoff overpayment's
-refund -- against the balance outstanding at that moment.
+The value one settled payment contributes to a loan's walk -- its interest,
+escrow, principal and refund, on the real running balance -- and the one
+construction of it.
 
-**One ALLOCATION, every payment KIND -- and since plan step X-au-g-2c-3a it
-lives at the LEAF, in :mod:`app.utils.money`, beside the accrual it is always
-paired with.**  :func:`~app.utils.money.apply_payment_cash` takes plain data --
-a cash amount, the balance before, and the interest and escrow already charged
--- so it divides an ACTUAL settled payment (:func:`split_one_payment`, cash
-read from the settled shadow), a PLANNED projected payment (its live D3 cash),
-and an ESTIMATED contractual installment exactly alike.  It is re-exported
-through this package because every existing caller names it here; the MOVE is
-what lets ``amortization_engine`` and ``rate_period_engine`` -- both BELOW this
-module in the import graph, and so structurally unable to reach it before --
-call the same rule instead of restating it.  The cash the grid
-shows leaving checking is the cash the loan folds: because ``principal = cash -
-interest - escrow``, an extra or short payment lands in principal automatically,
-where the resolver's contractual replay discards the real cash and needs an
-anchor true-up to recover.  Nothing here reads a schedule row.
+**Nothing here divides anything any more, and the two steps that emptied it are
+the point.**  A loan payment is one CHARGE and one ALLOCATION:
 
-**What is NOT one function any more, since plan step R16-a**: WHERE the charge
-comes from.  :func:`split_payment_cash` charges a month inside the per-payment
-step and is the ONE-PAYMENT-PER-MONTH composition the settled walk
-(:func:`.._walk.walk_loan_ledger`) and the posting ledger still take; the forward
-fold (``balance_at._plan_fold._split_plan``) charges per accrual PERIOD and
-allocates here directly, because a tier that may see two payments in one month
-would otherwise charge two months of interest for a fortnight.
+* the ALLOCATION moved to :mod:`app.utils.money` at plan step
+  **X-au-g-2c-3a** (:func:`~app.utils.money.apply_payment_cash`), because it sat
+  ABOVE two of the four walks that needed it -- ``amortization_engine`` and
+  ``rate_period_engine`` could not reach up without the import cycle
+  ``loan_ledger._split -> rate_period_engine -> amortization_engine`` -- so each
+  had restated it inline;
+* the CHARGE and the REPLAY that consumes it moved to :mod:`._charges` and
+  :mod:`._replay` at plan steps **X-au-g-2c-3b-1** and **X-au-g-2c-3b-2**, for
+  the same reason one tier up: the forward fold in ``balance_at`` could not hand
+  its rule DOWN to this package, so it stated its own.
 
-Pure: plain data in, plain values out.  No I/O, no clock, no Flask.
+``split_payment_cash`` -- the fused "charge a month, then divide this payment's
+cash" composition this module used to own -- is DELETED with the second of those.
+Its own docstring conceded it was correct only while a loan takes ONE payment per
+accrual period, and the settled walk was its last caller.  The retired
+composition survives as an ORACLE in
+``tests/oracles/loan_monthly_composition.py``, where the suite still folds a
+one-payment-a-month plan through it as an INDEPENDENT second opinion on the
+charge-per-period replay -- deleting it outright would have left the producer
+grading itself.
+
+What is left here is the FACT: the four economic parts, the record they came
+from, the installment they satisfy and the rate period they accrued at.
+
+Pure: plain data in, one value out.  No I/O, no clock, no Flask.
 """
 
 from dataclasses import dataclass
@@ -38,74 +39,9 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.transaction import Transaction
-from app.services.rate_period_engine import RatePeriod, period_for_date
-from app.services.row_valuation import owned_contribution
-from app.utils.money import (
-    PaymentCashSplit,
-    accrue_monthly_interest,
-    apply_payment_cash,
-)
+from app.services.rate_period_engine import RatePeriod
 
-_ZERO_MONEY = Decimal("0.00")
-
-
-def split_payment_cash(
-    cash: Decimal,
-    balance: Decimal,
-    annual_rate: Decimal,
-    monthly_escrow: Decimal,
-) -> PaymentCashSplit:
-    """Charge ONE month, then divide this payment's *cash* against it.
-
-    The pure arithmetic core of the fold's per-payment step, over plain data so
-    every payment KIND splits identically (see the module docstring).  ``balance``
-    is the outstanding balance BEFORE this payment.
-
-    **It is the ONE-PAYMENT-PER-MONTH composition** of the two rules plan step
-    **R16-a** separated: charge a month
-    (:func:`~app.utils.money.accrue_monthly_interest`, the BYTE-IDENTICAL formula
-    :func:`app.services.rate_period_engine._replay_payment_row` uses), then
-    allocate against it (:func:`apply_payment_cash`).  That composition is
-    correct exactly while a loan takes ONE payment per accrual period, which is
-    what the settled walk and the posting ledger assume today and what every
-    live loan does.  **A caller whose payments do not arrive one to a month must
-    charge its own accruals and allocate directly** -- as
-    ``balance_at._plan_fold._split_plan`` does since R16-a -- or it charges a month of
-    interest per PAYMENT rather than per month.
-
-    Two regimes (plan Section 6):
-
-    * **Loan already closed** (``balance <= 0``): no interest accrues and no escrow
-      is due, so the entire cash is an overpayment routed to ``excess`` (a Refund),
-      and the balance is unchanged.
-    * **Open loan**: ``interest = round_money(balance * annual_rate / 12)``;
-      ``principal = cash - interest - monthly_escrow``; a principal that would
-      overrun the balance caps to it, the remainder going to ``excess``.
-
-    Args:
-        cash: The cash this payment moved (settled actual, live planned, or
-            synthesized contractual).
-        balance: The outstanding balance before this payment.
-        annual_rate: The annual interest rate governing this payment's installment
-            (the caller resolves it -- :func:`period_for_date` for a real payment,
-            the installment's rate period for a synthesized one).
-        monthly_escrow: The monthly escrow in effect for this payment (``0.00``
-            when none applies).
-
-    Returns:
-        The :class:`PaymentCashSplit` for this payment.
-    """
-    if balance <= 0:
-        # Stated here as well as inside the allocator so THIS function's two arms
-        # are its docstring's two regimes: a closed loan accrues nothing, so there
-        # is no month to charge before allocating.
-        return apply_payment_cash(cash, balance, _ZERO_MONEY, _ZERO_MONEY)
-    return apply_payment_cash(
-        cash,
-        balance,
-        accrue_monthly_interest(balance, annual_rate),
-        monthly_escrow,
-    )
+from ._replay import PaymentOutcome
 
 
 @dataclass(frozen=True)
@@ -113,7 +49,7 @@ class LoanPaymentSplit:
     """The real principal / interest / escrow / refund split of one loan payment.
 
     The per-payment result of walking a loan's settled payments with the ACTUAL
-    cash paid (not the scheduled payment) -- see :func:`.._fold.walk_loan_ledger`.
+    cash paid (not the scheduled payment) -- see :func:`.._walk.walk_loan_ledger`.
     Carries the loan-side income shadow it derives from (the posting writer books
     its correction under that shadow's ``transaction_id``, and reads the shadow's
     period / scenario / owner / ``settled_on`` for the entry header) plus the four
@@ -125,10 +61,15 @@ class LoanPaymentSplit:
             :func:`~app.services.row_valuation.owned_contribution` is the cash
             ``principal`` falls out of; its ``transaction_id`` keys the
             correction.
-        interest: Accrued interest, ``round_money(balance_before * rate / 12)``
-            on the REAL running balance -- an Expense leg (``>= 0``).
-        escrow: The configured monthly escrow at payment time, NO inflation (the
-            exact figure the cash was built from) -- an Expense leg (``>= 0``).
+        interest: The interest CHARGE this payment cleared -- an Expense leg
+            (``>= 0``).  ``round_money(balance_before * rate / 12)`` on the REAL
+            running balance for the payment that OPENS its accrual period, and
+            ``0.00`` for one that follows another inside the same period, which
+            clears no fresh charge (plan step X-au-g-2c-3b-2).
+        escrow: The escrow CHARGE this payment cleared, NO inflation (the exact
+            figure in force on the period's own date) -- an Expense leg
+            (``>= 0``).  ``0.00`` for a payment that follows another inside one
+            accrual period, on the same rule as ``interest``.
         principal: The real debt paid down, ``cash - interest - escrow``, capped
             at the outstanding balance.  May be NEGATIVE (an underpayment that
             grows the balance) -- surfaced, never clamped (plan D5).
@@ -137,18 +78,23 @@ class LoanPaymentSplit:
             escrow or principal (plan D4).
         due_date: The contractual installment this payment satisfies
             (:func:`app.services.loan_loaders.loan_payment_due_date`, computed
-            ONCE by the merge that orders the walk and carried through here -- plan
-            step E1c).  It dates and numbers the CONFIRMED schedule row the seam's
-            walk-based view builds (:func:`app.services.balance_at.confirmed_view`),
-            where the split's own settled date governs only WHEN the row is visible.
-        period: The governing rate period this payment's cash was split against
+            ONCE by the event stream that orders the walk and carried through here
+            -- plan step E1c).  It dates and numbers the CONFIRMED schedule row the
+            seam's walk-based view builds
+            (:func:`app.services.balance_at.confirmed_view`), where the split's own
+            settled date governs only WHEN the row is visible.
+        period: The governing rate period of the ACCRUAL PERIOD this payment's
+            installment falls in -- carried off that period's own
+            :class:`~._charges.AccrualCharge`, which resolved it once
             (:func:`app.services.rate_period_engine.period_for_date` on the
-            payment's DUE date -- contract time, ruling D5).  The interest above was accrued at its
-            ``annual_rate``; carrying the resolved period (plan step E1c) lets the
-            confirmed-view builder read that SAME rate for the row's ``interest_rate``
-            and the period's ``period_pi`` for its ``extra_payment`` -- one
-            resolution, so a row's displayed rate is provably the rate its interest
-            accrued at.
+            charge's date -- contract time, ruling D5).  The interest above
+            accrued at its ``annual_rate``; the confirmed-view builder reads that
+            SAME rate for the row's ``interest_rate`` and the period's
+            ``period_pi`` for its ``extra_payment``.  **ONE resolution, so a
+            row's displayed rate is provably the rate its interest accrued at**
+            -- which re-resolving on each payment's own due date could not
+            promise once a period may hold two payments (plan step
+            X-au-g-2c-3b-2).
     """
 
     income_shadow: Transaction
@@ -160,87 +106,46 @@ class LoanPaymentSplit:
     period: RatePeriod
 
 
-def split_one_payment(
-    shadow: Transaction,
-    balance: Decimal,
-    periods: list,
-    monthly_escrow: Decimal,
-    due_date: date,
-) -> tuple[LoanPaymentSplit, Decimal]:
-    """Split one payment's cash and return ``(split, balance_after)``.
+def split_one_payment(outcome: PaymentOutcome) -> LoanPaymentSplit:
+    """Build one settled payment's :class:`LoanPaymentSplit` from its replay outcome.
 
-    The pure per-payment step of :func:`.._fold.walk_loan_ledger` (the body of its
-    running-balance walk), factored out so the recurrence reads as one expression
-    and the post-payoff branch is explicit.  ``balance`` is the outstanding
-    balance BEFORE this payment; the returned balance is AFTER it
-    (``balance - principal``).
-
-    Two regimes (plan Section 6):
-
-    * **Loan already closed** (``balance <= 0``): no interest accrues and no
-      escrow is due, so the entire cash is an overpayment routed to ``excess``
-      (a Refund).  This keeps every post-payoff Step-2 cash entry matched by a
-      correction instead of a phantom paydown.
-    * **Open loan**: ``interest = round_money(balance * rate / 12)`` at the rate
-      in effect for the payment's DUE date (the BYTE-IDENTICAL formula
-      :func:`app.services.rate_period_engine._replay_payment_row` uses);
-      ``principal = cash - interest - escrow``; a principal that would overrun
-      the balance caps to it, the remainder going to ``excess``.
-
-    The two regimes and the arithmetic are :func:`split_payment_cash`; this reads
-    the ACTUAL cash off the shadow, resolves the rate from the installment's DUE
-    date, and wraps the result with the shadow the posting writer books under,
-    that ``due_date``, and the resolved rate period.
+    The bridge from the shared replay (:func:`.._replay.replay_loan_events`, which
+    knows only cash and dates) back to the loan-specific fact the posting writer
+    and the confirmed-view builder consume.  It performs no arithmetic: the four
+    parts are the allocation's verbatim, and this attaches the record they came
+    from, the installment they satisfy, and the rate period they accrued at.
 
     **The split inputs key on CONTRACT time, the ledger on CASH time** (ruling
-    D5 / R-A, corrected here at finding N-34).  Ordering, the rate resolved
-    here, and the escrow the caller resolves all key on the DUE date -- the
-    installment the payment satisfies -- so out-of-order or late settlement can
-    never re-split an installment: a payment made a day late is still the
-    payment for ITS month, at ITS month's rate.  A pay period starts up to ~2
-    weeks BEFORE the installment it pays, so keying on the period start would
-    let a rate version effective inside that window govern the wrong side of the
-    boundary.  Only VISIBILITY -- which day the split's principal counts from --
-    keys on the settled date (:func:`app.services.loan_ledger.payment_visible_on`).
+    D5 / R-A, corrected at finding N-34).  Ordering, the rate the charge resolved,
+    and the escrow it carries all key on the DUE date -- the installment the
+    payment satisfies -- so out-of-order or late settlement can never re-split an
+    installment: a payment made a day late is still the payment for ITS month, at
+    ITS month's rate.  A pay period starts up to ~2 weeks BEFORE the installment
+    it pays, so keying on the period start would let a rate version effective
+    inside that window govern the wrong side of the boundary.  Only VISIBILITY --
+    which day the split's principal counts from -- keys on the settled date
+    (:func:`app.services.loan_ledger.payment_visible_on`).
 
     Args:
-        shadow: The settled loan-side income shadow.  Its cash is read through
-            :func:`~app.services.row_valuation.owned_contribution` -- the accessor
-            whose NAME asserts the row owns its figure -- rather than a resolver,
-            because the walk that produces it loads
-            :func:`app.services.loan_loaders.settled_income_shadows`, which
-            filters ``status_id.in_(settled_status_ids())``.  Every row here has
-            therefore SETTLED, so it answers from the settlement it RECORDED
-            (plan step X-au-c3) and never reaches the plan; a row that recorded
-            nothing REFUSES rather than falling back to a forecast.
-        balance: The outstanding balance before this payment.
-        periods: The loan's rate periods (from
-            :func:`app.services.loan_resolver.resolve_periods`); the governing
-            period's ``annual_rate`` drives the interest accrual.
-        monthly_escrow: The configured monthly escrow in effect for THIS
-            payment's installment (summed over the effective-dated components
-            active on its due date; no inflation).
-        due_date: The contractual installment this payment satisfies
-            (:func:`app.services.loan_loaders.loan_payment_due_date`), computed by
-            the caller (:func:`.._events.merge_anchor_and_payment_events` already
-            derives it to ORDER the walk, and threads it here so it is not
-            re-derived).  Resolves the rate period, and is stored on the split for
-            the confirmed-view builder.
+        outcome: The payment's :class:`~._replay.PaymentOutcome` -- its ``event``
+            carries the settled income shadow as ``source`` and the installment as
+            ``on_date``, its ``charge`` the accrual period standing over it, and
+            its ``split`` the four parts the ONE allocation produced.  **The
+            charge comes off the outcome rather than being looked up here**, so
+            the pairing is stated ONCE, by the replay that made it (plan step
+            X-au-g-2c-3b-2 built it the other way first, and an adversarial
+            review measured that as a second association rule agreeing with the
+            first only by construction).
 
     Returns:
-        ``(LoanPaymentSplit, balance_after)``.
+        The payment's :class:`LoanPaymentSplit`.
     """
-    period = period_for_date(periods, due_date)
-    parts = split_payment_cash(
-        owned_contribution(shadow), balance, period.annual_rate, monthly_escrow,
+    return LoanPaymentSplit(
+        income_shadow=outcome.event.source,
+        interest=outcome.split.interest,
+        escrow=outcome.split.escrow,
+        principal=outcome.split.principal,
+        excess=outcome.split.excess,
+        due_date=outcome.event.on_date,
+        period=outcome.charge.period,
     )
-    split = LoanPaymentSplit(
-        income_shadow=shadow,
-        interest=parts.interest,
-        escrow=parts.escrow,
-        principal=parts.principal,
-        excess=parts.excess,
-        due_date=due_date,
-        period=period,
-    )
-    return split, parts.balance_after

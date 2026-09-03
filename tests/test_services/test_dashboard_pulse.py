@@ -61,6 +61,7 @@ from tests._test_helpers import (
     settle_day_columns,
     settlement_columns,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 _CURRENT_IDX = 5  # seed_periods index that contains the frozen today.
@@ -86,7 +87,7 @@ def _add_expense(
         status_id=status_id,
         name=name,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         due_date=due_date,
         is_deleted=is_deleted,
         # A settled row must carry the day its money moved AND the record of
@@ -736,7 +737,7 @@ class TestPulsePeak:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Paycheck",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             db.session.add(income)
             db.session.commit()
@@ -1361,7 +1362,7 @@ class TestHeroChartIdentity:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Paycheck",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             db.session.add(income)
             tracked = _add_tracked_expense(

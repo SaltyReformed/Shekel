@@ -35,6 +35,7 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
 from app.models.category import Category
 from app.models.transaction import Transaction
 from app.services import (
@@ -371,7 +372,7 @@ def _create_envelope(
         name=creation.new_envelope.name,
         category_id=category.id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=_NO_BUDGET,
+        amount_ownership=AmountOwnership.own(_NO_BUDGET),
         is_envelope=True,
     )
     db.session.add(envelope)
