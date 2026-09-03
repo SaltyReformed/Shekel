@@ -598,9 +598,11 @@ sentence exists so nobody builds it believing the question was never raised.
   generated transfer.
   **ITS SHADOW HALF SHIPPED AT `X-au-g-2c-2` (`1f2b98a4`, ruling R-IN)** -- a shadow resolves from
   its parent, the copy in `update_transfer` and the drift corrector in `restore_transfer` are both
-  deleted, and **Transfer Invariant 3 is already STRUCTURAL**. This bullet claimed all three until
-  that step; they are struck rather than left, because a step description that claims work which
-  shipped elsewhere is how the next reader rebuilds it. What this step still owes is the parent,
+  deleted, and **Transfer Invariant 3's AMOUNT clause is STRUCTURAL for a DERIVED shadow -- not for
+  an owner-priced pair, whose TAKE arm still states one figure on the parent AND each leg
+  (`X-au-m`'s subject), and not for the status and period clauses (`X-bi-6`'s)**. This bullet
+  claimed all three until that step; they are struck rather than left, because a step description
+  that claims work which shipped elsewhere is how the next reader rebuilds it. What this step still owes is the parent,
   and one consequence worth naming: once `transfers.amount` is empty for a generated transfer,
   "the owner authored this figure" IS "the parent owns its amount", so
   `transfer_service._amount.apply_amount_ownership`'s `stated_override` parameter dissolves. `uq_transfers_adhoc_dedupe`

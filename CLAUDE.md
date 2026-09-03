@@ -85,6 +85,48 @@ enforcement); where a gate enforces a rule, fix what it flags at the root rather
     (the rule), `R-IZ` (the derived half) and `R-IY` (a derivable column is deleted, not
     maintained), developer 2026-09-02.
 
+## Design doctrine
+
+The standing answers to the questions every session eventually asks. These are rules, not mood, and
+the developer should never have to re-request them.
+
+- **Root cause only.** A band-aid, an override parameter, or a wrapper that routes around a wrong
+  computation is a refusal to fix it. If the root cause is out of scope, say so and stop; never ship
+  the workaround silently.
+- **The goal state of every arc is that its fences are structurally unnecessary.** A checker, an
+  allowlist, or an invariant a reconciler enforces is scaffolding around a defect. The work is to
+  make the defect unrepresentable, then delete the fence.
+- **On a design fork, map the FULL option space, then give a firm recommendation.** Lead with the
+  most-correct from-scratch design; sequencing manages risk, the design does not compromise for it.
+  A financial fork gets a worked numeric example per option BEFORE the question is asked.
+- **Correctness outranks time and effort.** Never propose the quicker option because it is quicker.
+  An unanswered design question is a STOP, not a fork to take unilaterally.
+- **A neutral adversarial review precedes every commit** -- a fresh subagent over the design and the
+  diff, grading the fix's own claims about itself hardest (they are the one thing its tests cannot
+  grade).
+
+Two skills re-arm this per task: `/charter` (executing work) and `/design-forks` (presenting a
+decision).
+
+## Multi-session operation
+
+Several Claude sessions regularly work this repo at once, each in its own worktree
+(`~/projects/shekel-*`), with one session acting as COORDINATOR.
+
+- **PRs and merges are coordinated.** When multiple sessions are active, the coordinator session
+  opens, orders and merges every PR. **Any session may `git push` its own branch to back up work**
+  (developer ruling 2026-09-02); a pushed branch is not a handoff and not a request to merge.
+- **Planning-document ids are reserved through the coordinator.** Never grep sibling worktrees for a
+  free ledger or ruling id; a snapshot cannot see a worktree created after you looked.
+- **A gating suite run takes the slot first**: `./scripts/suite_slot.sh acquire <name>`, then the
+  run, then `release <name>`. The postmaster is shared and a probe is not a lock; why the slot is
+  mandatory, its exemptions and its staleness rules: `.claude/rules/testing.md`.
+- **Never `pkill` shared tooling.** Kill by PID after reading `/proc/<pid>/cwd` to confirm whose
+  process it is.
+- **Data grants** (developer grant, restated 2026-09-02): production data at `/opt/docker/shekel`
+  may be read and copied; dev and throwaway databases take full CRUD. Production itself is never
+  written outside the deploy pipeline.
+
 ## Automated enforcement
 
 Many rules above are backed by deterministic gates, not just prose. Fix what a gate flags at the
@@ -93,6 +135,12 @@ root; never silence it with a bare disable.
 - **Per-edit hooks (`scripts/hooks/`)** lint each `app/`/`scripts/` Python edit and hard-block on
   errors and the custom checkers `shekel-decimal-from-float` / `shekel-refname-compare`; templates
   and `requirements.txt` have their own guards.
+- **SessionStart hook** (`scripts/hooks/session-start.sh`) prints the session's checkout, branch,
+  the suite-slot state and the plan of record's next step into context at session start, plus a
+  pointer to the Multi-session doctrine.
+- **PR-guard hook** (`scripts/hooks/guard-pr-actions.sh`) turns `gh pr create` / `gh pr merge` into
+  a permission prompt outside the coordinator session (which exports `SHEKEL_PR_COORDINATOR=1`);
+  `git push` is never gated. Advisory by design, the ask-decision shape of the migration guard.
 - **Stop hook** runs full `pylint app/` -- the only place cross-file `duplicate-code` is caught --
   and hard-blocks once `scripts/hooks/ENFORCE_PYLINT_FLOOR` exists (the 10.00/10 lock-in).
 - **Custom checkers:** `tools/pylint/shekel_checkers/` (+ tests), loaded via `.pylintrc`. Add one
@@ -123,7 +171,7 @@ docker compose -f docker-compose.dev.yml up -d && docker logs -f shekel-dev-app
 # Dev server fallback (host process; owner-role DB, no entrypoint gates)
 flask run
 
-# Tests -- full suite ~4.5-5 min at -n 12 (~11,800 tests); see Tests section
+# Tests -- the full suite takes MINUTES; see the Tests section and docs/testing-standards.md
 ./scripts/test.sh                             # full suite (restarts test-db first)
 ./scripts/test.sh tests/path/test_file.py::test_name -v  # single test (fast feedback)
 python scripts/build_test_template.py         # first-time setup; rebuild after migrations
@@ -176,8 +224,10 @@ A task is NOT complete until ALL of these are true:
 5. Full suite passes.
 6. Test output (pass/fail counts) shown to developer.
 7. Migrations tested in both upgrade and downgrade directions.
-8. Commit message format: `<type>(<scope>): <what changed>`
-9. Developer asked if they want to commit and push.
+8. A neutral adversarial review of the design and diff ran, and its findings are fixed or reported
+   (see Design doctrine).
+9. Commit message format: `<type>(<scope>): <what changed>`
+10. Developer asked if they want to commit and push.
 
 ## Transfer Invariants
 
@@ -189,24 +239,12 @@ A task is NOT complete until ALL of these are true:
 4. No code path directly mutates a shadow. All mutations go through the transfer service.
 5. Balance calculator queries ONLY budget.transactions. NEVER also query budget.transfers.
 
-**Invariant 3 is an instance of rule 14 and its THREE clauses are in three different states.** It is
-one value with two homes and a maintenance contract, and the work of making it structural is "delete
-a home", not "enforce it harder".
-
-- **Amounts -- PARTLY structural.** A DERIVED shadow stores no figure at all since plan step
-  `X-au-g-2c-2`, so there is nothing to disagree. An OWNER-PRICED shadow still stores one:
-  `transfer_service/_amount.apply_amount_ownership`'s TAKE arm calls `state_own_amount` on both the
-  parent and each leg, so the duplicate survives on exactly that branch.
-- **Statuses and periods -- NOT structural.** `budget.transactions` and `budget.transfers` each
-  store `status_id` and `pay_period_id`, and the transfer service keeps the pair equal by hand.
-- **And they cannot simply be dropped: invariant 5 is WHY they exist.** The shadow mirrors its
-  parent so the balance fold can read `budget.transactions` alone. Removing the mirror needs the
-  fold to read something else first, which is plan step `X-bi-4`'s re-point to movements. This is
-  the movement family's work, not an amount cutover's.
-
-**Until then it is enforced exactly as written above**, and the step that finally deletes a home
-owes this section a rewrite from a rule someone maintains into a fact the schema makes
-unrepresentable.
+**Invariant 3 is rule 14's known instance**: one value kept in two homes by a maintenance contract,
+and invariant 5 is why the mirror exists at all. Which clauses are already structural and which
+steps delete the rest is the balance arc's plan of record --
+`docs/audits/balance_architecture/README.md` (the X-au-m and X-bi-6 specifications). Until that work
+ships, the invariants are enforced exactly as written above, and the step that deletes a home owes
+this section its rewrite.
 
 ## Standards
 
@@ -214,19 +252,22 @@ Full standards: `docs/coding-standards.md` and `docs/testing-standards.md`. They
 force-loaded; the path-scoped rules in `.claude/rules/` (`coding`, `database`, `testing`, `deploy`)
 load the essentials automatically when you touch matching files and point you to the full doc.
 
+**The tier rule: a fact lives in ONE tier.** This file states a rule in one line and points;
+`.claude/rules/*` carry the path-scoped must-knows; `docs/*-standards.md` hold the rationale and
+every dated measurement. The `code-reviewer` agent deliberately mirrors the coding, database and
+testing rules plus the Transfer Invariants (a subagent loads no path-scoped rules); a change to one
+updates the mirror in the same commit -- a discipline no gate enforces yet.
+
 ## Tests
 
-**~11,800 tests, ~4.5-5 min at `-n 12`** (measured 2026-08-30: 11,788 passed in 278-296 s over four
-runs, a run-to-run variance of ~18 s; the previously stated "~5,500 tests, ~65 s" had gone stale by
-more than 2x in count and 4x in time). Run via `./scripts/test.sh` (not bare `pytest`) -- it
-restarts the `shekel-dev-test-db` container first and falls through to plain pytest in CI. Single
-test: `./scripts/test.sh tests/path/test_file.py::test_name -v`; `SKIP_DB_RESTART=1` skips the
-restart on chained runs. Rebuild the template after migrations:
-`python scripts/build_test_template.py`. **The wrapper also defaults to `-m "not docker"`, which
-DESELECTS 28 container-spawning `tests/test_deploy` tests -- they vanish from the report entirely
-rather than appearing as skips, so a green `./scripts/test.sh` run is not a claim about them; CI
-runs bare `pytest` and executes all 28.** `.claude/rules/testing.md` and `docs/testing-standards.md`
-carry the full guidance.
+Run via `./scripts/test.sh`, never bare `pytest`. The full suite is MINUTES, not seconds; the
+current count and dated timing live in `docs/testing-standards.md` (Test Run Guidelines), and the
+suite-slot protocol for concurrent worktrees is `.claude/rules/testing.md`. **The wrapper defaults
+to `-m "not docker"`, which DESELECTS the container-spawning `tests/test_deploy` tests** -- they
+vanish from the report rather than appearing as skips, so a green local run is not a claim about
+them; CI runs bare `pytest` and executes them all. Single test:
+`./scripts/test.sh tests/path/test_file.py::test_name -v`; `SKIP_DB_RESTART=1` skips the restart on
+chained runs. Rebuild the template after migrations: `python scripts/build_test_template.py`.
 
 ## Deployment
 
@@ -237,16 +278,17 @@ hardening, and prod-override-sync conventions auto-load via `.claude/rules/deplo
 
 ## Development Status
 
-**All live work is four ARCS, and `docs/plans/steps.md` is the single source of truth for what to do
+**All live work is five ARCS, and `docs/plans/steps.md` is the single source of truth for what to do
 next.** Start there and nowhere else: it holds every step in every arc IN EXECUTION ORDER, one
 sentence each. **The next step is the first row of its order table.** A row whose `starts` column
 reads `NOW` can be picked up today whatever its rank, which is how two steps run in parallel.
 
-Four more registries sit beside it, all in `docs/plans/`: `ledger.md` is every open finding in every
+Five more registries sit beside it, all in `docs/plans/`: `ledger.md` is every open finding in every
 arc and every row names a live owner; `rulings.md` is every developer ruling, keyed `(arc, id)` with
-the arc a COLUMN; `conventions.md` is the 16 rules all of it is held to; `lessons.md` is what this
-project has already paid to learn. Each arc's argument and step specifications stay in its own
-document: `docs/audits/balance_architecture/README.md` (balance), and `implementation_plan_*.md` for
+the arc a COLUMN; `conventions.md` is the 16 rules all of it is held to; `verification.md` is what
+"done" means for a step in any arc; `lessons.md` is what this project has already paid to learn.
+Each arc's argument and step specifications stay in its own document:
+`docs/audits/balance_architecture/README.md` (balance), and `implementation_plan_*.md` for
 recurrence, pay_calendar, credit_card and bank_import. `steps.md` names which document and section
 holds a given step's detail. **Every arc's rulings are in `rulings.md`, keyed `(arc, id)`, since
 `balance:X-ao-2a`; no arc document states one, and each carries a `The rulings` pointer instead.**
@@ -273,4 +315,6 @@ validated when you open its PR. To ship `dev` to `main`: open a PR `dev` -> `mai
 green check, then merge via the PR. Do NOT
 `git checkout main && git merge dev && git push origin main` -- branch protection rejects it. After
 a PR merges, resync `dev` so the next PR is not flagged out of date:
-`git fetch origin && git checkout dev && git merge origin/main && git push origin dev`.
+`git fetch origin && git checkout dev && git merge origin/main && git push origin dev`. When several
+sessions are active, PR and merge timing is the coordinator session's call -- see Multi-session
+operation.
