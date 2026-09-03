@@ -53,6 +53,7 @@ from tests._test_helpers import (
     freeze_today,
     make_expense_template,
     populate_in_a_fresh_pass,
+    resolved_amount,
     seam_cash_balance_at,
     took_advisory_lock,
 )
@@ -335,7 +336,7 @@ class TestTopUpDeficitPath:
                     .all()
                 )
                 assert len(txns) == 1
-                assert txns[0].estimated_amount == Decimal("1200.00")
+                assert resolved_amount(txns[0]) == Decimal("1200.00")
 
     def test_balances_correct_after_topup(self, app, db, seed_user):
         """Discipline 2: as-of balances continue correctly into the new window.
