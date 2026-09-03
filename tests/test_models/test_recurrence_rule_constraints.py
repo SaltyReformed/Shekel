@@ -319,7 +319,8 @@ class TestTheWindowIsHeldAtTheDoorsAndNotTheTable:
 
         Measured: a loan originating 2026-08-01 with ``payment_day`` 1 has its
         first contractual installment on 2026-09-01, and truing its balance to
-        zero on 2026-08-15 makes ``recurrence_end_date`` answer that day.  The
+        zero on 2026-08-15 makes ``LoanFigures.closing_date`` answer that day
+        -- the day it BECAME closed, since plan step ``recurrence:R7d-h``.  The
         window is empty and forward generation emits nothing, which is exactly
         right for a loan that owes nothing -- and a CHECK would have turned it
         into an unhandled ``CheckViolation`` out of the true-up.

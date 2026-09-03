@@ -432,12 +432,27 @@ closed; else the forward crossing; else `None`, which now means only *never*. `r
 is then DELETED and `is_retired` stops being a BOUND discriminator (it stays for badging). It
 deletes a defect rather than ruling on one: a retired loan's stop tracked `ctx.as_of`, so the
 admitted set GREW one occurrence per cadence period where the stored column froze, and at `R7d-c-2`
-that writes a past-dated row per pass against a debt that is gone. **OPEN**: a loan closed then
-trued back UP has two crossings; the rule takes the last at or before `as_of`, unconfirmed.
+that writes a past-dated row per pass against a debt that is gone. A loan closed then trued back UP
+has two crossings and the rule takes the LATER, **RULED `R-R51`** (developer, 2026-09-03): taking
+the first stops recurrence across a span the loan genuinely owed, which under-generates.
 
 **Scope.** A NEW producer beside `loan_payoff_date`, not a change to its contract, so the card,
 `/savings` and the equity chart move one at a time; deleting `loan_payoff_date` at its last consumer
-is a LATER `balance` step, not minted here. No migration; moves no stored value.
+is a LATER `balance` step, not minted here. No migration.
+
+**It DOES move a stored value, and the first draft of this line said it did not.** An adversarial
+review caught it and the state was then reproduced: `sync_recurring_payment_bounds` WRITES the
+derived answer into `recurrence_rules.end_date`, so every retired loan's stored bound changes at the
+next chokepoint -- usually one past date for another, but for a loan cleared BEFORE its first
+installment the stored pair becomes `[2026-07-15, 2026-06-21]` and is inverted PERMANENTLY, where
+the old `ctx.as_of` bound drifted past `starts_on` and healed. The refusal `refuse_inverted_window`
+reads that stored pair whenever a submission omits both bound keys, and the form locks a loan
+payment's start and "Ends" controls but NOT its "Repeats" select -- so the owner was refused on an
+edit still offered to them, with no control that could fix it. The remedy taken is the one the CHECK
+ruling already implies: that door SKIPS a definition whose window the app derives
+(`owns_validity_window`), because a derived empty window is a correct answer and refusing on it
+makes the door the constraint `ck_recurrence_rules_valid_window` declined to be. `R7d-f` moves the
+rest of that module's loan-payment reads off the column.
 
 - [ ] **R7d-d -- the DISPLAY readers take the resolver, through a COMPOSED DOOR.**
 

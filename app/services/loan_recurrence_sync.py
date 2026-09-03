@@ -10,8 +10,9 @@ a payment only while the loan actually exists and owes:
   the origination anchor resets over it: $0.00 principal, the whole payment to
   Refund) while the cash side still debits it, so a mortgage closing one month
   out projected $3,220.92 of payments for a loan that did not exist.
-* ``end_date`` = the loan's PROJECTED PAYOFF (Risk R-4), so nothing generates
-  past payoff.
+* ``end_date`` = the loan's CLOSING DATE (Risk R-4), so nothing generates past
+  the day the debt ends -- the projected payoff while it still owes, and the day
+  it LAST became closed once it does not.
 
 This used to run as a write on the loan-detail GET (documented Risk R-4); it now
 runs at every chokepoint that can MOVE either bound -- a params / rate edit, a
@@ -26,10 +27,14 @@ move one and leave the other stale.
 committed schedule -- a walk that amortizes one contractual installment per month
 whether or not a payment stands behind it -- so the date this column persisted
 could disagree with the payoff every screen showed.  It now reads the seam's
-:func:`app.services.balance_at.loan_payoff_date`: the date the loan's BALANCE
-folds to zero, the same figure the loan card's chip, the /savings cockpit, and the
-property equity chart render.  One derivation, one answer, and the stored copy is
-a projection of it rather than a second opinion.
+:attr:`~app.services.balance_at.LoanFigures.closing_date`
+(:func:`app.services.balance_at.loan_closing_date`, plan step
+``recurrence:R7d-h``): the date the loan's BALANCE folds to zero looking
+FORWARD, or -- for a loan already at zero, which has no forward crossing left --
+the day it LAST became closed, read backward over the recorded events.  One
+derivation, one answer, and the stored copy is a projection of it rather than a
+second opinion.  Until R7d-h that retired branch substituted the READ PASS's own
+now, so the stored bound moved with the day a chokepoint happened to run.
 
 Idempotent, and a genuine fixpoint: it recomputes the payoff and writes only when
 ``end_date`` actually changes.  Writing ``end_date = D`` stops shadow generation
@@ -115,61 +120,13 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only; these are ORM row types
 logger = logging.getLogger(__name__)
 
 
-def recurrence_end_date(
-    payoff_date: date | None, is_retired: bool, as_of: date,
-) -> date | None:
-    """Return the recurrence end_date a loan's derived payoff implies.
-
-    The three states of the DERIVED payoff
-    (:attr:`~app.services.balance_at.LoanFigures.payoff_date`), mapped onto the
-    recurrence bound.  ``payoff_date`` is ``None`` for two different loans, and
-    ``is_retired`` is what tells them apart -- collapsing them would either leave a
-    finished loan generating payments forever or halt a loan that still owes:
-
-    * **Pays off on a date** -- that date, so recurrence stops the month the
-      balance reaches zero.
-    * **Already RETIRED** (``None`` and owing nothing) -- *as_of*, the pass's own
-      now: the loan plans no further payments.  (The pre-C8d writer used the last
-      schedule row for a retired loan WITH history and its ``origination_date``
-      for one without -- two dates for one state; *as_of* is ONE rule.)
-
-      **This bounds the OCCURRENCE, and plan step R4a is what changed that.**
-      ``end_date`` used to bound PERIODS -- a period was admitted when
-      ``period.start_date <= end_date``, so the CURRENT period, which started
-      before *as_of*, still matched and only the claim predicate stopped a
-      further payment being generated into it for a loan that owes nothing.
-      Forward generation stops at the first occurrence past the bound, so a
-      retired loan's next installment is simply never emitted: finding **N-19**
-      (a bound that excluded the current period outright would have to be that
-      period's start minus a day) is closed by the model rather than by a
-      different bound.  Note also that a retired loan whose
-      payoff-affecting mutations span days rewrites this to each new day, so
-      "idempotent" is idempotent WITHIN a day.
-    * **Never pays off** (``None`` and NOT retired -- negative amortization, or an
-      underpayment too severe to clear the plan's post-contractual extension) --
-      ``None``, leaving recurrence indefinite until the user raises the payment.
-      That is what C7's payment-drift warning exists to prompt.
-
-    Args:
-        payoff_date: The loan's derived payoff, or ``None``.
-        is_retired: Whether the loan has originated and owes nothing
-            (:attr:`~app.services.balance_at.LoanFigures.is_retired`).
-        as_of: The read pass's as-of, the retired loan's bound.
-
-    Returns:
-        The recurrence ``end_date``, or ``None`` to leave generation indefinite.
-    """
-    if payoff_date is not None:
-        return payoff_date
-    return as_of if is_retired else None
-
-
 class LoanPaymentWindow(ABC):
     """How long a recurring transfer INTO A LOAN goes on firing -- three shapes.
 
     The DERIVED closing bound of a definition whose destination is a configured
-    loan, as one value with three shapes rather than the ``date``-or-``None``
-    pair :func:`recurrence_end_date` answers in.  That pair spells two of the
+    loan, as one value with three shapes rather than the bare ``date``-or-
+    ``None`` :attr:`~app.services.balance_at.LoanFigures.closing_date` answers
+    in.  That pair spells two of the
     three alike: a real closing date and an ALREADY-EMPTY window are both a
     ``date``, and telling them apart is the whole reason plan ledger row
     **D35**'s ``ck_recurrence_rules_valid_window`` was drafted and then held
@@ -227,9 +184,10 @@ class ClosesOn(LoanPaymentWindow):
     """The loan pays off on a date, so the definition stops there.
 
     Attributes:
-        on: The loan's DERIVED payoff -- the date its balance folds to zero
-            (:attr:`~app.services.balance_at.LoanFigures.payoff_date`), or the
-            read pass's own now for a loan that is already retired.  The last
+        on: The loan's DERIVED closing date
+            (:attr:`~app.services.balance_at.LoanFigures.closing_date`) -- the
+            date its balance folds to zero ahead, or the day it LAST became
+            closed for a loan already at zero.  The last
             day an occurrence may fall on, inclusive: the balance reaches zero
             AT that installment, so the installment itself is owed.
     """
@@ -276,23 +234,22 @@ class Empty(LoanPaymentWindow):
     """The loan's life closed BEFORE this definition's first occurrence.
 
     A loan originated 2026-06-20 with a ``payment_day`` of 15 owes its first
-    installment 2026-07-15; true its balance to zero and it retires, so on a
-    read pass as of 2026-07-01 the derived window is
-    ``[2026-07-15, 2026-07-01]`` -- CORRECT at nought occurrences.  Plan ledger
+    installment 2026-07-15; true its balance to zero on 2026-06-21 and it
+    retires that day, so the derived window is
+    ``[2026-07-15, 2026-06-21]`` -- CORRECT at nought occurrences.  Plan ledger
     row **D35** carries the same shape as the state that held
     ``ck_recurrence_rules_valid_window`` back, because a CHECK cannot tell it
     from an owner's mistake.
 
-    **The example is stated against the READ PASS's as-of, and an adversarial
-    review of this step is why.**  A retired loan's closing bound IS
-    ``ctx.as_of`` (:func:`recurrence_end_date`), so for the retired branch this
-    shape is TRANSIENT: the same untouched loan answers ``ClosesOn(today)``
-    from the day the as-of reaches the first occurrence.  An earlier wording
-    here described the STORED column's behaviour -- where the date froze at
-    whichever day a chokepoint last ran -- and would have taught every reader
-    plan steps R7d-d through R7d-f move over the wrong model.  The shape is
-    STABLE only where the loan has a real past ``payoff_date`` before the
-    definition's first occurrence.
+    **This shape is STABLE, and plan step ``recurrence:R7d-h`` is what made it
+    so.**  A retired loan's closing bound USED TO BE ``ctx.as_of`` -- the read
+    pass's own now -- so the retired branch was TRANSIENT: the same untouched
+    loan answered ``ClosesOn(today)`` from the day the as-of reached the first
+    occurrence, and its admitted set grew one occurrence per cadence period.
+    The bound is now the day the loan LAST became closed
+    (:attr:`~app.services.balance_at.LoanFigures.closing_date`), a fact about
+    the LOAN rather than about when the page was rendered, so an untouched
+    retired loan answers the same window on every read.
 
     **It admits exactly what a** :class:`ClosesOn` **before the same first
     occurrence admits -- nothing -- so it is a PRECOMPUTATION of a comparison
@@ -407,7 +364,10 @@ def loan_payment_window(
             PASS's scenario and its standing payment by the ACCOUNT's owner.
         ctx: The read pass's
             :class:`~app.services.balance_at.BalanceContext`.  Its ``as_of`` is
-            a retired loan's bound and its scenario scopes the fold; the pass
+            the day the loan's state is read at -- since plan step
+            ``recurrence:R7d-h`` it selects WHICH crossing answers, and is no
+            longer itself a retired loan's bound -- and its scenario scopes the
+            fold; the pass
             is TAKEN and never built here (the 2026-08-16 ruling -- a producer
             below the route does not build one).
 
@@ -463,9 +423,7 @@ def loan_payment_window(
     figures = balance_at.loan_figures(account, ctx)
     if figures is None:
         return None
-    closes = recurrence_end_date(
-        figures.payoff_date, figures.is_retired, ctx.as_of,
-    )
+    closes = figures.closing_date
     if closes is None:
         return INDEFINITE
     return (
@@ -809,8 +767,9 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
 
     * ``starts_on`` -- the loan's first contractual installment
       (:func:`loan_cadence_spec`); a payment cannot precede the loan.
-    * ``end_date`` -- the loan's derived payoff (R-4,
-      :func:`recurrence_end_date`); a payment cannot follow the payoff.
+    * ``end_date`` -- the loan's derived closing date (R-4,
+      :func:`~app.services.balance_at.loan_closing_date`); a payment cannot
+      follow the payoff.
 
     The two are deliberately NOT symmetric in what they require: the start is a
     contract fact and resolves with no scenario, while the end is a fold over
@@ -870,9 +829,7 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
         # Not a configured loan (no LoanParams) -- nothing to bound.
         return
 
-    new_end_date = recurrence_end_date(
-        figures.payoff_date, figures.is_retired, ctx.as_of,
-    )
+    new_end_date = figures.closing_date
     new_bound = (
         NEVER_ENDS if new_end_date is None else EndsOnDate(on=new_end_date)
     )

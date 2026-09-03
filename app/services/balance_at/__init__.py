@@ -248,6 +248,7 @@ from ._liability import liability_owed_at_dates
 from ._loan_figures import (
     LoanFigures,
     LoanTerms,
+    loan_closing_date,
     loan_figures,
     loan_terms,
 )
@@ -341,6 +342,7 @@ __all__ = [
     "interest_projection_for_account",
     "investment_growth_since_anchor",
     "liability_owed_at_dates",
+    "loan_closing_date",
     "loan_figures",
     "loan_terms",
     "loan_interest_in_year",
