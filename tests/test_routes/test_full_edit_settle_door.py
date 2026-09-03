@@ -87,6 +87,17 @@ def _full_edit_save(auth_client, txn, status_id, **overrides):
     a payload carrying them would be refused by ``_finalised_edit_response``
     before any of this suite's subject matter ran -- a helper that tested the
     lock instead of the settle.
+
+    **A GENERATED row submits no due date at all, for the same reason one tier
+    over** (plan step balance:X-au-e).  Its date is its DEFINITION's -- it is a
+    member of ``DerivedRowFields`` and every regeneration rewrites it -- and
+    since that step it is also what prices the row, so the popover renders it
+    as TEXT rather than an input and a browser sends no ``due_date`` key.  A
+    payload carrying one is refused by
+    ``_gates._reject_generated_due_date_edit`` before this suite's subject
+    matter runs, which is the same trap the finalised arm above exists to
+    avoid: seven cases here failed on that refusal the moment the gate landed,
+    all of them testing the settle and none of them testing the date.
     """
     payload = {
         "version_id": str(txn.version_id),
@@ -96,9 +107,10 @@ def _full_edit_save(auth_client, txn, status_id, **overrides):
     if not txn.status.is_immutable:
         payload["estimated_amount"] = str(txn.estimated_amount)
         payload["pay_period_id"] = str(txn.pay_period_id)
-        payload["due_date"] = (
-            txn.due_date.isoformat() if txn.due_date else ""
-        )
+        if txn.template_id is None:
+            payload["due_date"] = (
+                txn.due_date.isoformat() if txn.due_date else ""
+            )
     payload.update(overrides)
     return auth_client.patch(f"/transactions/{txn.id}", data=payload)
 

@@ -57,6 +57,7 @@ from tests._test_helpers import (
     field_is_disabled,
     freeze_today,
     last_covered_day,
+    make_expense_template,
     make_investment_account,
     make_salary_profile,
     mark_purchase_settled,
@@ -706,6 +707,27 @@ class TestSubtotalRowsEndpoint:
             assert "$9,999" not in html
             # The first user's own $2,000 income is shown via the fallback.
             assert "$2,000" in html
+
+
+def _generate_first_row(template, seed_user, periods):
+    """Generate *template*'s rows and return the first, committed.
+
+    The tests below need a row a DEFINITION produced rather than one built by
+    hand: only a generated row carries the ``amount_source_id`` declaration
+    plan step balance:X-au-e's refusal is keyed on, so a hand-built row would
+    grade the gate against a shape the app never writes.
+    """
+    from app.services import recurrence_engine  # pylint: disable=import-outside-toplevel
+
+    created = recurrence_engine.generate_for_template(
+        template,
+        GenerationSchedule.for_period_ids(
+            BalanceContext.build(template.user_id), {p.id for p in periods},
+        ),
+        seed_user["scenario"].id,
+    )
+    db.session.commit()
+    return created[0] if created else None
 
 
 class TestTransactionCRUD:
@@ -1443,6 +1465,71 @@ class TestTransactionCRUD:
             assert save_resp.status_code == 200
             db.session.refresh(txn)
             assert txn.due_date == date(2026, 2, 20)
+
+    def test_clearing_a_GENERATED_rows_due_date_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A generated row's due date is its definition's (**R-JD**'s sibling).
+
+        Plan step balance:X-au-e prices such a row from its definition's
+        series ON ITS OWN DUE DATE, so a cleared date leaves a row no rule can
+        answer -- and ``routes/grid/page`` prices every row it loads with no
+        handler, so ONE of them 500s the whole grid. Reproduced on a clone of
+        production before the fix: 926 rows priced before the cutover and
+        raised after it.
+
+        **The last assertion is the one that matters** and the case above is
+        why: the sibling test clears the date on an AD-HOC row and asserts
+        200, which is still correct. Asserting only the refusal here would
+        grade the door and not the thing that breaks, so this re-renders the
+        grid afterwards.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.flush()
+            row = _generate_first_row(template, seed_user, seed_periods_today)
+            assert row is not None, "the fixture generated no rows"
+            # The precondition the refusal exists for: this row is DERIVED.
+            assert row.amount_source_id is not None
+            assert row.due_date is not None
+            was = row.due_date
+
+            resp = auth_client.patch(f"/transactions/{row.id}", data={
+                "due_date": "",
+                "version_id": row.version_id,
+            })
+
+            assert resp.status_code == 400
+            assert b"recurring transaction" in resp.data
+            db.session.refresh(row)
+            assert row.due_date == was
+            # And the grid still renders, which is what the refusal protects.
+            assert auth_client.get("/grid").status_code == 200
+
+    def test_moving_a_GENERATED_rows_due_date_is_refused_too(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Keyed on the FIELD, not on emptiness.
+
+        A moved date is not harmless: it re-prices the row against a different
+        point in its definition's series, silently, and the next regeneration
+        puts it back. Without this case the gate could be written as a
+        clear-only test and still pass.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.flush()
+            row = _generate_first_row(template, seed_user, seed_periods_today)
+            was = row.due_date
+
+            resp = auth_client.patch(f"/transactions/{row.id}", data={
+                "due_date": "2026-02-20",
+                "version_id": row.version_id,
+            })
+
+            assert resp.status_code == 400
+            db.session.refresh(row)
+            assert row.due_date == was
 
     def test_full_edit_clears_due_date(
         self, app, auth_client, seed_user, seed_periods_today

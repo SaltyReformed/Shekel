@@ -5,15 +5,41 @@ Shekel Budget App -- Recurrence Engine: applying the owner's conflict decisions
 the chooser a :class:`~app.exceptions.RecurrenceConflict` raised.
 
 **Nothing here deletes.**  "Keep" leaves the row untouched and "use" clears the
-override / soft-delete flags and re-applies the template's amount, so a row
+override / soft-delete flags and hands the row back to its definition, so a row
 that reaches the chooser survives whichever branch the owner picks.
 
-**"The template's amount" is a statement of OWNERSHIP rather than a figure**
-(plan step **X-au-d**).  A definition that STATES its price gives the row that
-figure to own; one whose price is COMPUTED gives the row a declaration and no
-figure at all.  Writing the figure unconditionally is finding **N-437**: it
-hands a derived row back to its owner silently, where the two-column model it
-was written under made the same write an ``IntegrityError``.
+**"Use" WRITES NO FIGURE, and that is plan step X-au-e** (ruling **R-JD**).
+Every generated transaction row is derived now, so "move this instance to the
+template's amount" has no amount to move it to: the act is to stop overriding,
+and the definition's own effective-dated series then prices the row as of its
+OWN due date.  That is what closes finding **N-244** -- the old "use" wrote the
+template's CURRENT ``default_amount`` onto a row whose due date could precede
+the edit and cleared the flag that would have marked it, so a $100 history with
+one row resolved to $120 read as THREE price changes where one occurred.  A
+figure it does not write is a figure it cannot back-date.
+
+**The DECISION survives even though the collision it once mediated cannot
+occur** (ruling **R-JD**, developer 2026-09-03).  X-au-e's specification had it
+deleted outright, on the ground that a hand-edited month owns its figure and a
+regeneration that writes no figure cannot overwrite one.  Both halves of that
+are true and neither reaches the offer: ``txn.is_override = False`` below is the
+only writer in ``app/`` that clears that flag on a TEMPLATE-LINKED transaction,
+and likewise its only per-row un-delete outside archiving and unarchiving the
+whole template.
+
+*The qualifier is load-bearing and a first draft omitted it.*  An AST census of
+every writer of the two flags finds nine that clear one, not six: besides the
+create paths, ``transfer_service._update`` and ``._restore``
+clear ``is_override`` on a shadow through a VARIABLE
+(``shadow.is_override = flag``), which a grep for the literal cannot see, and
+``._restore`` un-deletes both legs.
+Those doors reach SHADOWS only, and ``ck_transactions_one_pricing_link`` makes
+``transfer_id`` exclusive with ``template_id`` -- so the conclusion holds by the
+schema rather than by the count, which is the stronger ground anyway.
+
+Deleting the decision would have stranded every
+overridden row permanently OWN, 40 of them on the 2026-09-03 production clone,
+with no route back to the definition until plan step X-au-h reworks the flag.
 
 **It answers the OVERRIDDEN and SOFT-DELETED conflicts only, never a RETAINED
 one.**  ``RecurrenceConflict.retained`` (plan step R10-a) names rows a maintain
@@ -30,8 +56,8 @@ from app.enums import AmountSourceEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.exceptions import ValidationError
-from app.services import posting_service, template_amount_service
-from app.services.amount_ownership import declare_derived, state_own_amount
+from app.services import posting_service
+from app.services.amount_ownership import declare_derived
 from app.services._recurrence_common import log_resource_access_denied
 from app.utils.log_events import (
     BUSINESS,
@@ -44,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 
 
-def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
+def resolve_conflicts(transaction_ids, action, user_id):
     """Resolve override/delete conflicts after a regeneration.
 
     Called by the route layer after the user responds to the conflict prompt.
@@ -52,13 +78,22 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
     any modification -- transactions not owned by ``user_id`` are silently
     skipped (defense-in-depth against IDOR).
 
+    **It took a ``new_amount`` until plan step X-au-e** (ruling **R-JD**), and
+    the parameter is gone rather than defaulted: "use" hands the row back to
+    its definition and the definition prices it, so there is no figure for a
+    caller to supply and no arm left that would read one.  The transfer twin
+    ``transfer_recurrence.resolve_conflicts`` still takes one, because a
+    generated transfer still stores its amount until plan step X-au-f -- which
+    is why ``routes._recurrence_conflict_chooser.RecurrenceConflictKind`` asks
+    the KIND whether "use" states a figure rather than assuming both do.
+
     Args:
         transaction_ids: List of Transaction IDs to resolve.
-        action:          'update' -- clear override/delete, apply new amount.
+        action:          'update' -- clear override/delete and hand the row
+                         back to its definition.
                          'keep' -- leave the transaction unchanged.
         user_id:         The requesting user's ID.  Transactions not owned
                          by this user are skipped.
-        new_amount:      The new default amount (required if action='update').
     """
     if action == "keep":
         # Nothing to do -- the user wants to keep their overrides.
@@ -123,44 +158,43 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
                     "transfer_service."
                 )
 
+            # **A row whose definition is GONE cannot be handed back to
+            # it** (ledger row **N-440**).  ``fk_transactions_template`` is ON
+            # DELETE SET NULL, so a row can outlive its template carrying no
+            # link -- and declaring such a row derived would write exactly the
+            # state that has no rule able to price it:
+            # ``_rule_within_definition`` answers TEMPLATE for a ``None``
+            # template and ``_stated_amount`` then refuses in a money path.
+            # The row keeps the figure it already owns, which is the only
+            # answer left that is true.
+            #
+            # **UNREACHABLE from the route today, and the honest reason is not
+            # the one a first draft gave.**  That comment said it covered "a
+            # row that lost its template between the raise and this call" --
+            # but the only way a row loses its template is that template's
+            # hard delete, and the same delete makes the Apply POST 404 at
+            # ``get_or_404`` before this function runs; the conflict set is
+            # also built by selecting on ``template_id``, so no such id can
+            # reach the allow-list.  What this is is the same DEFENCE IN DEPTH
+            # the ownership check twenty lines up is: ``resolve_conflicts`` is
+            # a published service entry, and a future caller assembling ids
+            # some other way would otherwise write a row no rule can price.
+            # Skipped rather than raised because it is a row to leave alone,
+            # not a caller error, and it is counted in ``skipped_count``.
+            if txn.template_id is None:
+                skipped_count += 1
+                continue
+
             txn.is_override = False
             txn.is_deleted = False
-            if new_amount is not None:
-                # **"Use the template's amount" is answered by the DEFINITION,
-                # and after plan step X-au-d the answer is not always a
-                # figure** (finding **N-437**).  The chooser offers one
-                # decision -- keep your figure, or move to the template's --
-                # and it is offered only where the template's own scalar
-                # actually prices its rows: ``regenerate_or_conflict_chooser``
-                # suppresses it for a salary-linked definition, whose
-                # ``default_amount`` is vestigial.  This arm is still
-                # REACHABLE for such a definition, because that route applies
-                # submitted decisions before it consults that suppression, so
-                # a crafted POST reaches here.  Writing the figure then handed
-                # a DERIVED paycheck back to OWN in silence -- legal,
-                # flushable, and a plan nothing recomputes again, which is
-                # exactly the stale cache ruling R-FI deletes.
-                #
-                # ``template_amount_service.owns_its_amount`` is the app's one
-                # eligibility test for a STATED price, shared with the write
-                # door, the backfill and generation's own
-                # ``_amounts._generated_amount_ownership``; a definition it
-                # answers False for prices its rows by computing, so the row
-                # goes back to DECLARING that definition and holds no figure.
-                #
-                # A row carrying no template at all is priced by no definition,
-                # so a figure applied to it is simply its own -- the same
-                # ``template is None`` arm ``cash_ledger._amount_source._stated_amount``
-                # carries, and for the same reason: asking the predicate about
-                # ``None`` is an ``AttributeError`` where every other
-                # unanswerable shape here is a designed outcome.
-                if (
-                    txn.template is None
-                    or template_amount_service.owns_its_amount(txn.template)
-                ):
-                    state_own_amount(txn, new_amount)
-                else:
-                    declare_derived(txn, AmountSourceEnum.TEMPLATE)
+            # **The whole of "use the template's amount"** since plan step
+            # X-au-e: the row stops owning a figure and DECLARES the definition
+            # that prices it, which is the same statement
+            # ``_amounts._derive_row_fields`` makes about a row generation
+            # writes.  One producer of "what ownership does a row of this
+            # definition take", so generation, the maintain splat and this
+            # chooser cannot come to disagree (``CLAUDE.md`` rule 14).
+            declare_derived(txn, AmountSourceEnum.TEMPLATE)
             restored.append(txn)
             resolved_count += 1
         db.session.flush()
@@ -181,5 +215,4 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
             user_id=user_id, action=action,
             resolved_count=resolved_count,
             skipped_count=skipped_count,
-            new_amount=str(new_amount) if new_amount is not None else None,
         )

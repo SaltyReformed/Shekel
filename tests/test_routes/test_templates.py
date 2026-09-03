@@ -56,9 +56,11 @@ from tests._test_helpers import (
     end_bound_payload,
     make_cadence_rule,
     make_transfer_template,
+    resolved_amount,
     settle_day_columns,
     settlement_columns,
     settlement_if_settling,
+    state_template_price,
 )
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
@@ -110,6 +112,7 @@ def _create_template(seed_user, name="Rent", amount="1200.00",
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     if cadence:
         # Authored through the write door, which is what plan step R7c-b made
         # the only way to make a rule: ``unit_id``, ``placement_id``,
@@ -705,11 +708,54 @@ class TestTemplateUpdate:
             assert resp.status_code == 200
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
-            assert reloaded.estimated_amount == Decimal("1400.00")
+            assert resolved_amount(reloaded) == Decimal("1400.00")
             assert reloaded.is_override is False
             assert db.session.get(
                 TransactionTemplate, tid,
             ).default_amount == Decimal("1400.00")
+
+    def test_the_chooser_PAGE_offers_no_figure_for_a_transaction(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """"Use" reads as *Follow the template*, never as *Use $1,400.00*.
+
+        Plan step balance:X-au-e, ruling **R-JD**.  The chooser is shared
+        verbatim with the transfer-template route, whose generated rows still
+        STORE their amount until plan step X-au-f, so the page's "use" side is
+        per-kind (``RecurrenceConflictKind.use_states_a_figure``).  Rendering
+        the transfer's sentence over a transaction would promise a figure no
+        writer writes: nothing moves the row to $1,400.00, it stops overriding
+        and its definition's series prices it on its own due date.
+
+        **The page says the wrong thing in three places if the flag is
+        dropped**, so all three are asserted: the framing sentence, the bulk
+        button, and the footnote about the rows that are NOT in the list.  The
+        footnote is the one that would be flatly false -- those rows are
+        derived already and this page changes nothing about them.
+        """
+        with app.app_context():
+            template = _create_template(
+                seed_user, cadence=EVERY_PERIOD, amount="1200.00",
+            )
+            _future_override_txn(seed_user, template, amount="1500.00")
+            tid = template.id
+
+            resp = auth_client.post(f"/templates/{tid}", data={
+                "default_amount": "1400.00",
+                **cadence_payload(),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            body = resp.data
+            # The chooser really did render -- without this the three
+            # absence assertions below pass on any page at all.
+            assert b"Some upcoming instances were hand-edited" in body
+            assert b"Follow the template" in body
+            assert b"Use new value for all" not in body
+            assert b"Your other upcoming instances move to" not in body
+            # The framing sentence still names the new price, because the
+            # DEFINITION's price genuinely did change to it.
+            assert b"1,400.00" in body
 
     def test_chooser_apply_keep_preserves_override(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -830,7 +876,7 @@ class TestTemplateUpdate:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
             assert reloaded.is_deleted is False
-            assert reloaded.estimated_amount == Decimal("1400.00")
+            assert resolved_amount(reloaded) == Decimal("1400.00")
             assert reloaded.name == "Apartment Rent"
 
     def test_amount_edit_commits_when_the_only_conflict_is_a_retained_row(
@@ -3409,6 +3455,7 @@ def _template_with_starts_on(seed_user, txn_type, starts_on):
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     # The definition first, then the cadence onto it (plan step R-F6).
     rule = make_cadence_rule(
         template, EVERY_PERIOD, starts_on=starts_on,

@@ -98,6 +98,7 @@ from tests._test_helpers import (
     seed_fica_config,
     seed_state_tax_config,
     seed_tax_bracket_set,
+    state_template_price,
 )
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
@@ -146,6 +147,7 @@ def _make_template(seed_user, cadence, **rule_kwargs):
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     # The definition first, then the cadence onto it (plan step R-F6).
     rule = make_cadence_rule(
         template, cadence,

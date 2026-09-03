@@ -58,6 +58,7 @@ from tests._test_helpers import (
     settled_day_basis_id,
     settlement_basis_id,
     settlement_columns,
+    state_template_price,
 )
 from tests._test_helpers import make_every_period_rule
 from app.models.amount_ownership import AmountOwnership
@@ -926,6 +927,7 @@ def _create_template(seed_user, name="Recurring Bill",
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     return template
 
 
@@ -1374,6 +1376,7 @@ def _create_envelope_template(
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     if with_rule:
         # The definition first, then the cadence onto it (plan step R-F6).
         make_every_period_rule(db.session, template)
