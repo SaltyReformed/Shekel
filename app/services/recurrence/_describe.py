@@ -548,11 +548,13 @@ def _derived_never_runs(_derived: Empty, _authored: EndBound) -> str:
 def _derived_closes_on(derived: ClosesOn, authored: EndBound) -> str:
     """Return the words for a definition two things stop, in one phrase.
 
-    Three branches, and they are total over any :class:`EndBound` shape --
-    including one plan step R8 adds -- because the discriminator is
+    Three branches.  The date arm discriminates on
     :attr:`~app.services.recurrence.EndBound.end_date`, which every shape
-    already answers, rather than a second table of authored kinds that a new
-    shape could be missing from.
+    answers, so no second table of authored kinds is introduced; the other two
+    delegate to :func:`_authored_phrase`, which is total over
+    :data:`~app.services.recurrence.END_BOUND_KINDS` and FAILS LOUD for a shape
+    it cannot word.  Asking it first is what makes that refusal reachable from
+    here too.
 
     * **The owner named a date too** -- both are the same kind of statement, so
       the phrase names the EARLIER of the two.  There is nothing to conjoin:
@@ -574,10 +576,16 @@ def _derived_closes_on(derived: ClosesOn, authored: EndBound) -> str:
     Returns:
         The phrase.
     """
+    # The authored phrase is asked FIRST and unconditionally, so its refusal
+    # fires on every path.  An adversarial review of this step caught the other
+    # order: branching on ``end_date`` before asking meant an authored shape
+    # missing from ``_STOP_PHRASES`` rendered silently through this arm and
+    # raised through the non-derived one -- the same input, two dispositions,
+    # and the arm that stayed quiet is the one with a second stop on it.
+    authored_phrase = _authored_phrase(authored)
     authored_on = authored.end_date
     if authored_on is not None:
         return _until(min(authored_on, derived.on))
-    authored_phrase = _authored_phrase(authored)
     if authored_phrase is None:
         return _until(derived.on)
     return f"{authored_phrase}, or {_until(derived.on)}"
@@ -587,9 +595,11 @@ def _derived_closes_on(derived: ClosesOn, authored: EndBound) -> str:
 #:
 #: Total over :data:`~app.services.recurrence._closing.DERIVED_STOP_KINDS` for
 #: the reason :data:`_STOP_PHRASES` is total over the authored set, and with a
-#: sharper consequence: a shape missing here would fall through to the authored
-#: phrase alone, so a definition its destination has already stopped would go
-#: on reading as a live commitment with a future date beside it.
+#: sharper consequence.  A missing AUTHORED shape renders a blank second line;
+#: a missing DERIVED shape would -- were this table consulted permissively --
+#: word the owner's bound alone, so a definition its destination has already
+#: stopped would read as a live commitment with a future date beside it.
+#: :func:`_stops_phrase` RAISES instead, which is a 500 rather than a lie.
 #:
 #: Each entry takes its OWN shape plus the authored bound, so the value type is
 #: ``Any`` rather than ``DerivedStop`` -- a table of exact-shape handlers is
@@ -629,10 +639,11 @@ def _stops_phrase(closing: Closing) -> str | None:
     if narrowed is None:
         raise RecurrenceDescriptionError(
             f"derived stop {type(closing.derived).__name__!r} has no wording.  "
-            f"Every shape a derived stop can take must have one: a cell that "
-            f"omits it words the owner's own bound alone, so a definition its "
-            f"destination has already stopped reads as a live commitment with "
-            f"a future date beside it."
+            f"Every shape a derived stop can take must have one, and the "
+            f"alternative to raising is worse than a 500: falling back to the "
+            f"owner's own bound would word a definition its destination has "
+            f"already stopped as a live commitment with a future date beside "
+            f"it."
         )
     return narrowed(closing.derived, closing.authored)
 

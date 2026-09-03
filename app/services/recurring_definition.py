@@ -17,10 +17,11 @@ Why it is a door and not a helper
 **A definition can be stopped by something it did not author, and every
 surface that asks "does this still fire" has to honour both stops.**  A
 recurring transfer that pays a loan stops when the debt does.  Until plan step
-R7d that fact reached the walk only as a CACHE: ten call sites wrote the loan's
+R7d that fact reaches the walk only as a CACHE: ten call sites WRITE the loan's
 derived payoff into ``budget.recurrence_rules.end_date``, the authored bound's
-own column, so one column held two facts and every reader was trusting that
-some earlier write had been recent enough (plan ledger row **D35**).  That is
+own column -- they still do, until R7d-g deletes nine of them -- so one column
+holds two facts and every reader is trusting that some earlier write was recent
+enough (plan ledger row **D35**).  That is
 ``CLAUDE.md`` rule 14's stored-and-derived case, and the remedy is to delete a
 home rather than keep two in step.
 
@@ -59,9 +60,9 @@ from dataclasses import replace
 
 from app.services.loan_recurrence_sync import loan_payment_window
 from app.services.balance_at import BalanceContext
-from app.services.obligations_aggregator import RecurringTemplate, template_rule
 from app.services.recurrence import (
     Closing,
+    RecurrenceOwner,
     ResolvedRecurrence,
     RuleReading,
     occurrence_placements,
@@ -70,7 +71,7 @@ from app.services.recurrence import (
 
 
 def resolved_definition(
-    template: RecurringTemplate, ctx: BalanceContext,
+    template: RecurrenceOwner, ctx: BalanceContext,
 ) -> ResolvedRecurrence | None:
     """Return what *template*'s recurrence MEANS, narrowed by its destination.
 
@@ -94,8 +95,9 @@ def resolved_definition(
 
     Args:
         template: The recurring definition -- a ``TransactionTemplate`` or a
-            ``TransferTemplate`` (or any object exposing ``recurrence_rule``
-            and ``to_account_id``, which is what the test fixtures build).
+            ``TransferTemplate`` (:data:`~app.services.recurrence.
+            RecurrenceOwner`), or any object exposing ``recurrence_rule`` and
+            ``to_account_id``, which is what the test fixtures build.
             **Must belong to ``ctx.user_id``**: the caller owns the ownership
             check, as every seam entry this reaches states.  A cross-owner
             pairing is refused one call down by
@@ -126,7 +128,14 @@ def resolved_definition(
             still resolves for such an owner: the not-a-loan answer is reached
             before the scenario guard.
     """
-    rule = template_rule(template)
+    # ``getattr`` rather than attribute access, and NOT
+    # ``obligations_aggregator.template_rule``: plan step R7d-e moves that
+    # module's ``has_ended`` onto THIS door, so importing it here would be a
+    # cycle one step out -- the same "move the leaf" problem this step just
+    # solved one layer down, recreated one layer up.  The read is one
+    # ``getattr`` and the duck-typed contract is the recurrence package's own
+    # (:data:`~app.services.recurrence.RecurrenceOwner`).
+    rule = getattr(template, "recurrence_rule", None)
     if rule is None:
         return None
     resolved = resolved_recurrence(rule, ctx.calendar())
@@ -146,7 +155,7 @@ def resolved_definition(
 
 
 def read_definition(
-    template: RecurringTemplate, ctx: BalanceContext,
+    template: RecurrenceOwner, ctx: BalanceContext,
 ) -> RuleReading:
     """Read *template* against *ctx*, keeping the meaning and the placements.
 
@@ -157,9 +166,13 @@ def read_definition(
 
     **The placements are walked under the composed closing**, because the walk
     reads it off the resolved value.  So a surface's "next date" and its
-    cadence sentence are two readings of one narrowing and cannot disagree
-    about when a definition stops -- which they could, and on a loan payment
-    did, while one read a stale column and the other did not.
+    cadence sentence are two readings of ONE narrowing and cannot come apart.
+    They do not disagree today either -- ``recurring_view._build_section``
+    already reads each rule once and derives both from that reading, and an
+    adversarial review of this step corrected an earlier sentence here for
+    claiming otherwise.  What this preserves is that property through a
+    second stop being added, rather than repairing a disagreement that
+    existed.
 
     Args:
         template: The recurring definition.  See :func:`resolved_definition`

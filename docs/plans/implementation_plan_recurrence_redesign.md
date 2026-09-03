@@ -409,17 +409,30 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
 `recurring_view` and `describe` stop reading the column, so the Recurring surface's cadence sentence
 and its next date name the derived payoff rather than the last value a chokepoint wrote.
 
-**Both of its questions are RULED by `R-R50`** (developer, 2026-09-02), which carries the
-measurements. A finished loan's payment says it is OVER and names no date -- `loan_payoff_date`
-folds forward only, so the read pass's own now is all there is and `ClosesOn` would state it as the
-loan's; `AlreadyOver` is a fourth shape admitting byte-for-byte what `ClosesOn(as_of)` admitted, and
-`R16-c` is where the real date becomes derivable. And the step reaches as far as the COMPOSED VALUE:
-five surfaces need the conjunction of the authored bound and the derived stop, so it is a value the
-walk already reads (`ResolvedRecurrence.closing`) rather than a narrowing each performs. The answer
-SHAPES move to `recurrence/_closing.py` because `_describe` cannot import `loan_recurrence_sync`
-without a cycle -- rule 14's placement clause -- while the RESOLVER stays, since deciding which
-shape applies means folding a balance. `$0.00`, and no rendered character: both live loan payments'
-column and derived payoff agree exactly.
+**It reaches as far as the COMPOSED VALUE** (developer, 2026-09-02, over two smaller options). Five
+surfaces need the conjunction of the authored bound and the derived stop -- generation, this
+surface's next date, its cadence sentence, the `/obligations` and `/savings` totals, and the form's
+preview -- so the conjunction is a VALUE the walk already reads (`ResolvedRecurrence.closing`)
+rather than a narrowing each performs. An optional `narrowed_by=` on the walk was refused: a default
+meaning "no narrowing" leaves each caller one forgotten keyword from admitting occurrences against a
+debt that is gone, with nothing to raise on. The answer SHAPES move to `recurrence/_closing.py`
+because `_describe` cannot import `loan_recurrence_sync` without a cycle -- rule 14's placement
+clause -- while the RESOLVER stays, since deciding which shape applies means folding a balance.
+
+**It is BLOCKED on `R7d-h`, and the reason is a design this step tried to build and got wrong.** A
+first pass added a fourth `DerivedStop` shape for a RETIRED loan, on the premise that the app cannot
+name the day such a loan closed. **That premise was false**: `walk_loan_ledger` -> `dated_deltas`
+already produces the dated recorded balance, and since `balance:X-au-g-2c-3b-2` (`3b7716f8`) both
+tiers share `replay_loan_events`, so the backward crossing is `plan_payoff_date`'s forward rule read
+the other way. Measured on a production clone at head, Van Loan trued to `$0.00`, read 2026-12-25:
+`payoff_date=None`, `is_retired=True`, and the recorded balance folds to `<= 0` on **`2026-09-01`**
+over nine dated movements. So the fourth shape was an epicycle around a producer nobody had written,
+and it carried a defect with it -- a retired loan's stop tracked `ctx.as_of`, so the admitted set
+GREW by one occurrence per cadence period where the stored column froze. `R7d-h` gives the loan ONE
+closing date over past and future; this step then needs three shapes, not four.
+
+`$0.00` and no rendered character on production either way: both live loan payments' stored column
+and derived payoff agree exactly (`2048-12-01`, `2029-02-22`, measured 2026-09-02).
 
 - [ ] **R7d-e -- `/obligations` and the emergency-fund baseline take the resolver.**
 
