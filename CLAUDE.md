@@ -138,6 +138,9 @@ root; never silence it with a bare disable.
 - **SessionStart hook** (`scripts/hooks/session-start.sh`) prints the session's checkout, branch,
   the suite-slot state and the plan of record's next step into context at session start, plus a
   pointer to the Multi-session doctrine.
+- **PR-guard hook** (`scripts/hooks/guard-pr-actions.sh`) turns `gh pr create` / `gh pr merge` into
+  a permission prompt outside the coordinator session (which exports `SHEKEL_PR_COORDINATOR=1`);
+  `git push` is never gated. Advisory by design, the ask-decision shape of the migration guard.
 - **Stop hook** runs full `pylint app/` -- the only place cross-file `duplicate-code` is caught --
   and hard-blocks once `scripts/hooks/ENFORCE_PYLINT_FLOOR` exists (the 10.00/10 lock-in).
 - **Custom checkers:** `tools/pylint/shekel_checkers/` (+ tests), loaded via `.pylintrc`. Add one
