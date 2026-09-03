@@ -731,8 +731,12 @@ period **2 times out of 6**, both cancelled by hand.
 **What it would delete.** One deposit becomes one app row, so the exact tier explains the
 developer's payroll deposits with no group, no residue and no attribution control -- which is the
 entire population `bank_import:X-gj-3a` was built for and the whole of what `bank_import:X-gj-3b`'s
-group rule would be for. It does NOT delete `DifferenceLanding`: a genuine multi-row deposit (a
-paycheck plus a reimbursement, two jobs on one deposit) still needs it.
+group rule would have been for -- and on 2026-09-02 the developer acted on that rather than filing
+it: **`X-gj-3b` is WITHDRAWN** (ruling `bank_import:R-JJ`) and this chain is re-ranked up in its
+place. It also opened **D59**: the model cannot express a 24-of-26 cadence at all, so the
+developer's own 24-of-26 benefit would have minted a `$100.00` income row on 2026-07-30 and failed
+to only because its `end_date` got there first. It does NOT delete `DifferenceLanding`: a genuine
+multi-row deposit (a paycheck plus a reimbursement, two jobs on one deposit) still needs it.
 **`X-gj-3a` is therefore a correct interim whose population would go to ZERO if this shipped**,
 which is the honest sequencing statement and is why this row exists rather than living in a commit
 message.
