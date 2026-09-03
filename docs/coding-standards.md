@@ -4,6 +4,10 @@ These standards apply to all code in the Shekel project. They are referenced fro
 loaded when working on code. Every rule here exists because its absence caused a real bug or a real
 quality problem in this project.
 
+**This file is the rationale tier and the one home for a rule's full statement.** CLAUDE.md states a
+rule in one line and points; `.claude/rules/coding.md` and `.claude/rules/database.md` carry the
+path-scoped must-knows; a fact lives in one tier and the other tiers point at it.
+
 ---
 
 ## Python

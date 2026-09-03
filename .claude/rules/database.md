@@ -7,7 +7,9 @@ paths:
 # Database, schema, and migration rules
 
 Must-knows for models and migrations. Full standards: `docs/coding-standards.md`
-(SQL / Database, Migrations, Audit Triggers).
+(SQL / Database, Migrations, Audit Triggers). The `code-reviewer` agent restates
+these rules deliberately, so a review carries them even where this file has not
+loaded; a change to a rule here updates that mirror in the same commit.
 
 ## Query safety
 
