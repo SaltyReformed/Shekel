@@ -37,7 +37,6 @@ from decimal import Decimal
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     CashLedgerWalk,
-    live_amounts,
     sum_projected,
 )
 from app.services.pay_calendar import PeriodWindow
@@ -159,13 +158,20 @@ class CashPeriodView:
         columns: ``OrderedDict`` period id -> :class:`CashPeriodFigures`, in the
             order the reported window holds them, which is payday order.
             Every period of the window is present.
-        amount_overrides: The live ``{transaction_id: Decimal}`` map the
-            still-Projected rows were valued through -- recomputed salary income
-            and derived loan debits.  ``{}`` for an account with no plan.
+    **It carried an ``amount_overrides`` map until plan step X-au-d, and
+    NOTHING EVER READ IT.**  The field was added so a grid cell and the balance
+    row beside it would fold one map (ruling **R-Q**); the grid was routed
+    through ``cash_ledger.display_amounts_by_id`` instead at plan step
+    X-au-c2b, and this copy was carried through :class:`._grid.GridBalanceView`
+    to no consumer -- an AST and grep census over ``app/``, ``app/templates``
+    and ``app/static`` found zero reads.  A test asserting its contents said
+    "the grid reads ``view.amount_overrides.get(...)`` per row", which had been
+    false since that step.  The cutovers then emptied the map itself: a derived
+    row stores no figure, so there is nothing for an override to supersede.
+    Both the field and the producer behind it go here.
     """
 
     columns: "OrderedDict[int, CashPeriodFigures]"
-    amount_overrides: "dict[int, Decimal]"
 
 
 def period_view_of(
@@ -265,8 +271,7 @@ def period_view_of(
     Returns:
         The :class:`CashPeriodView`: one :class:`CashPeriodFigures` per period
         of *window* (a period with no rows and no assertions reports zeros
-        against its folded balance), plus the live override map the projection
-        was computed with.
+        against its folded balance).
     """
     return CashPeriodView(
         columns=_assemble_figures(
@@ -276,7 +281,6 @@ def period_view_of(
             _cash_sums(folded.walk, folded.day_nets, window),
             _assertion_sums(folded.corrections, window),
         ),
-        amount_overrides=live_amounts(folded.plan.basis, folded.plan.rows),
     )
 
 

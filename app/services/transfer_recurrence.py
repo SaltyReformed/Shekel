@@ -54,18 +54,19 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services._recurrence_common import (
-    MaintainOutcome,
     TemplateRowSelector,
-    check_scenario_ownership,
     PlacedRow,
-    classify_maintain_work,
-    occurrences_to_write,
     log_resource_access_denied,
-    rows_this_pass_may_maintain,
 )
-from app.services.recurrence_engine import compute_due_date, resolve_generation_plan
+from app.services.recurrence_engine import (
+    MaintainActs,
+    PassReporting,
+    compute_due_date,
+    create_for_unclaimed_occurrences,
+    regenerate_definition,
+    resolve_generation_plan,
+)
 from app.services import transfer_service
-from app.exceptions import RecurrenceConflict
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED,
@@ -322,35 +323,46 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     if plan is None:
         return []
 
-    # WHICH occurrences still need a transfer -- the shared decision, so this
-    # loop holds only the part that is about ``budget.transfers`` and its
-    # shadow pair.  See ``_recurrence_common.occurrences_to_write``.
-    created = []
-    for placement in occurrences_to_write(
-        _selector(template, scenario_id), plan.placements,
-    ):
-        period = placement.period
+    # WHICH occurrences still need a transfer is the shared decision
+    # (``recurrence_engine._pass.create_for_unclaimed_occurrences``); what a row IS
+    # is this engine's, and that split is the whole of it since plan step
+    # balance:X-au-d.
+    def _new_row(period, occurrence):
+        """Build one generated transfer and its shadow pair for *occurrence*.
 
-        # No existing row -- create one, taking every derived column from the
-        # ONE statement of them (:class:`DerivedTransferFields`), which the
-        # maintain pass assigns onto an existing row from the same definition.
-        # The four fields below that are NOT in it say what this row IS rather
-        # than what the template says: whose it is, where it sits, that it is
-        # the rule's own row, and that it is not yet an actual event.
-        #
-        # The due date inside comes from ``recurrence_engine.compute_due_date``,
-        # the same shared helper the transaction engine uses: a rule with a
-        # day_of_month (monthly, quarterly, and -- via
-        # routes/loan/payment_transfer.py -- the mortgage payment, whose rule
-        # carries day_of_month=payment_day) yields that calendar day placed in
-        # the period's month, so the calendar/dashboard match the loan card's
-        # true monthly due date.  Rules without one (every-paycheck, every-N)
-        # fall back to period.start_date inside the helper.
-        created.append(_create_from_definition(
+        Every derived column comes from the ONE statement of them
+        (:class:`DerivedTransferFields`), which the maintain pass assigns onto
+        an existing row from the same definition.  The four fields that are NOT
+        in it say what this row IS rather than what the template says: whose it
+        is, where it sits, that it is the rule's own row, and that it is not
+        yet an actual event.
+
+        The due date inside comes from ``recurrence_engine.compute_due_date``,
+        the same shared helper the transaction engine uses: a rule with a
+        day_of_month (monthly, quarterly, and -- via
+        routes/loan/payment_transfer.py -- the mortgage payment, whose rule
+        carries day_of_month=payment_day) yields that calendar day placed in
+        the period's month, so the calendar/dashboard match the loan card's
+        true monthly due date.  Rules without one (every-paycheck, every-N)
+        fall back to period.start_date inside the helper.
+
+        Args:
+            period: The :class:`~app.services.pay_calendar.DerivedPeriod` the
+                transfer is funded in.
+            occurrence: The date this transfer answers.
+
+        Returns:
+            The created :class:`~app.models.transfer.Transfer`.
+        """
+        return _create_from_definition(
             _derive_row_fields(template, plan.rule, period),
-            template, PlacedRow(period.period_id, placement.occurrence),
+            template, PlacedRow(period.period_id, occurrence),
             scenario_id, plan.projected_id,
-        ))
+        )
+
+    created = create_for_unclaimed_occurrences(
+        _selector(template, scenario_id), plan, _new_row,
+    )
 
     db.session.flush()
     log_event(
@@ -436,75 +448,9 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
             unasked.  The caller should catch it, present the options, and call
             :func:`resolve_conflicts`.
     """
-    # Defense-in-depth, and it also DISAMBIGUATES the plan below: a ``None``
-    # plan means either "not your scenario" or "this template no longer
-    # recurs", and those want opposite answers -- do nothing, versus retire
-    # every row the vanished rule used to name.  Asking ownership here leaves
-    # the plan's ``None`` meaning exactly one thing.  The transaction engine's
-    # twin carries the same two calls for the same reason.
-    if not check_scenario_ownership(
-        logger, template, scenario_id,
-        block_message="Blocked cross-user transfer recurrence regeneration",
-    ):
-        return []
-
-    plan = resolve_generation_plan(
-        template, schedule, scenario_id, effective_from,
-        block_message="Blocked cross-user transfer recurrence regeneration",
+    return regenerate_definition(
+        _PASS, template, schedule, scenario_id, effective_from,
     )
-    existing = rows_this_pass_may_maintain(
-        _selector(template, scenario_id), schedule, effective_from,
-    )
-
-    outcome = _maintain_instances(template, plan, scenario_id, existing)
-    db.session.flush()
-
-    # ONE event per pass, and it gained two fields while another LEFT -- the
-    # transaction engine's twin records the identical change at plan step R10-a.
-    # This used to delegate its create half to ``generate_for_template``, so
-    # every template edit emitted ``EVT_TRANSFER_RECURRENCE_GENERATED`` as well;
-    # the maintain pass creates transfers itself, so it no longer does.
-    # ``updated_count`` and ``retained_conflict_count`` are new, and
-    # ``deleted_count`` now counts only rows the rule STOPPED naming -- under
-    # the old shape it counted every non-overridden row in the window, and its
-    # twin ``created_count`` counted the same rows again.  A reader comparing
-    # forensics across this step must not treat the two as the same number.
-    #
-    # Pylint: ``duplicate-code`` -- the regenerate audit-log + conflict-raise
-    # tail.  This is the parallel twin of
-    # ``recurrence_engine._maintain.regenerate_for_template``: the
-    # model-agnostic core (ownership, the plan, the row fetch, the whole
-    # maintain DECISION) is shared through ``_recurrence_common``; what remains
-    # is the per-engine tail, which differs only in the audit event constant and
-    # its message.  Extracting it into a shared log helper was tried and
-    # REVERTED (plan.md Phase 2 working note #3): one param per ``log_event``
-    # field trips ``too-many-arguments`` and -- because the helper call site
-    # re-duplicates the identical kwargs -- dissolves no cluster.  Documented
-    # one-sided disable instead; the partner engine stays un-disabled.
-    # pylint: disable=duplicate-code
-    log_event(
-        logger, logging.INFO, EVT_TRANSFER_RECURRENCE_REGENERATED, BUSINESS,
-        "Transfer recurrence regenerated for template",
-        user_id=template.user_id,
-        template_id=template.id,
-        scenario_id=scenario_id,
-        updated_count=len(outcome.updated),
-        deleted_count=len(outcome.removed),
-        created_count=len(outcome.created),
-        overridden_conflict_count=len(outcome.overridden_ids),
-        deleted_conflict_count=len(outcome.deleted_ids),
-        retained_conflict_count=len(outcome.retained_ids),
-    )
-
-    if outcome.overridden_ids or outcome.deleted_ids or outcome.retained_ids:
-        raise RecurrenceConflict(
-            overridden=outcome.overridden_ids,
-            deleted=outcome.deleted_ids,
-            retained=outcome.retained_ids,
-        )
-
-    return outcome.created
-    # pylint: enable=duplicate-code
 
 
 
@@ -761,50 +707,23 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
 
 
 
-def _maintain_instances(template, plan, scenario_id, existing):
-    """Resolve and apply everything one regeneration does to a template's rows.
-
-    The body of :func:`regenerate_for_template`, split out so the orchestrator
-    reads as ownership -> plan -> maintain -> report.  Runs in four steps:
-    refuse an unstorable cadence, derive what the definition says for every
-    period the rule names, classify each existing row against that, then write.
-
-    Args:
-        template: The updated TransferTemplate.
-        plan: The :class:`~app.services.recurrence_engine.GenerationPlan` for
-            this pass, or ``None`` when the template's recurrence was CLEARED --
-            which names no period, so every row is considered for retirement.
-        scenario_id: The scenario being maintained.
-        existing: Every transfer of this template in the pass's WRITE WINDOW at
-            or after its bound.  The window half is the load-bearing one: it is
-            what keeps this domain a superset of the plan's, and so what makes
-            the RETIRE branch reachable.
-
-    Returns:
-        The :class:`~app.services._recurrence_common.MaintainOutcome` for the
-        audit event and the conflict raise.
-    """
-    placements = plan.placements if plan is not None else ()
-    # Keyed by the OCCURRENCE; see the transaction engine's twin for the
-    # KeyError and the wrong-paycheck derivation this closes.
-    derived = {
-        placement.occurrence: _derive_row_fields(
-            template, plan.rule, placement.period,
-        )
-        for placement in placements
-    }
-    work = classify_maintain_work(
-        _selector(template, scenario_id), existing, placements,
-        with_records=_rows_holding_owner_records(existing),
-        reattributed=_rows_the_definition_reattributes(existing, template),
-    )
-    created, updated = _apply_maintain_work(
-        work, derived, template, scenario_id,
-        plan.projected_id if plan is not None else None,
-    )
-    return MaintainOutcome.after(work, created, updated)
-
-
+#: The acts a regeneration performs that are THIS engine's own -- what
+#: :class:`~app.services.recurrence_engine.MaintainActs` names, and everything
+#: about a regeneration that a transfer and a transaction do not share.  The
+#: body that performs them is
+#: :func:`~app.services.recurrence_engine.regenerate_definition`, ONE function
+#: for both engines since plan step balance:X-au-d -- which is where this
+#: module's own copy of it went, along with the ``duplicate-code`` disable that
+#: copy needed and the comment pointing at the transaction engine's twin.
+_PASS = MaintainActs(
+    PassReporting(
+        logger, "Blocked cross-user transfer recurrence regeneration",
+        EVT_TRANSFER_RECURRENCE_REGENERATED,
+        "Transfer recurrence regenerated for template",
+    ),
+    _selector, _derive_row_fields, _rows_holding_owner_records,
+    _rows_the_definition_reattributes, _apply_maintain_work,
+)
 
 
 def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):

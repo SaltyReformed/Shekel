@@ -6174,9 +6174,16 @@ def derived_calendar(
 
     The calendar-shaped sibling of :func:`derived_window`, for a producer that
     takes the whole calendar rather than a slice of it -- which
-    ``recurrence_engine._amounts._get_transaction_amount`` does since plan step
-    **R-F16**, because it needs the owner's paycheck COUNT as well as their
-    periods and both must come off one derivation.
+    :meth:`app.services.income_service.SalaryPricing._net_by_period` does,
+    because the paycheck engine needs the owner's paycheck COUNT as well as
+    their periods and both must come off one derivation (plan step **R-F16**).
+
+    *This sentence named ``recurrence_engine._amounts`` until plan step
+    balance:X-au-d, and a mechanical rename left it naming
+    ``_generated_amount_ownership``, which takes a template and reads no
+    calendar at all.  The requirement did not go away when generation stopped
+    pricing -- it MOVED, to the derivation above.  Caught by an adversarial
+    review of that step.*
 
     Args:
         paydays: The paydays opening each period, in any order.

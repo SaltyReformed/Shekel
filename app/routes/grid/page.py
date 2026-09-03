@@ -35,7 +35,7 @@ from app.services.account_resolver import (
 from app.services.balance_at import BalanceContext
 from app.utils.amount_relationships import valuation_load_options
 from app.services.cash_ledger import (
-    display_amounts_by_id,
+    amounts_by_id,
     settled_amounts_by_id,
 )
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
@@ -723,16 +723,19 @@ def index():
     )
     grid_view, anchor = _build_grid_view(ctx.account, ctx.balance_ctx)
     # The ONE map every cell on this page reads its amount from, built by the
-    # ONE rule every OTHER surface reads it by (``display_amounts_by_id``):
-    # what the row's amount resolves to, superseded by a live recompute where
-    # one exists (ruling R-Q).  It composed those two terms inline here until
-    # an adversarial review found the composition written twice and differently
-    # -- the fragments and the companion published the resolved map ALONE under
-    # the same context key, so the grid showed a drifted salary row its live
-    # net and the quick-edit box the same click opened showed the stale column.
-    # It reads the pass's own basis, which is the object the seam's own
-    # override map was built from, so the cell and the balance row beside it
-    # still cannot price one row two ways.
+    # ONE rule every OTHER surface reads it by (``amounts_by_id``): what the
+    # row's amount RESOLVES to (ruling R-Q).  It reads the pass's own basis, so
+    # the cell and the balance row beside it cannot price one row two ways.
+    #
+    # **It was ``display_amounts_by_id`` -- that resolve with a live recompute
+    # laid over it -- until plan step X-au-d.**  The composition had been
+    # written twice and differently before X-au-c2b extracted it (the fragments
+    # and the companion published the resolved map ALONE under the same context
+    # key, so the grid showed a drifted salary row its live net while the
+    # quick-edit box the same click opened showed the stale column).  What the
+    # cutovers then did was delete the second term rather than the second
+    # spelling: a derived row stores no figure, so there is nothing for a
+    # recompute to supersede and the composition collapsed onto the resolve.
     #
     # **That fall-through was ``txn.estimated_amount`` until plan step
     # X-au-c2b**, annotated onto each row as a transient
@@ -743,7 +746,7 @@ def index():
     # silently, so a render path that forgot to set the attribute showed the
     # stale column with nothing to say it had.  A published MAP is what a
     # template cannot read half of.
-    budgets = display_amounts_by_id(
+    budgets = amounts_by_id(
         all_transactions, ctx.balance_ctx.amounts(),
     )
     # What each row's money DID, beside what its amount IS (plan step X-au-c3).

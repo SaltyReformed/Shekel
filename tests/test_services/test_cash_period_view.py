@@ -1080,22 +1080,30 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
     The grid renders each row's amount beside the balance those same rows fold
     into.  Before plan step X-c2b2 the route built its own live map and the
     seam built another, and the two were "provably identical" only by an
-    argument about their candidate sets (finding N-51) -- so the view returns
-    the map it actually valued the plan through and the route reads it back.
+    argument about their candidate sets (finding N-51) -- so the view returned
+    the map it actually valued the plan through and the route read it back.
+
+    **The map is DELETED as of plan step X-au-d and the property is stronger
+    for it.**  A derived row stores no figure, so there is nothing for a live
+    recompute to be laid over: both sides ask ``cash_ledger.amounts_by_id``
+    over the pass's own basis and cannot come to hold two answers.  The field
+    went with the producer -- and an AST and grep census found NOTHING had read
+    ``CashPeriodView.amount_overrides`` since X-c2b2 anyway, while the case
+    below asserted, in its own docstring, that "the grid reads
+    ``view.amount_overrides.get(...)`` per row".  That claim had been false for
+    two plan steps.
     """
 
-    def test_the_view_returns_the_live_map_it_valued_the_plan_through(
+    def test_a_declared_salary_row_is_priced_by_its_PROFILE_in_the_subtotal(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """A stale salary estimate is priced LIVE, and the map says so.
+        """A salary row's income subtotal is what its profile pays.
 
-        A salary-linked Projected income row carries a deliberately stale
-        ``estimated_amount`` of ``$1.00`` against a ``$104,000`` profile whose
-        live net is ``$4,000.00`` (104000 / 26, hand-computed -- the same
-        figure ``test_income_service`` pins for this setup).  The view must
-        report BOTH the live figure in its income subtotal AND the map entry
-        that produced it, so a consumer rendering the row and a consumer
-        reading the balance cannot disagree about what the row is worth.
+        A salary-linked Projected income row DECLARES its definition and stores
+        no figure at all, against a ``$104,000`` profile whose net is
+        ``$4,000.00`` (104000 / 26, hand-computed -- the same figure
+        ``test_income_service`` pins for this setup).  A fold reading the row's
+        own column would contribute ``None``; this one asks the amount model.
         """
         # pylint: disable=import-outside-toplevel
         from tests.test_services.test_income_service import (
@@ -1109,9 +1117,7 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         template = _make_salary_template(seed_user, profile)
         db.session.commit()
         period = seed_periods[5]
-        txn = _make_txn(
-            seed_user, period, template=template, estimated_amount="1.00",
-        )
+        txn = _make_txn(seed_user, period, template=template, derived=True)
         db.session.commit()
 
         view = period_view_of(
@@ -1119,25 +1125,13 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
             period_window(seed_periods),
         )
 
-        assert view.amount_overrides == {txn.id: Decimal("4000.00")}
-        # The subtotal is the LIVE figure, not the stored $1.00 -- so the map
-        # on the result is the one the column was actually computed with.
+        assert txn.estimated_amount is None
         assert view.columns[period.id].income == Decimal("4000.00")
 
-    def test_an_account_with_no_plan_carries_an_empty_map(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """No still-projected rows means no overrides -- ``{}``, never ``None``.
-
-        The grid reads ``view.amount_overrides.get(...)`` per row, so an
-        account with nothing planned must still hand back a mapping.
-        """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        db.session.commit()
-
-        view = period_view_of(
-            assembled_fold(account, read_pass(account, scenario, _EARLY_AS_OF)),
-            period_window(seed_periods),
-        )
-
-        assert view.amount_overrides == {}
+    # ``test_an_account_with_no_plan_carries_an_empty_map`` lived here until
+    # plan step X-au-d, and its SUBJECT is deleted with the field: it asserted
+    # that ``CashPeriodView.amount_overrides`` was ``{}`` rather than ``None``
+    # for an account with nothing planned, so that "the grid reads
+    # ``view.amount_overrides.get(...)`` per row" would not raise.  The grid
+    # had stopped reading it two plan steps earlier and nothing else ever did,
+    # so the field is gone and there is no mapping left to be empty.

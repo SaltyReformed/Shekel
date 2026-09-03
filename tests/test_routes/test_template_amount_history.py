@@ -175,7 +175,7 @@ class TestEligibilityCanBeGAINED:
         """The paycheck stops pricing the rows, so the column becomes the price.
 
         With no ACTIVE profile the recurrence engine falls back to
-        ``default_amount`` (``recurrence_engine._get_transaction_amount``), so
+        ``default_amount`` (``recurrence_engine._generated_amount_ownership``), so
         the template starts owning its amount at exactly that moment.  Found by
         adversarial review: before this, archiving the profile left an eligible
         template holding ZERO versions -- 58 rows on production's one salary

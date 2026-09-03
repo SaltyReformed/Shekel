@@ -164,15 +164,19 @@ def _apply_field_updates(txn, data):
        would make this loop a SECOND writer of a column the seam is the single
        door to (finding **N-185**, the re-run of N-183 on the transaction side).
     2. ``is_override``, which sits with the field writes and ABOVE both the
-       refusal below and the status work.  Two separate reasons, and both are
-       load-bearing.  The settle asks the projection for a fresher amount and
-       SKIPS a row the user has overridden
-       (``income_service.live_projected_net``), so setting the flag afterwards
-       would let a salary row's recompute overwrite the estimate the same form
-       just submitted.  And act 3 FLUSHES (see below), so a flag written after
-       it is written after the UPDATE it belongs in -- which for a period move
-       leaves the row inside the generation index's partial predicate
-       (``is_override = FALSE``) while its period is already the new one.
+       refusal below and the status work.  **It had TWO reasons and has ONE
+       since plan step X-au-d.**  The retired one: a settle asked the
+       projection for a fresher amount and SKIPPED a row the user had
+       overridden (a read-time repair plan step X-au-d deleted), so setting
+       the flag afterwards would have let a salary row's recompute overwrite the
+       estimate the same form just submitted -- there is no recompute and no
+       cache left, because act 2b below makes a typed figure the row's OWN and
+       the amount model reads ownership rather than this flag (finding
+       **N-262**).  The one that stands: act 3 FLUSHES (see below), so a flag
+       written after it is written after the UPDATE it belongs in -- which for
+       a period move leaves the row inside the generation index's partial
+       predicate (``is_override = FALSE``) while its period is already the new
+       one.
        **Plan step R17 narrowed what that can collide with but did not remove
        it**: the dated index is keyed
        ``(template, scenario, occurs_on)``, and a move does not touch

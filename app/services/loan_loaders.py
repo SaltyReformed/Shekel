@@ -590,7 +590,7 @@ def projected_income_shadows(
 
     Carries no period bound and NO cash: the plan builder resolves each shadow's
     live D3 cash
-    (amount rule 4, via :func:`app.services.cash_ledger.display_amounts_by_id`),
+    (amount rule 4, via :func:`app.services.cash_ledger.amounts_by_id`),
     its due
     date (:func:`loan_payment_due_date`), and its escrow as the plan is assembled.
     ``pay_period`` and ``status`` are eager-loaded by :func:`query_shadow_income`.
@@ -836,7 +836,7 @@ def latest_settled_payment_due_date(
     earlier installment is the same structural property the tracking-start guard
     carries; a settled payment's escrow is additionally frozen by
     capture-on-settle
-    (amount rule 4, via :func:`app.services.cash_ledger.display_amounts_by_id`).
+    (amount rule 4, via :func:`app.services.cash_ledger.amounts_by_id`).
 
     Args:
         account_id: The loan account whose settled payments to scan.
