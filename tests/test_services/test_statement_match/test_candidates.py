@@ -17,6 +17,7 @@ and a scope is exactly the kind of clause a hand-built value cannot exercise.
 from datetime import date, timedelta
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.enums import SettledDayBasisEnum, StatusEnum
 from app.extensions import db
@@ -545,10 +546,19 @@ class TestEveryOFFEREDRowCanCarryItsOwnTokenBack:
 class TestTheCalendarIsTheOwnershipSCOPE:
     """A row this reader returns names a period the calendar was built from.
 
-    That property is what makes ``calendar.period_by_id`` total in
-    ``_transaction_candidates``: it dereferences the answer without a guard,
-    so a row whose period the calendar does not carry would raise inside a
-    money read rather than being declined.
+    That property is what the SCAN's own ``pay_period_id`` filter buys, and
+    both arms carry it -- ``_transaction_candidates`` and
+    ``_purchase_candidates``.  ``_transaction_candidates`` also holds a Python
+    guard (``if period is None: return None``), so for that arm the filter is
+    defence in depth; ``_purchase_candidates`` has none, because
+    ``purchase_candidate`` never sees the calendar, so there the filter is the
+    only thing keeping an undatable row out of a money-offering set.
+
+    **The scope is a PERIOD SET, not an owner comparison**, and it has been
+    since pay-calendar plan step C4-a-4.  A first version of this docstring
+    said the reader "dereferences the answer without a guard, so a row whose
+    period the calendar does not carry would raise"; it does not raise, it
+    declines.
     """
 
     def test_every_offered_row_is_datable_by_the_calendar_it_was_scoped_to(
@@ -571,15 +581,19 @@ class TestTheCalendarIsTheOwnershipSCOPE:
             assert rows
             assert all(row.expected_window is not None for row in rows)
 
-    def test_a_row_in_ANOTHER_owner_s_period_is_not_offered(
+    def test_a_row_in_ANOTHER_owner_s_period_cannot_EXIST_to_be_offered(
         self, app, seed_user, second_user,
     ):
-        """The scope did not loosen when it stopped being a subquery.
+        """The shape this class used to scope with is now UNSTORABLE.
 
-        A period belonging to someone else is not in this owner's calendar, so
-        its ids are not in the scope and a row filed under it cannot be
-        reached -- the same answer the ``pay_periods.user_id`` subquery gave,
-        reached from the value the window is read off instead.
+        **This case used to build a foreign-owner row and assert the scope
+        excluded it.**  Plan step ``pay_calendar:C13-a`` made that row
+        unstorable -- the builder states this owner, the period is somebody
+        else's, and ``fk_transactions_owner_period`` refuses the INSERT -- so
+        what it can still grade is the refusal.  The SCOPE is graded by
+        :func:`test_a_row_in_a_period_the_CALENDAR_LACKS_is_not_offered`
+        below, which this step added for exactly that reason: without it,
+        deleting either arm's filter leaves this suite green.
         """
         with app.app_context():
             theirs = PayPeriod(
@@ -588,11 +602,79 @@ class TestTheCalendarIsTheOwnershipSCOPE:
             )
             db.session.add(theirs)
             db.session.flush()
-            intruder = a_transaction(
-                seed_user, name="Not yours", period=theirs,
+            with pytest.raises(IntegrityError) as exc:
+                a_transaction(seed_user, name="Not yours", period=theirs)
+            assert "fk_transactions_owner_period" in str(exc.value)
+            db.session.rollback()
+
+    def test_a_row_in_a_period_the_CALENDAR_LACKS_is_not_offered(
+        self, app, seed_user,
+    ):
+        """Neither arm offers a row the calendar it was scoped to cannot date.
+
+        **This replaces coverage plan step ``pay_calendar:C13-a`` removed.**
+        The case it replaces fed the scan a FOREIGN-OWNER row, which the
+        composite keys now refuse, and with it gone both arms' period filters
+        could be deleted with this module green -- measured, 869 passed.
+
+        The input is the one the keys still permit and the reconcile suite
+        already uses for the same clause
+        (``test_reconcile_service.TestTheScopeIsTheCALENDARsNotTheTables``):
+        the owner's OWN period, missing from the calendar the request was
+        scoped to.  Not hypothetical -- it is what a concurrent writer produces
+        between a request's calendar read and its scan.
+
+        **What this case fires on, measured rather than claimed** (2026-09-02,
+        each filter deleted in turn):
+
+        * ``_purchase_candidates``' filter -- **this case FAILS.**  That arm
+          has no guard behind it: ``purchase_candidate`` never sees the
+          calendar, so the filter is the only thing keeping an undatable
+          purchase out of a money-offering set.  This is the arm that was
+          uncovered.
+        * ``_transaction_candidates``' filter -- this case still passes, and
+          so does every other.  The guard at ``if period is None: return None``
+          declines the row anyway, so that filter is defence in depth and
+          cannot be graded through the public return AT ALL.  Saying so is the
+          point: a future reader who deletes it will see a green suite, and
+          this paragraph is the only warning there is.
+        """
+        with app.app_context():
+            later = a_later_period(seed_user)
+            bill = a_transaction(
+                seed_user, name="Internet", amount="60.00", period=later,
             )
+            envelope = a_transaction(
+                seed_user, name="Groceries", is_envelope=True, period=later,
+            )
+            purchase = a_purchase(seed_user, envelope, amount="30.00")
             db.session.commit()
 
-            assert _candidate(
-                seed_user, intruder.id, RowKind.TRANSACTION,
-            ) is None
+            whole = pay_calendar.calendar_for(seed_user["user"].id)
+            short = pay_calendar.PayCalendar.from_paydays(
+                [
+                    (period.period_id, period.start_date)
+                    for period in whole.periods
+                    if period.period_id != later.id
+                ],
+                whole.cadence_days,
+                seed_user["user"].id,
+                history_opens_on=None,
+            )
+            rows = candidates_for(
+                seed_user["account"].id, short, a_basis(seed_user),
+            ).rows
+            offered = {(row.kind, row.row_id) for row in rows}
+
+            assert (RowKind.TRANSACTION, bill.id) not in offered
+            assert (RowKind.PURCHASE, purchase.id) not in offered
+            # ...and the same reader DOES offer a row the short calendar holds,
+            # so the assertions above cannot pass on an empty offer set.
+            inside = a_transaction(seed_user, name="Electricity")
+            db.session.commit()
+            assert any(
+                row.row_id == inside.id and row.kind is RowKind.TRANSACTION
+                for row in candidates_for(
+                    seed_user["account"].id, short, a_basis(seed_user),
+                ).rows
+            )

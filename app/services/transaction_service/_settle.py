@@ -905,10 +905,14 @@ def settle_from_entries(
         logger, logging.INFO,
         EVT_TRANSACTION_SETTLED_FROM_ENTRIES, BUSINESS,
         "Envelope transaction settled at sum(entries)",
-        # PayPeriod owner is the canonical user_id source for Transaction
-        # rows (Transaction has no direct user_id column).  pay_period
-        # is already loaded by the caller so this read does not trigger
-        # an autoflush.
+        # The owner, read off the paycheck.  ``pay_period`` is already
+        # loaded by the caller, so this read triggers no autoflush -- which
+        # is what the eager option on the settle path exists for.
+        # ``txn.user_id`` is the same value and needs no relationship at all
+        # since plan step ``pay_calendar:C13-a``, and moving this read onto it
+        # is what lets that eager option go.  It is a read that STAMPS a log
+        # event rather than one that refuses, so it is NOT one of finding
+        # **P75**'s nineteen -- that census excludes it by name.
         user_id=txn.pay_period.user_id,
         transaction_id=txn.id,
         new_status_id=new_status_id,

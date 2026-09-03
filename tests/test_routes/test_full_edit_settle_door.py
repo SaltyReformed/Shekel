@@ -336,6 +336,7 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
             # row, non-override -- the state every future period is in.
             occupant = Transaction(
                 template_id=source.template_id,
+                user_id=seed_periods_today[4].user_id,
                 pay_period_id=seed_periods_today[4].id,
                 scenario_id=source.scenario_id,
                 account_id=source.account_id,

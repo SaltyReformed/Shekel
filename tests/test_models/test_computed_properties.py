@@ -93,6 +93,7 @@ class TestTransactionEffectiveAmount:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         settled_on = default_settle_day(seed_periods[0], status.id)
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -245,6 +246,7 @@ class TestTransactionTypeProperties:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -266,6 +268,7 @@ class TestTransactionTypeProperties:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -803,6 +806,7 @@ class TestDaysUntilDue:
         status = db.session.query(Status).filter_by(name=status_name).one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -877,6 +881,7 @@ class TestSettleDayRefusesAnInstant:
                 db.session.query(TransactionType).filter_by(name="Expense").one()
             )
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -919,6 +924,7 @@ class TestSettleDayRefusesAnInstant:
             )
             with pytest.raises(TypeError, match="must be a date"):
                 Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -949,6 +955,7 @@ class TestDaysPaidBeforeDue:
         status = db.session.query(Status).filter_by(name="Paid").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,

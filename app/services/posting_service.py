@@ -316,8 +316,13 @@ def _settled_target(txn: Transaction, owner_id: int) -> dict[int, Decimal]:
         txn: The settled transaction.  ``account_id`` and
             ``transaction_type_id`` are immutable, so the cash account and the
             class are stable across the transaction's life.
-        owner_id: The owning user's id (``txn.pay_period.user_id`` -- a
-            ``Transaction`` has no ``user_id``), the category account's owner.
+        owner_id: The owning user's id, the category account's owner.  The
+            caller sources it from ``txn.pay_period.user_id``; ``txn.user_id``
+            is the same value and one hydration cheaper since plan step
+            ``pay_calendar:C13-a``.  This is a read that STAMPS rather than
+            refuses, so it is NOT one of finding **P75**'s nineteen -- that
+            row's own census excludes it by name -- and moving it is a
+            performance question ``C13-b`` may take while it is there.
 
     Returns:
         ``{cash_ledger_id: cash_leg, category_ledger_id: -cash_leg}``.

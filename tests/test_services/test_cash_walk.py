@@ -583,6 +583,7 @@ class TestSourceFactValuation:
         _opened_at(account, _instant(2026, 1, 1))
         db.session.add(Transaction(
             account_id=account.id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=scenario.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),

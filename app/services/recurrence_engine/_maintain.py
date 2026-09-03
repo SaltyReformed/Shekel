@@ -317,7 +317,7 @@ def _rows_the_definition_reattributes(existing, account_id) -> "set[int]":
 
 
 
-def _apply_maintain_work(work, derived, template_id, scenario_id, projected_id):
+def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     """Write one classified maintain pass, and reconcile what it moved.
 
     The only writer in the maintain path.  Order is load-bearing in one place:
@@ -330,7 +330,12 @@ def _apply_maintain_work(work, derived, template_id, scenario_id, projected_id):
         derived: ``{pay_period_id: DerivedRowFields}`` for every period the
             rule names -- the single statement of what a generated row's
             definition says, consumed identically by the update and the create.
-        template_id: The template every written row is linked to.
+        template: The template every written row is linked to.  The ROW
+            rather than its id since plan step ``pay_calendar:C13-a``,
+            because a created row now states its owner as well as its
+            link and the template is the one place both are known;
+            passing the id and adding a sixth argument would put the
+            same object's two fields in two parameters.
         scenario_id: The scenario every created row is written into.
         projected_id: The ``Projected`` status id for created rows.  ``None``
             only when the rule was cleared, in which case *work.create_in* is
@@ -371,7 +376,13 @@ def _apply_maintain_work(work, derived, template_id, scenario_id, projected_id):
     for create in work.create_in:
         txn = Transaction(
             **derived[create.occurs_on]._asdict(),
-            template_id=template_id,
+            # The OWNER sits here rather than in ``DerivedRowFields``, and the
+            # loop above is exactly why (plan step ``pay_calendar:C13-a``): it
+            # ``setattr``s every derived field onto an EXISTING row, and a row
+            # does not change hands because its template was edited.  Same
+            # argument as ``occurs_on``'s, stated at the top of this function.
+            user_id=template.user_id,
+            template_id=template.id,
             pay_period_id=create.period_id,
             occurs_on=create.occurs_on,
             scenario_id=scenario_id,
@@ -475,7 +486,7 @@ def _maintain_instances(template, plan, calendar, scenario_id, existing):
         ),
     )
     created, updated = _apply_maintain_work(
-        work, derived, template.id, scenario_id,
+        work, derived, template, scenario_id,
         plan.projected_id if plan is not None else None,
     )
     return MaintainOutcome.after(work, created, updated)

@@ -699,6 +699,7 @@ def _add_envelope_expense_with_settled_entries_ret(
 
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario_id,
         account_id=account.id,

@@ -29,6 +29,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum
@@ -981,36 +982,46 @@ class TestTheSpanADestinationCarriesIsDERIVED:
     ):
         """Ownership, and it is the CALENDAR that states it.
 
-        ``budget.transactions`` carries no ``user_id`` -- its owner IS its pay
-        period's, and nothing in the schema requires that owner to be its
-        ACCOUNT's (plan finding **P75**, closed by plan step
-        ``pay_calendar:C13``).  So a row on THIS account can name a period
-        this owner does not hold, and the scope has to exclude it.  It reads
-        the calendar's own saved ids since C4-a-4, where it asked
-        ``pay_periods.user_id`` through the relationship; both refuse it, and
-        the calendar's answer is the one that cannot disagree with the span
-        lookup beside it.
+        **The premise this case was written on is gone, and the case says so
+        rather than being deleted quietly.**  It read: "``budget.transactions``
+        carries no ``user_id`` -- its owner IS its pay period's, and nothing in
+        the schema requires that owner to be its ACCOUNT's".  Plan step
+        ``pay_calendar:C13-a`` gave the row a ``user_id`` and two composite
+        keys, so the trespasser is refused at the INSERT and never reaches the
+        scope.  The scope's calendar-id arm is unchanged and still correct --
+        and it is NOT one of finding **P75**'s nineteen, which counts reads
+        that REFUSE and excludes scopes by name.  What grades it now is
+        ``test_candidates.TestTheCalendarIsTheOwnershipSCOPE``'s short-calendar
+        case, added by this step for that reason.
 
-        The two owners' bootstrap periods open on the SAME civil day, so the
-        case can only pass on the id -- a scope comparing spans would let this
-        row through.
+        The two owners' bootstrap periods still open on the SAME civil day.
+        That assertion is KEPT and its reason has changed: it used to be what
+        made the old scope test about the period's identity rather than its
+        dates, and a foreign-key violation is indifferent to dates either way.
+        What it holds now is the FIXTURE -- if the two owners' calendars ever
+        stop coinciding, the case below stops standing in for the shape it
+        names.
+
+        A row that IS this owner's is offered in the same breath, so a fixture
+        that had stopped producing offers at all could not pass this.
         """
         with app.app_context():
             foreign_period = second_user["bootstrap_period"]
             assert foreign_period.start_date == (
                 seed_user["bootstrap_period"].start_date
             )
-            trespasser = a_transaction(
-                seed_user, name="Groceries", amount="500.00",
-                is_envelope=True, period=foreign_period,
-            )
+            with pytest.raises(IntegrityError) as exc:
+                a_transaction(
+                    seed_user, name="Groceries", amount="500.00",
+                    is_envelope=True, period=foreign_period,
+                )
+            assert "fk_transactions_owner_period" in str(exc.value)
+            db.session.rollback()
+
             mine = a_transaction(
                 seed_user, name="Gas", amount="120.00", is_envelope=True,
             )
-
-            offered = self._by_id(seed_user)
-            assert mine.id in offered
-            assert trespasser.id not in offered
+            assert mine.id in self._by_id(seed_user)
 
     def test_an_EMPTY_calendar_admits_NOTHING_rather_than_everything(
         self, app, db, seed_user,

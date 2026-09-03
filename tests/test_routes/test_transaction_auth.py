@@ -86,6 +86,7 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
     txn = Transaction(
+        user_id=other_periods[0].user_id,
         pay_period_id=other_periods[0].id,
         scenario_id=scenario.id,
         account_id=account.id,

@@ -123,6 +123,7 @@ def _make_transaction(seed_user, period):
     cat = seed_user["categories"]["Groceries"]
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=projected.id,
@@ -160,6 +161,7 @@ def _make_envelope_template_and_txn(seed_user, period):
 
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         template_id=template.id,

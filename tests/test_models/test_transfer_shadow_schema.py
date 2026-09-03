@@ -58,6 +58,7 @@ class TestTransactionTransferId:
             else data["savings_account"].id
         )
         txn = Transaction(
+            user_id=data['periods'][0].user_id,
             pay_period_id=data["periods"][0].id,
             scenario_id=data["scenario"].id,
             account_id=account_id,
@@ -89,6 +90,7 @@ class TestTransactionTransferId:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             data = seed_full_user_data
             txn = Transaction(
+                user_id=data['periods'][0].user_id,
                 pay_period_id=data["periods"][0].id,
                 scenario_id=data["scenario"].id,
                 account_id=data["account"].id,

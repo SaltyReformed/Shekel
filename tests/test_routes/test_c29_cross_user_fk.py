@@ -60,6 +60,7 @@ def _create_projected_expense(seed_user, period):
         The created Transaction (committed, refreshed).
     """
     txn = Transaction(
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

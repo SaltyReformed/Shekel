@@ -99,6 +99,7 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
     txn = Transaction(
         account_id=seed_user["account"].id,
         scenario_id=seed_user["scenario"].id,
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         status_id=paid_status_id,
         transaction_type_id=expense_type_id,
@@ -1239,6 +1240,7 @@ class TestCalendarMonthView:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -1416,6 +1418,7 @@ class TestCalendarInlineTotals:
 
             txn_inc = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -1426,6 +1429,7 @@ class TestCalendarInlineTotals:
             )
             txn_exp = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -1457,6 +1461,7 @@ class TestCalendarInlineTotals:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -1488,6 +1493,7 @@ class TestCalendarInlineTotals:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -1520,6 +1526,7 @@ class TestCalendarInlineTotals:
             # Jan 20 due date, so the clamped attribution lands on the 20th.
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[1].user_id,
                 pay_period_id=seed_periods[1].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -1774,6 +1781,7 @@ class TestCalendarFlowStrip:
             for name, txn_type, amount in flows:
                 db.session.add(Transaction(
                     account_id=seed_user["account"].id,
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -2044,6 +2052,7 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
     txn = Transaction(
         account_id=seed_user["account"].id,
         scenario_id=seed_user["scenario"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         status_id=ref_cache.status_id(StatusEnum.DONE),
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),

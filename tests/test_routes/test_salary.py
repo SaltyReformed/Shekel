@@ -2469,7 +2469,10 @@ class TestNetBiweeklyMismatchFixes:
             # Find a 2026 transaction and a 2027 transaction.
             txn_2026 = (
                 db.session.query(Transaction)
-                .join(PayPeriod)
+                # The relationship rather than the entity: since plan step
+                # ``pay_calendar:C13-a`` two foreign keys link these tables,
+                # so an entity join has no single onclause to infer.
+                .join(Transaction.pay_period)
                 .filter(
                     Transaction.template_id == profile.template_id,
                     Transaction.scenario_id == seed_user["scenario"].id,
@@ -2479,7 +2482,10 @@ class TestNetBiweeklyMismatchFixes:
             )
             txn_2027 = (
                 db.session.query(Transaction)
-                .join(PayPeriod)
+                # The relationship rather than the entity: since plan step
+                # ``pay_calendar:C13-a`` two foreign keys link these tables,
+                # so an entity join has no single onclause to infer.
+                .join(Transaction.pay_period)
                 .filter(
                     Transaction.template_id == profile.template_id,
                     Transaction.scenario_id == seed_user["scenario"].id,

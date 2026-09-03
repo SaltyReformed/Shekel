@@ -1682,6 +1682,7 @@ class TestTheSeamOwnsTheIncomeBasis:
             db.session.add(Transaction(
                 account_id=hysa.id,
                 template_id=template.id,
+                user_id=periods[5].user_id,
                 pay_period_id=periods[5].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -2121,6 +2122,7 @@ class TestOnlyALoanIsNotATransactionSum:
             for acct in (mortgage, inv, prop):
                 db.session.add(Transaction(
                     account_id=acct.id,
+                    user_id=periods[5].user_id,
                     pay_period_id=periods[5].id,
                     scenario_id=scenario.id,
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -2617,6 +2619,7 @@ class TestTheInterestChipAndTheBalanceAreOneWalk:
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             db.session.add(Transaction(
                 account_id=hysa.id,
+                user_id=periods[6].user_id,
                 pay_period_id=periods[6].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -2943,6 +2946,7 @@ class TestGridBalanceView:
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             db.session.add(Transaction(
                 account_id=hysa.id,
+                user_id=periods[6].user_id,
                 pay_period_id=periods[6].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3157,6 +3161,7 @@ class TestGridBalanceView:
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             income_txn = Transaction(
                 account_id=hysa.id,
+                user_id=periods[6].user_id,
                 pay_period_id=periods[6].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3584,6 +3589,7 @@ class TestTheViewOwnsTheLiveOverrideMap:
             account = seed_user["account"]
             income_txn = Transaction(
                 account_id=account.id,
+                user_id=periods[1].user_id,
                 pay_period_id=periods[1].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3741,6 +3747,7 @@ def _seed_grid_activity(db, seed_user, periods):
     account = seed_user["account"]
     db.session.add(Transaction(
         account_id=account.id,
+        user_id=periods[6].user_id,
         pay_period_id=periods[6].id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3750,6 +3757,7 @@ def _seed_grid_activity(db, seed_user, periods):
     ))
     db.session.add(Transaction(
         account_id=account.id,
+        user_id=periods[7].user_id,
         pay_period_id=periods[7].id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),

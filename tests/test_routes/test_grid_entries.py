@@ -118,6 +118,7 @@ def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
     db.session.flush()
 
     txn = Transaction(
+        user_id=seed_periods_today[period_index].user_id,
         pay_period_id=seed_periods_today[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -141,6 +142,7 @@ def _create_plain_txn(seed_user, seed_periods_today, period_index=0,
     projected = db.session.query(Status).filter_by(name="Projected").one()
 
     txn = Transaction(
+        user_id=seed_periods_today[period_index].user_id,
         pay_period_id=seed_periods_today[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -525,6 +527,7 @@ class TestBuildEntryListsDict:
             db.session.add(template)
             db.session.flush()
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,

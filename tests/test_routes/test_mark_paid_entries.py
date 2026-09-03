@@ -102,6 +102,7 @@ def _create_tracked_txn(seed_user, seed_periods):
 
     txn = Transaction(
         template_id=template.id,
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -124,6 +125,7 @@ def _create_non_tracked_txn(seed_user, seed_periods):
     )
 
     txn = Transaction(
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

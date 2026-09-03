@@ -96,6 +96,7 @@ def _make_envelope_txn(
     status = db.session.query(Status).filter_by(name=status_name).one()
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -152,6 +153,7 @@ def _make_discrete_txn(seed_user, period, template):
     )
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

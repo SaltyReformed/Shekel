@@ -2955,6 +2955,7 @@ def create_settled_cash_transaction(
     )
     txn = Transaction(
         account_id=account.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3116,6 +3117,7 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
     rule = make_every_period_rule(db_session, template)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3721,6 +3723,7 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 
     txn = Transaction(
         account_id=account.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario.id,
         status_id=status_id,

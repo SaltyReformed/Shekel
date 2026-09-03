@@ -80,6 +80,7 @@ def _create_regular_txn(seed_user, seed_periods_today):
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=seed_periods_today[0].user_id,
         pay_period_id=seed_periods_today[0].id,
         scenario_id=seed_user["scenario"].id,
         status_id=projected.id,
@@ -501,6 +502,7 @@ class TestDueDatePatch:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected.id,
@@ -552,6 +554,7 @@ class TestDueDatePatch:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected.id,
@@ -581,6 +584,7 @@ class TestDueDatePatch:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected.id,

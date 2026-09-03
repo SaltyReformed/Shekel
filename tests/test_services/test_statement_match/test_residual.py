@@ -1494,6 +1494,7 @@ class TestTheACTS_OWN_WRITES_CannotMoveAMemberUnderIt:
         payback = Transaction(
             account_id=seed_user["account"].id,
             template_id=None,
+            user_id=seed_user['bootstrap_period'].user_id,
             pay_period_id=seed_user["bootstrap_period"].id,
             scenario_id=seed_user["scenario"].id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),

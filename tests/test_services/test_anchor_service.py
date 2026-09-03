@@ -139,6 +139,7 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
 
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

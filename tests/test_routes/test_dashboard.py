@@ -206,6 +206,7 @@ class TestDashboardPulseRendering:
             db.session.flush()
             envelope = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=cur.user_id,
                 pay_period_id=cur.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -328,6 +329,7 @@ class TestDashboardPulseRendering:
             db.session.flush()
             tracked = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=cur.user_id,
                 pay_period_id=cur.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -440,6 +442,7 @@ class TestDashboardPulseRendering:
             peak_period = seed_periods_today[6]
             income = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=peak_period.user_id,
                 pay_period_id=peak_period.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),

@@ -132,6 +132,7 @@ def _add_transaction(
     txn = Transaction(
         account_id=seed_user["account"].id,
         template_id=template.id if template else None,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,
@@ -571,6 +572,7 @@ class TestCategoryInfo:
             cat = seed_user["categories"]["Car Payment"]
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),

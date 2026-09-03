@@ -1254,6 +1254,7 @@ class TestGenerateForTemplate:
                 db.session.add(Transaction(
                     account_id=template.account_id,
                     template_id=template.id,
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
                     status_id=projected_id,
@@ -2869,6 +2870,7 @@ class TestRegenerateForTemplate:
             carried = Transaction(
                 account_id=rule_row.account_id,
                 template_id=template.id,
+                user_id=rule_row.user_id,
                 pay_period_id=period_id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=rule_row.status_id,
