@@ -4436,9 +4436,11 @@ class TestLoanNotYetOriginated:
         opening from source, steps C3b1/C3b3, that read-outage class is retired
         entirely.)
 
-        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter in
-        ``loan_ledger.merge_anchor_and_payment_events`` and both asserts below
-        raise.
+        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter --
+        it would now go in ``loan_ledger.loan_event_stream``, where the reset
+        events are built (it was ``merge_anchor_and_payment_events`` until plan
+        step X-au-g-2c-3b-2 split the mapping from the ordering) -- and both
+        asserts below raise.
 
         $200,000.00 owed, not $199,759.69: with the clock at 2026-05-07 the loan
         has originated, so the 2026-05-01 installment is now a PAST due date -- and

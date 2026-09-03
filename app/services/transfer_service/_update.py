@@ -80,11 +80,13 @@ logger = logging.getLogger(__name__)
 #
 # ``due_date`` IS here, and its inclusion is load-bearing: on a LOAN payment the
 # due date is the installment the payment satisfies, which the genesis write walk
-# (``loan_ledger.merge_anchor_and_payment_events``) orders
-# payments by AND applies its strict ``anchor_date < due_date`` post-anchor
-# boundary against -- so moving it changes which payments an anchor SUBSUMES, and
-# therefore the POSTED balance.  Editing it without a reconcile would leave the
-# posted ledger disagreeing with every live reader (the history rows, the payment
+# dates every payment by (``loan_ledger.loan_event_stream``), orders on
+# (``loan_ledger.replay_loan_events``, which applies its strict
+# ``anchor_date < due_date`` post-anchor boundary against it) and keys its accrual
+# periods off -- so moving it changes which payments an anchor SUBSUMES, which
+# accrual period is charged, and therefore the POSTED balance.  Editing it
+# without a reconcile would leave the posted ledger disagreeing with every live
+# reader (the history rows, the payment
 # table, the resolver's replay), silently, until an unrelated chokepoint happened
 # to fire.  On a NON-loan transfer the cash reconcile is reconcile-to-target and
 # writes nothing, so listing it costs one idempotent no-op round-trip.
