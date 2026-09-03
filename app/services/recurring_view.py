@@ -495,15 +495,20 @@ def _build_section(
     project's disposition for a broken invariant is the loud one -- but the
     contract is stated rather than discovered.
 
+    *A ``PayCalendarError`` arm stood in the contract below until plan step
+    ``pay_calendar:C4-d`` (ruling **R-PC45**) and is DELETED rather than
+    reworded.  It named an owner with no resolvable pay cadence, which
+    :attr:`~app.services.pay_calendar.PayCalendar.cadence` refused on the read
+    further down.  This function takes a calendar it did not build, and a
+    calendar now carries a cadence or does not exist --
+    ``pay_calendar.calendar_for`` refuses that owner at the door -- so the
+    refusal is the CALLER's (``routes/templates/surface.list_templates`` builds
+    the calendar) and claiming it here would be claiming a raise this function
+    can no longer make.*
+
     Raises:
         RecurrenceResolutionError: When a rule names a cadence this application
             cannot derive.
-        PayCalendarError: The owner has no resolvable pay cadence -- no
-            ``budget.pay_schedule`` row and no pay period to infer one
-            from.  Every monetary figure here is a conversion against how often
-            they are paid, so there is no honest figure to publish
-            without it (plan step R7a-2a; see
-            :func:`app.services.pay_calendar.cadence_for`).
     """
     # ONE cadence for the section, off the schedule this surface already
     # holds: every row belongs to the calendar's owner, so asking per row
@@ -619,16 +624,15 @@ def build_view(
         both-units subtotal.  Every figure is a ``Decimal`` rounded to
         cents; the caller only displays.
 
+    *The ``PayCalendarError`` arm that stood beside the one below is DELETED at
+    plan step ``pay_calendar:C4-d``, for the reason :func:`_build_section`
+    states: a calendar this function is HANDED carries a cadence, so the owner
+    it named is refused by whoever built the calendar.*
+
     Raises:
         RecurrenceResolutionError: When a rule names a cadence this application
             cannot derive -- the fail-closed read :func:`_build_section`
             documents.
-        PayCalendarError: The owner has no resolvable pay cadence -- no
-            ``budget.pay_schedule`` row and no pay period to infer one
-            from.  Every row's per-paycheck column here is a conversion against how often
-            they are paid, so there is no honest figure to publish
-            without it (plan step R7a-2a; see
-            :func:`app.services.pay_calendar.cadence_for`).
     """
     income_section = _build_section(income_templates, calendar, as_of)
     expense_section = _build_section(expense_templates, calendar, as_of)

@@ -206,16 +206,18 @@ def _build_horizons(
     (``value - current_balance``), all ``Decimal``.  Returns an empty list
     when there is no current balance to project or delta from.
 
-    **It takes the CALENDAR rather than a resolved cadence, and that is what
-    makes the cadence read safe** (plan step **R-F17**).  How many pay periods
-    a horizon named in months reaches is a function of the owner's cadence, and
-    :attr:`~app.services.pay_calendar.PayCalendar.cadence` REFUSES a calendar
-    holding no paydays -- a state this page reaches and answers with no chips
-    rather than a 500.  A current period is the proof there are paydays:
-    :func:`~app.services.pay_calendar.derive_periods` refuses a payday beside
-    an absent cadence at construction, so a non-empty calendar always carries
-    one.  Reading it here, past this function's own ``None`` return, makes the
-    refusal unreachable by construction instead of by a caller's precondition.
+    **It takes the CALENDAR rather than a resolved cadence** (plan step
+    **R-F17**).  How many pay periods a horizon named in months reaches is a
+    function of the owner's cadence.  *This paragraph used to say the calendar
+    is what made the read SAFE, because
+    :attr:`~app.services.pay_calendar.PayCalendar.cadence` REFUSED a calendar
+    holding no cadence and a current period was the proof there was one; plan
+    step ``pay_calendar:C4-d`` (ruling R-PC45) made that property total, so a
+    calendar in hand always answers and nothing here can raise.  What remains
+    true is the reason the CALENDAR travels rather than a loose number:*
+    :func:`~app.services.pay_calendar.derive_periods` derives every span from
+    one owner's own paydays, so a non-empty calendar always carries
+    one, and it cannot be paired with another owner's rhythm.
 
     Args:
         current_balance: The page hero's figure, which every ``delta`` is
@@ -463,11 +465,14 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
         # carries ``None`` (the template omits the chip).  ``Decimal("0.00")``
         # is a legitimate value for a zero-APY interest account.
         #
-        # ``calendar.cadence`` sits INSIDE the true branch deliberately (plan
-        # step R-F17): a conditional expression evaluates it only when the
-        # guard holds, and that guard -- a current period exists -- is what
-        # proves the calendar has paydays and therefore a cadence to read.
-        # See :func:`_build_horizons` for the full argument.
+        # ``calendar.cadence`` sits INSIDE the true branch, and since plan step
+        # ``pay_calendar:C4-d`` (ruling R-PC45) that is no longer load-bearing
+        # for the cadence: that property is total now, so evaluating it
+        # unguarded would raise nothing.  The GUARD is still required, for its
+        # other reason -- ``_interest_next_year`` dereferences
+        # ``current_period.period_index``, so a lapsed schedule with no current
+        # period is an ``AttributeError`` without it.  See
+        # :func:`_build_horizons`.
         "interest_next_year": (
             _interest_next_year(
                 interest_by_period, current_period, all_periods,

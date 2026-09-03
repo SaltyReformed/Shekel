@@ -171,42 +171,85 @@ class TestItLoadsTheOwnersWholeSchedule:
                 p.period_id for p in theirs.periods
             }
 
-    def test_an_owner_with_no_paydays_loads_an_empty_calendar(
+    def test_an_owner_with_NO_SCHEDULE_ROW_is_REFUSED(
         self, app, db, seed_user,
     ):
-        """Answered, never refused, and this is the C2-b1 cadence rule live.
+        """No ``budget.pay_schedule`` row means no calendar (plan step C4-d).
 
-        The owner ``resolve_cadence`` answers ``None`` for, so it proves the
-        rule ADMITS the empty pairing rather than raising on it.
+        **This case inverted at plan step C4-d** (ruling **R-PC45**) and is
+        kept rather than deleted, because the inversion is the step.  It
+        asserted an EMPTY calendar carrying ``cadence_days is None``, which was
+        the last construction site of the absent cadence and the reason
+        ``int | None`` travelled into ``PayCalendar``, ``derive_periods`` and
+        three projection producers.
 
-        **Why that matters is SCHEDULED, not present-day**, and an adversarial
-        review of this step corrected a docstring that said otherwise: today the
-        only zero-payday owner is the companion, whom ``require_owner`` 404s
-        before any calendar is built.  ``balance:X-ad`` (ruling R-DB) stops
-        registration writing a bootstrap payday, and then a brand-new owner
-        holds none and reaches ``/templates`` on their first visit.
+        *The reason the old answer was called load-bearing had already
+        expired.*  It cited ``balance:X-ad`` (ruling R-DB): registration would
+        stop writing a bootstrap payday, so a brand-new owner would hold none
+        and reach ``/templates`` on their first visit, and a raising loader
+        would 500 that page.  ``balance:X-ad-a`` SHIPPED (``2a4eb477``) and
+        made it false -- registration asks for the real payday, cadence and
+        horizon and writes ``num_periods`` paydays -- so a brand-new owner
+        holds a schedule row and a schedule.  The scheduled reason arrived and
+        was refuted; C4-d re-measured it rather than inheriting it.
+
+        The owner constructed here is the companion shape, whom
+        ``require_owner`` 404s before any calendar is built.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             db.session.query(PayPeriod).filter_by(user_id=user_id).delete(
                 synchronize_session=False,
             )
-            # The schedule ROW goes too, and since plan step C3-b it has to be
-            # said: the cadence rule makes every batch that records a payday
-            # store one, so "no paydays" no longer implies "no cadence".  The
-            # owner this test is about has neither -- a brand-new sign-up
-            # before their first generate.
+            # Periods FIRST: ``fk_pay_periods_schedule`` is ON DELETE RESTRICT
+            # since plan step C4-b-2, so the parent cannot go under live
+            # children.  The schedule ROW goes too, and since plan step C3-b it
+            # has to be said: the cadence rule makes every batch that records a
+            # payday store one, so "no paydays" does not imply "no cadence".
+            # The owner this test is about has neither.
             db.session.query(PaySchedule).filter_by(user_id=user_id).delete(
                 synchronize_session=False,
             )
             db.session.commit()
 
-            assert pay_schedule_service.resolve_cadence(user_id) is None
+            # The premise, asserted rather than assumed: this owner really
+            # holds no schedule row, so the refusal below is about the state
+            # under test and not about a fixture that changed.
+            assert pay_schedule_service.resolve_schedule(user_id) is None
+
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
+                calendar_for(user_id)
+
+    def test_an_owner_with_a_SCHEDULE_and_no_paydays_loads_an_EMPTY_calendar(
+        self, app, db, seed_user,
+    ):
+        """The empty calendar that survives C4-d, and it carries a real cadence.
+
+        The other half of the case above, and the one that keeps the refusal
+        honest: "no calendar for an owner with no schedule row" must not become
+        "no calendar for an owner with no paydays".  This owner is ordinary --
+        ``pay_period_admin.reset_pay_periods`` passes through exactly this
+        state, and so does any owner between their schedule row being written
+        and their first batch landing.
+
+        The cadence is asserted to be the STORED one rather than merely
+        non-``None``: an empty calendar reading somebody else's schedule would
+        satisfy the weaker claim.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            db.session.query(PayPeriod).filter_by(user_id=user_id).delete(
+                synchronize_session=False,
+            )
+            db.session.commit()
+            pay_schedule_service.upsert_schedule(user_id, CADENCE + 7)
+            db.session.commit()
 
             calendar = calendar_for(user_id)
 
             assert calendar.periods == ()
-            assert calendar.cadence_days is None
+            assert calendar.cadence_days == CADENCE + 7
+            assert calendar.cadence.cadence_days == CADENCE + 7
             assert calendar.horizon() is None
             assert calendar.opening_bound() is None
 
@@ -536,24 +579,36 @@ class TestCalendarAtSchedule:
                 p.end_date for p in stored.periods[:-1]
             ]
 
-    def test_a_missing_cadence_beside_paydays_is_REFUSED(
-        self, app, seed_user,
+    def test_a_missing_cadence_is_REFUSED_whatever_the_payday_set(
+        self, app, db, seed_user,
     ):
-        """``None`` beside a payday is a broken invariant, not a default.
+        """A cadence-less ``ScheduleFacts`` cannot become a calendar here either.
 
-        :func:`calendar_for` cannot reach this for an owner with a schedule
-        row; this door can, because its caller supplies the value.  The
-        documented refusal is graded rather than trusted -- the last period's
-        end has no other source, and every cadence this could invent would
-        project a horizon the owner never chose.
+        **The refusal changed shape at plan step C4-d** (ruling **R-PC45**).
+        It was "``None`` beside a PAYDAY is a broken invariant" -- conditional
+        on the payday set, because ``None`` beside an empty one was legal.  A
+        cadence is required outright now, so this door refuses the value
+        whichever way the owner's paydays fall, and the message is
+        ``validate_cadence``'s.
+
+        Graded on BOTH payday shapes rather than on the seeded one alone: the
+        old rule passes a test of the non-empty shape unchanged, so a case that
+        checked only that would not distinguish the two rules.
         """
         with app.app_context():
             user_id = seed_user["user"].id
+            cadence_less = pay_schedule_service.ScheduleFacts(None, None)
 
-            with pytest.raises(PayCalendarError, match="no cadence"):
-                calendar_at_schedule(
-                    user_id, pay_schedule_service.ScheduleFacts(None, None),
-                )
+            with pytest.raises(PayCalendarError, match="must be a plain int"):
+                calendar_at_schedule(user_id, cadence_less)
+
+            db.session.query(PayPeriod).filter_by(user_id=user_id).delete(
+                synchronize_session=False,
+            )
+            db.session.commit()
+
+            with pytest.raises(PayCalendarError, match="must be a plain int"):
+                calendar_at_schedule(user_id, cadence_less)
 
     def test_it_carries_the_history_bound_it_is_GIVEN(self, app, seed_user):
         """The second fact travels too, and it is a fact about the calendar.

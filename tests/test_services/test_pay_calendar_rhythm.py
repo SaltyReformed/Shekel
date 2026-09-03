@@ -136,8 +136,17 @@ class TestPaydaysInMonthThrough:
         )
 
     def test_an_empty_calendar_holds_no_paydays(self):
-        """A companion holds no schedule, and production has one such user."""
-        empty = PayCalendar.from_paydays([], None, user_id=1, history_opens_on=None)
+        """No payday means no anchor, so there is nothing to count from.
+
+        *The calendar carried ``cadence_days=None`` until plan step
+        ``pay_calendar:C4-d``, when a cadence became required; the owner that
+        stood for -- no ``budget.pay_schedule`` row -- has no calendar at all
+        now.  An EMPTY calendar is still ordinary, and it is this one: a
+        schedule row and zero paydays.*
+        """
+        empty = PayCalendar.from_paydays(
+            [], 14, user_id=1, history_opens_on=None,
+        )
         assert paydays_in_month_through(empty, date(2026, 1, 31)) == ()
 
 
@@ -527,7 +536,7 @@ class TestTheBackwardRhythmAndItsFloor:
     def test_an_empty_calendar_has_no_rhythm_to_run_backward(self):
         """No payday means no anchor, so there is nothing to step back from."""
         empty = PayCalendar.from_paydays(
-            [], None, user_id=1, history_opens_on=date(2020, 1, 1),
+            [], 14, user_id=1, history_opens_on=date(2020, 1, 1),
         )
 
         assert paydays_in_month_through(empty, date(2026, 1, 31)) == ()
@@ -626,9 +635,9 @@ class TestSavedPaydaysInMonthThrough:
         ) == (date(2026, 1, 23),)
 
     def test_an_empty_calendar_records_no_paydays(self):
-        """A companion holds no schedule, and production has one such user."""
+        """No saved payday means nothing recorded, which is a real answer."""
         empty = PayCalendar.from_paydays(
-            [], None, user_id=1, history_opens_on=None,
+            [], 14, user_id=1, history_opens_on=None,
         )
 
         assert saved_paydays_in_month_through(empty, date(2026, 1, 31)) == ()

@@ -92,34 +92,30 @@ class PayrollBasis:
         one name instead of a three-hop attribute chain, and so there is a
         single place to look when asking where its denominator comes from.
 
-        **Resolved on READ rather than at construction**, which is what lets an
+        **Resolved on READ rather than at construction**, which is what let an
         owner with no pay cadence reach a producer that never prices a
         paycheck.  :attr:`~app.services.pay_calendar.PayCalendar.cadence`
-        REFUSES such an owner -- there is no honest default for how often
+        REFUSED such an owner -- there is no honest default for how often
         somebody is paid -- and before plan step **balance:X-bh-1**
         ``tax_report_service.compute_tax_report`` resolved the cadence
         conditionally so the Taxes tab would not 500 for an owner whose report
-        is all zeros anyway.  A calendar can always be built, so that guard is
-        unnecessary rather than remembered.
+        is all zeros anyway.
 
-        **ONE such guard went and TWO stay, which an adversarial review of this
-        step corrected**: ``balance_at/_inputs.py`` and
-        ``investment_dashboard_service/_context.py`` keep their
-        ``cadence_days is not None`` tests because what they feed is
-        ``investment_projection.adapt_deductions``, which takes a raw
-        :class:`~app.services.pay_calendar.PayCadence` and not a basis -- so
-        nothing there is resolved lazily, and the refusal would reach the grid,
-        ``/savings`` and ``/investments`` on the seam for the one production
-        owner ``_inputs.py`` records it firing for.
+        **That whole class of guard is GONE at plan step pay_calendar:C4-d**
+        (ruling **R-PC45**), including the two this paragraph used to name as
+        surviving -- ``balance_at/_inputs.py`` and
+        ``investment_dashboard_service/_context.py``, which kept
+        ``cadence_days is not None`` tests because what they feed takes a raw
+        :class:`~app.services.pay_calendar.PayCadence` and not a basis, so
+        nothing there resolved lazily.  Both are DELETED rather than satisfied:
+        the owner they guarded against holds no ``budget.pay_schedule`` row,
+        and ``pay_calendar.calendar_for`` refuses that owner outright instead of
+        answering an empty calendar with no cadence.  A calendar in hand
+        therefore carries a cadence, this read is TOTAL, and the lazy
+        resolution above buys ordering freedom rather than safety.
 
         Returns:
             The paycheck count as an integral ``Decimal``.
-
-        Raises:
-            PayCalendarError: This owner has no resolvable pay cadence, which
-                :attr:`~app.services.pay_calendar.PayCalendar.cadence_days`
-                documents as possible ONLY for a calendar holding no payday --
-                an owner with no paycheck to price.
         """
         return self.calendar.cadence.periods_per_year
 
