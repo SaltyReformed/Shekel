@@ -645,9 +645,9 @@ class DifferenceLanding:
     (:meth:`~app.services.income_service.SalaryPricing._net_by_period`
     returns the paycheck's ``net_pay`` for it and ``template.default_amount``
     for every other) so *which member rounds* is a stored fact.  What it lacks
-    is a JUSTIFICATION: finding `balance:N-391` reads *NOT yet attributed*,
-    and the thing that would supply one is the standing rule
-    ``bank_import:X-gj-3b`` ships.
+    is a JUSTIFICATION: `balance:N-391` reads *NOT yet attributed*, and none is
+    coming -- ``bank_import:X-gj-3b`` was WITHDRAWN (**R-JJ**) and
+    ``recurrence:R18`` dissolves the question: one deposit will name ONE row.
 
     **It is a GENERALISATION of ``bank_cash_for`` rather than a second arm
     beside it, and the algebra is why that matters.**  That function answered

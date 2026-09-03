@@ -42,7 +42,9 @@ from tests._test_helpers import (
     make_cadence_rule,
     make_every_period_rule,
     override_anchor,
+    resolved_amount,
     settle_instant_on,
+    state_template_price,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import owned_contribution
@@ -68,6 +70,7 @@ class TestSalaryToGrid:
             )
             db.session.add(template)
             db.session.flush()
+            state_template_price(template)
             # The definition first, then the cadence onto it (plan step R-F6).
             rule = make_every_period_rule(db.session, template)
 
@@ -83,7 +86,7 @@ class TestSalaryToGrid:
             assert len(txns) == 10
             for txn in txns:
                 assert txn.transaction_type.name == "Income"
-                assert txn.estimated_amount == Decimal("2884.62")
+                assert resolved_amount(txn) == Decimal("2884.62")
                 assert txn.status.name == "Projected"
 
 
@@ -107,6 +110,7 @@ class TestTemplateRecurrenceToGrid:
             )
             db.session.add(template)
             db.session.flush()
+            state_template_price(template)
             # The definition first, then the cadence onto it (plan step R-F6).
             rule = make_cadence_rule(
                 template,
@@ -131,7 +135,7 @@ class TestTemplateRecurrenceToGrid:
             calendar = calendar_for(seed_user["user"].id)
             for txn in txns:
                 assert txn.name == "Rent"
-                assert txn.estimated_amount == Decimal("1200.00")
+                assert resolved_amount(txn) == Decimal("1200.00")
                 # Each transaction's period should contain the 15th of some
                 # month.  The span is the CALENDAR's since plan step
                 # ``pay_calendar:C4-c`` dropped ``pay_periods.end_date``.

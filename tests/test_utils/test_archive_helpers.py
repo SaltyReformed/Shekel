@@ -261,17 +261,55 @@ class TestTemplateHasPaidHistorySemanticIsSettled:
             )
             assert template_has_paid_history(template.id) is False
 
-    def test_soft_deleted_settled_ignored(self, app, db, seed_user, seed_periods_today):
-        """Soft-deleted settled rows do not block deletion.
+    def test_soft_deleted_settled_BLOCKS_deletion(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A soft-deleted settled row is payment history (**R-JE**).
 
-        The predicate filters by ``is_deleted=False``, mirroring the
-        pre-fix behavior at ``archive_helpers.py``.  Pins that the
-        is_settled refactor preserves this gate -- a row the user
-        already discarded cannot block subsequent template cleanup.
+        **This assertion was ``is False`` until plan step balance:X-au-e**, on
+        the ground that "a row the user already discarded cannot block
+        subsequent template cleanup".  The developer ruled the opposite on
+        2026-09-03, closing finding **N-444**, and the reason is that the two
+        halves of one door disagreed: this predicate filtered
+        ``is_deleted = False`` while ``crud.hard_delete_template``'s bulk
+        delete did not, so such a row was invisible to the GATE and excluded
+        from the DELETE.  The template went, ``fk_transactions_template`` is ON
+        DELETE SET NULL, and the row was left holding its money with no link to
+        the definition that made it.
+
+        Harmless while that survivor OWNED its figure.  X-au-e declares every
+        non-override template row DERIVED, so the same survivor now carries
+        ``amount_source_id = template`` with no template to read: unpriceable
+        on any revert to Projected, and unrestorable by the cutover migration's
+        own downgrade, whose restore joins on the ``template_id`` that is now
+        NULL (**N-440**).
+
+        The cost is stated rather than hidden: such a template is archived
+        instead of permanently deleted.  Zero rows of this shape exist on the
+        2026-09-03 production clone.
         """
         with app.app_context():
             template, txn = _make_template_with_status_txn(
                 app, db, seed_user, seed_periods_today[0], "Paid",
+            )
+            txn.is_deleted = True
+            db.session.commit()
+            assert template_has_paid_history(template.id) is True
+
+    def test_soft_deleted_PROJECTED_still_does_not_block(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The negative control for the case above: it is SETTLED that counts.
+
+        Without this, ``template_has_paid_history`` returning ``True`` for
+        every soft-deleted row -- a predicate that had dropped the status test
+        rather than the ``is_deleted`` one -- would pass the case above and
+        block the permanent deletion of any template with a discarded
+        projected row.
+        """
+        with app.app_context():
+            template, txn = _make_template_with_status_txn(
+                app, db, seed_user, seed_periods_today[0], "Projected",
             )
             txn.is_deleted = True
             db.session.commit()

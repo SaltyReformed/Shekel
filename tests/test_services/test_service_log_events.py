@@ -939,7 +939,6 @@ class TestRecurrenceEngineLogging:
         ) as cap:
             recurrence_engine.resolve_conflicts(
                 [s2_txn.id], "update", seed_user["user"].id,
-                new_amount=Decimal("80.00"),
             )
 
         record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)

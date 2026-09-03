@@ -298,16 +298,16 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     # abort the entire template edit at flush against
     # ``ck_transactions_amount_ownership`` (finding **N-293**, closed there).
     #
-    # **What it writes is the DEFINITION's own answer, and that is what closed
-    # finding N-437 here** (plan step X-au-d).  The field is
-    # ``_amounts._generated_amount_ownership(template)``: ``own`` over the
-    # scalar for a definition that STATES its price, ``derived`` naming the
-    # template for one whose price is COMPUTED.  So the splat cannot hand a row
-    # back to its owner -- both states it can write are the state a row of this
-    # definition is supposed to be in, which is the whole meaning of
-    # "maintain".  It carried ``own(figure)`` unconditionally until that step,
-    # and a SILENT hand-back was what that would have become the moment a
-    # cutover derived a row this pass can reach.
+    # **What it writes is a DECLARATION and never a figure** (plan step
+    # X-au-e, the condition finding N-437 was closed under).  The field is
+    # ``derived_ownership(AmountSourceEnum.TEMPLATE)``, one value rather than
+    # a fork, so the splat cannot hand a row back to its owner -- there is no
+    # arm here that states a price at all, which is the whole meaning of
+    # "maintain" once a definition prices its own rows.  It carried
+    # ``own(figure)`` unconditionally until X-au-k, then ``own`` OR ``derived``
+    # on ``template_amount_service.owns_its_amount`` until X-au-e; a SILENT
+    # hand-back was what the first would have become the moment a cutover
+    # derived a row this pass can reach.
     #
     # The rows it can reach are narrower than the fetch:
     # ``_recurrence_common.classify_maintain_work`` routes an IMMUTABLE, an
