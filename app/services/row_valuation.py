@@ -286,12 +286,11 @@ def settled_amounts_by_id(rows) -> "dict[int, Decimal | None]":
     """Return ``{transaction_id: what the row RECORDED as having moved}``.
 
     The batch every SCREEN reads to show a settled row's figure (plan step
-    X-au-c3), and the sibling of :func:`display_amounts_by_id` rather than a
-    second spelling of it: that map answers what a row's amount IS -- its plan,
-    or the live recompute superseding it -- and this one answers what its money
-    DID.  A screen shows the second where there is one and the first otherwise,
-    which is the same precedence the balance uses
-    (:func:`fixed_contribution`).
+    X-au-c3), and the sibling of :func:`~app.services.cash_ledger.amounts_by_id`
+    rather than a second spelling of it: that map answers what a row's amount
+    IS -- its plan -- and this one answers what its money DID.  A screen shows
+    the second where there is one and the first otherwise, which is the same
+    precedence the balance uses (:func:`fixed_contribution`).
 
     **It lives HERE rather than beside its sibling in
     ``cash_ledger._amounts``, and the reason is the split this module IS**: the
@@ -348,16 +347,17 @@ def fixed_contribution(txn) -> "Decimal | None":
 
     **The first arm is why the status gate sits ABOVE the resolver** (plan step
     X-au-c2).  ``Transaction.effective_amount`` answered ``$0.00`` for an
-    excluded row from inside the valuation, where the resolver would REFUSE the
-    same row: the live producer filters to Projected rows
-    (``income_service.live_projected_net``), so a Cancelled salary row is absent
-    from its map and has no derived answer at all.  *There were TWO producers
-    until plan step X-au-g-2c-2, the second being
-    ``cash_ledger.LoanPricing.live_cash``; a loan payment's shadow is DERIVED
-    now and rule 4 prices it whatever its status, which is the same
-    ask-what-it-is-priced-at-second ordering stated from the other side.*  Asking what
-    a row is worth before asking what it is priced at is what keeps that from
-    being a 500 on a row nobody is counting.
+    excluded row from inside the valuation, where the resolver of the day would
+    REFUSE the same row: both live producers filtered to Projected rows, so a
+    Cancelled salary row was absent from the map and had no derived answer at
+    all.  *NEITHER producer survives -- ``cash_ledger.LoanPricing.live_cash``
+    went at plan step X-au-g-2c-2 and ``income_service.live_projected_net`` at
+    **X-au-d** -- and the rules that replaced them read no status, so rule 2 and
+    rule 4 now price a Cancelled row like any other.*  The ordering is kept
+    anyway and is not merely vestigial: asking what a row is WORTH before
+    asking what it is PRICED at is what stops an excluded row paying for a
+    derivation nobody is counting, and it is what makes the gate a property of
+    this module rather than a precondition each producer must restate.
 
     **Order matters between the two arms, and it is unchanged**: an excluded row
     is worth ``0`` even if it settled first and was cancelled after, because
@@ -504,8 +504,10 @@ def owned_contribution(txn) -> Decimal:
     entry, so one caller still asks this accessor about a row that might be
     derived.  That was true when written and false from plan step
     **X-au-g-2c-1**, which routed that reader through
-    ``cash_ledger.display_amounts_by_id`` -- the census at that step found TWO
-    unrouted readers where the finding had named one, and moved both.  Plan step
+    ``cash_ledger.display_amounts_by_id`` (now ``amounts_by_id``: plan step
+    X-au-d deleted the live half of that composition) -- the census at that
+    step found TWO unrouted readers where the finding had named one, and moved
+    both.  Plan step
     **X-au-g-2c-2** then declared every transfer shadow derived, so the state
     this paragraph warned about is not merely unvisited but unreachable: the
     accessor would refuse, and no caller reaches it.
@@ -516,12 +518,23 @@ def owned_contribution(txn) -> Decimal:
     as a REASON decays invisibly, because nobody re-checks a premise; the
     re-census that corrected it is recorded at the foot of this docstring.*
 
-    **Re-censused at plan step X-au-g-2c-2, because widening the derived class
-    from loan payments to EVERY transfer shadow widens what this accessor can be
-    handed.**  All seven live call sites are settled-only or guarded:
+    **RE-CENSUSED AT PLAN STEP X-au-d (2026-09-03), and the re-run is the
+    discipline rather than the result.**  Widening the derived class widens what
+    this accessor can be handed, so the census is re-run at every cutover that
+    widens it -- X-au-g-2c-2 for every transfer shadow, X-au-d for every
+    non-override salary row INCLUDING the settled ones.  An adversarial review
+    of X-au-d found this paragraph edited without the census being re-run, which
+    would have left the next widening reading a date that did not cover it.
+    *The merge of X-au-d with X-au-g-2c-3b-2 then proved the point a second time
+    and from the other direction: the two steps edited THIS paragraph
+    concurrently, and the list below was stale in the branch that had just
+    re-run the census -- because the seventh site MOVED under it rather than
+    changing count.  A census is re-run on the MERGED tree or it is not re-run.*
+    All seven live call sites are settled-only or guarded:
     ``cash_ledger.settled_cash_leg``, ``loan_ledger._events.loan_event_stream``
     (which was ``._split.split_one_payment`` until plan step X-au-g-2c-3b-2 moved
-    the cash read onto the event that carries it),
+    the cash read onto the event that carries it, and which reads SETTLED income
+    shadows either way),
     ``loan_posting_service._sync`` and ``._display``,
     ``savings_dashboard_service._metrics`` (settled statuses in SQL), and the
     spending report's ``_window`` and ``_breakdown``.  ``statement_match`` and

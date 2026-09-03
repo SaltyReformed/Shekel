@@ -53,8 +53,10 @@ class AmountBasis:
     than merged, and that is the whole reason this type exists: a merged map
     makes "which rule applies" a question about map membership, which is the
     link-derived discriminator ruling R-FI refuted, and it hides which producer
-    answered.  ``_amounts.live_amounts`` merges their ANSWERS for the callers
-    that want one map, and does it in one place.
+    answered.  *A ``_amounts.live_amounts`` did merge their ANSWERS for callers
+    that wanted one map; it went with the read-time repair at plan step X-au-d,
+    and what a caller asks for a row set now is ``amounts_by_id``, which
+    dispatches per row rather than merging per producer.*
 
     **It holds the derivations rather than per-row answers, and that is plan
     step X-au-c2b's restructure.**  It was

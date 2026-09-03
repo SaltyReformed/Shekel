@@ -34,8 +34,9 @@ discriminator by tracing -- because two of them are SUBSETS of two others:
      step X-au-c3 records what MOVED in its own columns and writes no plan
      column at all, so a settled row's plan keeps whatever ownership it had.
   2. **SALARY** -- a paycheck, priced by the salary profile driving its
-     template (``income_service.live_projected_net``).  A SUBSET of rule 3:
-     ``SalaryProfile.template_id`` names an ordinary transaction template.
+     template (``income_service.salary_net_for`` over the pass's
+     ``SalaryPricing``).  A SUBSET of rule 3: ``SalaryProfile.template_id``
+     names an ordinary transaction template.
   3. **TEMPLATE** -- an ordinary recurring row, priced by its definition's
      effective-dated series as of the row's OWN due date
      (``template_amount_service.amount_as_of``, plan step X-au-a).
@@ -73,13 +74,18 @@ so the first bucket to derive would have taken out the whole screen.  Asking the
 column instead makes the two agree by construction: the state the CHECK pairs a
 figure with is exactly the state this dispatch answers from that figure.
 
-X-au-c1 backfilled no declaration at all, so EVERY row on production is OWN and
-this resolver answers its stored column through ONE arm.  That is what makes
-X-au-c2's fifteen-module reader refactor byte-identical by construction rather
-than by measurement -- before it, a Projected template-linked row priced from the
-SERIES and agreed with its column only because X-au-b measured ``$0.00`` drift.
-The per-kind cutovers (X-au-d..X-au-i) are what stamp a relation as each bucket
-stops being priced.  A CC payback is the kind carrying NEITHER link while its
+X-au-c1 backfilled no declaration at all, so every row was OWN and this resolver
+answered its stored column through ONE arm.  That is what made X-au-c2's
+fifteen-module reader refactor byte-identical by construction rather than by
+measurement -- before it, a Projected template-linked row priced from the SERIES
+and agreed with its column only because X-au-b measured ``$0.00`` drift.  **The
+per-kind cutovers are what stamp a relation as each bucket stops being priced,
+and TWO have run**: X-au-g-2c-2 declared every transfer SHADOW (350 rows on
+production, 2026-09-01) and **X-au-d** declared every non-override SALARY row
+(59 rows, 2026-09-02).  *The sentence this replaces still said every production
+row was OWN; it went stale at the first of those and is corrected here rather
+than at the step that made it false a second time.*  X-au-e and X-au-f are what
+remain.  A CC payback is the kind carrying NEITHER link while its
 amount is derived (``credit_workflow.create_cc_payback_transaction`` copies the
 source row's figure, ``entry_credit_workflow.sync_entry_payback`` re-states it as
 the sum of the source's credit entries), so it places as OWN here and needs a
@@ -647,29 +653,49 @@ def _own_answer(txn, _basis: AmountBasis) -> Decimal:
 def _salary_answer(txn, basis: AmountBasis) -> Decimal:
     """Rule 2: a paycheck is worth what its salary profile pays for that period.
 
-    Delegates to the map ``income_service.live_projected_net`` built, which is
-    the same figure the salary projection page renders and the same one the
-    recurrence engine writes at generation (DH-#30: both resolve tax configs per
-    period YEAR).
+    Delegates to :func:`app.services.income_service.salary_net_for` over the
+    pass's :class:`~app.services.income_service.SalaryPricing`, which since
+    plan step **X-au-d** is the only producer of a ROW's amount: generation
+    used to write a second copy of this derivation into ``estimated_amount``
+    and it now declares the row instead.
 
-    **The refusal fires exactly where the app holds two answers**, which is why
-    it is a refusal.  ``live_projected_net`` scopes its profile lookup by
-    SCENARIO while generation's ``_get_salary_profile`` takes the first active
+    *That is the narrow claim and it is the true one.*  An adversarial review
+    of X-au-d refuted the wider one this paragraph used to make -- that it is
+    the only producer of the FIGURE.  ``routes/salary/views`` and
+    ``routes/salary/cockpit`` each build the same ``project_salary`` call over
+    the same calendar to render their own breakdowns, so the derivation is
+    written three times and this step deleted one of them.  Finding
+    **N-443**.
+
+    **The refusal narrowed at that step and is stated as it now is.**  It
+    fired where the app held two answers: the read-time producer scoped its
+    profile lookup by SCENARIO while generation's own took the first active
     profile whatever its scenario, so a template driven by profiles in two
-    scenarios is priced by one profile at write time and by another -- or by
-    none -- at read time.  A row this rule cannot place is one of those, or one
-    whose pay period the profile's projection does not cover, or an EXPENSE row
-    on a salary-linked template (``live_projected_net`` takes income only).
-    Zero such rows on the 2026-08-12 production clone.
+    scenarios was priced by one at write time and by another -- or by none --
+    at read time.  There is no write-time resolution left to disagree with.
+    What still refuses: no ACTIVE profile in the ROW's scenario names its
+    template, the profile's projection does not cover the row's pay period, or
+    the row is an EXPENSE on a salary-linked template
+    (``salary_net_for`` takes income only).  Zero such rows on the 2026-08-12
+    production clone and zero on the 2026-09-02 one.
 
     **It reads no STATUS, and that is plan step X-au-c2b's split.**  The map it
-    used to index was built by the read-time repair, which filters to Projected
+    used to index was built by a read-time repair, which filtered to Projected
     non-overridden rows -- so a Cancelled or hand-priced paycheck was refused
     here for a reason that has nothing to do with what a paycheck is worth.
     Pricing asks the definition; whether a row still counts is finding
     **N-262**'s separate question, answered above this rule by
-    ``row_valuation.fixed_contribution`` and beside it by
-    ``income_service.live_projected_net``.
+    ``row_valuation.fixed_contribution``.  *That repair is deleted as of plan
+    step X-au-d, so the split it protected is now simply the shape of the
+    model: there is one producer and it reads no status.*
+
+    **A HAND-PRICED paycheck never reaches this rule**, and that is what makes
+    the status-blindness safe rather than merely tidy.  The edit doors state a
+    typed figure through ``amount_ownership.state_own_amount``, which clears
+    the declaration -- so such a row is OWN and rule 1 answers it.  ``is_override``
+    decides nothing here (finding **N-262**): a row whose PERIOD alone was
+    moved carries that flag and stays derived, which is why moving a paycheck
+    re-prices it for the paycheck it was moved into.
 
     Args:
         txn: The salary income row being priced.

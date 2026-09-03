@@ -31,6 +31,7 @@ from app.services import (
     account_service,
     paycheck_calculator,
     recurrence_engine,
+    salary_profile_service,
     template_amount_service,
 )
 from app.services import pay_schedule_service
@@ -511,21 +512,36 @@ def delete_profile(profile_id):
     if profile is None:
         abort(404)
 
+    # **BEFORE the flag, and the ordering IS the fix** (finding **N-261**,
+    # ruled 2026-09-02).  Archiving removes the producer behind amount rule 2,
+    # and since plan step X-au-d the rows it priced hold no figure of their
+    # own -- so they must record what they were last worth here, while this
+    # profile is still what prices them.  ``is_salary_linked_template`` reads
+    # the identity-mapped collection, so a pending ``is_active = False`` is
+    # already visible to it: freezing after the flag would freeze the
+    # ``default_amount`` this exists to avoid.  Measured on the 2026-09-02
+    # production clone: without it the archive re-prices 50 of 59 rows and
+    # moves the projected balance by ``-$9,677.24``.
+    salary_profile_service.archive_profile(profile)
+
     profile.is_active = False
     if profile.template:
         profile.template.is_active = False
         # The template's amount stops being DERIVED the moment the profile is
-        # archived (plan step X-au-a): with no ACTIVE profile the recurrence
-        # engine prices its rows from ``default_amount``
-        # (``recurrence_engine._get_transaction_amount``), so that column
-        # becomes the definition's stated price and the write door opens its
-        # series at it.  Without this the template would satisfy
+        # archived (plan step X-au-a): with no ACTIVE profile its rows are
+        # priced by its own series rather than by the paycheck engine, so that
+        # column becomes the definition's stated price and the write door opens
+        # its series at it.  Without this the template would satisfy
         # ``owns_its_amount`` while holding NO version -- an eligible
         # definition with an empty series, which is the one gap
-        # ``amount_as_of`` reports as ``None`` and which plan step X-au-b's
-        # resolver is specified to REFUSE rather than fall back on.  Found by
-        # adversarial review; measured at 58 rows on production's one salary
-        # template.
+        # ``amount_as_of`` reports as ``None`` and which the amount resolver is
+        # specified to REFUSE rather than fall back on.  Found by adversarial
+        # review; measured at 58 rows on production's one salary template.
+        #
+        # **It no longer decides what the EXISTING rows are worth**, which is
+        # the half N-261 was about: the freeze above has already made every one
+        # of them state its own figure, so this version is what a row generated
+        # from the template AFTER the archive would read.
         template_amount_service.set_amount(
             profile.template, profile.template.default_amount,
             effective_on=display_today(),

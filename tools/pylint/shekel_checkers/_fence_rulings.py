@@ -320,14 +320,25 @@ _FENCED_MODULE_RULINGS = {
         # all seam-private in ``balance_at._cash_fold``.
         "planned_cash_rows",
         # ``_amounts`` -- what ONE row is worth to checking.  An amount per
-        # TRANSACTION is not a balance per ACCOUNT: the live override lookup is
-        # what a row is worth right now when its stored amount is a stale
-        # cache, the income rule reads it, and the three-bucket
-        # reservation is a decomposition of one row's budget.  The cash analog
-        # of ``loan_ledger``'s ``split_*`` rulings below, and carried for the
-        # same reason.  The three-bucket reservation formula itself is NOT here:
+        # TRANSACTION is not a balance per ACCOUNT.  The cash analog of
+        # ``loan_ledger``'s ``split_*`` rulings below, and carried for the same
+        # reason.  The three-bucket reservation formula itself is NOT here:
         # D1c deleted its only external caller, so it went private and needs no
         # ruling -- structure retiring a fence entry, which is Phase D's point.
+        #
+        # **FOUR MORE ENTRIES WENT THE SAME WAY AT PLAN STEP X-au-d, and this
+        # is the fence shrinking rather than being widened.**  The live-override
+        # family this paragraph used to describe -- ``live_override``,
+        # ``live_amounts`` and the ``income_amount`` rule that read them -- and
+        # the ``display_amounts_by_id`` composition over them are all DELETED:
+        # a paycheck row no longer stores a figure a live recompute has to
+        # supersede, so there is no second answer for a screen to compose and
+        # nothing left to classify.  What survives is ``amounts_by_id`` below,
+        # which answers what a row's amount IS with no live half at all.
+        # *The four names outlived the functions by one commit; CI's checker
+        # step caught them, and the LOCAL suite structurally could not --
+        # ``pytest.ini`` sets ``testpaths = tests``, so ``tools/pylint/tests``
+        # runs nowhere but CI.*
         #
         # The VALUATION family (plan step X-au-c2) joins them on exactly that
         # ground, and it is the same question ``Transaction.effective_amount``
@@ -341,19 +352,9 @@ _FENCED_MODULE_RULINGS = {
         # under :data:`_ROW_VALUATION_MODULES` -- both are DEFINED one module
         # down and only re-exported here, and this fence keys on where a
         # function is DEFINED.
-        "live_override",
-        "live_amounts",
-        # The COMPOSITION of the two questions a screen asks -- what a row's
-        # amount resolves to, superseded by a live recompute (plan step
-        # X-au-c2b).  A non-producer on the same ground both of its terms are:
-        # a dict keyed by ROW ID, nothing per account, nothing folded or dated.
-        # It exists because an adversarial review found that composition
-        # written twice and differently across the grid and the fragments.
-        "display_amounts_by_id",
         "contributed_amount",
         "contribution_of",
         "contributions_by_id",
-        "income_amount",
         # ``_amount_source`` -- WHERE one row's amount comes from (plan step
         # X-au-b, ruling R-FI).  Four names, one ruling, because they are one
         # question at two tiers: ``amount_basis`` resolves the live producers

@@ -42,6 +42,7 @@ import pytest
 from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
+    AmountSourceEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -52,6 +53,7 @@ from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, CalcMethod, DeductionTiming
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
 from app.services import (
     growth_engine,
     account_service,
@@ -59,6 +61,7 @@ from app.services import (
     balance_at,
     cash_ledger,
     income_service,
+    template_amount_service,
 )
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -124,6 +127,77 @@ def _no_baseline(user_id):
     carrying ``scenario=None`` -- not by passing ``None`` where a context goes.
     """
     return BalanceContext(user_id=user_id, scenario=None, as_of=date.today())
+
+
+#: What a template's ``default_amount`` says when the graded figure is its
+#: price SERIES.  Distinct from every amount the cases below state, so a
+#: producer reading the scalar instead of the series answers a number no
+#: assertion expects (see :func:`_derived_income_row`).
+_NOT_THE_SERIES = Decimal("7.77")
+
+
+def _derived_income_row(db, seed_user, account, period, scenario, amount):
+    """A projected income row DECLARED derived, priced by a definition's series.
+
+    **What replaced a monkeypatched read-time repair at plan step X-au-d.**  A
+    fold that reads a row's own column contributes ``None`` for this row, and
+    one that asks the amount model contributes *amount* -- so "the balance is
+    built on the derivation" is a property of the DATA here rather than of a
+    patched producer.
+
+    The definition is priced through ``template_amount_service.set_amount``,
+    the ONE write door for a price series, and the row's due date is the
+    period's own start so ``amount_as_of`` resolves on it.
+
+    **``default_amount`` is deliberately NOT the graded figure.**  An
+    adversarial review of plan step X-au-d found a first version setting both
+    to *amount*, which makes the series and the scalar the same number -- and
+    ``_stated_amount``'s empty-series refusal is then invisible: replacing that
+    refusal with ``return template.default_amount``, the exact fallback its own
+    message forbids, survives every case built on this helper.  A distinct
+    scalar is what makes the series load-bearing.
+
+    Args:
+        db: The test session fixture.
+        seed_user: The seeded owner bundle.
+        account: The account the row's money moves through.
+        period: The pay period the row is funded in.
+        scenario: The scenario the row belongs to.
+        amount: What the definition states, and therefore what the row is
+            worth.
+
+    Returns:
+        The staged :class:`~app.models.transaction.Transaction`.
+    """
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=account.id,
+        category_id=next(iter(seed_user["categories"].values())).id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+        name="Priced income",
+        default_amount=_NOT_THE_SERIES,
+    )
+    db.session.add(template)
+    db.session.flush()
+    template_amount_service.set_amount(
+        template, amount, effective_on=period.start_date,
+    )
+    txn = Transaction(
+        account_id=account.id,
+        template_id=template.id,
+        pay_period_id=period.id,
+        scenario_id=scenario.id,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        name="Priced income",
+        due_date=period.start_date,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+        amount_ownership=AmountOwnership.derived(
+            ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+        ),
+    )
+    db.session.add(txn)
+    db.session.flush()
+    return txn
 
 
 def _make_hysa(db, seed_user, anchor_period, balance):
@@ -1617,12 +1691,17 @@ class TestTheSeamOwnsTheIncomeBasis:
     def test_a_stale_stored_amount_is_priced_live_without_being_asked(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A salary row's stale estimate never reaches the balance.
+        """A salary row is priced by its profile on both maps, unasked.
 
-        The stored ``estimated_amount`` is $1.00 against a $104,000 profile
-        whose live net is $4,000.00 (104000 / 26, hand-computed).  Both the
-        kind-correct map and the cash-flow map must carry the LIVE figure with
-        no argument passed: $1,000 anchor + $4,000 = $5,000.00 at period 5.
+        A $104,000 profile nets $4,000.00 a period (104000 / 26, hand-computed).
+        Both the kind-correct map and the cash-flow map must carry that figure
+        with no argument passed: $1,000 anchor + $4,000 = $5,000.00 at period 5.
+
+        **The row stores NOTHING since plan step X-au-d**, where it carried a
+        deliberately stale ``$1.00``.  The property is stronger for it: a fold
+        reading the column would contribute ``None`` rather than a wrong
+        figure, so the substitution this arc removes is unrepresentable here
+        instead of merely absent.
         """
         # pylint: disable=import-outside-toplevel
         from tests.test_services.test_income_service import (
@@ -1641,12 +1720,11 @@ class TestTheSeamOwnsTheIncomeBasis:
             template = _make_salary_template(seed_user, profile)
             db.session.commit()
             txn = _make_txn(
-                seed_user, periods[5], template=template,
-                estimated_amount="1.00",
+                seed_user, periods[5], template=template, derived=True,
             )
             db.session.commit()
 
-            assert txn.estimated_amount == Decimal("1.00")
+            assert txn.estimated_amount is None
             assert balance_at.balance_map(
                 account, bctx,
             )[periods[5].id] == Decimal("5000.00")
@@ -1659,10 +1737,10 @@ class TestTheSeamOwnsTheIncomeBasis:
     ):
         """The kind that used to read STORED income reads LIVE income too.
 
-        This is the asymmetry ruling R-Q deleted.  An HYSA's salary row carries
-        the same stale $1.00 estimate; its balance must be built on the same
-        $4,000.00 live net a plain account gets, so the grid's premium over the
-        cash basis is pure interest rather than an income mismatch.
+        This is the asymmetry ruling R-Q deleted.  An HYSA's salary row is
+        DECLARED exactly as a plain account's is; its balance must be built on
+        the same $4,000.00 net, so the grid's premium over the cash basis is
+        pure interest rather than an income mismatch.
         """
         # pylint: disable=import-outside-toplevel
         from tests.test_services.test_income_service import (
@@ -1687,7 +1765,9 @@ class TestTheSeamOwnsTheIncomeBasis:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="HYSA paycheck",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("1.00")),
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+                ),
             ))
             db.session.commit()
 
@@ -3132,9 +3212,9 @@ class TestGridBalanceView:
             )
 
     def test_the_accrual_is_pure_interest_on_one_income_basis(
-        self, app, db, seed_user, seed_periods_today, monkeypatch,
+        self, app, db, seed_user, seed_periods_today,
     ):
-        """The accrual stays pure interest when live income != stored (M1).
+        """The accrual stays pure interest when income is DERIVED (M1).
 
         Regression guard for the income-basis trap ruling R-Q closes at the
         root.  The cash walk auto-built a LIVE income map while the
@@ -3144,10 +3224,17 @@ class TestGridBalanceView:
         the divergence has no argument to arrive through -- and this pins the
         consequence.
 
-        Forces live ($1,500) != stored ($1,000) on a real income transaction
-        in a FUTURE period (so ruling R-G lands it in its own column) and
-        asserts the accrual telescopes exactly to the premium over the cash
-        basis, with the $500 income delta nowhere in it.
+        **The divergent figure is a real DATA state since plan step X-au-d**,
+        where it was a monkeypatched read-time repair: the row DECLARES a
+        definition whose price series states ``$1,500.00`` and stores nothing
+        itself, so a walk reading the column would contribute ``None`` and one
+        reading the definition contributes ``$1,500``.  The figures are
+        unchanged, and the setup no longer patches a producer out of the app it
+        is grading.
+
+        The row sits in a FUTURE period (so ruling R-G lands it in its own
+        column), and the accrual must telescope exactly to the premium over the
+        cash basis with the income nowhere in it.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -3155,25 +3242,11 @@ class TestGridBalanceView:
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
-            income_txn = Transaction(
-                account_id=hysa.id,
-                pay_period_id=periods[6].id,
-                scenario_id=scenario.id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Paycheck deposit",
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
+            income_txn = _derived_income_row(
+                db, seed_user, hysa, periods[6], scenario, Decimal("1500.00"),
             )
-            db.session.add(income_txn)
             db.session.commit()
-
-            # Force live != stored: the live seam revalues this income at
-            # $1,500 (vs the $1,000 stored).
-            live = {income_txn.id: Decimal("1500.00")}
-            monkeypatch.setattr(
-                income_service, "live_projected_net",
-                lambda txn, pricing: live.get(txn.id),
-            )
+            assert income_txn.estimated_amount is None
 
             view = balance_at.grid_balance_view(hysa, bctx)
             cash = balance_at.cash_balance_map(hysa, bctx)
@@ -3255,7 +3328,7 @@ class TestGridRowFlags:
     def _view(columns):
         """Wrap *columns* in a view (the flags read nothing else)."""
         return balance_at.GridBalanceView(
-            columns=OrderedDict(columns), amount_overrides={},
+            columns=OrderedDict(columns),
         )
 
     @staticmethod
@@ -3468,7 +3541,7 @@ class TestTheRemainderOracleSeesEveryTerm:
     def _view(columns):
         """Wrap *columns* in a view (the oracle reads nothing else)."""
         return balance_at.GridBalanceView(
-            columns=OrderedDict(columns), amount_overrides={},
+            columns=OrderedDict(columns),
         )
 
     # The figures are ruling R-AH's own: $181.59 is the employer's flat 5% of
@@ -3561,50 +3634,62 @@ class TestTheRemainderOracleSeesEveryTerm:
             _assert_grid_view_reconciles(self._view(columns))
 
 
-class TestTheViewOwnsTheLiveOverrideMap:
-    """Ruling R-Q: the seam builds the live map and hands it back.
+class TestTheViewIsBuiltOnOneAmountModel:
+    """Ruling R-Q: a cell and the balance row beside it price one row one way.
 
-    The map is a balance INPUT, so the producer that folds it owns it.  Before
-    this it was the caller's argument and the grid route built a second copy for
+    **This class was ``TestTheViewOwnsTheLiveOverrideMap`` until plan step
+    X-au-d, and the rename is the change.**  R-Q was answered by making the
+    seam BUILD the live override map and hand it back, because before that the
+    map was the caller's argument and the grid route built a second copy for
     its cells -- "provably identical" by an argument about which rows each side
-    filters (finding N-48), which is the agreeing-by-coincidence shape this arc
-    exists to end.  Handing the same object back makes the cells and the balance
-    row one map by construction.
+    filters (finding **N-48**), which is the agreeing-by-coincidence shape this
+    arc exists to end.
+
+    There is no map to hand back now: a derived row stores no figure, so there
+    is nothing for a recompute to be laid over and both the cells and the fold
+    ask ``cash_ledger.amounts_by_id`` over the pass's own basis.  The field the
+    old case asserted (``GridBalanceView.amount_overrides``) was carried to NO
+    consumer at all -- an AST and grep census over ``app/``, ``app/templates``
+    and ``app/static`` found zero reads, and the case's own docstring claimed
+    "the grid reads ``view.amount_overrides.get(...)`` per row", which had been
+    false since plan step X-au-c2b routed the grid through the amount model.
+    So the field is deleted and this is what replaced the case: the property
+    asserted end to end, on the two figures a reader actually sees.
     """
 
-    def test_the_view_returns_the_map_it_projected_with(
-        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    def test_the_column_and_the_published_budget_agree_on_one_row(
+        self, app, db, seed_user, seed_periods_today,
     ):
-        """``amount_overrides`` is the live map, not an empty courtesy field."""
+        """A derived row's income column and its published budget are one figure.
+
+        The row DECLARES a definition stating ``$1,500.00`` and stores nothing,
+        so neither side can answer by reading a column.
+
+        **Both sides are asserted against the FIXTURE's figure rather than
+        against each other**, and an adversarial review of plan step X-au-d is
+        why the docstring says so: they reach one resolver through one chain,
+        so "a producer that had drifted would differ here" names a shape the
+        code no longer has.  What this grades is that the grid column and the
+        published budget both reflect the DEFINITION -- a route computing its
+        own figure, or a fold reading the row, fails on ``$1,500.00``.
+        """
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
             account = seed_user["account"]
-            income_txn = Transaction(
-                account_id=account.id,
-                pay_period_id=periods[1].id,
-                scenario_id=scenario.id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Paycheck",
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
+            income_txn = _derived_income_row(
+                db, seed_user, account, periods[1], scenario,
+                Decimal("1500.00"),
             )
-            db.session.add(income_txn)
             db.session.commit()
-            monkeypatch.setattr(
-                income_service, "live_projected_net",
-                lambda txn, pricing: (
-                    Decimal("1500.00") if txn.id == income_txn.id else None
-                ),
-            )
 
             view = balance_at.grid_balance_view(account, bctx)
+            budgets = cash_ledger.amounts_by_id([income_txn], bctx.amounts())
 
-            assert view.amount_overrides == {income_txn.id: Decimal("1500.00")}
-            # And the projection actually used it: the live $1,500 lands in
-            # the column, not the stored $1,000.
+            assert income_txn.estimated_amount is None
+            assert budgets[income_txn.id] == Decimal("1500.00")
             assert view.columns[periods[1].id].income == Decimal("1500.00")
 
 

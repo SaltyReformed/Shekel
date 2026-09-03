@@ -28,14 +28,20 @@ that same day it is **$10,914.93** over 51 of 62 rows.  The replacement rule
 reads no clock at all, so no date can move a resolved figure.
 
 **The read was not the whole exposure, which is why the direction of the fix
-matters.**  Two writers would have made those figures permanent: a settle runs
-``transaction_service._reconcile_cached_amount`` BEFORE the status flip and
-writes the live figure into ``estimated_amount``, after which the row leaves
-``income_service.live_projected_net``'s Projected-only candidate set and nothing
-can repair it; and any salary, calibration or tax-config save runs
+matters.**  Two writers would have made those figures permanent: a settle ran
+a cache reconciler in ``transaction_service`` BEFORE the status flip and
+wrote the live figure into ``estimated_amount``, after which the row left the
+read-time repair's Projected-only candidate set and nothing could repair it;
+and any salary, calibration or tax-config save runs
 ``routes.salary._helpers._regenerate_salary_transactions``, which rebuilds every
 row from today forward.  A read-time defect with two write-back doors is a
 storage defect on a delay.
+
+*Both write-back doors are gone as of plan step **balance:X-au-d**: a salary
+row DECLARES the definition that prices it and stores no figure, so the settle
+has no cache to reconcile and a regeneration writes no amount.  The paragraph
+stays because it is the ARGUMENT for the direction of this module's fix, not a
+description of live code.*
 """
 
 import logging

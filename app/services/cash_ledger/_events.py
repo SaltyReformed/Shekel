@@ -345,11 +345,12 @@ class CashSourceFact:
     amount on three rows whose entries are all credit (their true checking effect
     is ``$0.00`` and the ledger correctly posts nothing at all).
 
-    The projection's own read-time adjustments cannot reach a settled row and are
-    deliberately not applied: the entries-aware RESERVATION models money still to
-    leave (this has left), and the live override map is built from
-    ``income_service.live_projected_net`` / ``LoanPricing.live_cash``, both of
-    which filter to ``is_projected`` candidates.
+    The projection's own read-time adjustment cannot reach a settled row and is
+    deliberately not applied: the entries-aware RESERVATION models money still
+    to leave, and this has left.  *A live OVERRIDE map used to be named here as
+    a second such adjustment; both its producers are deleted -- ``LoanPricing.live_cash``
+    at plan step X-au-g-2c-2 and ``income_service.live_projected_net`` at
+    X-au-d -- because a derived row stores no figure for one to supersede.*
 
     Attributes:
         transaction_id: The source row's id -- the transaction itself, or for a
