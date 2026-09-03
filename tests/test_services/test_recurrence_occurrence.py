@@ -377,15 +377,20 @@ def _baseline_schedules() -> tuple[list, list]:
 def _empty_calendar() -> PayCalendar:
     """Return the calendar of an owner with no paydays at all.
 
-    ``cadence_days`` is ``None``, which plan step C2-b1 made legal beside an
-    empty payday set and only there: with no last period there is no projected
-    end for it to feed, so the value is provably unread.
+    It carries a real ``cadence_days``, which plan step C4-d made required:
+    this is an owner who HAS a ``budget.pay_schedule`` row and has recorded no
+    payday under it -- the state ``pay_period_admin.reset_pay_periods`` passes
+    through.  *It carried ``None`` until that step, on plan step C2-b1's rule
+    that an absent cadence was legal beside an empty payday set and only there;
+    the owner that stood for has no calendar at all now.*  Nothing here reads
+    the cadence either way: with no last period there is no projected end for
+    it to feed.
 
     Returns:
         The empty :class:`~app.services.pay_calendar.PayCalendar`.
     """
     return PayCalendar.from_paydays(
-        paydays=(), cadence_days=None, user_id=_USER_ID,
+        paydays=(), cadence_days=14, user_id=_USER_ID,
         history_opens_on=None,
     )
 

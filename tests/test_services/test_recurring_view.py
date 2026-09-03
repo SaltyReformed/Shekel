@@ -852,34 +852,35 @@ class TestAnAbsentCadenceIsRefused:
     cost with nothing on the page saying so.
 
     Unreachable through any application path -- registration writes the
-    ``budget.pay_schedule`` row (plan step X-ad-a) and
-    ``pay_schedule_service.resolve_cadence`` falls back to the last period's
-    length for legacy owners -- so this is the control on a broken invariant,
-    not on a user state.
+    ``budget.pay_schedule`` row AND the paydays (plan step X-ad-a) -- so this
+    is the control on a broken invariant, not on a user state.  *The paragraph
+    here also said ``resolve_cadence`` "falls back to the last period's length
+    for legacy owners"; plan step ``pay_calendar:C4-b-2`` deleted that
+    inference and ``fk_pay_periods_schedule`` deleted the owner it served.*
+
+    **Where the refusal LIVES moved at plan step ``pay_calendar:C4-d``**
+    (ruling **R-PC45**).  This surface used to meet the cadence-less owner as a
+    CALENDAR carrying ``cadence_days=None``, and refused when it read the
+    cadence.  There is no such calendar now: ``pay_calendar.calendar_for``
+    refuses that owner outright, so the surface is never handed one.
+
+    *One case that stood here is DELETED rather than rewritten, and an
+    adversarial review of that step is why.*  It asserted that ``build_view``
+    refused a calendar built with ``cadence_days=None``.  The first rewrite
+    made it assert that such a calendar cannot be BUILT and that
+    ``calendar_for`` refuses -- two claims that touch this module not at all,
+    already graded in ``test_pay_calendar_derivation.py`` and
+    ``test_pay_calendar_loader.py``, sitting in a file about ``recurring_view``
+    inside a class named for a property of it.  A duplicate in the wrong file
+    is a test that goes stale where nobody looks for it.
+
+    **No coverage was lost.**  The extra subject that case carried -- a
+    RULE-LESS definition still reaching the section subtotal's cadence read --
+    is exercised by ``test_a_rule_less_definition_still_answers_none``, which
+    passes a rule-less template through ``build_view``.  What remains here is
+    the one property that is still about THIS module: the archived drawer must
+    not read a cadence the active sections do.
     """
-
-    def test_the_active_sections_refuse_an_owner_with_no_cadence(
-        self, seed_user, seed_periods_today,
-    ):
-        """A rule-LESS definition is refused too, and that is the point.
-
-        The row itself needs no conversion, but the section subtotal it lands
-        in is published in both units, so the page cannot be rendered honestly
-        without the cadence.  Pinning the rule-less case is what stops a later
-        change from making the refusal conditional on there being a figure to
-        convert -- which would leave the subtotal's own per-paycheck value
-        computed against an assumed rhythm.
-        """
-        tmpl = _create_expense(seed_user, None, Decimal("25.00"))
-        cadence_less = PayCalendar.from_paydays(
-            paydays=(), cadence_days=None, user_id=seed_user["user"].id,
-            history_opens_on=None,
-        )
-
-        with pytest.raises(PayCalendarError, match="no pay cadence"):
-            recurring_view.build_view(
-                [], [tmpl], [], cadence_less, date.today(),
-            )
 
     def test_the_archived_drawer_does_NOT_need_a_cadence(
         self, seed_user, seed_periods_today, monkeypatch,

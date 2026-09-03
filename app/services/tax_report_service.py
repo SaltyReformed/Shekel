@@ -387,14 +387,15 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
     # every projection below divides by (plan step R-F16).
     calendar = balance_ctx.calendar()
     # **Asked only when it can be ANSWERED, and the guard that used to say so
-    # is gone** (plan step balance:X-bh-1).  ``PayCalendar.cadence`` REFUSES an
-    # owner who has never stated one, and such an owner has no paydays at all
-    # -- so they also have no periods to project, which is the all-modelled
-    # zero report this function's own contract promises "no crash" for.  A
-    # conditional ``calendar.cadence if calendar.cadence_days is not None``
-    # stood here to keep that refusal off the page; the basis now carries the
-    # CALENDAR and resolves the cadence on read, so the refusal fires only
-    # where the number is actually needed and there is nothing left to guard.
+    # is gone** (plan step balance:X-bh-1).  A conditional ``calendar.cadence
+    # if calendar.cadence_days is not None`` stood here to keep
+    # ``PayCalendar.cadence``'s refusal off the page; the basis carries the
+    # CALENDAR and resolves the cadence on read, so there was nothing left to
+    # guard.  **Since plan step pay_calendar:C4-d there is nothing left to
+    # refuse either** (ruling R-PC45): the owner that property refused holds no
+    # ``budget.pay_schedule`` row, and ``calendar_for`` now refuses THEM, so a
+    # calendar reaching this line always carries a cadence and the read above
+    # is total.
     periods = year_paydays(calendar, year)
     configs = load_tax_configs_for_year(user_id, primary, year)
 

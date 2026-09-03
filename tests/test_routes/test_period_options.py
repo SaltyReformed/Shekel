@@ -194,18 +194,28 @@ class TestWhatTheResultIsAndIsNot:
                 ]
 
     def test_an_owner_with_no_paydays_is_offered_nothing(
-        self, app, db, bare_user, frozen_today,
+        self, app, db, bare_user_with_cadence, frozen_today,
     ):
         """An empty calendar answers an empty list rather than raising.
 
-        The state a brand-new owner is in since plan step X-ad-a stopped
-        writing a bootstrap payday; the template's ``{% if periods %}`` then
-        omits the selector entirely.
+        The owner between their schedule row being written and their first
+        batch landing -- the state ``pay_period_admin.reset_pay_periods``
+        passes through.  The template's ``{% if periods %}`` then omits the
+        selector entirely.
+
+        **``bare_user_with_cadence`` rather than ``bare_user`` since plan step
+        ``pay_calendar:C4-d``** (ruling R-PC45): ``calendar_for`` refuses an
+        owner with no ``budget.pay_schedule`` row, so a bare owner would raise
+        here and this case would stop being about ``period_move_options`` at
+        all.  *Its docstring also cited "the state a brand-new owner is in
+        since plan step X-ad-a stopped writing a bootstrap payday", which
+        X-ad-a itself falsified when it shipped: registration writes the
+        schedule row AND ``num_periods`` real paydays.*
         """
         frozen_today(date(2026, 2, 1))
         with app.app_context():
             assert period_move_options(
-                calendar_for(bare_user["user"].id), None,
+                calendar_for(bare_user_with_cadence["user"].id), None,
             ) == []
 
     def test_every_offered_period_carries_an_id_the_form_can_submit(

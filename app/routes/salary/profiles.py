@@ -80,10 +80,15 @@ def _paychecks_per_year() -> "int | None":
     calendar**, and the two doors beside it are why each is wrong here.
     :func:`~app.services.pay_calendar.cadence_for` REFUSES the unresolvable
     owner, which is right for a producer of money and wrong for a form.
-    :func:`~app.services.pay_calendar.calendar_for` answers without refusing
-    but derives the owner's whole payday set to do it -- 61 rows on
-    production, on two pages that load a calendar for nothing else.  This is
-    the one fact both of those read, asked directly.
+    **Since plan step ``pay_calendar:C4-d`` (ruling R-PC45) so does**
+    :func:`~app.services.pay_calendar.calendar_for` -- this paragraph said it
+    "answers without refusing", which was true of the empty cadence-less
+    calendar that step deleted and is now false of both calendar doors.  It
+    remains the wrong door here for its OTHER stated reason, which the step did
+    not touch: it derives the owner's whole payday set to answer, 61 rows on
+    production, on two pages that load a calendar for nothing else.
+    ``resolve_cadence`` is the SOFT door and is what this form wants -- the one
+    fact both of those read, asked directly, and answered rather than raised.
 
     Returns:
         The paycheck count as an ``int``, or ``None``.
