@@ -85,6 +85,7 @@ def _create_tracked_txn_in_period(
     db.session.flush()
 
     txn = Transaction(
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -115,6 +116,7 @@ def _create_plain_txn_in_period(
     category_key = name if name in seed_user["categories"] else "Rent"
 
     txn = Transaction(
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

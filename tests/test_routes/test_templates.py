@@ -1154,6 +1154,7 @@ class TestGridRowKeyBuilder:
             # names -- these must remain distinct rows.
             txn_a = Transaction(
                 account_id=account.id,
+                user_id=period.user_id,
                 pay_period_id=period.id,
                 scenario_id=scenario.id,
                 status_id=projected.id,
@@ -1164,6 +1165,7 @@ class TestGridRowKeyBuilder:
             )
             txn_b = Transaction(
                 account_id=account.id,
+                user_id=period.user_id,
                 pay_period_id=period.id,
                 scenario_id=scenario.id,
                 status_id=projected.id,
@@ -2421,6 +2423,7 @@ class TestTemplateHardDelete:
 
             paycheck = Transaction(
                 template_id=template.id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2516,6 +2519,7 @@ class TestTemplateHardDelete:
 
             received_paycheck = Transaction(
                 template_id=template.id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2533,6 +2537,7 @@ class TestTemplateHardDelete:
             )
             projected_paycheck = Transaction(
                 template_id=template.id,
+                user_id=seed_periods_today[1].user_id,
                 pay_period_id=seed_periods_today[1].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,

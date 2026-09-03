@@ -101,6 +101,7 @@ def _row(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     txn = Transaction(
         account_id=template.account_id,
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=(seed_user["scenario"] if scenario is None else scenario).id,
         status_id=ref_cache.status_id(status),

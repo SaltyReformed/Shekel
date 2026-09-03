@@ -137,6 +137,17 @@ def create_inline():
     # dropped; assign Projected unconditionally.
     data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
 
+    # **The row's OWNER, which is a column since plan step
+    # ``pay_calendar:C13-a``.**  ``user_id`` is not a schema field on either
+    # create schema and never will be -- it is not the submitter's to state --
+    # so it is assigned here from the session, exactly as ``status_id`` above
+    # is.  ``_resolve_owned_fks`` has already proved that the submitted
+    # account, category, pay period and scenario are all ``current_user``'s, so
+    # this is the same value all four of them carry; if it were not, the two
+    # composite keys would refuse the INSERT rather than store a row whose
+    # parents disagree.
+    data["user_id"] = current_user.id
+
     # A typed name wins; an omitted or blank one (the pre_load hook
     # drops empty submits) falls back to the category display name.
     data.setdefault("name", category.display_name)
@@ -203,6 +214,17 @@ def create_transaction():
     # so any submitted value was dropped; assign Projected unconditionally so
     # the only route to a settled status remains the status seam.
     data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
+
+    # **The row's OWNER, which is a column since plan step
+    # ``pay_calendar:C13-a``.**  ``user_id`` is not a schema field on either
+    # create schema and never will be -- it is not the submitter's to state --
+    # so it is assigned here from the session, exactly as ``status_id`` above
+    # is.  ``_resolve_owned_fks`` has already proved that the submitted
+    # account, category, pay period and scenario are all ``current_user``'s, so
+    # this is the same value all four of them carry; if it were not, the two
+    # composite keys would refuse the INSERT rather than store a row whose
+    # parents disagree.
+    data["user_id"] = current_user.id
 
     # **The submitted figure becomes the row's OWNERSHIP before the splat**
     # (plan step **X-au-k**).  ``estimated_amount`` is read-only on the model

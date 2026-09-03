@@ -176,6 +176,10 @@ def mint_uncategorized(
     # verb, the bank's posting day on the ``observed`` basis, owning its
     # amount, on the baseline scenario.
     row = Transaction(
+        # The pass is the ONE statement of whose row this is (plan step
+        # ``pay_calendar:C13-a``), the same source ``account_id`` and the
+        # baseline scenario below already read.
+        user_id=scope.owner_id,
         account_id=scope.account_id,
         pay_period_id=movement.pay_period_id,
         scenario_id=require_baseline_scenario(scope.owner_id).id,

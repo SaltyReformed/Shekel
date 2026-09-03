@@ -34,6 +34,7 @@ class TestCreditWorkflow:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -88,6 +89,7 @@ class TestCreditWorkflow:
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -153,6 +155,7 @@ class TestCreditWorkflow:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[-1].user_id,
                 pay_period_id=seed_periods[-1].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -374,6 +377,7 @@ class TestCarryForward:
             # Create two projected expenses in the first period.
             for name in ("Expense A", "Expense B"):
                 txn = Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -418,6 +422,7 @@ class TestCarryForward:
 
             # One projected, one done.
             t1 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -428,6 +433,7 @@ class TestCarryForward:
                 amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             t2 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -485,6 +491,7 @@ class TestCarryForward:
             # Create a template-linked transaction.
             txn = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -517,6 +524,7 @@ class TestCarryForward:
 
             # One projected (should move), one cancelled (should stay).
             t1 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -527,6 +535,7 @@ class TestCarryForward:
                 amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             t2 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -566,6 +575,7 @@ class TestCarryForward:
 
             # One projected expense (should move), one received income (should stay).
             t1 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -576,6 +586,7 @@ class TestCarryForward:
                 amount_ownership=AmountOwnership.own(Decimal("60.00")),
             )
             t2 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -617,6 +628,7 @@ class TestCarryForward:
 
             # Soft-deleted projected expense -- should NOT be moved.
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -795,6 +807,7 @@ class TestNegativePaths:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -973,6 +986,7 @@ class TestNegativePaths:
             # Create a template-linked transaction (is_override=False).
             txn_with_template = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -985,6 +999,7 @@ class TestNegativePaths:
             )
             # Create an ad-hoc transaction (no template).
             txn_adhoc = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,

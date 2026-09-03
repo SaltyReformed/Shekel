@@ -119,6 +119,7 @@ def _make_projected_txn(seed_user, period, *, template,
     )
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -415,6 +416,7 @@ class TestSettleFromEntriesPreconditions:
                 .filter_by(name="Expense").one()
             )
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,

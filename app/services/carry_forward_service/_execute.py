@@ -540,6 +540,10 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
         The newly added (unflushed) Transaction.
     """
     row = Transaction(
+        # A carried-forward row is the SOURCE row's, moved (plan step
+        # ``pay_calendar:C13-a``): the owner travels with the identity this
+        # constructor copies, exactly as the account and template do.
+        user_id=source_txn.user_id,
         account_id=source_txn.account_id,
         template_id=source_txn.template_id,
         pay_period_id=target_period.period_id,

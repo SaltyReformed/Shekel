@@ -242,6 +242,7 @@ class TestConcurrentMarkDone:
 
         txn = Transaction(
             account_id=data["account"].id,
+            user_id=data['past_period'].user_id,
             pay_period_id=data["past_period"].id,
             scenario_id=data["scenario"].id,
             status_id=projected.id,
@@ -296,6 +297,7 @@ class TestConcurrentMarkDone:
 
         txn = Transaction(
             account_id=data["account"].id,
+            user_id=data['past_period'].user_id,
             pay_period_id=data["past_period"].id,
             scenario_id=data["scenario"].id,
             status_id=projected.id,
@@ -360,6 +362,7 @@ class TestConcurrentCarryForwardAndEdit:
 
         txn = Transaction(
             account_id=data["account"].id,
+            user_id=data['past_period'].user_id,
             pay_period_id=data["past_period"].id,
             scenario_id=data["scenario"].id,
             status_id=projected.id,

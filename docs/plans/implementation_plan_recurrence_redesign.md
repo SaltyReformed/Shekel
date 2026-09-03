@@ -404,17 +404,53 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: today it creates
       the Van's `$531.94` installment due `2029-02-22` the stale column drops. Carries **D46**.
 
-- [ ] **R7d-d -- the DISPLAY readers take the resolver.**
+**A first build is HELD at `9aff7ab9`** (`feat/r7d-c-2-loan-bound-at-generation`, no PR), recorded
+because nothing else in `docs/` references it. Its `_plan.py` half is superseded by `R7d-d`'s
+`Closing`; its 868 lines of test and harness are not, nor is the measurement `balance:X-au-f` rests
+on -- Van Loan, 24 projected rows, stamped clone 2026-08-31: unedited `2029-02-22`, rows raised to
+`$900.00` `2028-02-22`, halved to `$265.97` `2030-04-22`. The rows bound the generator.
+
+- [ ] **R7d-h -- a loan gets ONE closing date, past AND future.**
+      *(Id append-only per conventions rule 2; its RANK is before `R7d-d`, which it blocks.)*
+
+`balance_at.loan_payoff_date` answers HALF its own question: it folds FORWARD from the confirmed
+present seed, so a loan already at zero has no crossing left to date and returns `None` -- which
+does not mean *never*, it means *not my half*. Three consumers each invent a meaning --
+`recurrence_end_date` substitutes the READ CLOCK, `LoanFigures` adds `is_retired`, the equity chart
+and `/savings` drop the loan -- rule 14's derived half broken by a producer refusing half its
+domain, with each coping strategy an epicycle around a walk nobody wrote.
+
+**The date IS derivable today, which is what the step rests on.** `walk_loan_ledger` ->
+`dated_deltas` already produces the dated recorded balance and `balance:X-au-g-2c-3b-2` (`3b7716f8`)
+put both tiers on `replay_loan_events`, so the backward crossing is `plan_payoff_date`'s forward
+rule read the other way. Production clone at head, Van Loan trued to `$0.00`, read `2026-12-25`:
+`payoff_date=None`, `is_retired=True`, recorded balance folds to `<= 0` on **`2026-09-01`** over
+nine dated movements.
+
+`loan_closing_date(account, ctx) -> date | None` -- closed at `as_of`, the day it LAST became
+closed; else the forward crossing; else `None`, which now means only *never*. `recurrence_end_date`
+is then DELETED and `is_retired` stops being a BOUND discriminator (it stays for badging). It
+deletes a defect rather than ruling on one: a retired loan's stop tracked `ctx.as_of`, so the
+admitted set GREW one occurrence per cadence period where the stored column froze, and at `R7d-c-2`
+that writes a past-dated row per pass against a debt that is gone. **OPEN**: a loan closed then
+trued back UP has two crossings; the rule takes the last at or before `as_of`, unconfirmed.
+
+**Scope.** A NEW producer beside `loan_payoff_date`, not a change to its contract, so the card,
+`/savings` and the equity chart move one at a time; deleting `loan_payoff_date` at its last consumer
+is a LATER `balance` step, not minted here. No migration; moves no stored value.
+
+- [ ] **R7d-d -- the DISPLAY readers take the resolver, through a COMPOSED DOOR.**
 
 `recurring_view` and `describe` stop reading the column, so the Recurring surface's cadence sentence
-names the derived payoff, not the last value a chokepoint wrote.
+and its next date name the derived payoff rather than the last value a chokepoint wrote.
 
-**It must first decide what a RETIRED loan's payment says, because the resolver made that a function
-of the READ CLOCK** (R7d-b's adversarial review). A retired loan has no forward crossing, so the
-window is `ClosesOn(today)` and tomorrow's render says `ClosesOn(tomorrow)` -- where the stored
-column froze at whichever day a chokepoint last ran. The sum type does NOT tell "closes at the
-payoff" from "closed before this read", so this leaf renders the retired state as a STATE rather
-than a date, or a fourth shape is owed.
+**It reaches as far as the COMPOSED VALUE** (developer, 2026-09-02, over two smaller options): the
+conjunction of the authored bound and the derived stop is a VALUE the walk already reads
+(`ResolvedRecurrence.closing`), not a narrowing each of five surfaces performs, and the answer
+SHAPES move to `recurrence/_closing.py` because `_describe` cannot import `loan_recurrence_sync`
+without a cycle. **BLOCKED on `R7d-h`**, whose absence this step first papered over with a fourth
+shape. Held at `ea61116d` (`feat/r7d-d`, no PR) -- composed value, door and type move built and
+green; the display readers are NOT moved and the step may not tick until they are.
 
 - [ ] **R7d-e -- `/obligations` and the emergency-fund baseline take the resolver.**
 

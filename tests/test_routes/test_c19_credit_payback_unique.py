@@ -76,6 +76,7 @@ def _make_projected_expense(seed_user, seed_periods, amount="100.00", period_ind
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     txn = Transaction(
+        user_id=seed_periods[period_index].user_id,
         pay_period_id=seed_periods[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -106,6 +107,7 @@ def _insert_payback_directly(
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     payback = Transaction(
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario_id,
         account_id=account_id,
@@ -665,6 +667,7 @@ class TestSyncEntryPaybackTOCTOUPrevention:
         db.session.flush()
         txn = Transaction(
             account_id=seed_user["account"].id,
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             template_id=template.id,
@@ -767,6 +770,7 @@ class TestSyncEntryPaybackTOCTOUPrevention:
         db.session.flush()
         txn = Transaction(
             account_id=data["account"].id,
+            user_id=data['periods'][0].user_id,
             pay_period_id=data["periods"][0].id,
             scenario_id=data["scenario"].id,
             template_id=template.id,

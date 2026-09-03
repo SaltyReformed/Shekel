@@ -63,6 +63,7 @@ def _settled(db, seed_user, period, name, amount, day, *, is_income=False):
     status_id = ref_cache.status_id(StatusEnum.DONE)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,

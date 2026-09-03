@@ -321,10 +321,15 @@ def test_transactions_is_override_and_is_deleted_default_to_false(
 
     db.session.execute(db.text(
         "INSERT INTO budget.transactions "
-        "(account_id, pay_period_id, scenario_id, status_id, name, "
+        "(user_id, account_id, pay_period_id, scenario_id, status_id, name, "
         " transaction_type_id, estimated_amount) "
-        "VALUES (:acct, :pp, :sc, :st, :name, :tt, :amt)"
+        "VALUES (:uid, :acct, :pp, :sc, :st, :name, :tt, :amt)"
     ), {
+        # The OWNER, stated because this INSERT bypasses the ORM on purpose
+        # (plan step ``pay_calendar:C13-a``): ``budget.transactions.user_id`` is
+        # NOT NULL and has no server default, exactly like the four ids beside
+        # it, so a storage-tier control has to say it.
+        "uid": seed_periods[0].user_id,
         "acct": seed_user["account"].id,
         "pp": seed_periods[0].id,
         "sc": seed_user["scenario"].id,

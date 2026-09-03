@@ -160,6 +160,7 @@ class TestCreateEntry:
 
             txn = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -196,6 +197,7 @@ class TestCreateEntry:
             )
             txn = Transaction(
                 template_id=None,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -288,6 +290,7 @@ class TestCreateEntry:
             # Ad-hoc (no template), so ``tracks_purchases`` reads the row's own
             # ``is_envelope`` and the transfer guard is what refuses it.
             txn = Transaction(
+                user_id=user_id,
                 pay_period_id=period_id,
                 scenario_id=scenario_id,
                 account_id=account_id,
@@ -338,6 +341,7 @@ class TestCreateEntry:
 
             txn = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -613,6 +617,7 @@ class TestCompanionAccess:
 
             txn = Transaction(
                 template_id=template.id,
+                user_id=periods[0].user_id,
                 pay_period_id=periods[0].id,
                 scenario_id=seed_second_user["scenario"].id,
                 account_id=seed_second_user["account"].id,

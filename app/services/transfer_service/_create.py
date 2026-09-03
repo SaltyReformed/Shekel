@@ -159,6 +159,12 @@ def _build_shadow(
         session.
     """
     shadow = Transaction(
+        # A shadow is its PARENT TRANSFER's, and the transfer states its own
+        # owner (plan step ``pay_calendar:C13-a``).  Reading it off the parent
+        # rather than off ``account_id`` is what makes an endpoint on a
+        # stranger's account a refused INSERT instead of a row that agrees
+        # with itself and not with the transfer.
+        user_id=xfer.user_id,
         account_id=account_id,
         template_id=None,       # Shadows are transfer-generated, not template-generated.
         transfer_id=xfer.id,

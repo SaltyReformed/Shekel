@@ -28,6 +28,15 @@ class PayPeriod(UserScopedMixin, CreatedAtMixin, db.Model):
         # duplicate ORDINAL, which is now a position in a sort rather than a
         # value anything can repeat.
         db.UniqueConstraint("user_id", "start_date", name="uq_pay_periods_user_start"),
+        # The SUPERKEY ``budget.transactions`` names to prove its own owner is
+        # this period's (plan step ``pay_calendar:C13-a``, ruling **R-PC32**).
+        # It constrains nothing -- ``id`` is already the primary key, so this
+        # key can reject no row -- and exists only because PostgreSQL requires
+        # a UNIQUE over exactly the referenced columns before a composite
+        # foreign key may target them.  The same construction, for the same
+        # reason, as ``uq_accounts_id_user`` one table over and
+        # ``uq_transactions_id_account`` on the table that names this one.
+        db.UniqueConstraint("id", "user_id", name="uq_pay_periods_id_user"),
         # An owner holding a payday HAS a recorded cadence, guaranteed rather
         # than remembered (plan step C4-b-2, closing findings **P8** and
         # **P35**).  ``pay_period_write._apply`` upserts the schedule row
@@ -92,8 +101,13 @@ class PayPeriod(UserScopedMixin, CreatedAtMixin, db.Model):
     start_date = db.Column(db.Date, nullable=False)
 
     # Relationships -- transactions loaded via back_populates on Transaction
+    # ``foreign_keys`` for the reason ``Transaction.pay_period`` states: this
+    # table is reached from ``budget.transactions`` by two declared keys since
+    # plan step ``pay_calendar:C13-a``, and the single-column one is the
+    # declared join path for both directions of the pair.
     transactions = db.relationship(
-        "Transaction", back_populates="pay_period", lazy="select"
+        "Transaction", foreign_keys="Transaction.pay_period_id",
+        back_populates="pay_period", lazy="select",
     )
 
     def __repr__(self):

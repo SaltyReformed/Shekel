@@ -1795,6 +1795,7 @@ class TestTheReconcileRoute:
 
         txn = Transaction(
             template_id=template.id,
+            user_id=seed_periods_today[0].user_id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=account.id,
@@ -3163,6 +3164,7 @@ class TestTheReconcileRoutesUngradedBranches:
         db.session.flush()
         txn = Transaction(
             template_id=template.id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -5281,6 +5283,7 @@ class TestCheckingDetail:
             # Create income and expense in all post-anchor periods.
             for p in periods[1:]:
                 db.session.add(Transaction(
+                    user_id=p.user_id,
                     pay_period_id=p.id,
                     scenario_id=scenario.id,
                     account_id=acct.id,
@@ -5291,6 +5294,7 @@ class TestCheckingDetail:
                     amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 ))
                 db.session.add(Transaction(
+                    user_id=p.user_id,
                     pay_period_id=p.id,
                     scenario_id=scenario.id,
                     account_id=acct.id,
@@ -5346,6 +5350,7 @@ class TestCheckingDetail:
 
             for p in periods[1:]:
                 db.session.add(Transaction(
+                    user_id=p.user_id,
                     pay_period_id=p.id,
                     scenario_id=scenario.id,
                     account_id=acct.id,
@@ -5356,6 +5361,7 @@ class TestCheckingDetail:
                     amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 ))
                 db.session.add(Transaction(
+                    user_id=p.user_id,
                     pay_period_id=p.id,
                     scenario_id=scenario.id,
                     account_id=acct.id,
@@ -5478,6 +5484,7 @@ class TestCheckingDetail:
 
             # Create a credit expense in the first post-anchor period.
             db.session.add(Transaction(
+                user_id=periods[1].user_id,
                 pay_period_id=periods[1].id,
                 scenario_id=scenario.id,
                 account_id=acct.id,
@@ -5609,6 +5616,7 @@ def _make_projected_envelope_expense(
 
     txn = Transaction(
         template_id=template.id,
+        user_id=pay_period.user_id,
         pay_period_id=pay_period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=account_id,
@@ -6237,12 +6245,14 @@ class TestCashDetailContext:
         category = seed_user["categories"]["Salary"]
         for period in periods[1:]:
             db.session.add(Transaction(
+                user_id=period.user_id,
                 pay_period_id=period.id, scenario_id=seed_user["scenario"].id,
                 account_id=acct.id, status_id=projected.id, name="Paycheck",
                 category_id=category.id, transaction_type_id=income_type.id,
                 amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             ))
             db.session.add(Transaction(
+                user_id=period.user_id,
                 pay_period_id=period.id, scenario_id=seed_user["scenario"].id,
                 account_id=acct.id, status_id=projected.id, name="Bills",
                 category_id=category.id, transaction_type_id=expense_type.id,
