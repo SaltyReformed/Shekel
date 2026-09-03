@@ -358,6 +358,10 @@ def _create_envelope(
         The staged, flushed :class:`~app.models.transaction.Transaction`.
     """
     envelope = Transaction(
+        # The pass is the ONE statement of whose row this is (plan step
+        # ``pay_calendar:C13-a``), the same source ``account_id`` and the
+        # baseline scenario below already read.
+        user_id=scope.owner_id,
         account_id=scope.account_id,
         pay_period_id=pay_period_id,
         # **The BASELINE scenario, unconditionally.**  A what-if scenario is a

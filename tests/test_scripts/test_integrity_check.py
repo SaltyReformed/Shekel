@@ -126,10 +126,17 @@ class TestReferentialIntegrity:
         txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         db.session.execute(db.text("""
             INSERT INTO budget.transactions
-                (pay_period_id, scenario_id, account_id, status_id, name,
-                 transaction_type_id, estimated_amount)
-            VALUES (99999, :sid, :aid, :stid, 'Ghost Txn', :ttid, 50.00)
+                (pay_period_id, user_id, scenario_id, account_id, status_id,
+                 name, transaction_type_id, estimated_amount)
+            VALUES (99999, :uid, :sid, :aid, :stid, 'Ghost Txn', :ttid, 50.00)
         """), {
+            # ``session_replication_role = 'replica'`` suppresses referential
+            # TRIGGERS, which is what lets ``pay_period_id`` dangle -- it does
+            # not suppress NOT NULL, so the owner plan step
+            # ``pay_calendar:C13-a`` added is stated like every other column
+            # here.  It is the seeded owner's: the row is forged in its PARENT
+            # POINTER, which is what FK-05 is about, and nowhere else.
+            "uid": seed_user["user"].id,
             "sid": seed_user["scenario"].id,
             "aid": seed_user["account"].id,
             "stid": status.id,
@@ -584,6 +591,7 @@ class TestDataConsistency:
 
         settled_on = seed_periods[0].start_date
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -701,6 +709,7 @@ class TestDataConsistency:
 
         generated = Transaction(
             template_id=template.id,
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -732,6 +741,7 @@ class TestDataConsistency:
 
         override_sibling = Transaction(
             template_id=template.id,
+            user_id=generated.user_id,
             pay_period_id=generated.pay_period_id,
             scenario_id=generated.scenario_id,
             account_id=generated.account_id,
@@ -772,14 +782,18 @@ class TestDataConsistency:
         try:
             db.session.execute(db.text("""
                 INSERT INTO budget.transactions
-                    (template_id, pay_period_id, scenario_id, account_id,
-                     status_id, name, category_id, transaction_type_id,
-                     estimated_amount, is_override, is_deleted)
-                VALUES (:tid, :pid, :sid, :aid, :stid, 'DC06 True Dup',
+                    (template_id, pay_period_id, user_id, scenario_id,
+                     account_id, status_id, name, category_id,
+                     transaction_type_id, estimated_amount, is_override,
+                     is_deleted)
+                VALUES (:tid, :pid, :uid, :sid, :aid, :stid, 'DC06 True Dup',
                         :cid, :ttid, 100.00, FALSE, FALSE)
             """), {
                 "tid": template.id,
                 "pid": generated.pay_period_id,
+                # The duplicate is the generated row in every column that is
+                # not the index being tested, its owner included.
+                "uid": generated.user_id,
                 "sid": generated.scenario_id,
                 "aid": generated.account_id,
                 "stid": generated.status_id,
@@ -836,6 +850,7 @@ class TestDataConsistency:
         generated.occurs_on = date(2026, 1, 15)
         second = Transaction(
             template_id=template.id,
+            user_id=generated.user_id,
             pay_period_id=generated.pay_period_id,
             scenario_id=generated.scenario_id,
             account_id=generated.account_id,
@@ -881,14 +896,19 @@ class TestDataConsistency:
         try:
             db.session.execute(db.text("""
                 INSERT INTO budget.transactions
-                    (template_id, pay_period_id, scenario_id, account_id,
-                     status_id, name, category_id, transaction_type_id,
-                     estimated_amount, occurs_on, is_override, is_deleted)
-                VALUES (:tid, :pid, :sid, :aid, :stid, 'DC06 Same Occurrence',
+                    (template_id, pay_period_id, user_id, scenario_id,
+                     account_id, status_id, name, category_id,
+                     transaction_type_id, estimated_amount, occurs_on,
+                     is_override, is_deleted)
+                VALUES (:tid, :pid, :uid, :sid, :aid, :stid,
+                        'DC06 Same Occurrence',
                         :cid, :ttid, 100.00, :occ, FALSE, FALSE)
             """), {
                 "tid": template.id,
                 "pid": seed_periods[1].id,
+                # The period is a real one of the SAME owner's, so the row is
+                # legal on every axis but the occurrence key under test.
+                "uid": seed_periods[1].user_id,
                 "sid": generated.scenario_id,
                 "aid": generated.account_id,
                 "stid": generated.status_id,

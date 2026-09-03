@@ -1322,6 +1322,7 @@ class TestEmergencyFundCommittedBaseline:
             for period in seed_periods[1:7]:
                 txn = Transaction(
                     account_id=seed_user["account"].id,
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
                     status_id=settled_id,
@@ -1394,6 +1395,7 @@ class TestEmergencyFundCommittedBaseline:
             for period in seed_periods[0:6]:
                 db.session.add(Transaction(
                     account_id=seed_user["account"].id,
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
                     status_id=settled_id,
@@ -1408,6 +1410,7 @@ class TestEmergencyFundCommittedBaseline:
                 ))
                 db.session.add(Transaction(
                     account_id=savings.id,
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
                     status_id=settled_id,

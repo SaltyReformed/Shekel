@@ -89,6 +89,13 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
         """
         txn = Transaction(
             **_derive_row_fields(template, plan.rule, period)._asdict(),
+            # The OWNER sits here beside the other four rather than inside
+            # ``DerivedRowFields`` (plan step ``pay_calendar:C13-a``), for the
+            # reason stated above about ``occurs_on``: it is what the row IS,
+            # not something its definition re-derives per pass.  A maintain
+            # pass ``setattr``s every derived field onto an existing row, and a
+            # row does not change hands because its template was edited.
+            user_id=template.user_id,
             template_id=template.id,
             pay_period_id=period.period_id,
             occurs_on=occurrence,

@@ -78,6 +78,7 @@ def _a_row(db, seed_user, period, status_id, *, income=False, name="row"):
     """Insert one transaction of the given TYPE in the given status."""
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,

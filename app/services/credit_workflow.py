@@ -629,6 +629,11 @@ def create_cc_payback_transaction(
         ``id`` is available for entry linkage and logging.
     """
     payback = Transaction(
+        # The payback belongs to whoever the credit row belongs to (plan step
+        # ``pay_calendar:C13-a``); it is the same fact the account and the
+        # period below already carry, and the composite keys refuse a
+        # disagreement.
+        user_id=source_txn.user_id,
         account_id=source_txn.account_id,
         template_id=None,
         pay_period_id=next_period.period_id,

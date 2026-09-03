@@ -128,6 +128,7 @@ def _make_transaction(data, **overrides) -> Transaction:
         _db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     fields = {
+        "user_id": data["periods"][0].user_id,
         "pay_period_id": data["periods"][0].id,
         "scenario_id": data["scenario"].id,
         "account_id": data["account"].id,

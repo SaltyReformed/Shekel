@@ -548,6 +548,7 @@ class TestDeactivateCompanion:
         txn = Transaction(
             account_id=seed_user["account"].id,
             template_id=template.id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected_id,

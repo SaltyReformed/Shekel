@@ -45,6 +45,7 @@ def _payback_pair(app, seed_user, seed_periods):
     with app.app_context():
         source = Transaction(
             account_id=seed_user["account"].id,
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             category_id=seed_user["categories"]["Groceries"].id,
@@ -131,6 +132,7 @@ class TestTheCopyNamesTheRepairTHISPaybackHas:
         with app.app_context():
             envelope = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 category_id=seed_user["categories"]["Groceries"].id,
@@ -199,6 +201,7 @@ class TestTheDeleteRefusalNamesTheRepairTHISPaybackHas:
         with app.app_context():
             envelope = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 category_id=seed_user["categories"]["Groceries"].id,

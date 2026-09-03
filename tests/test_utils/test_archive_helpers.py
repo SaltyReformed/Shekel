@@ -60,6 +60,7 @@ def _make_template_with_status_txn(app, db_, seed_user, period, status_name):
 
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -98,6 +99,7 @@ def _make_income_template_with_status_txn(app, db_, seed_user, period, status_na
 
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

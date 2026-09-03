@@ -75,6 +75,7 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
     planned = Decimal(amount)
     settled_on = default_settle_day(seed_periods[period_index], status.id)
     txn = Transaction(
+        user_id=seed_periods[period_index].user_id,
         pay_period_id=seed_periods[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -929,6 +930,7 @@ class TestNumericEdgeCases:
             status = db.session.query(Status).filter_by(name="Projected").one()
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1001,6 +1003,7 @@ class TestAuthEdgeCases:
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn2 = Transaction(
+                user_id=periods2[0].user_id,
                 pay_period_id=periods2[0].id,
                 scenario_id=second_user["scenario"].id,
                 account_id=second_user["account"].id,

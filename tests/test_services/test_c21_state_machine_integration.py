@@ -276,6 +276,7 @@ class TestPartialUniqueIndexBehaviour:
         projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
         shadow = Transaction(
             account_id=td["account"].id,
+            user_id=td['periods'][0].user_id,
             pay_period_id=td["periods"][0].id,
             scenario_id=td["scenario"].id,
             status_id=projected_id,
@@ -362,6 +363,7 @@ class TestPartialUniqueIndexBehaviour:
 
             txn_a = Transaction(
                 account_id=td["account"].id,
+                user_id=td['periods'][0].user_id,
                 pay_period_id=td["periods"][0].id,
                 scenario_id=td["scenario"].id,
                 status_id=projected_id,
@@ -373,6 +375,7 @@ class TestPartialUniqueIndexBehaviour:
             )
             txn_b = Transaction(
                 account_id=td["account"].id,
+                user_id=td['periods'][0].user_id,
                 pay_period_id=td["periods"][0].id,
                 scenario_id=td["scenario"].id,
                 status_id=projected_id,

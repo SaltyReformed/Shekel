@@ -415,6 +415,7 @@ class TestATemplateThatNeverRecurredIsNotSwept:
         manual = Transaction(
             account_id=seed_user["account"].id,
             template_id=template.id,
+            user_id=seed_periods[6].user_id,
             pay_period_id=seed_periods[6].id,
             scenario_id=seed_user["scenario"].id,
             status_id=_projected_id(),

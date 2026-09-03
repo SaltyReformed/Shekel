@@ -529,6 +529,7 @@ class TestMarkDoneDoubleSubmit:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -587,6 +588,7 @@ class TestCarryForwardDoubleSubmit:
             amounts = [Decimal("850.00"), Decimal("125.50"), Decimal("43.99")]
             for i, amount in enumerate(amounts):
                 txn = Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
