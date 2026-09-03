@@ -137,8 +137,11 @@ class HandTotals:
             2026-09-01 (**R-IU**) that NO member is pre-selected, on **R-HX**'s
             reading of what justified means -- the app has a candidate here
             (the member whose figure is computed rather than stored) and not a
-            justification, and the justification is what
-            ``bank_import:X-gj-3b``'s standing rule ships.
+            justification.  **No later step supplies one**: ``X-gj-3b`` was
+            withdrawn 2026-09-02 (**R-JJ**), and ``recurrence:R18`` removes the
+            CHOICE instead of justifying it, by making one payroll deposit name
+            one row.  The control is NOT retired with it -- a genuine multi-row
+            group has no computed member, so it has no candidate either.
     """
 
     sides: MatchSides
