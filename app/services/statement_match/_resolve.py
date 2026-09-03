@@ -8,9 +8,10 @@ finding **N-336** asks for took the file past its line cap.  Nothing moved
 across it: :func:`resolve_rows` called nothing in the write half and the write
 half calls nothing here, so the split is the call graph's own shape.
 
-**SIX refusals live here and they share one subject**: whether what a body
-sent is what this pass could have offered.  Two are about the LINES -- a line
-this account does not hold, and one another match has claimed -- and four
+**SEVEN refusals live here and they share one subject**: whether what a body
+sent is what this pass could have offered.  Three are about the LINES -- a
+line this account does not hold, one another match has claimed, and one the
+owner has already SKIPPED (plan step ``bank_import:X-gj-4a``) -- and four
 about the ROWS: a row this pass could not offer or can no longer price, one
 subject named twice, a row that has MOVED since the screen described it, and
 an ATTRIBUTION naming a row the submission does not carry (plan step
@@ -21,9 +22,11 @@ empty side, a parent matched beside its own child -- and the ones in
 ``bank_import:X-f6d-4`` includes the figure that is not the row's to state.
 
 *(This module's count is stated because this arc has shipped a taxonomy that
-did not add up before; if a sixth refusal is added here, this sentence is what
-has to change with it.  No count is claimed for the other module, which owns
-its own.)*
+did not add up before; if an eighth refusal is added here, this sentence is
+what has to change with it.  It read SIX until plan step
+``bank_import:X-gj-4a`` added the skip, which is the count moving with the
+predicate rather than a reader being left to re-count.  No count is claimed
+for the other module, which owns its own.)*
 
 **The security property is the SCOPE** and it did not change: an id is looked
 up in the pass's own offer set (:class:`~._scope.ReviewScope`), never queried
@@ -45,10 +48,12 @@ from ._candidates import MatchedSubjects, repriced, unmatched_rows
 from ._offers import CandidateRow, RowKind
 from ._scope import ReviewScope
 from ._submission import MatchSubmission, ReviewedRow
+from ._undisposed import skipped_among
 
 
 def load_lines(
     account_id: int, line_ids: "frozenset[int]", matched: MatchedSubjects,
+    *, for_write: bool,
 ) -> "list[BankStatementLine]":
     """Return the submitted bank lines, refusing any this account cannot match.
 
@@ -69,23 +74,64 @@ def load_lines(
     account, and has something already claimed it" is two places for the
     refusal to stop firing.
 
+    **A line the owner has SKIPPED is refused for the same reason one match
+    holds** (plan step ``bank_import:X-gj-4a``, ruling **bank_import:R-HP**):
+    a bank line ends on exactly ONE of the four verbs, and
+    :func:`~._skipping.skip_line` refuses the mirror -- a line a live match
+    answers may not also be skipped.  **Without this half the exclusivity is
+    one-directional**, and the state it admits is silent: the line carries a
+    match AND a skip, so it renders a card on the Explained tab and another on
+    the Skipped tab, is absent from the inbox for two independent reasons, and
+    nothing raises.  No key can hold it -- the rule spans two tables -- which
+    is the position ``accept_match``'s balance refusal is already in.
+
+    **Asked HERE and not in the three doors**, because this function is
+    already the one statement of *is this line on this account, and has
+    anything claimed it*: the paragraph above says two implementations of that
+    question is two places for it to stop firing, and a third door written next
+    year inherits this one by calling it.
+
     Args:
         account_id: The account the match is for.
         line_ids: The submitted ids.
         matched: What this account's matches have already claimed, read by the
             ACT rather than queried here -- so a batch's fourth item sees the
             lines its third item claimed.
+        for_write: Whether the caller is about to WRITE a match, which decides
+            whether the lines are read under a row lock.  **Keyword-only and
+            with NO DEFAULT**, because the value that reads as safe is the
+            wrong one in both directions: defaulting to ``True`` makes a
+            PREVIEW fail, and defaulting to ``False`` makes a DOOR race.  The
+            three write doors pass ``True``;
+            :func:`~._preview.preview_hand_build` passes ``False``, and it is
+            the only caller that may -- it exists to run this door's reads and
+            refusals WITHOUT its writes.
+            **A preview must not lock, and that is measured rather than
+            stylistic**: a query request runs inside a
+            ``REPEATABLE READ, READ ONLY`` transaction
+            (:mod:`app.db_transaction`), where PostgreSQL refuses every row-lock
+            strength -- ``FOR NO KEY UPDATE`` included -- at executor start,
+            whether or not the query matches a row.  The workbench reaches this
+            on an ordinary ``GET .../statements/match?line=N``, which is the
+            link ruling **R-HC** puts on every queue row, so a lock taken
+            unconditionally here is a 500 on that page.  Named by adversarial
+            design review 2026-09-02, which found it in this step's own first
+            draft.
 
     Returns:
         The lines, ascending by posted day then id.
 
     Raises:
-        ValidationError: When an id names no line on this account, or names one
-            another match already explains.  A REFUSAL rather than a silent
-            skip, unlike the reconcile panel's bulk tick: that door narrows a
+        ValidationError: When an id names no line on this account, names one
+            another match already explains, or names one the owner has already
+            skipped.  A REFUSAL rather than silently dropping the member,
+            unlike the reconcile panel's bulk tick: that door narrows a
             set the user swept, and this one names specific rows on purpose, so
             dropping a member would change what the match MEANS while
-            reporting success.
+            reporting success.  *(It read "rather than a silent skip" until
+            plan step ``bank_import:X-gj-4a`` made SKIP a verb of this
+            package's own, at which point the sentence read as being about the
+            refusal one line above it.)*
     """
     if line_ids & matched.lines:
         raise ValidationError(
@@ -93,19 +139,47 @@ def load_lines(
             "else.  Undo that match first if it is wrong.  Nothing was "
             "changed."
         )
-    lines = (
+    # **A WRITING CALLER READS THE LINES LOCKED, AND BEFORE THE SKIP TEST
+    # BELOW.**  Both halves of ruling R-HP's exclusivity are app-tier reads
+    # across two tables -- this asks whether a skip answers the line, and
+    # :func:`~._skipping.skip_line` asks whether a match does -- so under
+    # ``READ COMMITTED`` two tabs otherwise interleave into a line carrying
+    # BOTH answers, which no key can catch.  Locking the bank line, which both
+    # writers' foreign keys reference, is what serialises them.
+    # ``FOR NO KEY UPDATE`` for the reason :func:`~._skipping._line_on`
+    # states: ``FOR KEY SHARE`` is what an ordinary foreign-key insert already
+    # takes, and two of those are compatible with each other.
+    #
+    # **The ORDER BY gives every caller here one lock order, which bounds the
+    # deadlock risk WITHIN one call and not across a batch.**
+    # :func:`~._batch.apply_reviewed` loops its items and calls a door per
+    # item, so a bulk apply takes N separately-ordered reads in SUBMISSION
+    # order; two concurrent presses whose items name the same lines in
+    # opposite order can still deadlock. That is finding **N-471** and is not
+    # narrowed here, because the remedy is an ordering decision in the batch
+    # and would change which item's savepoint runs first on a money door.
+    # Named by adversarial design review 2026-09-02.
+    query = (
         db.session.query(BankStatementLine)
         .filter(
             BankStatementLine.account_id == account_id,
             BankStatementLine.id.in_(line_ids),
         )
         .order_by(BankStatementLine.posted_on, BankStatementLine.id)
-        .all()
     )
+    if for_write:
+        query = query.with_for_update(of=BankStatementLine, key_share=False)
+    lines = query.all()
     if len(lines) != len(line_ids):
         raise ValidationError(
             "A statement line you picked is no longer on this account.  "
             "Reload the page and try again -- nothing was changed."
+        )
+    if skipped_among(line_ids, account_id):
+        raise ValidationError(
+            "A statement line you picked is one you have already skipped, so "
+            "it is not waiting to be explained.  Undo that skip first if you "
+            "meant to explain it.  Nothing was changed."
         )
     return lines
 

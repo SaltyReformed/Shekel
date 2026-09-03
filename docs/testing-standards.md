@@ -3,6 +3,10 @@
 These standards apply to all testing activities in the Shekel project. They are referenced from
 CLAUDE.md and are loaded when working on tests or when test-related decisions arise.
 
+**This file is the rationale tier and the one home for the suite's dated measurements.** CLAUDE.md
+states each rule in one line and points here; `.claude/rules/testing.md` carries the path-scoped
+must-knows; a fact lives in one tier and the other tiers point at it.
+
 ---
 
 ## Test Infrastructure
@@ -30,18 +34,24 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
   bare `pytest` reaches the system daemon outside CI. Opt in locally with
   `SHEKEL_ALLOW_HOST_DOCKER=1 PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/...`.
   Full rationale and the daemon-isolation plan: `docs/test-harness-isolation.md`.
-- **Full suite:** ~65 s wall-clock including the restart (~62 s pytest + ~3 s restart) on a fresh
-  test-db container, ~5,504 tests at the default `-n 12` parallelism (set in `pytest.ini`
-  `addopts`). A single `./scripts/test.sh` invocation completes well under the 10-min hard timeout.
-- **Concurrent invocations are NOT safe under Phase 3b.** The per-worker DB name is the stable form
-  `shekel_test_{worker_id}` (no PID suffix) so the Flask-SQLAlchemy engine URL stays valid across
-  every drop+reclone. Two simultaneous pytest invocations against the same cluster collide on the
-  same worker DB name -- the bootstrap's `pg_stat_activity` filter prevents dropping a sibling's
-  live DB, so the second invocation gets a clear "database already exists" failure instead of silent
-  corruption. Workarounds when you genuinely need concurrent invocations: run one against the dev
-  `db` cluster on port 5432 (point `TEST_ADMIN_DATABASE_URL` at it after rebuilding the template
-  there), or run them sequentially with a `wait` between invocations. Sequential invocations are
-  unaffected; orphan cleanup at session start drops any leftover DB from a previous crashed run.
+- **Full suite:** ~11,800 tests, ~4.5-5 min at the default `-n 12` parallelism (set in `pytest.ini`
+  `addopts`). Measured 2026-08-30: 11,788 passed in 278-296 s over four runs, ~18 s run-to-run
+  variance. Do not quote these figures without their date; the wrapper's own output is the current
+  measurement.
+- **Concurrent invocations are serialized by the suite slot** (`scripts/suite_slot.sh`, PR #199,
+  2026-09-02): `acquire <name>` before a gating run, `release <name>` after, `status` to inspect.
+  The postmaster is SHARED. `test.sh` attempts a hygiene restart first, and its live-backend probe
+  skips the restart when another run's connections are visible -- but the probe is a race (probe,
+  then restart), it is blind to a run whose only connections sit on the excluded admin database, and
+  even a correctly skipped restart leaves two suites contending (the slot script's header carries
+  the measurement: 859 s against 304 s alone, both results void). A probe is not a lock, which is
+  why the slot is mandatory rather than advisory. Semantics, exemptions and the staleness rules live
+  in `.claude/rules/testing.md` and the script's own header. What the slot does not cover, the
+  worker databases do: the per-worker DB name is the stable form `shekel_test_{worker_id}` (no PID
+  suffix), so two unslotted invocations against one cluster collide with a clear "database already
+  exists" failure rather than silent corruption -- isolate a second checkout with `TEST_DB_PREFIX`
+  and `TEST_TEMPLATE_DATABASE` ("Two checkouts against one cluster" below). Orphan cleanup at
+  session start drops any leftover DB from a previous crashed run.
 - **First-time setup:** build the template once with `python scripts/build_test_template.py`; see
   "Building the test template" below for when to rebuild.
 - **Before reporting done:** every batch (or the single full- suite invocation) must end in
@@ -52,9 +62,10 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
   marginal speedup falls off because PostgreSQL's cluster- wide `pg_database` catalog lock (formerly
   the WAL/fsync pipeline pre-Phase-3) is the serialised resource; see
   `docs/audits/test_improvements/test-performance-research.md` for the full profile.
-- **Test timeout:** 30s per test, configured in `pytest.ini`. Slowest known test is ~3s
-  (bcrypt-bound MFA/auth tests; ~1-3s each is expected). Anything past 30s raises a timeout error
-  rather than hanging the suite.
+- **Test timeout:** 30s per test, configured in `pytest.ini`; anything past 30s raises a timeout
+  error rather than hanging the suite. The bcrypt-bound MFA/auth tests are the slow tail. (A
+  slowest-test figure once quoted here was measured stale and is dropped rather than re-pinned;
+  re-measure with `--durations` when the tail matters.)
 
 ## Catalog fragmentation and the test-runner wrapper
 
@@ -98,8 +109,8 @@ exits, no long-lived backend) does **not** fragment -- DROP stays at ~3 ms. Only
 pattern of "many long-lived backends + heavy DDL" triggers the drift.
 
 **Fix.** `./scripts/test.sh` restarts `shekel-dev-test-db` before every pytest invocation, waits for
-`pg_isready`, then execs into pytest with whatever arguments were passed. Cost is ~3 s -- ~5 % of a
-65 s suite, invisible compared to the variance it eliminates.
+`pg_isready`, then execs into pytest with whatever arguments were passed. Cost is ~3 s, invisible
+compared to the variance it eliminates.
 
 Escape hatches:
 
@@ -148,8 +159,8 @@ Phase 3b fixed. The restart-per-suite cost is a better tradeoff than test isolat
 ### Optional per-directory batching (historical)
 
 The 8-batch split below was required when the suite was ~28 min sequentially and the 10-min CI
-timeout forced sub-batches. At the current Phase 3 `-n 12` default (~65 s full suite via
-`./scripts/test.sh`) it is **purely historical** -- batched invocations no longer offer any
+timeout forced sub-batches. At the `-n 12` default (the dated full-suite measurement is under Test
+Run Guidelines above) it is **purely historical** -- batched invocations no longer offer any
 wall-clock benefit and individual batches finish in seconds, so the bisecting-a-regression and
 sequential- debugging scenarios are better served by `pytest <specific-file> -v` rather than a whole
 batch. The table is preserved so existing references to "Batch N" in old commits or docs remain
@@ -166,9 +177,10 @@ decodable; DO NOT cite these timings in new measurements.
 | `tests/test_adversarial/ tests/test_scripts/ tests/test_deploy/` | ~545 | -- |
 | `tests/test_audit_fixes.py test_ref_cache.py test_schemas/ test_utils/ test_concurrent/` | ~400 | -- |
 
-Total: ~5,504 tests / ~65 s at `-n 12` via `./scripts/test.sh` (full suite is faster than the sum of
-batches because pytest startup + 12-worker bootstrap overhead amortises over the full inventory
-rather than paying 8x). `tests/test_performance/` is excluded from the default `addopts` and must be
+Total then, in that era's own figures: ~5,504 tests / ~65 s at `-n 12` via `./scripts/test.sh` (full
+suite is faster than the sum of batches because pytest startup + 12-worker bootstrap overhead
+amortises over the full inventory rather than paying 8x); DO NOT cite these timings in new
+measurements either. `tests/test_performance/` is excluded from the default `addopts` and must be
 invoked explicitly: `./scripts/test.sh tests/test_performance -v -s`.
 
 ## Building the test template

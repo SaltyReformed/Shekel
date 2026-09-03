@@ -49,7 +49,6 @@ from app.services.tax_config_service import (
     load_tax_configs_for_periods,
     load_tax_configs_for_year,
 )
-from app.utils.balance_predicates import is_projected
 
 logger = logging.getLogger(__name__)
 
@@ -152,9 +151,10 @@ def get_current_gross_biweekly(
         return ZERO
 
     # Resolved for the RESOLVED PERIOD's own tax year rather than the clock's,
-    # which is the key ``live_projected_net`` below already uses for every
-    # period it prices -- so a caller reading one period and a caller reading
-    # the horizon cannot resolve the same period against different rules.
+    # which is the key :meth:`SalaryPricing._net_by_period` below uses for
+    # every period it prices -- so a caller reading one period and a caller
+    # reading the horizon cannot resolve the same period against different
+    # rules.
     tax_configs = load_tax_configs_for_year(
         user_id, profile, current_period.start_date.year,
     )
@@ -168,7 +168,9 @@ class SalaryPricing:
     """What the owner's active salary profiles pay, resolved per profile ASKED.
 
     **The DERIVATION half of the salary amount rule, split from its per-row
-    lookup at plan step X-au-c2b.**  Everything expensive behind a paycheck's
+    lookup at plan step X-au-c2b, and the one producer of a ROW's amount since
+    plan step X-au-d** (finding **N-443** is the two other spellings of the
+    projection itself).  Everything expensive behind a paycheck's
     live figure -- the owner's whole pay-period set, each profile's tax configs
     resolved per period YEAR, and ``paycheck_calculator.project_salary`` run over
     the complete set because FOUR of the engine's judgements read it (see
@@ -354,14 +356,28 @@ def salary_pricing(user_id: int, scenario_id: int) -> SalaryPricing:
 def salary_net_for(txn, pricing: SalaryPricing) -> "Decimal | None":
     """Return what the salary profile pays for *txn*'s period, or ``None``.
 
-    **The PRICING lookup -- amount rule 2's whole body** (ruling **R-FI**), split
-    from the read-time repair below at plan step X-au-c2b.  It asks only what a
-    paycheck IS worth, so it reads nothing about whether the row still counts:
-    not ``is_projected``, not ``is_override``, not ``is_deleted``.  That is
-    finding **N-262**'s rule applied one tier down -- those three say whether a
-    row COUNTS and who last touched it, never who prices it -- and it is why a
-    Cancelled paycheck resolves like any other instead of refusing for a reason
-    that has nothing to do with pricing.
+    **The PRICING lookup -- amount rule 2's whole body** (ruling **R-FI**), and
+    since plan step **X-au-d** the only producer of a ROW's amount.  It was
+    split from a read-time repair (``live_projected_net``) at plan step
+    X-au-c2b and stood beside it until that cutover declared salary rows
+    DERIVED, at which point there was no stored figure left for a repair to
+    supersede and the repair was deleted rather than left as a second walk to
+    one answer (``CLAUDE.md`` rule 14, rulings **R-IZ** / **R-JA**).
+
+    *It is not the only spelling of the paycheck DERIVATION, and an adversarial
+    review of X-au-d corrected a claim here that said it was*:
+    ``routes/salary/views`` and ``routes/salary/cockpit`` each build the same
+    ``project_salary`` call over the same calendar, because they render the
+    whole breakdown rather than the net.  Finding **N-443**.
+
+    It asks only what a paycheck IS worth, so it reads nothing about whether
+    the row still counts: not ``is_projected``, not ``is_override``, not
+    ``is_deleted``.  That is finding **N-262**'s rule applied one tier down --
+    those three say whether a row COUNTS and who last touched it, never who
+    prices it -- and it is why a Cancelled paycheck resolves like any other
+    instead of refusing for a reason that has nothing to do with pricing.  The
+    repair that DID read those three is what X-au-d removed, so the split it
+    was written to protect is now simply the shape of the module.
 
     ``is_income`` IS read, and it is a pricing fact rather than a status one: a
     salary profile states a NET PAY, so an expense row on a salary-linked
@@ -382,45 +398,3 @@ def salary_net_for(txn, pricing: SalaryPricing) -> "Decimal | None":
     if not txn.is_income or txn.template_id is None:
         return None
     return pricing.net_for(txn.template_id, txn.pay_period_id)
-
-
-def live_projected_net(txn, pricing: SalaryPricing) -> "Decimal | None":
-    """Return the live net that SUPERSEDES *txn*'s stored figure, or ``None``.
-
-    The read-time repair, and the half of the old batch producer that reads a
-    row's status.  A stored ``Transaction.estimated_amount`` is a cache of this
-    derivation (finding **N-224**), so every balance and display surface shows
-    the recompute rather than the column -- which is what keeps the grid from
-    disagreeing with the salary page after a profile, calibration, or
-    financial-calc CODE change that fired no regeneration.
-
-    Only a row that is ALL of:
-
-      * income with a template, and priced by an active profile in this
-        scenario for its own period (:func:`salary_net_for`);
-      * Projected (:func:`~app.utils.balance_predicates.is_projected` --
-        Received income RECORDS what moved, a historical fact and
-        never a recomputable projection);
-      * NOT user-overridden (``is_override`` -- a manual amount the user
-        deliberately set is respected, mirroring the recurrence engine),
-
-    has a live figure.  Every other row answers ``None`` and keeps its stored
-    one, so the repair stays dormant for non-salary income, overridden rows and
-    expenses.
-
-    **This gate is the repair's, NOT the pricing rule's**, and separating them is
-    plan step X-au-c2b.  Ruling R-FI deletes the repair outright -- plan steps
-    X-au-d and X-au-g declare these rows DERIVED, after which the resolver
-    answers them from :func:`salary_net_for` and there is no stored figure left
-    to supersede.  Until then the two coexist and only this one reads status.
-
-    Args:
-        txn: The row to ask about.
-        pricing: The read pass's :class:`SalaryPricing`.
-
-    Returns:
-        The live net pay when the repair applies to this row, else ``None``.
-    """
-    if not is_projected(txn) or txn.is_override:
-        return None
-    return salary_net_for(txn, pricing)

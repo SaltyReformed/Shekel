@@ -1179,6 +1179,67 @@ class TestTheDeletePost:
         assert db.session.query(StatementImport).count() == 0
         assert db.session.query(BankStatementLine).count() == 0
 
+    def test_the_flash_says_how_many_SKIPS_went_with_the_lines(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step ``bank_import:X-gj-4a``, ruling **bank_import:R-JG**.
+
+        A skip goes with its line rather than refusing the delete, so what the
+        owner loses is answers they already gave -- and re-importing the same
+        span asks about those lines again.  **The service counting it is not
+        enough**: ``ImportRemoval.anchors_released`` is computed, tested at the
+        service tier and rendered by NO surface, while its own docstring says
+        it is "reported rather than silent" -- measured on this tree, and
+        exactly the state this case exists to keep the skip count out of.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        recorded = db.session.query(StatementImport).one()
+        line = db.session.query(BankStatementLine).order_by(
+            BankStatementLine.id,
+        ).first()
+        statement_match.skip_line(
+            line.id, seed_user["user"].id, seed_user["account"].id,
+        )
+        db.session.commit()
+
+        response = self._delete(
+            auth_client, seed_user["account"].id, recorded.id,
+        )
+
+        # **Read out of the TOAST, not out of the page** (``_flash_toasts``).
+        # The imports table renders each evidence sentence in a ``title``
+        # attribute, so a bare ``in body`` has passed here against a receipt
+        # that said nothing at all -- and the 2026-08-23 review measured that
+        # flipping every category to ``success`` left all 32 cases in this file
+        # green.  Named by adversarial test-quality review 2026-09-02.
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert any(
+            "1 line(s) you had skipped went with them" in message
+            for _, message in toasts
+        )
+        assert [category for category, _ in toasts] == ["info"]
+
+    def test_the_flash_says_NOTHING_about_skips_when_none_went(
+        self, auth_client, db, seed_user,
+    ):
+        """The clause is conditional, so an ordinary delete does not mention it.
+
+        Paired with the case above deliberately: a sentence rendered
+        unconditionally would read "0 line(s) you had skipped went with them"
+        on every delete, which is the noise every other clause on this receipt
+        is written to avoid.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        recorded = db.session.query(StatementImport).one()
+
+        response = self._delete(
+            auth_client, seed_user["account"].id, recorded.id,
+        )
+
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert toasts, "the delete should still have flashed its receipt"
+        assert not any("you had skipped" in message for _, message in toasts)
+
     def test_the_page_offers_the_control_with_what_it_would_remove(
         self, auth_client, db, seed_user,
     ):

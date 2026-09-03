@@ -7,7 +7,9 @@ paths:
 
 Must-knows for the test suite. Full standards: `docs/testing-standards.md`
 (infrastructure, run guidelines, problem reporting, the catalog-fragmentation
-rationale).
+rationale). The `code-reviewer` agent restates the test-quality bar
+deliberately, so a review carries it even where this file has not loaded; a
+change here updates that mirror in the same commit.
 
 ## Running
 
@@ -23,10 +25,12 @@ rationale).
   `./scripts/test.sh tests/path/test_file.py::test_name -v`.
 - **Concurrent worktrees: take the slot first.** `./scripts/suite_slot.sh acquire <name>`,
   then `./scripts/test.sh`, then `release <name>`. The template and the worker databases
-  are isolated per worktree, but the POSTMASTER is shared and `test.sh` restarts it as its
-  FIRST act, so a gating run KILLS any in-flight run elsewhere. One-directional: a gating
-  run destroys a targeted one, never the reverse. Contention measured 859 s against 304 s
-  alone, both results void. `acquire` exits 2 and releases what it took when a pytest is
+  are isolated per worktree, but the POSTMASTER is shared: `test.sh` ATTEMPTS a hygiene
+  restart first, and its live-backend probe skips it when another run's connections are
+  visible -- but the probe is a race, it is blind to a run whose only connections sit on
+  the excluded admin database, and a probe is not a lock, so an unslotted gating run can
+  still kill an in-flight run. Contention measured 859 s against 304 s alone, both results
+  void. `acquire` exits 2 and releases what it took when a pytest is
   already live -- it guards the START of a run, so one in flight can only be coordinated,
   not protected. `release` frees the lock even on a name mismatch, so copy your name
   exactly. **Only the HOLDER releases** -- a lock held 600 s with nothing running looks

@@ -248,11 +248,16 @@ def _shadow_live_amount(
     price rather than two answers about two moments; deriving it once rather
     than twice is what makes that structural.
 
-    **The genesis split resolves its rate period from the identical date**
-    (``loan_ledger._split.split_one_payment``, ``period_for_date(periods,
-    due_date)``), so the cash built into a payment and the interest and escrow
-    its split backs out of principal read one period and one escrow version,
-    by construction (the cash==split invariant) rather than by coincidence.
+    **The genesis charge resolves its rate period and its escrow from the
+    identical date** (``loan_ledger._charges.charges_for_due_dates``,
+    ``period_for_date(periods, on_date)``), so the cash built into a payment and
+    the interest and escrow its split backs out of principal read one period and
+    one escrow version, by construction (the cash==split invariant) rather than
+    by coincidence.  **A charge is dated at the EARLIEST installment due in its
+    accrual period, which for the one-payment-a-month shape IS this due date**;
+    a SECOND payment in one period deliberately clears no fresh charge, so there
+    the cash carries an escrow the split does not back out and the whole payment
+    is principal (plan step X-au-g-2c-3b-2).
     Until R-IJ that held for the escrow alone: the P&I came from whatever
     period contained the READ date, so on an ARM whose rate had adjusted
     between the two the residual ``cash - interest - escrow`` absorbed the

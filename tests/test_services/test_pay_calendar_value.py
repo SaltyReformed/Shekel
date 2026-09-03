@@ -1027,9 +1027,9 @@ class TestCurrentAndFuture:
 
     def test_an_empty_calendar_answers_an_empty_window(self):
         """An owner with no payday has no paycheck left, which is not an error."""
-        assert len(PayCalendar.from_paydays([], None, 7, history_opens_on=None).current_and_future(
-            date(2026, 1, 2),
-        )) == 0
+        assert len(PayCalendar.from_paydays(
+            [], 14, 7, history_opens_on=None,
+        ).current_and_future(date(2026, 1, 2))) == 0
 
     @pytest.mark.parametrize("name,paydays,cadence", SHAPES + [
         # The one shape ``SHAPES`` omits and the only one on which this
@@ -1178,11 +1178,15 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
     def test_an_owner_with_no_payday_is_answered_nothing(self):
         """An empty calendar has no last payday to continue from.
 
-        The same answer :meth:`PayCalendar.current_and_future` gives them, and
-        the reason the ``cadence_days is None`` beside an empty payday set is
-        never read: the sequence returns before the projection.
+        The same answer :meth:`PayCalendar.current_and_future` gives them.  The
+        sequence returns before the projection, so the cadence this calendar
+        carries is never read -- *which is what the paragraph here used to
+        argue made ``cadence_days is None`` SAFE beside an empty payday set.
+        Plan step ``pay_calendar:C4-d`` made a cadence required, so the
+        property is now that the walk is empty rather than that an absent value
+        goes unread.*
         """
-        empty = PayCalendar.from_paydays([], None, 7, history_opens_on=None)
+        empty = PayCalendar.from_paydays([], 14, 7, history_opens_on=None)
 
         assert list(paychecks_from(empty, date(2026, 1, 1))) == []
         assert len(empty.current_and_future(date(2026, 1, 1))) == 0
@@ -1395,7 +1399,9 @@ class TestTheSavedWindowIsTheBalanceSeamsDomain:
 
     def test_an_empty_calendar_answers_an_empty_window(self):
         """A brand-new owner has no columns, which is an answer not an error."""
-        assert len(PayCalendar.from_paydays([], None, 1, history_opens_on=None).saved()) == 0
+        assert len(PayCalendar.from_paydays(
+            [], 14, 1, history_opens_on=None,
+        ).saved()) == 0
 
 
 class TestTheAxisReplacesTheSyntheticProjection:
@@ -1802,7 +1808,7 @@ class TestTheSavedIndexIsBOTHTheScopeAndTheLookup:
         this returns none -- rather than a scope that is missing and reads as
         unbounded.
         """
-        assert calendar(paydays=[], cadence=None).saved_by_id() == {}
+        assert calendar(paydays=[]).saved_by_id() == {}
 
     def test_the_mapping_is_READ_ONLY_and_the_same_one_every_call(self):
         """MEMOIZED, and immutable so the sharing cannot be turned against it.

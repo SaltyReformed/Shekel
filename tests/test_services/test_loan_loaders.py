@@ -453,15 +453,20 @@ class TestTheOneAnchorChronology:
     def test_the_merge_defers_to_the_loaders_order_and_does_not_re_sort(
         self, app, db, seed_user,
     ):
-        """The walk's event merge adds NO ordering rule of its own.
+        """The walk's replay adds NO ordering rule of its own within a kind.
 
         Handed two same-date anchors in an order the loader would never
-        produce, the merge must return them in exactly that order: its stable
-        sort keys only on ``(governing_date, tag)``, so the anchors' relative
-        order is whatever the caller supplied.  That is the contract -- the
-        loader is the one home of the anchor key, so a re-sort here would be a
-        second statement of it, and it was an INCOMPLETE second statement
+        produce, the replay must apply them in exactly that order: its stable
+        sort keys only on ``(on_date, kind)``, so the anchors' relative order is
+        whatever the caller supplied.  That is the contract -- the loader is the
+        one home of the anchor key, so a re-sort here would be a second
+        statement of it, and it was an INCOMPLETE second statement
         (``(anchor_date, created_at)``, no ``event_id``) until X-an-b.
+
+        The stream builder and the replay were ONE function
+        (``merge_anchor_and_payment_events``) until plan step X-au-g-2c-3b-2
+        split the mapping from the ordering; the contract this pins is
+        unchanged, and it is now the replay's.
         """
         with app.app_context():
             loan = create_loan_account(
@@ -475,17 +480,17 @@ class TestTheOneAnchorChronology:
 
             facts = loan_loaders.load_loan_anchor_facts(_params(loan))
             reversed_facts = list(reversed(facts))
-            merged = loan_ledger.merge_anchor_and_payment_events(
-                reversed_facts, [], _params(loan).payment_day,
+            replay = loan_ledger.replay_loan_events(
+                Decimal("0.00"),
+                loan_ledger.loan_event_stream(
+                    reversed_facts, [], _params(loan).payment_day, [], [],
+                ),
             )
-            anchors_in_stream = [
-                item for _date, is_anchor, item in merged if is_anchor
-            ]
-            # Same date, so only the caller's order can decide: the merge
+            # Same date, so only the caller's order can decide: the replay
             # preserved it rather than imposing one.
-            assert [fact.event_id for fact in anchors_in_stream[-2:]] == [
-                reversed_facts[0].event_id, reversed_facts[1].event_id,
-            ]
+            assert [
+                outcome.event.source.event_id for outcome in replay.resets[-2:]
+            ] == [reversed_facts[0].event_id, reversed_facts[1].event_id]
 
 
 class TestTheChronologyKeyItself:

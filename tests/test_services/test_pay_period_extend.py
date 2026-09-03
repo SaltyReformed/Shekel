@@ -329,12 +329,20 @@ class TestExtendPayPeriods:
                     .count()
                 ) == 0
 
-    def test_empty_schedule_raises(self, app, bare_user):
-        """Extending a user with no periods raises ValidationError."""
+    def test_empty_schedule_raises(self, app, bare_user_with_cadence):
+        """Extending a user with no periods raises ValidationError.
+
+        ``bare_user_with_cadence`` since plan step ``pay_calendar:C4-d``: an
+        owner with no ``budget.pay_schedule`` row is refused by
+        ``calendar_for`` before this door reaches its own empty branch, so a
+        bare owner would grade that refusal instead of this message.  The
+        refusal itself is graded at
+        ``test_pay_period_admin.TestAnOwnerWithNoPaydaysReachesEveryDoor``.
+        """
         with app.app_context():
             with pytest.raises(ValidationError, match="Generate your first"):
                 pay_period_admin.extend_pay_periods(
-                    bare_user["user"].id, num_periods=2,
+                    bare_user_with_cadence["user"].id, num_periods=2,
                 )
 
     def test_balances_correct_after_extend(self, app, db, seed_user):

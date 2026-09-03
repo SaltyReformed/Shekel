@@ -32,25 +32,15 @@ import logging
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.exceptions import RecurrenceConflict
 from app.services import posting_service
-from app.services._recurrence_common import (
-    MaintainOutcome,
-    check_scenario_ownership,
-    classify_maintain_work,
-    rows_this_pass_may_maintain,
-)
 from app.services.recurrence_engine._generate import _selector
-from app.services.recurrence_engine._amounts import (
-    _derive_row_fields,
-    _get_salary_profile,
+from app.services.recurrence_engine._amounts import _derive_row_fields
+from app.services.recurrence_engine._pass import (
+    MaintainActs,
+    PassReporting,
+    regenerate_definition,
 )
-from app.services.recurrence_engine._plan import resolve_generation_plan
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_RECURRENCE_REGENERATED,
-    log_event,
-)
+from app.utils.log_events import EVT_RECURRENCE_REGENERATED
 
 logger = logging.getLogger(__name__)
 
@@ -136,73 +126,9 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
             unasked.  The caller should catch it, present the options, and call
             :func:`resolve_conflicts`.
     """
-    # Defense-in-depth, and it also DISAMBIGUATES the plan below: a ``None``
-    # plan means either "not your scenario" or "this template no longer
-    # recurs", and those want opposite answers -- do nothing, versus retire
-    # every row the vanished rule used to name.  Asking ownership here leaves
-    # the plan's ``None`` meaning exactly one thing.
-    if not check_scenario_ownership(
-        logger, template, scenario_id,
-        block_message="Blocked cross-user recurrence regeneration",
-    ):
-        return []
-
-    # What the rule names NOW, and what is there already.  ``plan`` is None
-    # only for a CLEARED recurrence (ownership is settled above), in which case
-    # the rule names no period at all and every existing row is considered for
-    # retirement -- the behaviour ``regenerate_or_conflict_chooser`` documents
-    # for a template whose pattern was set to "Does not repeat".
-    #
-    # The two calls take the SAME bound and the same window, and the second's
-    # answer is a SUPERSET of the first's -- it is the window, where the plan
-    # is the window intersected with the periods the rule names.  That is what
-    # makes the RETIRE branch reachable at all: a row is retired precisely
-    # because the rule no longer names the row's period.  Equal, not strictly
-    # wider, when the rule names every period of the window -- which is the
-    # ordinary case, and the case in which nothing is retired.
-    plan = resolve_generation_plan(
-        template, schedule, scenario_id, effective_from,
-        block_message="Blocked cross-user recurrence regeneration",
+    return regenerate_definition(
+        _PASS, template, schedule, scenario_id, effective_from,
     )
-    existing = rows_this_pass_may_maintain(
-        _selector(template, scenario_id), schedule, effective_from,
-    )
-
-    outcome = _maintain_instances(
-        template, plan, schedule.calendar, scenario_id, existing,
-    )
-    db.session.flush()
-
-    # **ONE event per pass, and it gained a field while another LEFT.**  This
-    # used to delegate its create half to ``generate_for_template``, so every
-    # template edit emitted ``EVT_RECURRENCE_GENERATED`` as well; the maintain
-    # pass creates rows itself, so it no longer does.  ``updated_count`` is new
-    # and ``deleted_count`` now counts only rows the rule stopped naming --
-    # under the old shape it counted every row in the window, and its twin
-    # ``created_count`` counted the same rows again.  A reader comparing
-    # forensics across this step must not treat the two as the same number.
-    log_event(
-        logger, logging.INFO, EVT_RECURRENCE_REGENERATED, BUSINESS,
-        "Recurrence regenerated for template",
-        user_id=template.user_id,
-        template_id=template.id,
-        scenario_id=scenario_id,
-        updated_count=len(outcome.updated),
-        deleted_count=len(outcome.removed),
-        created_count=len(outcome.created),
-        overridden_conflict_count=len(outcome.overridden_ids),
-        deleted_conflict_count=len(outcome.deleted_ids),
-        retained_conflict_count=len(outcome.retained_ids),
-    )
-
-    if outcome.overridden_ids or outcome.deleted_ids or outcome.retained_ids:
-        raise RecurrenceConflict(
-            overridden=outcome.overridden_ids,
-            deleted=outcome.deleted_ids,
-            retained=outcome.retained_ids,
-        )
-
-    return outcome.created
 
 
 
@@ -289,7 +215,7 @@ def _rows_holding_owner_records(existing) -> set[int]:
 
 
 
-def _rows_the_definition_reattributes(existing, account_id) -> "set[int]":
+def _rows_the_definition_reattributes(existing, template) -> "set[int]":
     """Return the ids of rows whose ACCOUNT this template has moved.
 
     Half of what :func:`_recurrence_common.classify_maintain_work` needs and
@@ -305,14 +231,21 @@ def _rows_the_definition_reattributes(existing, account_id) -> "set[int]":
     same edit.  A row carrying NOTHING follows its template's account freely,
     which is the ordinary case and the behaviour every earlier version had.
 
+    **It takes the TEMPLATE rather than its account id** (plan step
+    balance:X-au-d), which is the shape :class:`MaintainActs` names: a transfer
+    has two endpoints and cannot be asked this with one id, so the shared
+    signature is the definition and each engine reads what it needs off it.
+
     Args:
         existing: The rows this pass is considering.
-        account_id: The template's account NOW.
+        template: The TransactionTemplate, holding its account NOW.
 
     Returns:
         The subset of their ids sitting on a different account.
     """
-    return {row.id for row in existing if row.account_id != account_id}
+    return {
+        row.id for row in existing if row.account_id != template.account_id
+    }
 
 
 
@@ -330,12 +263,16 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
         derived: ``{pay_period_id: DerivedRowFields}`` for every period the
             rule names -- the single statement of what a generated row's
             definition says, consumed identically by the update and the create.
-        template: The template every written row is linked to.  The ROW
-            rather than its id since plan step ``pay_calendar:C13-a``,
-            because a created row now states its owner as well as its
-            link and the template is the one place both are known;
-            passing the id and adding a sixth argument would put the
-            same object's two fields in two parameters.
+        template: The definition every written row is linked to.  Taken whole
+            rather than as an id since plan step balance:X-au-d, because
+            :class:`~app.services._recurrence_common.MaintainActs` gives both
+            engines' writers one signature and a transfer's needs the template
+            itself.  **Plan step ``pay_calendar:C13-a`` needs it whole for a
+            second, independent reason**: a created row states its OWNER as
+            well as its link, and the template is the one place both are
+            known -- so passing the id would put one object's two fields in
+            two parameters.  Either reason alone justifies the signature;
+            removing one does not license reverting it.
         scenario_id: The scenario every created row is written into.
         projected_id: The ``Projected`` status id for created rows.  ``None``
             only when the rule was cleared, in which case *work.create_in* is
@@ -360,12 +297,22 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     # or none of it -- where it used to write ``estimated_amount`` alone and
     # abort the entire template edit at flush against
     # ``ck_transactions_amount_ownership`` (finding **N-293**, closed there).
-    # What it can still do is state ``own`` over a row that was DERIVED, which
-    # is a SILENT hand-back rather than a refusal: finding **N-437**, owned by
-    # plan step X-au-e, which stops generation pricing rows at all.  It is
-    # unreachable today because this pass selects on ``template_id`` and
-    # ``ck_transactions_one_pricing_link`` makes that exclusive with
-    # ``transfer_id`` -- the only link whose rows are derived before X-au-e.
+    #
+    # **What it writes is the DEFINITION's own answer, and that is what closed
+    # finding N-437 here** (plan step X-au-d).  The field is
+    # ``_amounts._generated_amount_ownership(template)``: ``own`` over the
+    # scalar for a definition that STATES its price, ``derived`` naming the
+    # template for one whose price is COMPUTED.  So the splat cannot hand a row
+    # back to its owner -- both states it can write are the state a row of this
+    # definition is supposed to be in, which is the whole meaning of
+    # "maintain".  It carried ``own(figure)`` unconditionally until that step,
+    # and a SILENT hand-back was what that would have become the moment a
+    # cutover derived a row this pass can reach.
+    #
+    # The rows it can reach are narrower than the fetch:
+    # ``_recurrence_common.classify_maintain_work`` routes an IMMUTABLE, an
+    # OVERRIDDEN and a soft-DELETED row away from ``work.update`` before this
+    # loop sees them, so a figure a human authored is never overwritten here.
     updated = []
     for row in work.update:
         for field, value in derived[row.occurs_on]._asdict().items():
@@ -418,75 +365,17 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     return created, updated
 
 
-
-
-def _maintain_instances(template, plan, calendar, scenario_id, existing):
-    """Resolve and apply everything one regeneration does to a template's rows.
-
-    The body of :func:`regenerate_for_template`, split out so the orchestrator
-    reads as ownership -> plan -> maintain -> report.  It read
-    "ownership -> bound -> plan" until pay-calendar plan step C2-f3c deleted
-    the bound-resolution step (``_recurrence_common.regeneration_bound``).  Runs
-    in three steps: derive what the definition says for every period the rule
-    names, classify each existing row against that, then write.  It ran a
-    fourth first -- the unstorable-cadence refusal -- until plan step **R17**
-    re-keyed the unique index onto the occurrence, which is what made a
-    paycheck a rule names twice storable and the refusal unnecessary.
-
-    Args:
-        template: The updated TransactionTemplate.
-        plan: The :class:`GenerationPlan` for this pass, or ``None`` when the
-            template's recurrence was CLEARED -- which names no period, so
-            every row is considered for retirement.
-        calendar: The owner's
-            :class:`~app.services.pay_calendar.PayCalendar`, which is all this
-            reads off the pass -- the WRITE WINDOW has already done its work in
-            the plan and in *existing*.  Taking the whole
-            ``GenerationSchedule`` for one field is the shape pay-calendar plan
-            step C2-f3c removed from ``_amounts._derive_row_fields``, and an
-            adversarial review of that step found it still here.
-        scenario_id: The scenario being maintained.
-        existing: Every row of this template in the pass's WRITE WINDOW at
-            or after its bound.  The window half is the load-bearing one:
-            it is what keeps this domain a superset of the plan's, and so
-            what makes the RETIRE branch reachable.
-
-    Returns:
-        The :class:`~app.services._recurrence_common.MaintainOutcome` for
-        the audit event and the conflict
-        raise.
-    """
-    placements = plan.placements if plan is not None else ()
-    salary_profile = _get_salary_profile(template)
-    # **Keyed by the OCCURRENCE, not by the pay period**, because that is what
-    # a row is now selected for maintenance BY.  Keying it by period was a
-    # defect an adversarial review of this leaf found: ``classify_maintain_work``
-    # routes a row to ``update`` when its ``occurs_on`` is named, and the row
-    # may sit in a period the rule does NOT name (the owner moved it, then
-    # cleared the override through the conflict chooser).  ``derived`` holds
-    # only named periods, so ``derived[row.pay_period_id]`` raised ``KeyError``
-    # -- a 500 -- and where the landing period happened to be named it silently
-    # re-derived the row's amount and due date from the WRONG paycheck.
-    #
-    # It also collapsed a repeated paycheck: two placements sharing a period
-    # kept only the last one's fields, so at a pay cadence of 30 days or more
-    # both installments took the same date and figure.  One occurrence is one
-    # entry, so neither is reachable.
-    derived = {
-        placement.occurrence: _derive_row_fields(
-            template, plan.rule, salary_profile, placement.period, calendar,
-        )
-        for placement in placements
-    }
-    work = classify_maintain_work(
-        _selector(template, scenario_id), existing, placements,
-        with_records=_rows_holding_owner_records(existing),
-        reattributed=_rows_the_definition_reattributes(
-            existing, template.account_id,
-        ),
-    )
-    created, updated = _apply_maintain_work(
-        work, derived, template, scenario_id,
-        plan.projected_id if plan is not None else None,
-    )
-    return MaintainOutcome.after(work, created, updated)
+#: The acts a regeneration performs that are THIS engine's own -- what
+#: :class:`~._pass.MaintainActs` names, and everything about a regeneration
+#: that a transaction and a transfer do not share.  The body that performs them
+#: is :func:`~._pass.regenerate_definition`, ONE function for both engines
+#: since plan step balance:X-au-d -- which is where this module's own copy of
+#: it went.
+_PASS = MaintainActs(
+    PassReporting(
+        logger, "Blocked cross-user recurrence regeneration",
+        EVT_RECURRENCE_REGENERATED, "Recurrence regenerated for template",
+    ),
+    _selector, _derive_row_fields, _rows_holding_owner_records,
+    _rows_the_definition_reattributes, _apply_maintain_work,
+)

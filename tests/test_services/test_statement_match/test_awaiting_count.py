@@ -5,9 +5,9 @@ lines the review has not disposed of, and that figure links to the review
 screen.  A figure and its caption may not disagree (the design language's
 second principle), so the count applies exactly the predicates
 :func:`~app.services.statement_match.review_set` splits on and no others.
-There are THREE since plan step balance:X-f3c-2b-2b added the books bound;
-this header said "two" until that step, which is the count going stale where
-nothing reads it.
+There are FOUR since plan step bank_import:X-gj-4a added the recorded SKIP;
+this header said "two" until balance:X-f3c-2b-2b added the books bound and
+"three" until the skip, which is the count going stale where nothing reads it.
 
 **The calendar bound is what makes this a real gate rather than a spelling of
 ``COUNT(*)``.**  A line posted before the owner's first payday can never be
@@ -49,7 +49,14 @@ def _opens(seed_user):
 
 
 class TestTheCountTheGridRenders:
-    """The two predicates, and the boundary between them."""
+    """The DAY predicates, and the boundary between them.
+
+    *It said "the two predicates" through two steps that added a third and a
+    fourth* -- balance:X-f3c-2b-2b's books bound and this step's skip -- so it
+    names the KIND now rather than a count that decays where nothing reads it.
+    The module header carries the count, in one place.  Named by adversarial
+    design review 2026-09-02.
+    """
 
     def test_an_account_with_nothing_recorded_counts_zero(
         self, app, db, seed_user,
@@ -174,6 +181,48 @@ class TestTheCountTheGridRenders:
 
         assert awaiting_review_count(seed_user["account"].id, opens) == 1
         assert awaiting_review_count(other.id, opens) == 1
+
+
+class TestASkippedLineIsNotWork:
+    """Plan step ``bank_import:X-gj-4a``, the FOURTH predicate.
+
+    The badge asks *how many lines still have no answer*, and *explained by
+    nothing* is an answer (ruling **R-HP**).  A badge that went on counting a
+    skipped line would send the owner to a screen that no longer holds it --
+    the figure-and-caption disagreement this module exists to refuse.
+    """
+
+    def test_a_skipped_line_is_not_counted(self, app, db, seed_user):
+        """FIRING CONTROL: drop the skip term and this reads 1.
+
+        The pair matters: 1 before and 0 after, from ONE line, so the case
+        cannot pass against a count that was zero for some other reason.
+        """
+        opens = _opens(seed_user)
+        line = a_bank_line(seed_user, an_import(seed_user))
+        db.session.flush()
+        account_id = seed_user["account"].id
+        assert awaiting_review_count(account_id, opens) == 1
+
+        statement_match.skip_line(line.id, seed_user["user"].id, account_id)
+
+        assert awaiting_review_count(account_id, opens) == 0
+
+    def test_undoing_the_skip_makes_it_work_again(self, app, db, seed_user):
+        """The question comes back, so the badge does too."""
+        opens = _opens(seed_user)
+        line = a_bank_line(seed_user, an_import(seed_user))
+        db.session.flush()
+        account_id = seed_user["account"].id
+        recorded = statement_match.skip_line(
+            line.id, seed_user["user"].id, account_id,
+        )
+
+        statement_match.unskip_line(
+            recorded.skip_id, seed_user["user"].id, account_id,
+        )
+
+        assert awaiting_review_count(account_id, opens) == 1
 
 
 class TestTheCountAgreesWithTheScreenItLinksTo:

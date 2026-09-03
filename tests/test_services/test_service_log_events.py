@@ -72,6 +72,8 @@ from app.utils.log_events import (
     EVT_RECURRENCE_CONFLICTS_RESOLVED,
     EVT_RECURRENCE_GENERATED,
     EVT_RECURRENCE_REGENERATED,
+    EVT_SALARY_ROWS_FROZEN,
+    EVT_TRANSFER_RECURRENCE_REGENERATED,
     EVT_TRANSACTION_SETTLED_FROM_ENTRIES,
     EVT_TRANSFER_CREATED,
     EVT_TRANSFER_HARD_DELETED,
@@ -746,8 +748,23 @@ class TestRecurrenceEngineLogging:
         assert record.count == 3
         assert record.user_id == seed_user["user"].id
 
-    def test_regenerate_emits_event(self, app, db, seed_user, _recurrence_setup, seed_periods):
-        """regenerate_for_template emits ``recurrence_regenerated``."""
+    def test_regenerate_emits_THIS_engines_event_and_not_the_other(
+        self, app, db, seed_user, _recurrence_setup, seed_periods,
+    ):
+        """regenerate_for_template emits ``recurrence_regenerated``.
+
+        **And not the transfer engine's**, which is the half plan step
+        balance:X-au-d made worth asserting.  Both engines run ONE shared body
+        (``recurrence_engine._pass.regenerate_definition``) and supply their own
+        ``PassReporting`` -- a logger and three strings, constructed
+        POSITIONALLY.  A swap of the five callables beside it is caught by
+        arity; a swap of the two engines' reporting records is not, and would
+        file each engine's regeneration under the other's audit event in
+        silence.  The transfer engine's twin is
+        ``test_transfer_recurrence``'s ``EVT_TRANSFER_RECURRENCE_REGENERATED``
+        assertion, so the pair closes the swap in both directions.  Named by an
+        adversarial review of that step.
+        """
         with app.app_context():
             recurrence_engine.generate_for_template(
                 _recurrence_setup, GenerationSchedule.for_period_ids(
@@ -767,6 +784,79 @@ class TestRecurrenceEngineLogging:
         record = cap.find(EVT_RECURRENCE_REGENERATED)
         assert record is not None
         assert record.template_id == _recurrence_setup.id
+        assert cap.find(EVT_TRANSFER_RECURRENCE_REGENERATED) is None, (
+            "this engine must emit its OWN event: finding the transfer "
+            "engine's here means the two PassReporting records are swapped"
+        )
+
+    def test_archiving_a_salary_profile_emits_its_frozen_count(
+        self, app, db, seed_user, _recurrence_setup, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Archiving a salary profile emits ``salary_rows_frozen``.
+
+        Plan step **balance:X-au-d**: the archive records what each row it
+        priced was last worth, and the COUNT is what the audit trail carries.
+        Asserted because a freeze that silently skipped a row would still leave
+        the balance unmoved -- the skipped row keeps its declaration and
+        re-prices later -- so the outcome alone cannot see it.  Named by an
+        adversarial review of that step.
+        """
+        # pylint: disable=import-outside-toplevel  -- the salary models and the
+        # archive service are not this module's subject and would put the
+        # paycheck stack on every logging test's load path.
+        from app.models.ref import FilingStatus
+        # Pylint: ``import-outside-toplevel`` -- see above.
+        from app.models.salary_profile import SalaryProfile
+        # Pylint: ``import-outside-toplevel`` -- see above.
+        from app.services import salary_profile_service
+
+        with app.app_context():
+            # The template is built HERE rather than taken from
+            # ``_recurrence_setup``: ``is_salary_linked_template`` reads the
+            # identity-mapped ``salary_profiles`` collection, so a template
+            # loaded before its profile existed carries an empty one and would
+            # make this case grade a stale relationship rather than the act.
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=next(iter(seed_user["categories"].values())).id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                name="X-au-d logging control",
+                default_amount=Decimal("11.11"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            db.session.add(SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=db.session.query(FilingStatus).first().id,
+                template_id=template.id,
+                name="X-au-d logging control",
+                annual_salary=Decimal("104000.00"),
+                state_code="NC",
+                is_active=True,
+            ))
+            db.session.flush()
+            make_every_period_rule(db.session, template)
+            created = recurrence_engine.generate_for_template(
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(seed_user["user"].id),
+                    {p.id for p in seed_periods[:3]},
+                ),
+                seed_user["scenario"].id,
+            )
+            db.session.flush()
+            profile = template.salary_profiles[0]
+
+            with _LogCapture("app.services.salary_profile_service") as cap:
+                frozen = salary_profile_service.archive_profile(profile)
+
+            assert frozen == len(created) == 3
+            record = cap.find(EVT_SALARY_ROWS_FROZEN)
+            assert record is not None
+            assert record.frozen_count == 3
+            assert record.salary_profile_id == profile.id
+            assert record.template_id == template.id
 
     def test_cross_user_blocked_emits_event(
         self, app, db, seed_user, _recurrence_setup, seed_periods,

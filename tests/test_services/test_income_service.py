@@ -28,6 +28,8 @@ Test fixture math (hand-computed):
 from datetime import date
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import AmountSourceEnum
 from app.extensions import db
 from app.models.ref import FilingStatus, RaiseType, Status, TaxType, TransactionType
 from app.models.salary_profile import SalaryProfile
@@ -134,8 +136,19 @@ def _make_salary_template(seed_user, profile, *, name="Paycheck"):
 def _make_txn(
     seed_user, period, *, template=None, type_name="Income",
     status_name="Projected", is_override=False, estimated_amount="1.00",
+    derived=False,
 ):
-    """Create a single Transaction in ``period`` for the producer tests."""
+    """Create a single Transaction in ``period`` for the producer tests.
+
+    ``derived=True`` builds the row plan step **X-au-d** puts every
+    non-overridden salary row in: it DECLARES its definition
+    (:attr:`~app.enums.AmountSourceEnum.TEMPLATE`) and stores no figure at all,
+    so amount rule 2 prices it from the profile.  The default is the OWN shape
+    -- an ad-hoc row, or one a human re-priced -- where *estimated_amount* IS
+    the answer.  The two are one attribute on the model
+    (``ck_transactions_amount_ownership`` pairs them), which is why this is a
+    switch rather than two independent arguments.
+    """
     txn_type = (
         db.session.query(TransactionType).filter_by(name=type_name).one()
     )
@@ -151,7 +164,12 @@ def _make_txn(
         name="producer-test txn",
         category_id=category.id,
         transaction_type_id=txn_type.id,
-        amount_ownership=AmountOwnership.own(Decimal(estimated_amount)),
+        amount_ownership=(
+            AmountOwnership.derived(
+                ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+            )
+            if derived else AmountOwnership.own(Decimal(estimated_amount))
+        ),
         is_override=is_override,
     )
     db.session.add(txn)
@@ -159,43 +177,60 @@ def _make_txn(
     return txn
 
 
-def _live_net_map(user_id, scenario_id, rows):
-    """The salary override map, as the read-time repair produces it per row.
+def _net_map(user_id, scenario_id, rows):
+    """What the salary derivation answers for each of *rows*, where it answers.
 
-    Plan step X-au-c2b split ``live_projected_net`` into an owner-scoped
-    DERIVATION (:func:`income_service.salary_pricing`) and a per-row lookup, so
-    the map these tests grade is now something a caller builds rather than
-    something the producer returns.  Assembled here so every assertion below
-    keeps its original shape and figures.
+    Plan step X-au-c2b split the producer into an owner-scoped DERIVATION
+    (:func:`income_service.salary_pricing`) and a per-row lookup
+    (:func:`income_service.salary_net_for`), so the map these tests grade is
+    something a caller builds rather than something the producer returns.
+
+    **It was ``_live_net_map`` and asked the READ-TIME REPAIR until plan step
+    X-au-d**, which deleted that repair: a salary row is DECLARED derived and
+    stores no figure, so there is nothing for a repair to supersede and
+    ``salary_net_for`` is the one producer.  The difference is not cosmetic --
+    the repair filtered to Projected non-overridden rows and the PRICING rule
+    filters on neither (finding **N-262**), which is what the class below now
+    grades.
     """
     pricing = income_service.salary_pricing(user_id, scenario_id)
     answers = {}
     for txn in rows:
-        net = income_service.live_projected_net(txn, pricing)
+        net = income_service.salary_net_for(txn, pricing)
         if net is not None:
             answers[txn.id] = net
     return answers
 
 
-class TestLiveProjectedNet:
-    """Unit tests for ``income_service.live_projected_net`` (Workstream B).
+class TestSalaryNetFor:
+    """Unit tests for ``income_service.salary_net_for`` -- amount rule 2's body.
 
-    Locks the two properties the live-recompute relies on: the producer
-    (a) recomputes the net LIVE from the salary profile, ignoring the
-    stored ``estimated_amount`` (so a stale cache cannot leak through),
-    and (b) filters to exactly the Projected, non-overridden,
-    salary-linked income rows.
+    Locks the two properties the amount model relies on: the producer
+    (a) answers what the salary PROFILE pays for the row's own period, and
+    (b) answers for a row it can PRICE, which is a question about the
+    definition and never about whether the row still counts.
+
+    **Half (b) is the inversion plan step X-au-d completed.**  This class
+    graded a read-time repair, whose candidate set was "Projected,
+    non-overridden, salary-linked income" -- so a Cancelled or hand-priced
+    paycheck was refused for reasons that have nothing to do with what a
+    paycheck is worth.  Pricing asks the definition; whether a row still counts
+    is finding **N-262**'s separate question, answered above this rule by
+    ``row_valuation.fixed_contribution``, and WHO owns the figure is answered
+    by the row's declaration rather than by ``is_override``.
     """
 
     def test_recomputes_live_ignoring_stored_amount(
         self, app, db, seed_user, seed_periods,
     ):
-        """A Projected salary-linked income row maps to the LIVE net.
+        """A salary-linked income row maps to what its PROFILE pays.
 
-        The transaction's stored ``estimated_amount`` is deliberately set
-        to $1.00 (a stale/wrong value).  The producer must return the
-        live net for the transaction's period -- proving it recomputes
-        from the profile and never trusts the cached column.
+        The row is built OWNING a deliberately wrong ``$1.00`` so the two
+        answers stay distinguishable at this tier: a producer reading the
+        column would answer ``$1.00`` and the profile answers ``$4,000.00``.
+        The DECLARED shape -- where the column is empty and the distinction is
+        structural rather than measured -- is graded one tier up, by
+        ``test_amount_source`` over the rule this producer is the body of.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -211,7 +246,7 @@ class TestLiveProjectedNet:
             )
             db.session.commit()
 
-            overrides = _live_net_map(user_id, scenario_id, [txn])
+            overrides = _net_map(user_id, scenario_id, [txn])
 
             # $104,000 profile, no raise, no tax configs seeded -> net =
             # gross = 104000 / 26 = $4,000.00 (hand-computed; the sibling
@@ -221,17 +256,25 @@ class TestLiveProjectedNet:
             assert overrides == {txn.id: expected_net}
             assert overrides[txn.id] != Decimal("1.00")
 
-    def test_filters_to_projected_nonoverride_salary_income(
+    def test_prices_by_the_DEFINITION_and_never_by_the_rows_status(
         self, app, db, seed_user, seed_periods,
     ):
-        """Only Projected, non-overridden, salary-linked income is overridden.
+        """What a paycheck is WORTH does not depend on whether it still counts.
 
-        Builds five rows and asserts the override dict contains exactly
-        the one Projected non-override income row linked to the salary
-        profile -- Received income (historical), an overridden row (user
-        value respected), non-salary income (template has no profile),
-        and an expense are all omitted, so a caller's fallback to the
-        stored amount applies to them.
+        **This case asserted the opposite until plan step X-au-d**, and the
+        inversion is the step.  It graded a read-time repair whose candidate
+        set was "Projected, non-overridden, salary-linked income", so it
+        asserted that a RECEIVED paycheck and an OVERRIDDEN one were omitted.
+        Those two omissions were the repair's status gate, not a pricing rule
+        (finding **N-262**): a Received paycheck is worth exactly what the
+        profile paid for its period, and whether the app should USE that figure
+        is a different question answered above this producer.
+
+        Five rows, and the split is now by DEFINITION rather than by status:
+        the three on the salary template are all priced -- Projected, Received
+        and overridden alike -- while non-salary income (a template no profile
+        names) and an expense are not, because no salary profile states what
+        they are worth.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -272,23 +315,31 @@ class TestLiveProjectedNet:
             )
             db.session.commit()
 
-            overrides = _live_net_map(
+            priced = _net_map(
                 user_id, scenario_id,
                 [wanted, received, overridden, non_salary, expense],
             )
 
-            assert set(overrides) == {wanted.id}, (
-                "Only the Projected, non-override, salary-linked income "
-                f"row should be overridden; got ids {sorted(overrides)}"
+            assert set(priced) == {wanted.id, received.id, overridden.id}, (
+                "every row on the salary template is PRICED by the profile "
+                "whatever its status or override flag, and no other row is; "
+                f"got ids {sorted(priced)}"
+            )
+            assert priced[received.id] == priced[wanted.id], (
+                "a Received paycheck is worth what the profile paid for its "
+                "period; refusing it here would be the repair's status gate "
+                "re-added inside a pricing rule (finding N-262)"
             )
 
-    def test_empty_when_no_candidates(self, app, db, seed_user, seed_periods):
-        """No salary-linked Projected income -> empty dict (fast no-op)."""
+    def test_empty_when_no_salary_definition_prices_the_row(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A row no salary profile's template names has no answer here."""
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
             # Empty transaction list.
-            assert _live_net_map(user_id, scenario_id, []) == {}
+            assert _net_map(user_id, scenario_id, []) == {}
 
             # An income row whose template has no SalaryProfile -> omitted.
             income_type = (
@@ -310,7 +361,7 @@ class TestLiveProjectedNet:
                 template=unlinked,
             )
             db.session.commit()
-            assert _live_net_map(user_id, scenario_id, [txn]) == {}
+            assert _net_map(user_id, scenario_id, [txn]) == {}
 
 
 
@@ -327,30 +378,32 @@ def _derived(user_id):
 
 
 class TestLiveIncomeThroughBalanceResolver:
-    """Workstream B integration: balance surfaces recompute projected salary
-    income live, so a stale stored ``estimated_amount`` never reaches a
-    balance or subtotal.  This is the drift-without-regeneration lock -- the
-    exact failure mode (a code change staling the grid) that motivated the
-    income resolver.
+    """Balance surfaces price a projected salary row from its PROFILE.
+
+    The drift-without-regeneration lock -- the exact failure mode (a profile,
+    calibration or code change staling the grid) that motivated the income
+    resolver.  **Plan step X-au-d changed what makes it hold**: the row no
+    longer stores a figure a repair has to supersede, it DECLARES the
+    definition that prices it, so there is one answer rather than a preferred
+    one.  The class stays because the surfaces still have to reach that answer.
     """
 
-    def test_stale_stored_income_overridden_by_live_net(
+    def test_a_declared_salary_row_reaches_the_grid_and_the_BALANCE(
         self, app, db, seed_user, seed_periods,
     ):
-        """A projected salary income row with a stale $1.00 stored amount
-        contributes its LIVE net to the grid's income row AND to the
-        rendered BALANCE -- never the stale stored value.
+        """A declared salary income row contributes its profile's net to both.
 
-        $104,000 profile, no deductions, no tax configs seeded -> net =
-        gross = 104000/26 = $4,000.00.  The transaction is stored at $1.00
-        (simulating a cache invalidated by a profile/code change with no
-        regeneration); both surfaces must show $4,000.00.
+        $104,000 profile, no deductions, no tax configs seeded -> net = gross =
+        104000/26 = $4,000.00.  The row stores NOTHING, so a surface that read
+        the column would contribute ``None`` rather than a stale figure -- the
+        substitution this cutover makes unrepresentable instead of unlikely.
 
         The income row was read through ``cash_ledger.period_subtotal`` until
         plan step X-c2b3 deleted it; it is now the shipped
         ``GridColumn.income``, which is what the grid footer renders.  The
-        $4,000.00 is unchanged because the live override map is the same rule on
-        both bases -- which is the property this test exists to pin.
+        $4,000.00 is unchanged across both that step and this one, because the
+        rule is the same on both bases -- which is the property this test
+        exists to pin.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -363,11 +416,11 @@ class TestLiveIncomeThroughBalanceResolver:
 
             periods = all_periods(user_id)
             period = periods[5]
-            _make_txn(
-                seed_user, period, template=template,
-                estimated_amount="1.00",
+            row = _make_txn(
+                seed_user, period, template=template, derived=True,
             )
             db.session.commit()
+            assert row.estimated_amount is None
 
             tax_configs = load_tax_configs_for_year(
                 user_id, profile, period.start_date.year,
@@ -380,24 +433,24 @@ class TestLiveIncomeThroughBalanceResolver:
             expected_net = {
                 bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
             }[period.id]
-            # Sanity: the live net genuinely differs from the stale stored.
+            # Sanity: the profile's answer is the hand-computed figure, and
+            # it is not something the row could have been read off.
             assert expected_net == Decimal("4000.00")
-            assert expected_net != Decimal("1.00")
 
             # The grid's income row reflects the live net.
             column = balance_at.grid_balance_view(
                 account, bctx,
             ).columns[period.id]
             assert column.income == expected_net, (
-                f"GridColumn.income should be live {expected_net}, "
-                f"got {column.income} (stale stored was 1.00)"
+                f"GridColumn.income should be the profile's {expected_net}, "
+                f"got {column.income} (the row stores no figure at all)"
             )
 
-            # The BALANCE moves by the live net too, not just the rendered
-            # income row -- the property that makes the override a basis rather
-            # than a display value.  Re-pointed off the deleted anchor-forward
-            # walk onto the cash view at plan step X-g4b; the delta is
-            # unchanged because both read one ``live_amount_overrides`` map.
+            # The BALANCE moves by that net too, not just the rendered income
+            # row -- the property that makes the derivation a basis rather than
+            # a display value.  Re-pointed off the deleted anchor-forward walk
+            # onto the cash view at plan step X-g4b; the delta is unchanged
+            # because both fold one amount model.
             result = balance_at.cash_balance_map(
                 account, bctx,
             )
@@ -411,13 +464,17 @@ class TestLiveIncomeThroughBalanceResolver:
     def test_overridden_income_row_keeps_user_value(
         self, app, db, seed_user, seed_periods,
     ):
-        """A user-overridden salary income row is NOT recomputed.
+        """A salary income row that OWNS its figure is not recomputed.
 
-        ``is_override=True`` means the user deliberately set the amount;
-        the resolver must respect it (the producer excludes it), so the grid's
-        income row reflects the stored $1234.56, not the live net.  Read through
-        ``GridColumn.income`` since plan step X-c2b3 deleted
-        ``cash_ledger.period_subtotal``.
+        The non-vacuity partner for the case above, and the one whose REASON
+        changed at plan step X-au-d.  It used to hold because a read-time
+        repair excluded ``is_override`` rows; it holds now because the row
+        DECLARES no definition -- ``amount_ownership`` is what decides, so the
+        figure a human typed is answered by amount rule 1 and no salary
+        producer is consulted at all (finding **N-262**).  The flag is set here
+        because that is what the edit doors do beside taking ownership, not
+        because pricing reads it.  Read through ``GridColumn.income`` since
+        plan step X-c2b3 deleted ``cash_ledger.period_subtotal``.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -439,7 +496,7 @@ class TestLiveIncomeThroughBalanceResolver:
                 account, bctx,
             ).columns[period.id]
             assert column.income == Decimal("1234.56"), (
-                "An overridden income row must keep the user's amount, "
+                "a row that OWNS its figure must keep the user's amount, "
                 f"got {column.income}"
             )
 
@@ -651,12 +708,12 @@ class TestConsumerIntegration:
 
 
 class TestLiveProjectedNetUsesPerYearTaxConfigs:
-    """DH-#30: live_projected_net resolves tax configs PER period year.
+    """DH-#30: the salary derivation resolves tax configs PER period year.
 
     The recurrence engine GENERATES the stored grid amount using each
     period's OWN tax year; the live recompute must resolve the same way or
     the stored cache and the live value silently disagree -- the exact
-    reconciliation contract live_projected_net advertises.  Pre-fix it
+    reconciliation contract amount rule 2 advertises.  Pre-fix it
     loaded a single current-year config set and applied it across the whole
     ~2-year horizon, so a future-year period was recomputed against the
     wrong year's tax.
@@ -736,7 +793,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             # pass vacuously.
             assert net_2027_rate != net_2026_rate
 
-            overrides = _live_net_map(user_id, scenario_id, [txn])
+            overrides = _net_map(user_id, scenario_id, [txn])
             assert overrides[txn.id] == net_2027_rate
             assert overrides[txn.id] != net_2026_rate
 
@@ -816,10 +873,10 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             db.session.commit()
 
             freeze_today(monkeypatch, date(2026, 6, 1))
-            priced_in_2026 = _live_net_map(user_id, scenario_id, [txn])[txn.id]
+            priced_in_2026 = _net_map(user_id, scenario_id, [txn])[txn.id]
 
             freeze_today(monkeypatch, date(2027, 6, 1))
-            priced_in_2027 = _live_net_map(user_id, scenario_id, [txn])[txn.id]
+            priced_in_2027 = _net_map(user_id, scenario_id, [txn])[txn.id]
 
             assert priced_in_2027 == priced_in_2026
 

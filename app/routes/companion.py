@@ -49,7 +49,7 @@ from app.models.category import Category
 from app.services import companion_service, grid_view_service
 from app.services.cash_ledger import (
     baseline_amount_basis,
-    display_amounts_by_id,
+    amounts_by_id,
     settled_amounts_by_id,
 )
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
@@ -136,7 +136,7 @@ def _build_partial_context(
     # on a missing baseline, so an owner without one meets the application's
     # ONE designed answer (ruling R-BW) instead of two surfaces disagreeing
     # about whether they can price anything.
-    budgets = display_amounts_by_id(
+    budgets = amounts_by_id(
         transactions, baseline_amount_basis(owner_id),
     )
     # What each row's money DID, beside what its amount IS (plan step X-au-c3).

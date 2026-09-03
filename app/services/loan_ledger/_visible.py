@@ -123,8 +123,8 @@ def payment_visible_on(shadow: Transaction) -> date:
     rule's blast radius to one day of VISIBILITY.**  The interest / principal /
     escrow split, the governing rate version, and the anchor-versus-payment
     ordering all key on the DUE date
-    (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`,
-    :mod:`app.services.loan_ledger._split`) -- never on ``paid_at`` -- so a late or
+    (:func:`app.services.loan_ledger.loan_event_stream`,
+    :mod:`app.services.loan_ledger._replay`) -- never on ``paid_at`` -- so a late or
     out-of-order settlement, and equally a re-zoned one, changes only WHEN the
     paid-down principal is shown, never HOW the payment splits, at what rate, or
     against which anchor.

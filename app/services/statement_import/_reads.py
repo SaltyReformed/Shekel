@@ -18,6 +18,7 @@ from app import ref_cache
 from app.extensions import db
 from app.models.ref import StatementSource
 from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_line_skip import StatementLineSkip
 from app.models.statement_match import StatementMatchMember
 from app.services.statement_match import removals_by_match
 
@@ -151,6 +152,49 @@ def matches_by_import(account_id: int) -> "dict[int, list[int]]":
     return by_import
 
 
+def skips_by_import(account_id: int) -> "dict[int, int]":
+    """Return how many SKIP decisions each of this account's imports holds.
+
+    Plan step ``bank_import:X-gj-4a``, ruling **bank_import:R-JG**.  A skip
+    claims nothing but its own line, so
+    ``fk_statement_line_skips_line_account`` CASCADES rather than refusing a
+    delete -- which means deleting an import destroys the owner's own answers,
+    silently, unless something counts them.
+
+    **ONE derivation for the confirmation and the act**, which is
+    :func:`matches_by_import`' own rule and for its own reason: the page reads
+    it to say what a delete WOULD take and :func:`~._undo.delete_import` reads
+    it to say what it DID, so a confirmation cannot count differently from the
+    act it confirms.
+
+    Args:
+        account_id: The account whose imports to read.
+
+    Returns:
+        ``{import_id: count}``, covering only the imports that own a skipped
+        line.  An import with none is absent, and both callers read that as
+        zero -- the honest answer rather than an absence to branch on.
+    """
+    rows = (
+        db.session.query(
+            BankStatementLine.import_id,
+            db.func.count(StatementLineSkip.id),
+        )
+        .join(
+            StatementLineSkip,
+            db.and_(
+                StatementLineSkip.bank_statement_line_id
+                == BankStatementLine.id,
+                StatementLineSkip.account_id == BankStatementLine.account_id,
+            ),
+        )
+        .filter(BankStatementLine.account_id == account_id)
+        .group_by(BankStatementLine.import_id)
+        .all()
+    )
+    return dict(rows)
+
+
 @dataclass(frozen=True)
 class ImportRemovalPreview:
     """What deleting one import would take back, and what stops it.
@@ -178,20 +222,32 @@ class ImportRemovalPreview:
             ``None``.  When it is set, :attr:`rows` and :attr:`cash` describe a
             removal that cannot happen yet, and the page says the refusal
             instead of the figure.
+        skips: How many SKIP decisions the delete would destroy (plan step
+            ``bank_import:X-gj-4a``, ruling **R-JG**).  **On the CONSENT and
+            not only on the receipt**, which is this value's founding
+            argument: ``ImportRemoval.skips_forgotten`` says how many went
+            AFTER the irreversible act, and an owner who has worked a
+            378-line statement down to zero is entitled to know before they
+            press that their answers go with it.  A skip cascades away with
+            its line rather than blocking the delete, so nothing else would
+            tell them.  Named by adversarial review 2026-09-02.
     """
 
     rows: int
     cash: Decimal
     blocked: "str | None"
+    skips: int
 
 
-def _removal_preview(match_ids, removals) -> ImportRemovalPreview:
+def _removal_preview(match_ids, removals, skips: int) -> ImportRemovalPreview:
     """Fold one import's acts into what deleting it would do.
 
     Args:
         match_ids: The acts naming a line this import owns.
         removals: ``{match_id: PlannedRemovals}`` from
             ``statement_match.removals_by_match``.
+        skips: How many SKIP decisions this import's lines carry
+            (:func:`skips_by_import`).
 
     Returns:
         Its :class:`ImportRemovalPreview`.
@@ -202,6 +258,7 @@ def _removal_preview(match_ids, removals) -> ImportRemovalPreview:
     return ImportRemovalPreview(
         rows=sum(len(one.rows) for one in planned),
         cash=sum((one.cash_amount for one in planned), Decimal("0.00")),
+        skips=skips,
         # The FIRST refusal, because one is enough to stop the whole delete and
         # the owner fixes them one at a time anyway.
         blocked=next(
@@ -328,6 +385,9 @@ def import_history(
         owner_id, account_id,
         {match_id for ids in by_import.values() for match_id in ids},
     )
+    # ONE aggregate for every rendered import, shared with the act that
+    # performs the delete -- see :func:`skips_by_import`.
+    skips = skips_by_import(account_id)
     return [
         ImportRecord(
             import_id=row.id,
@@ -338,7 +398,9 @@ def import_history(
             line_count=row.line_count,
             recorded_count=row.recorded_count,
             matches_affected=len(by_import.get(row.id, ())),
-            removes=_removal_preview(by_import.get(row.id, ()), removals),
+            removes=_removal_preview(
+                by_import.get(row.id, ()), removals, skips.get(row.id, 0),
+            ),
             balance=_imported_balance(row),
         )
         for row in imports

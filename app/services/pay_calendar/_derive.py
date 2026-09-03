@@ -91,16 +91,39 @@ MAX_CADENCE_DAYS: int = 365
 
 
 class PayCalendarError(ShekelError, ValueError):
-    """A payday set or cadence cannot define a pay calendar.
+    """No pay calendar can be derived: there is no schedule, or it is unusable.
 
-    A broken invariant, never user input, which is why no route catches it and
-    no form field is named in the message.  ``budget.pay_periods`` already
-    enforces the payday model's key (``uq_pay_periods_user_start``), so a
-    duplicate payday cannot come out of the table; reaching this from the
-    application would mean a caller assembled a payday set by hand and got it
-    wrong.  Failing loud is the only safe disposition -- every alternative
+    **TWO states reach it and ``app/error_handlers.py`` answers both with one
+    page**, deliberately (plan step C4-b-2, the handler ledger row **P35**
+    deferred).  One is ORDINARY and repairable: the owner holds no
+    ``budget.pay_schedule`` row, so there is no rhythm to derive anything from
+    -- :func:`~._loader.calendar_for` and :func:`~._loader.cadence_for` refuse
+    them from one place since plan step C4-d (ruling **R-PC45**), where the
+    cadence door used to refuse and the calendar door used to answer an empty
+    calendar carrying no cadence.  The other is a BROKEN INVARIANT no write
+    door produces: a payday set or a cadence that cannot define a calendar.  The
+    owner can act on the first and can do nothing about the second, and both
+    leave every per-period figure unanswerable, so the page offers the one
+    repair that exists and the LOG carries which state it was.
+
+    **Neither state is user INPUT**, which is why no form field is named in
+    the message: one is a setup state the owner repairs elsewhere and the other
+    is a broken invariant.  *An earlier form of this paragraph also said "no
+    route catches it", which was false when written --
+    ``routes/accounts/statements`` catches it beside ``BaselineMissingError``
+    and degrades -- and would have read as licence to leave the application
+    without an answer.  ``app/error_handlers.py`` registers one (plan step
+    C4-b-2, ruling R-PC42); a route catching it to DEGRADE a fragment is
+    ordinary beside that.*  ``budget.pay_periods`` already enforces the payday
+    model's key (``uq_pay_periods_user_start``), so a duplicate payday cannot
+    come out of the table; reaching the second state from the application would
+    mean a caller assembled a payday set by hand and got it wrong.  Failing
+    loud is the only safe disposition for it -- every alternative
     (de-duplicating, clamping a bad cadence) silently produces a calendar whose
     periods do not tile the days the owner's money lives on.
+
+    **A caller's own ``Raises:`` names the cause that matters at its site**
+    rather than re-enumerating both; this class is where the pair is stated.
 
     Also a ``ValueError`` because it is raised for rejected function arguments,
     where that is Python's own contract; a caller catching either name gets it.
@@ -119,8 +142,8 @@ class PayCalendarError(ShekelError, ValueError):
     **One of those refusals WAS reachable from a page, and plan step C4-b-2
     closed that route rather than handling it** (ledger row **P35**).
     :func:`~._loader.calendar_for` resolves the cadence through
-    ``pay_schedule_service.resolve_cadence``, which until that step fell back to
-    inferring it from the last period's stored length -- bounded below by
+    ``pay_schedule_service.resolve_schedule``, which until that step fell back
+    to inferring it from the last period's stored length -- bounded below by
     ``ck_pay_periods_date_order`` and NOT bounded above -- so a hand-written
     period spanning more than a year refused the calendar, and since C2-c that
     meant a 500 on every balance page.  ``fk_pay_periods_schedule`` makes the
@@ -362,7 +385,7 @@ class DerivedPeriod:
 
 
 def derive_periods(
-    paydays: "Iterable[tuple[int | None, date]]", cadence_days: "int | None",
+    paydays: "Iterable[tuple[int | None, date]]", cadence_days: int,
 ) -> tuple[DerivedPeriod, ...]:
     """Derive an owner's whole pay calendar from their paydays and cadence.
 
@@ -435,38 +458,37 @@ def derive_periods(
         cadence_days: Days between paydays, from ``budget.pay_schedule``.  Read
             only for the LAST period's end; every other end is dictated by the
             next payday, so a wrong cadence can move exactly one day in the
-            result.  A value that is present is validated EAGERLY, before the
-            paydays are looked at: a bad one is a bad caller whether or not
-            this particular owner has paydays yet, and refusing it only when
-            the data reaches the projection branch would hide it until the day
-            a user records their first payday.
-            **``None`` is legal, and ONLY beside an empty payday set** (plan
-            step C2-b1).  ``pay_schedule_service.resolve_cadence`` answers
-            ``None`` for an owner with no ``budget.pay_schedule`` row, and
-            since plan step C4-b-2 ``fk_pay_periods_schedule`` makes that
-            IMPLY no pay periods -- so such an owner has no last
-            period and the value is provably unread.  The same answer BESIDE a
-            payday is a broken invariant and is refused; see the refusal's own
-            message for which callers can still reach it.  *That refusal used
-            to carry a careful note that it was NOT plan finding P8's state --
-            P8's owner had an INFERRED cadence rather than an absent one, and
-            nothing here policed them.  The key polices them now, at the only
-            tier that can.*
+            result.  Validated EAGERLY, before the paydays are looked at: a bad
+            one is a bad caller whether or not this particular owner has
+            paydays yet, and refusing it only when the data reaches the
+            projection branch would hide it until the day a user records their
+            first payday.
+            **Not optional, since plan step C4-d** (ruling **R-PC45**).  It was
+            ``int | None``, ``None`` being legal beside an empty payday set and
+            REFUSED beside a non-empty one -- a pairing this function policed at
+            runtime for every caller, in twenty lines, because the type would
+            not.  The absence it stood for was an owner with no
+            ``budget.pay_schedule`` row, and that owner now has no CALENDAR:
+            :func:`~._loader.calendar_for` refuses them rather than building an
+            empty one with no cadence, so nothing constructs the pair and there
+            is nothing here to refuse.  An owner with a schedule row and zero
+            paydays is unaffected and still ordinary -- they have a real
+            cadence and an empty calendar, which is what
+            ``pay_period_admin.reset_pay_periods`` passes through.
 
     Returns:
         The owner's periods, ``start_date`` ascending, ``period_index`` running
         0..n-1 in that order.  Empty for an empty payday set.
 
     Raises:
-        PayCalendarError: ``cadence_days`` is not an ``int`` or falls outside
-            1..365; ``cadence_days`` is ``None`` beside a non-empty payday set;
-            a ``period_id`` is neither an ``int`` nor ``None``; a payday is not
-            a ``datetime.date``, or is a ``datetime.datetime`` (which is a
-            ``date`` subclass and would silently give every derived end a time
-            component); or a payday appears twice.
+        PayCalendarError: ``cadence_days`` is not an ``int`` (``None``
+            included) or falls outside 1..365; a ``period_id`` is neither an
+            ``int`` nor ``None``; a payday is not a ``datetime.date``, or is a
+            ``datetime.datetime`` (which is a ``date`` subclass and would
+            silently give every derived end a time component); or a payday
+            appears twice.
     """
-    if cadence_days is not None:
-        validate_cadence(cadence_days)
+    validate_cadence(cadence_days)
     # Sorted on the PAYDAY alone.  Sorting the pairs would break on a ``None``
     # id the moment two paydays tied -- and they cannot tie, which is checked
     # next, so keying the sort on the id would only hide that check.
@@ -483,29 +505,10 @@ def derive_periods(
             )
 
     if not ordered:
-        # No last period, so no projected end, so the cadence is unread -- which
-        # is what makes ``None`` legal here and nowhere else.  Returning before
-        # the refusal below rather than after it is the whole rule.
+        # No last period, so no projected end, so the cadence is unread.  It
+        # was still validated above, deliberately: a bad cadence is a bad
+        # caller whether or not this owner has paydays yet.
         return ()
-    if cadence_days is None:
-        raise PayCalendarError(
-            f"{len(ordered)} payday(s) were handed in with no cadence.  The "
-            f"last period's end is start_date + cadence_days - 1 and there is "
-            f"no other source for it, so a calendar cannot be derived.  A "
-            f"broken invariant rather than an input to clamp: every cadence "
-            f"this could invent would project a horizon the owner never "
-            f"chose.  What can produce this pair is a caller assembling a "
-            f"payday set BY HAND and pairing it with a cadence it did not "
-            f"read.  No door in app/ is one, since plan step C4-b-2: "
-            f"fk_pay_periods_schedule means an owner with paydays has a "
-            f"budget.pay_schedule row, so resolve_cadence answers for every "
-            f"owner who has any payday to hand in.  That closes both routes "
-            f"this message used to name -- pay_period_write._apply, which "
-            f"passes the cadence it is recording or the stored one, and "
-            f"_loader.calendar_for, which reads the schedule FIRST so its "
-            f"losing interleaving is a cadence with fewer paydays rather "
-            f"than paydays with no cadence."
-        )
 
     last_position = len(ordered) - 1
     return tuple(
@@ -630,11 +633,16 @@ def validate_cadence(cadence_days: int) -> None:
     private and ``__init__`` does not re-export it -- so the name is visible to
     siblings and to nothing else.
 
-    **``None`` is not this function's subject and reaching here with one is a
-    caller error**, which is a correction plan step C2-b1 made: absence means
-    "this owner has no schedule at all", and whether that is legal depends on
-    whether they have paydays, which only :func:`derive_periods` knows.  It
-    guards this call and states the rule.
+    **``None`` IS this function's subject since plan step C4-d** (ruling
+    **R-PC45**), and that is a reversal of the rule C2-b1 wrote here.  Absence
+    used to mean "this owner has no schedule at all", whose legality depended on
+    whether they had paydays -- a question only :func:`derive_periods` could
+    answer, so it guarded this call and owned a refusal of its own.  A calendar
+    now requires a cadence outright: an owner with no ``budget.pay_schedule``
+    row has no calendar rather than a cadence-less one, so the pair that needed
+    a second opinion cannot be built.  The refusal below is the whole of it, and
+    it is the check already written for ``bool`` and ``float`` doing one more
+    type's work rather than a new fence.
 
     The upper bound is the stored column's own
     (``ck_pay_schedule_cadence_range``, 1..365).  Enforcing only the lower half
@@ -646,8 +654,8 @@ def validate_cadence(cadence_days: int) -> None:
         cadence_days: The candidate cadence.
 
     Raises:
-        PayCalendarError: The value is not an ``int`` (a ``bool`` included), or
-            falls outside 1..365.
+        PayCalendarError: The value is not an ``int`` (a ``bool`` and ``None``
+            included), or falls outside 1..365.
     """
     if not isinstance(cadence_days, int) or isinstance(cadence_days, bool):
         raise PayCalendarError(
@@ -655,9 +663,10 @@ def validate_cadence(cadence_days: int) -> None:
             f"{type(cadence_days).__name__} {cadence_days!r}.  A bool is an "
             f"int subclass and would pass as a one-day cadence, and a float is "
             f"truncated by date arithmetic, which moves a horizon silently.  "
-            f"(None does not reach here: derive_periods decides whether an "
-            f"ABSENT cadence is legal, because that depends on whether the "
-            f"owner has any paydays for a last period to be derived from.)"
+            f"None reaches here as a caller that built a calendar without a "
+            f"cadence: since plan step C4-d there is no such calendar, because "
+            f"an owner with no budget.pay_schedule row has no calendar at all "
+            f"(pay_calendar._loader.calendar_for refuses them)."
         )
     if not MIN_CADENCE_DAYS <= cadence_days <= MAX_CADENCE_DAYS:
         raise PayCalendarError(

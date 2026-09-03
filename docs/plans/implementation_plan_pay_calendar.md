@@ -6,14 +6,15 @@
 ticked at `C2-f3e` (`4f134bf4`). Built: **C1**, **C2** whole, **C3**. Section 4 carries each commit;
 what reached `main` is a MEASUREMENT (`git log --oneline origin/main..dev`).
 
-**`C4` is IN FLIGHT and `C4-c`, its deepest cut, has SHIPPED (`c703e1c7`).** Decomposed into seven
-leaves 2026-08-25 (developer) once its reader census was re-measured -- the leaves ARE that census,
-which row **P70**'s query-position count structurally could not see.
-**All five `C4-a` reader leaves, both `C4-b` leaves and `C4-c` have SHIPPED**; `C4-d` is the one
-open leaf, and it is the same defect one tier up -- in the TYPE rather than in the schema. `C4-b`
-was split in two on 2026-09-01 (developer, **R-PC40**) once its real prerequisite was measured:
-`C4-b-1` took the TEST CORPUS off hand-built pay periods, `C4-b-2` added the key, `C4-c` dropped the
-columns.
+**`C4` IS DONE.** Decomposed into seven leaves 2026-08-25 (developer) once its reader census was
+re-measured -- the leaves ARE that census, which row **P70**'s query-position count structurally
+could not see. All five `C4-a` reader leaves, both `C4-b` leaves, `C4-c` (the drop, `c703e1c7`) and
+`C4-d` have SHIPPED. `C4-b` was split in two on 2026-09-01 (developer, **R-PC40**) once its real
+prerequisite was measured: `C4-b-1` took the TEST CORPUS off hand-built pay periods, `C4-b-2` added
+the key, `C4-c` dropped the columns, and
+**`C4-d` took the same defect one tier up -- in the TYPE rather than in the schema** (**R-PC45**): a
+calendar HAS a cadence, and an owner with no `budget.pay_schedule` row has no calendar rather than
+an empty cadence-less one.
 
 **`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
 salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
@@ -288,25 +289,12 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `historical/pay_calendar_as_built_2026-08-16.md`. **Must not be undone**: `pay_period_write`
       is the ONE place in `app/` that constructs or deletes a pay period, and R-PC1's coverage half
       is DELETED.
-- [ ] **C4 -- drop the derived columns.** The DECOMPOSED parent, split into seven leaves 2026-08-25
-      and into EIGHT on 2026-09-01 when `C4-b` split in two (**R-PC40**); it ticks with `C4-d`, its
-      last open leaf, NOT with `C4-c` -- the drop shipped and the cadence TYPE did not. Its FIRST
-      commit landed before the split (row **P70**): the rolling top-up's remaining-paycheck count
-      moved onto `PayCalendar.current_and_future` and the top-up itself left for
-      `pay_period_rolling`, `pay_period_admin` having had nine lines under its ceiling (row
-      **P31**). Closes **P1**, **P4**, **P5**, **P8**, **P9**.
-
-**THE READER CENSUS was the leaf list and the leaves have taken it**; its three re-measurements
-(2026-08-25 by AST, 2026-08-28 at `C4-a-2` for a SHAPE the first was blind to, and `C4-a-5`'s, which
-found a reader in `tests/` that both a paragraph and a fresh grep missed) are condensed here under
-rule 5, the commits being the record.
-**What survives is the PREDICATE, because a predicate cannot go stale where a count can**, and
-`C4-c` re-runs it rather than trusting any list: *a read of `end_date` or `period_index` reached
-through a `budget.pay_periods` ROW -- in query position, through `.pay_period`, or through a local
-bound from it.* `pay_schedule_service.resolve_schedule` is `C4-b-2`'s. Each `C4-a` leaf's "what a
-later leaf must obey" has MOVED into `C4-c`'s specification below, which is where rule 4 sends an
-entry's overflow; nothing live depends on a line here.
-
+- [x] **C4 -- drop the derived columns.** `327a70f2`. The DECOMPOSED parent, split into seven leaves
+      2026-08-25 and into EIGHT on 2026-09-01 when `C4-b` split in two (**R-PC40**); it ticks with
+      `C4-d`, its last open leaf. Closes **P1**, **P4**, **P5**, **P8**, **P9**.
+      **A later leaf obeys the PREDICATE, never a count**: a read of `end_date` or `period_index`
+      reaching through a `budget.pay_periods` ROW. Reader census as built:
+      `historical/c4_reader_census_2026-09-02.md`.
 - [x] **C4-a-1 -- the balance seam's attribution clamp.** `8962e073` + `2895f693`. Closed **P38**.
 - [x] **C4-a-2 -- the reconcile panel, and the clamp moves onto the value.** `82bd762c`.
       `utils.dates.attribution_date` DELETED for `DerivedPeriod.attribution_day` (**R-PC31**).
@@ -331,22 +319,12 @@ entry's overflow; nothing live depends on a line here.
       **P35** deferred (**R-PC42**). Closed **P8** and **P35**. **What a later step must obey**: the
       backfill reads the PAYDAYS, not the stored span -- restoring `(end - start) + 1` writes a
       2x-wrong cadence (row **P28**); and `MIN_MATERIALISABLE_CADENCE_DAYS` now bounds only stored.
-- [ ] **C4-d -- the cadence type stops admitting a row that cannot exist.** `ScheduleFacts` copies
-      two columns off one `budget.pay_schedule` row and types both optional, while the columns are
-      `NOT NULL` (`cadence_days`) and nullable (`history_opens_on`). So a pair naming no cadence
-      beside a stated opening is constructible in Python and unrepresentable in the database --
-      **the defect `C4-b-2` removed from the SCHEMA, surviving one tier up in the TYPE**, which is
-      why it is a leaf of this arc and not a tidy-up. `resolve_schedule` returns an OPTIONAL
-      `ScheduleFacts` whose `cadence_days` is non-optional.
-      **Its own fork, and the reason it is not folded into `C4-b-2`** (**R-PC44**): the direct blast
-      radius is 5 call sites in `app/`, two branching on `None` -- but `calendar_for` is
-      `resolve_schedule`'s sole consumer and today answers an EMPTY calendar for a schedule-less
-      owner. Returning `None` instead is the honest shape and reaches 48 call sites, which is a
-      question about what a PAGE does for an owner with no pay calendar. Doing the 5-site half alone
-      was weighed and refused: it moves the impossible pair from `ScheduleFacts` to `PayCalendar`
-      rather than deleting it. **Blocked by `C4-b-2`, not `C4-c`** -- the new type is true only once
-      `None` means "no schedule row", which deleting the inferring arm is what establishes; `C4-c`'s
-      columns are not this leaf's subject. *Call-site counts measured 2026-09-01; re-run them.*
+- [x] **C4-d -- the cadence type stops admitting a row that cannot exist.** `327a70f2`. Ruling
+      **R-PC45**: a calendar HAS a cadence, and `calendar_for` RAISES for an owner with no
+      `budget.pay_schedule` row rather than answering an empty one. Six `int | None` declarations
+      and two live `cadence_days is not None` guards deleted.
+      **A later leaf wanting an empty calendar takes `bare_user_with_cadence`, never `bare_user`.**
+      Opened **P81**, **P82**. As built: `historical/c4_d_as_built_2026-09-02.md`.
 - [x] **C4-c -- the drop.** `c703e1c7`. Migration `b7a41e2c9d63`, RE-PARENTED onto `c9a4e7b21d58`;
       63 rows byte-identical across that adjacency, the off-cadence control shown able to DISAGREE
       first. `upgrade()` REPORTS a disagreeing stored pair; the downgrade names its three missing

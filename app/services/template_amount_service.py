@@ -76,7 +76,7 @@ def is_salary_linked_template(template) -> bool:
     """Return True iff an ACTIVE salary profile drives this template's amounts.
 
     A salary-linked template's instance amounts are paycheck-calculated per
-    period (``recurrence_engine._get_transaction_amount``), so its
+    period (``income_service.SalaryPricing``), so its
     ``default_amount`` is vestigial: editing it does not change a generated row.
     Two callers read this, and they are the same question asked for two
     purposes -- the update route skips the amount-change conflict chooser for

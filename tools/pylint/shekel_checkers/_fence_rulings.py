@@ -320,14 +320,25 @@ _FENCED_MODULE_RULINGS = {
         # all seam-private in ``balance_at._cash_fold``.
         "planned_cash_rows",
         # ``_amounts`` -- what ONE row is worth to checking.  An amount per
-        # TRANSACTION is not a balance per ACCOUNT: the live override lookup is
-        # what a row is worth right now when its stored amount is a stale
-        # cache, the income rule reads it, and the three-bucket
-        # reservation is a decomposition of one row's budget.  The cash analog
-        # of ``loan_ledger``'s ``split_*`` rulings below, and carried for the
-        # same reason.  The three-bucket reservation formula itself is NOT here:
+        # TRANSACTION is not a balance per ACCOUNT.  The cash analog of
+        # ``loan_ledger``'s ``split_*`` rulings below, and carried for the same
+        # reason.  The three-bucket reservation formula itself is NOT here:
         # D1c deleted its only external caller, so it went private and needs no
         # ruling -- structure retiring a fence entry, which is Phase D's point.
+        #
+        # **FOUR MORE ENTRIES WENT THE SAME WAY AT PLAN STEP X-au-d, and this
+        # is the fence shrinking rather than being widened.**  The live-override
+        # family this paragraph used to describe -- ``live_override``,
+        # ``live_amounts`` and the ``income_amount`` rule that read them -- and
+        # the ``display_amounts_by_id`` composition over them are all DELETED:
+        # a paycheck row no longer stores a figure a live recompute has to
+        # supersede, so there is no second answer for a screen to compose and
+        # nothing left to classify.  What survives is ``amounts_by_id`` below,
+        # which answers what a row's amount IS with no live half at all.
+        # *The four names outlived the functions by one commit; CI's checker
+        # step caught them, and the LOCAL suite structurally could not --
+        # ``pytest.ini`` sets ``testpaths = tests``, so ``tools/pylint/tests``
+        # runs nowhere but CI.*
         #
         # The VALUATION family (plan step X-au-c2) joins them on exactly that
         # ground, and it is the same question ``Transaction.effective_amount``
@@ -341,19 +352,9 @@ _FENCED_MODULE_RULINGS = {
         # under :data:`_ROW_VALUATION_MODULES` -- both are DEFINED one module
         # down and only re-exported here, and this fence keys on where a
         # function is DEFINED.
-        "live_override",
-        "live_amounts",
-        # The COMPOSITION of the two questions a screen asks -- what a row's
-        # amount resolves to, superseded by a live recompute (plan step
-        # X-au-c2b).  A non-producer on the same ground both of its terms are:
-        # a dict keyed by ROW ID, nothing per account, nothing folded or dated.
-        # It exists because an adversarial review found that composition
-        # written twice and differently across the grid and the fragments.
-        "display_amounts_by_id",
         "contributed_amount",
         "contribution_of",
         "contributions_by_id",
-        "income_amount",
         # ``_amount_source`` -- WHERE one row's amount comes from (plan step
         # X-au-b, ruling R-FI).  Four names, one ruling, because they are one
         # question at two tiers: ``amount_basis`` resolves the live producers
@@ -645,14 +646,18 @@ _FENCED_MODULE_RULINGS = {
             #     holding it still cannot reach a balance without the running
             #     walk the seam owns.  That is the same ruling
             #     ``walk_loan_ledger`` carries above: dated facts, not a
-            #     balance-at-T.
+            #     balance-at-T.  Since plan step X-au-g-2c-3b-2 the charge
+            #     carries the whole governing ``RatePeriod`` rather than a bare
+            #     rate, which changes nothing here: a ``RatePeriod`` is the
+            #     loan's CONTRACT (its rate, its level P&I, its term), a
+            #     derived snapshot already public from ``rate_period_engine``,
+            #     and no amount owed can be read off it.
             "charges_for_due_dates",
             "installment_slot",
             # The real principal/interest/escrow split of a payment -- a
-            # decomposition of CASH, not an account balance.  The whole-loan list,
-            # its per-payment step, and the month-charging composition over the
-            # allocation carry one ruling: cash in, four parts out, no
-            # balance-at-T.
+            # decomposition of CASH, not an account balance.  The whole-loan list
+            # and its per-payment construction carry one ruling: cash in, four
+            # parts out, no balance-at-T.
             #
             # ``apply_payment_cash`` LEFT this entry at plan step X-au-g-2c-3a and
             # its ruling is DROPPED rather than moved, because there is nowhere to
@@ -667,18 +672,52 @@ _FENCED_MODULE_RULINGS = {
             # inconvenient.  This checker asks what a module DEFINES, not what it
             # re-exports, so ``loan_ledger`` keeping the name in its public surface
             # does not keep the ruling alive.  Same shape as `095ea62f`.
+            #
+            # ``split_payment_cash`` -- the month-charging composition over that
+            # allocation -- is DELETED at plan step X-au-g-2c-3b-2 and its ruling
+            # goes with it.  It was correct only while a loan took ONE payment per
+            # accrual period, which is the assumption that step exists to remove;
+            # the composition survives only as a test oracle, outside ``app/``.
             "compute_loan_payment_splits",
             "split_one_payment",
-            "split_payment_cash",
-            # Chronology, not balance: each answers WHEN a fact happened or
-            # becomes countable, and the walk answers what it COST.
-            #   * the event stream's ORDER (which fact the walk applies next).  It
-            #     yields the loan's anchor FACTS, which carry an asserted
-            #     ``anchor_balance`` -- but a user-asserted stored fact is not a
-            #     balance-at-T, the same ruling ``resolve_anchor`` carries above.
-            #   * the two visibility rules: each returns a ``date`` and cannot
-            #     yield a figure at all.  **Three names left this entry at plan
-            #     step C2-d** -- ``owner_pay_periods``,
+            # The ONE loan replay (plan step X-au-g-2c-3b-2) and the stream it
+            # folds.  Chronology and cash decomposition, not balance-at-T.
+            #
+            #   * ``loan_event_stream`` yields the loan's FACTS mapped onto three
+            #     dated events -- the same ruling its predecessor
+            #     ``merge_anchor_and_payment_events`` carried.  A reset event
+            #     carries an asserted ``anchor_balance``, but a user-asserted
+            #     stored fact is not a balance-at-T (the ruling ``resolve_anchor``
+            #     carries above), and it decides no order at all now.
+            #   * ``replay_loan_events`` returns one CASH DECOMPOSITION per
+            #     payment and one displaced running balance per assertion.
+            #     **It DOES hand back dated running balances** -- an outcome's
+            #     event carries ``on_date`` and its split carries
+            #     ``balance_after`` -- and an earlier draft of this ruling
+            #     claimed the opposite twice ("it answers no DATE"; "a consumer
+            #     cannot reach a balance without the seam-private prefix-sum").
+            #     Both were false of this very code, and an adversarial review
+            #     measured it: five public calls yield ``[(date, owed)]``.  The
+            #     ruling is restated on the ground that actually holds.
+            #
+            #     THE GROUND: this exposes nothing ``dated_deltas`` did not
+            #     already expose.  That name has been public since plan step E1a
+            #     and accumulating over it yields the seam's OWN answer, keyed by
+            #     each event's VISIBLE date.  What the replay returns is keyed by
+            #     CONTRACT time -- the installment an event belongs to, not the
+            #     day it counts from -- which is strictly FURTHER from
+            #     "what is owed on date D" than the public name beside it.  The
+            #     re-key is the seam's clock and the prefix-sum is seam-private
+            #     (``balance_at._fold``), and neither is reachable from here.  A
+            #     consumer that wants a balance still has an easier public road
+            #     that this ruling already covers, so the classification adds no
+            #     exposure rather than resisting one.
+            "loan_event_stream",
+            "replay_loan_events",
+            # Chronology, not balance: each answers WHEN a fact becomes
+            # countable, and the walk answers what it COST.  Each returns a
+            # ``date`` and cannot yield a figure at all.  **Three names left this
+            # entry at plan step C2-d** -- ``owner_pay_periods``,
             #     ``find_period_containing_date`` and
             #     ``resolve_anchor_pay_period``, the owner's calendar and the
             #     date-to-period chain the anchor writers filed against, now
@@ -686,7 +725,6 @@ _FENCED_MODULE_RULINGS = {
             #     to carry a caveat ("a ``PayPeriod`` is an ORM row, so money is
             #     reachable by relationship; a period is not an account's
             #     balance") that the two survivors do not need.
-            "merge_anchor_and_payment_events",
             "anchor_visible_on",
             "payment_visible_on",
             # The walk's events re-keyed by their visible dates (plan step

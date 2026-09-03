@@ -590,7 +590,7 @@ def projected_income_shadows(
 
     Carries no period bound and NO cash: the plan builder resolves each shadow's
     live D3 cash
-    (amount rule 4, via :func:`app.services.cash_ledger.display_amounts_by_id`),
+    (amount rule 4, via :func:`app.services.cash_ledger.amounts_by_id`),
     its due
     date (:func:`loan_payment_due_date`), and its escrow as the plan is assembled.
     ``pay_period`` and ``status`` are eager-loaded by :func:`query_shadow_income`.
@@ -630,8 +630,9 @@ def installment_for(
     plan step C9b) must decide "which installment would this be?" before any row
     is written, and a guard keying on a rule of its own would refuse a different
     set of payments than the fold erases -- the boundary-predicate drift this
-    architecture keeps paying for.  Same shape as ``split_payment_cash``
-    factored out of ``split_one_payment`` (C6a).
+    architecture keeps paying for.  Same shape as the ONE allocation
+    (``app.utils.money.apply_payment_cash``) factored out of the four walks that
+    had each restated it (X-au-g-2c-3a).
 
     Pure: no I/O, no clock.
 
@@ -654,7 +655,7 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
 
     The project's SINGLE derivation of "which contractual installment is this
     payment?" -- read by the fold's event stream
-    (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`),
+    (:func:`app.services.loan_ledger.loan_event_stream`),
     the payment-history table
     (:func:`app.services.loan_posting_service.confirmed_loan_payment_history`),
     and the settled-payment guards below, so no two of them can disagree on a
@@ -708,9 +709,11 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     generated row its own ``due_on``.
 
     This value is a POSTING INPUT, not display metadata: the fold's event stream
-    (``loan_ledger.merge_anchor_and_payment_events``) orders
-    payments by it and applies its strict ``anchor_date < due_date`` post-anchor
-    boundary against it, so moving it moves the POSTED balance.  Any writer of
+    (``loan_ledger.loan_event_stream``) DATES every payment by it, the replay
+    (``loan_ledger.replay_loan_events``) orders on that date and applies its
+    strict ``anchor_date < due_date`` post-anchor boundary against it, and the
+    charge calendar keys its accrual periods off it -- so moving it moves the
+    POSTED balance.  Any writer of
     ``due_date`` must therefore follow it with a posting reconcile --
     ``transfer_service._POSTING_RELEVANT_FIELDS`` is what enforces that.
 
@@ -836,7 +839,7 @@ def latest_settled_payment_due_date(
     earlier installment is the same structural property the tracking-start guard
     carries; a settled payment's escrow is additionally frozen by
     capture-on-settle
-    (amount rule 4, via :func:`app.services.cash_ledger.display_amounts_by_id`).
+    (amount rule 4, via :func:`app.services.cash_ledger.amounts_by_id`).
 
     Args:
         account_id: The loan account whose settled payments to scan.

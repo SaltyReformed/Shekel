@@ -164,13 +164,19 @@ class _ProjectionContext:
             the offsets are a function of the owner's cadence alone, so
             deriving them inside the per-account branch would re-answer one
             question once per tile.  **Empty when :attr:`current_period` is
-            ``None``**, and that pairing is what keeps the cadence read safe:
-            a calendar with no paydays carries no cadence and REFUSES, and a
-            current period is the proof it has some -- so the resolution
-            happens exactly where that is already known
-            (:func:`.._orchestrator._build_projection_context`) and nowhere
-            else.  An empty tuple is a total answer, so no consumer needs a
-            second nullable field to interpret.
+            ``None``**, which since plan step ``pay_calendar:C4-d`` (ruling
+            **R-PC45**) is a PRODUCT rule rather than a safety one: an owner
+            whose schedule does not cover today publishes no horizon chips.
+            *It read as safety until that step -- "a calendar with no paydays
+            carries no cadence and REFUSES, and a current period is the proof
+            it has some" -- and that reason is gone, because a cadence-less
+            calendar is now unconstructible and
+            :attr:`~app.services.pay_calendar.PayCalendar.cadence` is total.*
+            The resolution still happens in one place
+            (:func:`.._orchestrator._build_projection_context`), which is where
+            ledger row **P81** asks whether the emptying is intended.  An
+            empty tuple is a total answer, so no consumer needs a second
+            nullable field to interpret.
     """
 
     current_period: DerivedPeriod | None

@@ -31,12 +31,15 @@ that consulted the calendar to decide what to show would be the second producer
 of an answer the calendar already has, which is the class of duplicate this
 whole arc exists to remove.
 
-**What the split COST, said rather than left for the next reader to find**
-(adversarial review, 2026-08-19): a pairing :class:`~._calendar.PayCalendar`
-enforces -- ``cadence_days`` is ``None`` only beside an empty payday set, which
-:func:`~._derive.derive_periods` refuses to break -- is a documented
-PRECONDITION here, because a free function cannot see the constructor that
-holds it.  :func:`axis_window` states it where it reads the value.
+**What the split COST is now nothing, and plan step C4-d is what paid it off**
+(ruling **R-PC45**).  An adversarial review of 2026-08-19 recorded the cost: a
+pairing :class:`~._calendar.PayCalendar` enforced -- ``cadence_days`` ``None``
+only beside an empty payday set -- became a documented PRECONDITION here,
+because a free function cannot see the constructor that holds it, and
+:func:`axis_window` carried the worst of it (a caller breaking it reached
+``elapsed // None``).  ``cadence_days`` is a plain ``int`` at every tier now, so
+there is no precondition left to document and none of these three producers can
+be handed the pair that had no answer.
 
 **Five of the six cannot produce a gapped window and the sixth can**, which is
 :class:`~._window.PeriodWindow`'s own contiguity refusal restated from the
@@ -64,7 +67,7 @@ from ._window import PeriodWindow
 
 
 def projected_paychecks(
-    periods: "tuple[DerivedPeriod, ...]", cadence_days: "int | None",
+    periods: "tuple[DerivedPeriod, ...]", cadence_days: int,
     from_day: "date | None" = None,
 ) -> "Iterator[DerivedPeriod]":
     """Yield the paychecks that follow the SAVED schedule, at the owner's cadence.
@@ -110,9 +113,7 @@ def projected_paychecks(
 
     Args:
         periods: The owner's SAVED periods, ``start_date`` ascending.  Only the
-            last one is read; an EMPTY tuple yields nothing, which is also the
-            only state in which *cadence_days* may be ``None``
-            (:func:`~._derive.derive_periods` enforces that pairing).
+            last one is read; an EMPTY tuple yields nothing.
         cadence_days: Days between paydays.
         from_day: Skip to the paycheck COVERING this day before yielding, when
             it falls past the schedule's horizon.  ``None`` (the default)
@@ -311,7 +312,7 @@ def current_and_future_window(
 
 def axis_window(
     periods: "tuple[DerivedPeriod, ...]",
-    cadence_days: "int | None",
+    cadence_days: int,
     user_id: int,
     first_day: date,
     last_day: date,
@@ -358,14 +359,14 @@ def axis_window(
 
     Args:
         periods: The calendar's periods, ``start_date`` ascending.
-        cadence_days: Days between paydays.  ``None`` is legal ONLY beside an
-            empty *periods*, which is the pairing
-            :func:`~._derive.derive_periods` enforces and
-            :class:`~._calendar.PayCalendar` therefore cannot break; the guard
-            below returns before this is read exactly when *periods* is empty,
-            so the two agree.  A hand-assembled call passing ``None`` beside a
+        cadence_days: Days between paydays.  **A plain ``int`` since plan step
+            C4-d** (ruling **R-PC45**): it was ``int | None``, legal ONLY beside
+            an empty *periods*, and this docstring's own statement of that was
+            the fence -- *"a hand-assembled call passing ``None`` beside a
             payday reaches ``elapsed // None`` and a ``TypeError``, which is the
-            precondition this function cannot check for itself.
+            precondition this function cannot check for itself."*  It has no
+            subject now: no calendar carries an absent cadence, so no caller can
+            hand one down.
         user_id: The owner these periods belong to, named in the refusal below
             so a traceback says whose schedule the range fell outside of.
         first_day: Inclusive lower bound of the range.  Must be at or after the
@@ -414,7 +415,7 @@ def axis_window(
 
 def projection_axis_window(
     periods: "tuple[DerivedPeriod, ...]",
-    cadence_days: "int | None",
+    cadence_days: int,
     user_id: int,
     first_day: date,
     last_day: date,

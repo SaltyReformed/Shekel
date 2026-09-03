@@ -739,6 +739,7 @@ def _removal_flash(account_id: int, removal) -> tuple:
         rows_removed=removal.rows_removed,
         cash_removed=str(removal.cash_removed),
         identity_forgotten=removal.identity_forgotten,
+        skips_forgotten=removal.skips_forgotten,
     )
     released = (
         f"  {removal.matches_released} accepted match(es) were undone, so "
@@ -756,6 +757,17 @@ def _removal_flash(account_id: int, removal) -> tuple:
         f"lines were removed with them, worth {removal.cash_removed:+,.2f}."
         if removal.rows_removed else ""
     )
+    # **The owner's own ANSWERS, which the cascade takes silently** (plan step
+    # ``bank_import:X-gj-4a``).  A skip claims nothing but its line, so it goes
+    # with the line rather than refusing the delete -- and what that costs is
+    # questions the owner has already answered being asked again the next time
+    # the same file is imported.  Said here because a figure computed and never
+    # rendered is a promise the receipt does not keep.
+    unskipped = (
+        f"  {removal.skips_forgotten} line(s) you had skipped went with them, "
+        f"so re-importing this span will ask about those again."
+        if removal.skips_forgotten else ""
+    )
     forgotten = (
         "  This was the last import for this account from that source, so the "
         "app no longer records which bank account it is; the next import will "
@@ -766,7 +778,7 @@ def _removal_flash(account_id: int, removal) -> tuple:
         f"Deleted the import of '{removal.file_name}' covering "
         f"{removal.period_start} to {removal.period_end}, and the "
         f"{removal.lines_removed} bank line(s) it had recorded."
-        f"{released}{removed_rows}{forgotten}",
+        f"{released}{removed_rows}{unskipped}{forgotten}",
         "info",
     )
 

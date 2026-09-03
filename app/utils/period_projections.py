@@ -91,9 +91,18 @@ def offered_spans(cadence: PayCadence, spans):
 
     Args:
         cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`.
-            **Resolve it only where a current pay period exists**: a calendar
-            with no paydays carries no cadence and refuses, and a current
-            period is what proves it has some.
+            *This said "resolve it only where a current pay period exists: a
+            calendar with no paydays carries no cadence and refuses, and a
+            current period is what proves it has some".  Plan step
+            ``pay_calendar:C4-d`` (ruling R-PC45) made that false in both
+            halves -- a calendar carries a cadence or is not built, and
+            ``PayCalendar.cadence`` is total -- and this module is the LEAF
+            both of that step's updated callers reach, so the instruction
+            outlived the two copies of it.*  Where a caller resolves it is now
+            that caller's own question: ``routes/accounts/detail`` still guards
+            on a current period because ``_interest_next_year`` dereferences
+            ``period_index``, and the savings cockpit's guard is ledger row
+            **P81**.
         spans: ``(months, *label_fields)`` tuples.  The label fields are
             CARRIED, never read, so each surface passes whatever shape it
             renders -- one label for a chip, a button label plus a tooltip for
@@ -126,8 +135,10 @@ def horizon_offsets(cadence: PayCadence) -> tuple[tuple[str, int], ...]:
     see :meth:`~app.services.pay_calendar.PayCadence.paychecks_within`.
 
     Args:
-        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`,
-            resolved only where a current pay period proves it is readable.
+        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`.
+            Always readable since plan step ``pay_calendar:C4-d`` -- see
+            :func:`horizon_offsets` for the precondition this used to state and
+            why it no longer holds.
 
     Returns:
         The reachable horizons in :data:`HORIZON_MONTHS` order, each paired

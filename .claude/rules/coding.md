@@ -10,6 +10,9 @@ The must-knows for code in this project. Full standards, with rationale and
 examples: `docs/coding-standards.md` -- read it when a point here needs depth.
 Several rules are enforced by gates (the per-edit hook, the custom pylint
 checkers, CI); fix what a gate flags at the root, never with a bare disable.
+The `code-reviewer` agent restates these rules deliberately, so a review
+carries them even where this file has not loaded; a change to a rule here
+updates that mirror in the same commit.
 
 ## Python
 
