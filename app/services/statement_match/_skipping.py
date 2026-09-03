@@ -13,7 +13,7 @@ the two: :func:`~app.services.bank_agreement.bank_agreement` goes on reporting
 the line's amount as a disagreement, which is right, because the money the bank
 showed genuinely is not in the books.  What a skip changes is that the
 Reconcile inbox stops asking.  The panel says so where the owner presses it
-(plan step ``bank_import:X-gj-4c``).
+(plan step ``bank_import:X-gj-4b``).
 
 **One reader is deliberately left alone**, and saying so is the point:
 :func:`~app.services.bank_agreement.bank_agreement`'s day drill-down labels

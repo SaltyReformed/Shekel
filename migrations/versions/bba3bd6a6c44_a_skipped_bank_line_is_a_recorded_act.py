@@ -14,9 +14,11 @@ forever.
 
 **Why a table and not a column on ``budget.bank_statement_lines``.**  Every
 column there is a fact the SOURCE stated, and ``statement_import._record
-._absorb_gained_facts`` fills any NULL from what a later export states.  A
-*the owner skipped this* column would be the first with no source, and that loop
-would need a rule excluding it -- a fence where a separate table needs none.
+._absorb_gained_facts`` fills a NULL from what a later export states.  A
+*the owner skipped this* column would be the first there NO source can ever
+state.  (An earlier draft called that a loop a new column would have to be
+excluded from; it is five explicit ``if recorded.X is None`` arms, so such a
+column would simply have no arm.  The argument stands on the two legs below.)
 The line table also carries no ``user_id``, so who decided would be
 unrecordable.
 
@@ -76,7 +78,7 @@ no figure, no day, no posting.  The rows themselves remain readable in
 each with the whole record).
 
 Revision ID: bba3bd6a6c44
-Revises: b7a41e2c9d63
+Revises: d7b2e6c1a483
 Create Date: 2026-09-02
 """
 from alembic import op
@@ -85,16 +87,27 @@ import sqlalchemy as sa
 
 # Revision identifiers, used by Alembic.
 revision = 'bba3bd6a6c44'
-# **RE-PARENT AT THE MERGE, NOT AT AUTHORING TIME.**  Three other lanes were in
-# flight when this was written (``balance:X-au-k``,
-# ``balance:X-au-g-2c-3b-2``, ``pay_calendar:C4-d``) and each was measured to
-# carry NO alembic revision, so this is the only migration in flight and there
-# is no sibling to collide with.  If that changes, point this at whatever
-# ``dev``'s single head is as the LAST edit before the PR: a ``down_revision``
-# may only name a revision present in the same tree, so pointing it early
-# breaks this branch's own ``flask db upgrade`` while the other stays green.
-# The precedent and its measurement are ``b8e4c1f7a903``'s own note.
-down_revision = 'b7a41e2c9d63'
+# **RE-PARENTED AT THE MERGE, AND THE PREDICTION THAT SAID IT WOULD NOT NEED TO
+# BE WAS WRONG.**  This note used to read that the three lanes in flight
+# (``balance:X-au-k``, ``balance:X-au-g-2c-3b-2``, ``pay_calendar:C4-d``) each
+# carried NO alembic revision, so this was the only migration in flight with no
+# sibling to collide with.  True when written and false by the time it merged:
+# ``balance:X-au-d`` landed ``d7b2e6c1a483`` and ``pay_calendar:C13`` is holding
+# ``d4a92f6b13c8``, so THREE revisions ended up declaring ``b7a41e2c9d63`` as
+# their parent.  That is an undated measurement quoted as a reason, and the
+# reason it is dangerous here is that git merges the three perfectly cleanly --
+# they are different files -- while ``flask db upgrade`` then refuses on two
+# heads, and production runs migrations on deploy.
+#
+# So the chain is SERIALIZED in merge order, and this was re-pointed from
+# ``b7a41e2c9d63`` to ``d7b2e6c1a483`` as the last edit before the PR, against a
+# measured head rather than a remembered one: ``dev`` at ``6d93f9d2`` holds 172
+# revisions whose only childless one is ``d7b2e6c1a483``, and with this one re-pointed onto
+# it the tree holds 173 with a single head.  A ``down_revision``
+# may only name a revision present in the same tree, which is why this is done
+# at the merge and never at authoring time.  The precedent and its measurement
+# are ``b8e4c1f7a903``'s own note.
+down_revision = 'd7b2e6c1a483'
 branch_labels = None
 depends_on = None
 
