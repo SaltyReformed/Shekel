@@ -40,6 +40,7 @@ from tests._test_helpers import (
     freeze_today,
     loan_income_shadow,
 )
+from app.services.amount_ownership import declare_derived
 
 #: The read instant for the early-settled-payment case ONLY -- deliberately
 #: later than the module-wide :data:`_AS_OF` below, because that case is about a
@@ -205,12 +206,11 @@ def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
         seed_user, db, account, seed_periods[9],
         amount=Decimal("2100.00"), due_date=date(2026, 6, 1),
     )
-    # Declare it DERIVED: the two writes ``ck_transactions_amount_ownership``
-    # makes one.  Its parent transfer keeps its own figure, so rule 5 answers.
-    shadow.estimated_amount = None
-    shadow.amount_source_id = ref_cache.amount_source_id(
-        AmountSourceEnum.PARENT_TRANSFER,
-    )
+    # Declare it DERIVED.  Since plan step X-au-k this is ONE write of one
+    # attribute; it was two, and the pairing between them was the thing
+    # ``ck_transactions_amount_ownership`` had to catch.  Its parent transfer
+    # keeps its own figure, so rule 5 answers.
+    declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
     db.session.commit()
 
     # The accessor the tier used to call still refuses this row...
@@ -325,7 +325,7 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
     june_charge = {
         charge.on_date: charge for charge in plan.charges
     }[date(2026, 6, 1)]
-    assert june_charge.annual_rate == Decimal("0.12")
+    assert june_charge.period.annual_rate == Decimal("0.12")
     assert june_charge.escrow == Decimal("500.00")
 
 
@@ -404,7 +404,7 @@ def test_two_payments_in_one_month_produce_ONE_charge_at_the_EARLIEST(
     charge = june_charges[0]
     assert charge.on_date == date(2026, 6, 1), "dated at the EARLIEST due"
     # Resolved AT that date: the versions effective 06-10 govern neither.
-    assert charge.annual_rate == _RATE
+    assert charge.period.annual_rate == _RATE
     assert charge.escrow == Decimal("100.00")     # 1,200.00 a year
 
     # And the whole plan holds one charge per occupied month, no more.

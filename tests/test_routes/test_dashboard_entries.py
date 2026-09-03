@@ -43,6 +43,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 
 from tests._test_helpers import current_pay_period
+from app.models.amount_ownership import AmountOwnership
 
 
 # -- Helpers ---------------------------------------------------------
@@ -92,7 +93,7 @@ def _create_tracked_txn_in_period(
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
         template_id=template.id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
         due_date=period.start_date,
     )
     db.session.add(txn)
@@ -121,7 +122,7 @@ def _create_plain_txn_in_period(
         name=name,
         category_id=seed_user["categories"][category_key].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
         due_date=period.start_date,
     )
     db.session.add(txn)

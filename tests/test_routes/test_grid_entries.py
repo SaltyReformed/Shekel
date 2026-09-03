@@ -32,6 +32,7 @@ from tests._test_helpers import (
     current_pay_period,
 )
 from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 
 def _sums(rows):
@@ -125,7 +126,7 @@ def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
         template_id=template.id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
     )
     db.session.add(txn)
     db.session.flush()
@@ -147,7 +148,7 @@ def _create_plain_txn(seed_user, seed_periods_today, period_index=0,
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
     )
     db.session.add(txn)
     db.session.flush()
@@ -532,7 +533,7 @@ class TestBuildEntryListsDict:
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
                 template_id=template.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             db.session.add(txn)
             db.session.commit()

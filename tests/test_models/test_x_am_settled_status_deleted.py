@@ -51,6 +51,7 @@ from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from tests._test_helpers import create_savings_account, load_migration_module
+from app.models.amount_ownership import AmountOwnership
 
 _MIGRATION = load_migration_module(
     "f2a9c4d7e310_the_settled_band_has_two_members.py"
@@ -85,7 +86,7 @@ def _a_row(db, seed_user, period, status_id, *, income=False, name="row"):
         transaction_type_id=ref_cache.txn_type_id(
             TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE,
         ),
-        estimated_amount=Decimal("42.00"),
+        amount_ownership=AmountOwnership.own(Decimal("42.00")),
     )
     db.session.add(txn)
     db.session.flush()
@@ -220,7 +221,7 @@ class TestTheUpgradeRePointsBeforeItDeletes:
                 pay_period_id=seed_periods_today[3].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=archive.id,
-                amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 name="archived transfer",
             )
             db.session.add(xfer)
@@ -286,7 +287,7 @@ class TestTheForeignKeyIsWhatMakesTheDeleteSafe:
                 pay_period_id=seed_periods_today[3].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=archive.id,
-                amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 name="archived transfer",
             )
             db.session.add(xfer)

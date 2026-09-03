@@ -110,6 +110,7 @@ from tests._test_helpers import (
     reassert_balance_on,
     settle_instant_on,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _no_baseline(user_id):
@@ -1686,7 +1687,7 @@ class TestTheSeamOwnsTheIncomeBasis:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="HYSA paycheck",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1.00")),
             ))
             db.session.commit()
 
@@ -2127,7 +2128,7 @@ class TestOnlyALoanIsNotATransactionSum:
                     transaction_type_id=ref_cache.txn_type_id(
                         TxnTypeEnum.INCOME,
                     ),
-                    estimated_amount=Decimal("9999.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("9999.00")),
                 ))
             db.session.commit()
 
@@ -2621,7 +2622,7 @@ class TestTheInterestChipAndTheBalanceAreOneWalk:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Deposit",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             ))
             db.session.commit()
             params = (
@@ -2947,7 +2948,7 @@ class TestGridBalanceView:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Deposit",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             ))
             db.session.commit()
 
@@ -3161,7 +3162,7 @@ class TestGridBalanceView:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Paycheck deposit",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             )
             db.session.add(income_txn)
             db.session.commit()
@@ -3588,7 +3589,7 @@ class TestTheViewOwnsTheLiveOverrideMap:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Paycheck",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             )
             db.session.add(income_txn)
             db.session.commit()
@@ -3745,7 +3746,7 @@ def _seed_grid_activity(db, seed_user, periods):
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name="Paycheck",
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-        estimated_amount=Decimal("2400.00"),
+        amount_ownership=AmountOwnership.own(Decimal("2400.00")),
     ))
     db.session.add(Transaction(
         account_id=account.id,
@@ -3754,7 +3755,7 @@ def _seed_grid_activity(db, seed_user, periods):
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name="Rent",
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal("1450.00"),
+        amount_ownership=AmountOwnership.own(Decimal("1450.00")),
     ))
     db.session.commit()
 
@@ -4435,9 +4436,11 @@ class TestLoanNotYetOriginated:
         opening from source, steps C3b1/C3b3, that read-outage class is retired
         entirely.)
 
-        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter in
-        ``loan_ledger.merge_anchor_and_payment_events`` and both asserts below
-        raise.
+        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter --
+        it would now go in ``loan_ledger.loan_event_stream``, where the reset
+        events are built (it was ``merge_anchor_and_payment_events`` until plan
+        step X-au-g-2c-3b-2 split the mapping from the ordering) -- and both
+        asserts below raise.
 
         $200,000.00 owed, not $199,759.69: with the clock at 2026-05-07 the loan
         has originated, so the 2026-05-01 installment is now a PAST due date -- and

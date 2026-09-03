@@ -45,6 +45,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
 from app.services import entry_service
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -108,7 +109,7 @@ def _create_tracked_txn(seed_user, seed_periods):
         name="Tracked Groceries",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("500.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -130,7 +131,7 @@ def _create_non_tracked_txn(seed_user, seed_periods):
         name="Non-Tracked Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("200.00"),
+        amount_ownership=AmountOwnership.own(Decimal("200.00")),
     )
     db.session.add(txn)
     db.session.commit()

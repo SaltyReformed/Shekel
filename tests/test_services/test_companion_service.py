@@ -32,6 +32,7 @@ from app.services import companion_service
 from app.services.auth_service import hash_password
 from app.services.pay_calendar import PayCalendarError, calendar_for
 from tests._test_helpers import open_owner_calendar
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -91,7 +92,7 @@ def _make_txn(seed_user, period, template, *, name=None, amount=None):
 
     txn = Transaction(
         name=name or template.name,
-        estimated_amount=amount or template.default_amount,
+        amount_ownership=AmountOwnership.own(amount or template.default_amount),
         transaction_type_id=expense_type.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         pay_period_id=period.id,
@@ -236,7 +237,7 @@ class TestVisibilityFiltering:
         category = list(seed_user["categories"].values())[0]
         txn = Transaction(
             name="Ad-hoc",
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             transaction_type_id=expense_type.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             pay_period_id=seed_periods_today[0].id,
@@ -303,7 +304,7 @@ class TestVisibilityFiltering:
         category = list(seed_user["categories"].values())[0]
         carried = Transaction(
             name="Groceries",
-            estimated_amount=template.default_amount,
+            amount_ownership=AmountOwnership.own(template.default_amount),
             transaction_type_id=expense_type.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             pay_period_id=seed_periods_today[0].id,

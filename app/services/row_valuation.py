@@ -519,7 +519,9 @@ def owned_contribution(txn) -> Decimal:
     **Re-censused at plan step X-au-g-2c-2, because widening the derived class
     from loan payments to EVERY transfer shadow widens what this accessor can be
     handed.**  All seven live call sites are settled-only or guarded:
-    ``cash_ledger.settled_cash_leg``, ``loan_ledger._split.split_one_payment``,
+    ``cash_ledger.settled_cash_leg``, ``loan_ledger._events.loan_event_stream``
+    (which was ``._split.split_one_payment`` until plan step X-au-g-2c-3b-2 moved
+    the cash read onto the event that carries it),
     ``loan_posting_service._sync`` and ``._display``,
     ``savings_dashboard_service._metrics`` (settled statuses in SQL), and the
     spending report's ``_window`` and ``_breakdown``.  ``statement_match`` and

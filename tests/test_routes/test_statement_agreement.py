@@ -43,6 +43,7 @@ from tests._test_helpers import (
 )
 from tests.test_services.test_cash_fold import _instant
 from tests.test_services.test_statement_import.test_anchor import _seed_import
+from app.models.amount_ownership import AmountOwnership
 
 _FILE_CHAIN = StatementBalanceEvidenceEnum.FILE_CHAIN
 _UNCORROBORATED = StatementBalanceEvidenceEnum.UNCORROBORATED
@@ -129,7 +130,7 @@ def _settled(db, seed_user, period, name, amount, day):
         status_id=status_id,
         name=name,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         **settlement_columns(day, amount, amount),
         **settle_day_columns(day),
     )

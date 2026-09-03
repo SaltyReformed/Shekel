@@ -48,6 +48,7 @@ from app.services.spending_report_service import (
     SpendingItemRow,
     SpendingWindow,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 @pytest.fixture(autouse=True)
@@ -102,7 +103,7 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
         status_id=paid_status_id,
         transaction_type_id=expense_type_id,
         name=name,
-        estimated_amount=amount,
+        amount_ownership=AmountOwnership.own(amount),
         category_id=cat.id if cat else None,
         # A settled row carries the whole record -- day, figure and basis --
         # through the one door a bare-built fixture uses (plan step X-au-c3).
@@ -1243,7 +1244,7 @@ class TestCalendarMonthView:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Test Income",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("3000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("3000.00")),
                 due_date=date(2026, 1, 5),
             )
             db.session.add(txn)
@@ -1420,7 +1421,7 @@ class TestCalendarInlineTotals:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Test Paycheck",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("2500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
                 due_date=date(2026, 1, 5),
             )
             txn_exp = Transaction(
@@ -1430,7 +1431,7 @@ class TestCalendarInlineTotals:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Test Rent",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
                 due_date=date(2026, 1, 5),
             )
             db.session.add_all([txn_inc, txn_exp])
@@ -1461,7 +1462,7 @@ class TestCalendarInlineTotals:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Electric Bill Detail",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
                 due_date=date(2026, 1, 10),
             )
             db.session.add(txn)
@@ -1492,7 +1493,7 @@ class TestCalendarInlineTotals:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Popover Check",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 due_date=date(2026, 1, 15),
             )
             db.session.add(txn)
@@ -1524,7 +1525,7 @@ class TestCalendarInlineTotals:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Click Test",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
                 due_date=date(2026, 1, 20),
             )
             db.session.add(txn)
@@ -1778,7 +1779,7 @@ class TestCalendarFlowStrip:
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                     name=name,
                     transaction_type_id=ref_cache.txn_type_id(txn_type),
-                    estimated_amount=amount,
+                    amount_ownership=AmountOwnership.own(amount),
                     due_date=date(2026, 1, 5),
                 ))
             db.session.commit()
@@ -2047,7 +2048,7 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
         status_id=ref_cache.status_id(StatusEnum.DONE),
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
-        estimated_amount=Decimal(estimated),
+        amount_ownership=AmountOwnership.own(Decimal(estimated)),
         category_id=cat.id if cat else None,
         due_date=due_date,
         # A settled row carries the day its money moved AND the record of what

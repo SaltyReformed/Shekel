@@ -213,6 +213,15 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
       on write-path triggers only (transfer settle/revert, params/APR change); never touches settled
       rows. Oracles: hand-computed charge appears/disappears; settled charge untouched (control);
       confirming the charge posts + folds at its instant.
+- [ ] **CC4d** `feat(cards): a finance charge names the relation that prices it` -- give CC4c's
+      projected charge its OWN pricing link, a typed FK that `ck_transactions_one_pricing_link`
+      counts, so it declares its relation the way every other derived row does.
+      **It is this arc's half of `balance:X-au-l`**, which deletes `amount_source_id` on the ground
+      that the relation is derivable from the link a row carries (**balance:R-IY**, `CLAUDE.md` rule
+      14). **N-264** was written as the reason that column must SURVIVE --
+      *a derived row that no pricing link can reach* -- and the developer ruled its other reading:
+      the arc is missing a leg, not short a discriminator. Closes **N-264**, and `balance:X-au-l` is
+      gated on this.
 
 ### Phase 5 -- Rewards
 

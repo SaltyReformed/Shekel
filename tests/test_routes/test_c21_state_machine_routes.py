@@ -26,6 +26,7 @@ from app.services import status_seam
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from tests._test_helpers import settlement_if_settling
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_projected_expense(seed_user, seed_periods_today):
@@ -47,7 +48,7 @@ def _create_projected_expense(seed_user, seed_periods_today):
         name="Test Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("123.45"),
+        amount_ownership=AmountOwnership.own(Decimal("123.45")),
     )
     db.session.add(txn)
     db.session.commit()

@@ -19,10 +19,10 @@ import pytest
 
 from app.enums import AmountSourceEnum
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership, from_columns
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.amount_ownership import (
-    _FIGURE_COLUMNS,
     declare_derived,
     owns_its_amount,
     state_own_amount,
@@ -31,64 +31,105 @@ from app import ref_cache
 from tests._test_helpers import add_txn, create_transfer
 
 
-class TestTheRegistryIsComplete:
-    """Every table carrying ``amount_source_id`` has a figure column here."""
+class TestEveryOwnedTableMapsThePairAsOneAttribute:
+    """The completeness the ``_FIGURE_COLUMNS`` registry used to hand-keep.
 
-    def test_it_covers_exactly_the_models_that_carry_the_column(self, app):
-        """The completeness predicate, discovered rather than restated.
+    **The registry is GONE at plan step X-au-k, and this is what replaced it.**
+    The seam carried a ``{model: figure column name}`` dict because a
+    transaction stores an owned figure in ``estimated_amount`` and a transfer
+    in ``amount``, so an act had to look up which column to write; both models
+    expose the pair under the SAME attribute now, so there is nothing to
+    dispatch on and nothing to keep in step.  What the dict also bought was a
+    COMPLETENESS predicate -- a third table brought under the amount model
+    would fail loudly rather than be written through a default -- and that
+    predicate is worth more than the dispatch was, so it is restated here
+    against the MAPPERS instead of against a hand-written dict.
 
-        The mapping is keyed on the model, so a THIRD table brought under the
-        amount model raises ``KeyError`` at the lookup instead of being written
-        through some default -- but only if somebody notices.  This is what
-        notices: the expected set is derived from the MAPPERS, so a table that
-        gains ``amount_source_id`` without a figure column beside it fails
-        here rather than at the first row somebody tries to declare.
+    It is strictly stronger than the version it replaces, for a reason the old
+    file's own second test named: ``setattr`` on a declarative class does not
+    fail, so a model that carried ``amount_source_id`` without the composite
+    would take an ``amount_ownership`` assignment, put it nowhere, and let the
+    ``commit`` after it succeed.  A census over ``mapper.composites`` cannot be
+    satisfied that way -- an unmapped instance attribute never appears there.
+    """
 
-        The same shape as ``_RULE_ANSWERS`` / ``_RELATION_RULES`` one tier up,
-        and for the same reason.
+    def test_every_table_with_a_source_column_maps_the_composite(self, app):
+        """The two sets are equal: source column present iff pair mapped.
+
+        Discovered from the mappers rather than restated, so a table that gains
+        ``amount_source_id`` without the composite beside it fails HERE rather
+        than at the first row somebody tries to declare.
+
+        **The left-hand census reads the TABLE's column names, not the
+        mapper's attribute keys, and that distinction is load-bearing.**
+        ``mapper.columns`` is keyed by ATTRIBUTE, so it answers
+        ``_amount_source_id`` on both tables since plan step X-au-k made the
+        halves private -- and a census written against it reads EMPTY, which
+        two empty sets would then have called equal.  The question this test
+        asks is about the SCHEMA ("which tables carry the column"), so it asks
+        the schema.  Measured: written against ``mapper.columns`` first, and
+        it went vacuous exactly that way.
         """
         with app.app_context():
             carrying = {
                 mapper.class_ for mapper in db.Model.registry.mappers
-                if "amount_source_id" in mapper.columns
+                if "amount_source_id" in mapper.local_table.c
+            }
+            mapping_the_pair = {
+                mapper.class_ for mapper in db.Model.registry.mappers
+                if any(c.key == "amount_ownership" for c in mapper.composites)
             }
 
-            assert carrying == set(_FIGURE_COLUMNS)
+            # Non-vacuous FIRST: two empty sets are equal, and a census that
+            # measured nothing would pass this test forever.
+            assert carrying == {Transaction, Transfer}
+            assert mapping_the_pair == carrying
 
-    def test_each_registered_column_exists_on_its_model(self, app):
-        """A registered column NAME must be a real column on that table.
+    def test_each_composite_covers_its_own_tables_two_columns(self, app):
+        """The composite maps the FIGURE and the SOURCE, in that order.
 
-        Without this the registry could name a column that does not exist --
-        a near-miss spelling, or one renamed by a migration -- and every write
-        would create an ORM attribute nobody reads.  ``setattr`` on a mapped
-        class does not fail, and neither does the ``commit`` after it: a
-        SQLAlchemy declarative class has no ``__slots__``, so the value simply
-        goes nowhere.  That is the same silent shape an adversarial review of
-        this step found twice in the fixtures, where a test wrote
-        ``EscrowLine.annual_amount`` -- a column that lives on the VERSION --
-        and an assertion passed because nothing had changed.
+        A composite over the wrong columns -- or over the right ones in the
+        wrong order -- would build every value object with its halves swapped,
+        and both halves are nullable, so nothing else would notice.  The figure
+        column differs by table, which is the difference the deleted registry
+        existed to carry, so it is named per model here.
         """
+        expected = {
+            Transaction: ("estimated_amount", "amount_source_id"),
+            Transfer: ("amount", "amount_source_id"),
+        }
         with app.app_context():
-            for model, column in _FIGURE_COLUMNS.items():
-                assert column in model.__mapper__.columns, (
-                    f"{model.__name__} has no column {column!r}"
+            for model, columns in expected.items():
+                composite = next(
+                    c for c in model.__mapper__.composites
+                    if c.key == "amount_ownership"
                 )
+                assert tuple(c.name for c in composite.columns) == columns
+                # The FACTORY, not the class: it answers ``None`` for a row
+                # that has stated no ownership, which is what lets
+                # ``AmountOwnership`` be total over R-FI's two states.  Mapping
+                # the class directly is the edit this assertion exists to
+                # catch.
+                assert composite.composite_class is from_columns
 
-    def test_an_unregistered_model_raises_rather_than_guessing(self, app):
-        """A model with no figure column fails loudly at the seam.
+    def test_the_public_names_are_read_only_on_every_owned_table(self, app):
+        """No table under the amount model has a writable half of the pair.
 
-        The negative control on the registry: a lookup that fell back to a
-        default would write a declaration onto a table whose CHECK does not
-        pair it with anything.
+        The census above says the pair is MAPPED as one attribute; this says
+        the halves are not ALSO reachable under their public names, which is
+        the property that makes "one writer" structural rather than observed.
+        A model that mapped the composite and left the columns publicly
+        writable would satisfy every other test in this class.
         """
+        halves = {
+            Transaction: ("estimated_amount", "amount_source_id"),
+            Transfer: ("amount", "amount_source_id"),
+        }
         with app.app_context():
-            class _NotAmountOwned:  # pylint: disable=too-few-public-methods
-                amount_source_id = None
-
-            with pytest.raises(KeyError):
-                declare_derived(
-                    _NotAmountOwned(), AmountSourceEnum.PARENT_TRANSFER,
-                )
+            for model, names in halves.items():
+                for name in names:
+                    with pytest.raises(AttributeError):
+                        setattr(model(), name, Decimal("1.00"))
 
 
 class TestTheTwoActs:
@@ -146,10 +187,10 @@ class TestTheTwoActs:
         """The SECOND table is written through the same two functions.
 
         ``budget.transfers`` stores an owned figure in ``amount`` where a
-        transaction uses ``estimated_amount``, and the registry is what keeps
-        one seam serving both.  Without this case the seam could hard-code the
-        transaction column and every transfer write would silently create an
-        attribute.
+        transaction uses ``estimated_amount``, and since plan step X-au-k what
+        keeps one seam serving both is that the two tables expose the pair
+        under the same ATTRIBUTE name -- the seam names no column at all.
+        Without this case the seam could serve only the transaction shape.
         """
         with app.app_context():
             td = seed_full_user_data

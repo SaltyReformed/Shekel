@@ -58,6 +58,7 @@ from tests._test_helpers import (
     last_covered_day,
     make_every_period_rule,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -102,10 +103,10 @@ def _make_envelope_txn(
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=Decimal(
+        amount_ownership=AmountOwnership.own(Decimal(
             estimated_amount if estimated_amount is not None
             else str(template.default_amount)
-        ),
+        )),
         is_override=is_override,
     )
     db.session.add(txn)
@@ -158,7 +159,7 @@ def _make_discrete_txn(seed_user, period, template):
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=template.default_amount,
+        amount_ownership=AmountOwnership.own(template.default_amount),
     )
     db.session.add(txn)
     db.session.flush()

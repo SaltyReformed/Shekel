@@ -60,6 +60,7 @@ from tests._test_helpers import (
     settlement_columns,
 )
 from tests._test_helpers import make_every_period_rule
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
@@ -94,7 +95,7 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal(amount),
+        amount_ownership=AmountOwnership.own(Decimal(amount)),
         # A settled row carries the day its money moved AND the record of what
         # moved, or it carries neither -- the pair is one fact in three columns
         # (plan step X-au-c3), resolved by the shared helper rather than spelled
@@ -301,7 +302,7 @@ class TestCarryForwardUnpaid:
                 name="Baseline Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             db.session.add(baseline_txn)
 
@@ -314,7 +315,7 @@ class TestCarryForwardUnpaid:
                 name="Alt Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             db.session.add(alt_txn)
             db.session.flush()
@@ -1418,7 +1419,7 @@ def _create_envelope_txn(
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=planned,
+        amount_ownership=AmountOwnership.own(planned),
         **settle_day_columns(settled_on),
         **settlement_columns(settled_on, planned, submitted=settled_amount),
         occurs_on=occurs_on,
@@ -2685,7 +2686,7 @@ class TestCarryForwardEnvelopeIncomeFalse:
                 name=template.name,
                 category_id=template.category_id,
                 transaction_type_id=template.transaction_type_id,
-                estimated_amount=Decimal("2500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
             )
             db.session.add(source)
             db.session.commit()

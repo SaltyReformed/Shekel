@@ -45,6 +45,7 @@ from tests._test_helpers import (
     last_covered_day,
     settle_day_columns,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def a_transaction(
@@ -138,7 +139,7 @@ def a_transaction(
         name=name,
         category_id=category_id,
         transaction_type_id=type_id,
-        estimated_amount=Decimal(amount),
+        amount_ownership=AmountOwnership.own(Decimal(amount)),
         is_envelope=is_envelope,
         **settle_day_columns(settled_on, settle_day_basis),
         settled_amount=Decimal(amount) if settled_on else None,

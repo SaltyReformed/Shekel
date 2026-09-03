@@ -23,6 +23,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.exceptions import ValidationError
 from app.services import posting_service
+from app.services.amount_ownership import state_own_amount
 from app.services._recurrence_common import log_resource_access_denied
 from app.utils.log_events import (
     BUSINESS,
@@ -117,7 +118,13 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
             txn.is_override = False
             txn.is_deleted = False
             if new_amount is not None:
-                txn.estimated_amount = new_amount
+                # **This states the row's OWNERSHIP, not just its figure**
+                # (plan step X-au-k): the pair is one attribute, so writing a
+                # figure declares the row the owner of it.  A row this loop can
+                # reach is template-linked and owns its figure today; when a
+                # cutover derives one, this becomes a SILENT hand-back where it
+                # used to be an ``IntegrityError``.  Finding **N-437**.
+                state_own_amount(txn, new_amount)
             restored.append(txn)
             resolved_count += 1
         db.session.flush()

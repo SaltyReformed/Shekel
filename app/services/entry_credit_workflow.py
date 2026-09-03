@@ -21,6 +21,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import match_withdrawal, posting_service
+from app.services.amount_ownership import state_own_amount
 from app.services.row_valuation import settled_figure
 from app.services.pay_calendar import calendar_for
 from app.services.credit_workflow import (
@@ -189,7 +190,14 @@ def sync_entry_payback(
             )
         # UPDATE: adjust the payback amount and link any new entries.
         previous_amount = existing_payback.estimated_amount
-        existing_payback.estimated_amount = total_credit
+        # **States the payback's OWNERSHIP, not just its figure** (plan step
+        # X-au-k).  A payback carries ``credit_payback_for_id``, which
+        # ``ck_transactions_one_pricing_link`` makes exclusive with the two
+        # links any relation is declared through, so it owns its figure by
+        # construction and this cannot un-derive anything today.  Finding
+        # **N-437** is the class; plan step X-au-i, which would have given a
+        # payback a relation of its own, was WITHDRAWN.
+        state_own_amount(existing_payback, total_credit)
         for entry in credit_entries:
             if entry.credit_payback_id != existing_payback.id:
                 entry.credit_payback_id = existing_payback.id

@@ -23,6 +23,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import account_service
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Companion blocked from all guarded routes ────────────────────────
@@ -325,7 +326,7 @@ def _create_companion_test_transaction(
 
     txn = Transaction(
         name=template_name,
-        estimated_amount=Decimal("500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("500.00")),
         transaction_type_id=expense_type.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         pay_period_id=seed_periods_today[0].id,
@@ -495,7 +496,7 @@ class TestMarkDoneCompanionAccess:
 
         txn = Transaction(
             name="Other Groceries",
-            estimated_amount=Decimal("400.00"),
+            amount_ownership=AmountOwnership.own(Decimal("400.00")),
             transaction_type_id=expense_type.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             pay_period_id=period.id,
@@ -551,7 +552,7 @@ class TestMarkDoneCompanionAccess:
 
         txn = Transaction(
             name="Ad-hoc expense",
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             transaction_type_id=expense_type.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             pay_period_id=seed_periods_today[0].id,

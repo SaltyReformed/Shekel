@@ -52,6 +52,7 @@ from tests.oracles.recurrence_baseline import (
     MONTHLY,
 )
 from app.services.settle_day import record_settle_day
+from app.services.amount_ownership import state_own_amount
 
 
 def _assert_shadows_valid(xfer):
@@ -317,7 +318,7 @@ class TestTransferGeneration:
 
             # Override one entry.
             created[0].is_override = True
-            created[0].amount = Decimal("999.99")
+            state_own_amount(created[0], Decimal("999.99"))
             # Soft-delete another.
             created[1].is_deleted = True
             db.session.flush()
@@ -690,7 +691,7 @@ class TestTransferRegeneration:
             # Override one entry.
             overridden_id = created[0].id
             created[0].is_override = True
-            created[0].amount = Decimal("999.99")
+            state_own_amount(created[0], Decimal("999.99"))
             db.session.flush()
 
             with pytest.raises(RecurrenceConflict) as exc_info:
@@ -766,7 +767,7 @@ class TestTransferResolveConflicts:
             # Override one entry.
             xfer = created[0]
             xfer.is_override = True
-            xfer.amount = Decimal("999.99")
+            state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
             transfer_recurrence.resolve_conflicts(
@@ -797,7 +798,7 @@ class TestTransferResolveConflicts:
             # Override one entry.
             xfer = created[0]
             xfer.is_override = True
-            xfer.amount = Decimal("999.99")
+            state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
             transfer_recurrence.resolve_conflicts(
@@ -838,7 +839,7 @@ class TestTransferResolveConflicts:
 
             xfer = created[0]
             xfer.is_override = True
-            xfer.amount = Decimal("999.99")
+            state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
             # Attempt resolve as second_user -- should be blocked.
@@ -870,7 +871,7 @@ class TestTransferResolveConflicts:
 
             xfer = created[0]
             xfer.is_override = True
-            xfer.amount = Decimal("999.99")
+            state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
             # 'keep' with wrong user -- no-op by design (keep never modifies).
@@ -901,7 +902,7 @@ class TestTransferResolveConflicts:
 
             xfer = created[0]
             xfer.is_override = True
-            xfer.amount = Decimal("999.99")
+            state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
             transfer_recurrence.resolve_conflicts(
@@ -932,7 +933,7 @@ class TestTransferResolveConflicts:
             db.session.flush()
             xfer_a = created_a[0]
             xfer_a.is_override = True
-            xfer_a.amount = Decimal("999.99")
+            state_own_amount(xfer_a, Decimal("999.99"))
 
             # Create transfer for user B (needs their own periods).
             from app.services import pay_period_service
@@ -952,7 +953,7 @@ class TestTransferResolveConflicts:
             db.session.flush()
             xfer_b = created_b[0]
             xfer_b.is_override = True
-            xfer_b.amount = Decimal("888.88")
+            state_own_amount(xfer_b, Decimal("888.88"))
             db.session.flush()
 
             # Resolve as user A -- only xfer_a should be modified.
@@ -1392,7 +1393,7 @@ class TestShadowTransactionCreation:
             # Override one entry.
             xfer = created[0]
             xfer.is_override = True
-            xfer.amount = Decimal("999.99")
+            state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
             transfer_recurrence.resolve_conflicts(
@@ -1467,7 +1468,7 @@ class TestResolveConflictsServiceRouting:
 
             xfer = created[0]
             xfer.is_override = True
-            xfer.amount = Decimal("999.99")
+            state_own_amount(xfer, Decimal("999.99"))
             # A shadow cannot be drifted to prove the service corrects it:
             # since plan step X-au-g-2c-2 it stores no figure and reads its
             # parent, so ``ck_transactions_amount_ownership`` refuses the
@@ -1569,7 +1570,7 @@ class TestResolveConflictsServiceRouting:
 
             xfer = created[0]
             xfer.is_override = True
-            xfer.amount = Decimal("350.00")
+            state_own_amount(xfer, Decimal("350.00"))
             db.session.flush()
 
             transfer_recurrence.resolve_conflicts(
@@ -1605,7 +1606,7 @@ class TestResolveConflictsServiceRouting:
 
             xfer = created[0]
             xfer.is_override = True
-            xfer.amount = Decimal("999.99")
+            state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
             transfer_recurrence.resolve_conflicts(
@@ -1641,9 +1642,9 @@ class TestResolveConflictsServiceRouting:
 
             # Override two transfers, soft-delete a third.
             created[0].is_override = True
-            created[0].amount = Decimal("999.99")
+            state_own_amount(created[0], Decimal("999.99"))
             created[1].is_override = True
-            created[1].amount = Decimal("888.88")
+            state_own_amount(created[1], Decimal("888.88"))
             db.session.flush()
 
             from app.services import transfer_service as ts

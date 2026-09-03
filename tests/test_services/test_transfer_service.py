@@ -32,6 +32,7 @@ from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
+    write_past_the_amount_seam,
     add_anchor_history,
     an_entered_day,
     create_loan_account,
@@ -41,6 +42,7 @@ from tests._test_helpers import (
 )
 from app.services.settle_day import record_settle_day
 from app.services.state_machine import allowed_transitions
+from app.services.amount_ownership import state_own_amount
 
 
 @pytest.fixture()
@@ -1600,7 +1602,11 @@ class TestRestoreTransfer:
             # transaction, and a bare rollback here would leave nothing to
             # restore.
             attempt = db.session.begin_nested()
-            shadow.estimated_amount = Decimal("999.00")
+            # Past the MAPPING, for the reason
+            # ``test_a_leg_cannot_hold_a_figure_while_it_declares_a_parent``
+            # states: since plan step X-au-k the seam would release the
+            # shadow's declaration instead of drifting it.
+            write_past_the_amount_seam(shadow, Decimal("999.00"))
             # ``match`` names the constraint that IS the claim; a bare
             # ``IntegrityError`` would pass on an FK or a unique index too.
             with pytest.raises(

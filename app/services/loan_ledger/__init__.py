@@ -42,15 +42,25 @@ walk needs no fence (plan step D-fold).
 
 ## The modules
 
-* :mod:`._split` -- the ONE split: how one payment's ACTUAL cash divides into
-  interest / escrow / principal / refund.  Pure.  **It is TWO rules since plan
-  step R16-a**, because fusing them made the payment COUNT the clock: charging a
-  month's interest inside the per-payment step means N payments charge N months
-  however far apart they fall.  :func:`apply_payment_cash` is the ALLOCATION
-  alone -- cash against charges already standing -- and :func:`split_payment_cash`
-  is the one-payment-per-month composition that charges a month first.
-* :mod:`._events` -- the event stream: the loan's anchors and its settled
-  payments, merged into one chronological order.  Reads no clock.
+* :mod:`._charges` -- what an accrual period COSTS: one
+  :class:`AccrualCharge` per period the payments occupy, carrying the rate period
+  governing it and the escrow in force on its date.  Pure.
+* :mod:`._replay` -- the ONE replay: charges accumulate, a payment allocates
+  against what stands, an assertion resets the balance.  Pure.  **It is a shared
+  primitive since plan step X-au-g-2c-3b-2**, when the settled walk here and the
+  forward fold in ``balance_at`` were found to be two statements of one rule --
+  the third time this arc has found a rule duplicated because it sat on the wrong
+  side of the import graph.  The CHARGE and the ALLOCATION are separate values
+  since plan step R16-a, because fusing them made the payment COUNT the clock:
+  charging a month's interest inside the per-payment step means N payments charge
+  N months however far apart they fall.
+* :mod:`._split` -- the loan's per-payment FACT
+  (:class:`LoanPaymentSplit`): the four economic parts a payment's cash turned
+  out to be, the record they came from, the installment they satisfy and the rate
+  period they accrued at.  Pure, and it computes nothing.
+* :mod:`._events` -- the event stream: which of the loan's rows are facts, which
+  date governs each, and what figure each carries.  Reads no clock, and decides
+  no order -- that is :mod:`._replay`'s.
 * :mod:`._walk` -- the running-balance replay over that stream (the loan's FACTS:
   per-payment splits and per-anchor corrections), the payment-split view of it,
   and the visible-date re-key of its events (:func:`dated_deltas`, step E1a --
@@ -88,7 +98,7 @@ Plan of record: ``docs/audits/balance_architecture/README.md`` (step B1).
 
 from ._events import (
     confirmed_shadows_through,
-    merge_anchor_and_payment_events,
+    loan_event_stream,
 )
 from ._walk import (
     LoanAnchorCorrection,
@@ -102,12 +112,18 @@ from ._charges import (
     charges_for_due_dates,
     installment_slot,
 )
+from ._replay import (
+    LoanCashEvent,
+    LoanEventStream,
+    LoanReplay,
+    LoanResetEvent,
+    PaymentOutcome,
+    ResetOutcome,
+    replay_loan_events,
+)
 from ._split import (
     LoanPaymentSplit,
-    PaymentCashSplit,
-    apply_payment_cash,
     split_one_payment,
-    split_payment_cash,
 )
 from ._visible import (
     anchor_visible_on,
@@ -117,19 +133,23 @@ from ._visible import (
 __all__ = [
     "AccrualCharge",
     "LoanAnchorCorrection",
+    "LoanCashEvent",
+    "LoanEventStream",
     "LoanLedgerWalk",
     "LoanPaymentSplit",
-    "PaymentCashSplit",
+    "LoanReplay",
+    "LoanResetEvent",
+    "PaymentOutcome",
+    "ResetOutcome",
     "anchor_visible_on",
-    "apply_payment_cash",
     "charges_for_due_dates",
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
     "dated_deltas",
     "installment_slot",
-    "merge_anchor_and_payment_events",
+    "loan_event_stream",
     "payment_visible_on",
+    "replay_loan_events",
     "split_one_payment",
-    "split_payment_cash",
     "walk_loan_ledger",
 ]

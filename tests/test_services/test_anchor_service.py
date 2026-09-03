@@ -61,6 +61,7 @@ from tests._test_helpers import (
     settle_day_columns,
 )
 from app.services import cash_ledger
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_checking_account(seed_user, anchor_balance="1000.00", observed_on=None):
@@ -145,7 +146,7 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
         name="Groceries",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("500.00")),
     )
     db.session.add(txn)
     db.session.flush()

@@ -69,6 +69,8 @@ from tests._test_helpers import (
     shadow_amount,
 )
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -230,7 +232,7 @@ class TestClearingATransactionTemplatesRecurrence:
             .one()
         )
         overridden.is_override = True
-        overridden.estimated_amount = Decimal("17.99")
+        state_own_amount(overridden, Decimal("17.99"))
         overridden_id = overridden.id
         db.session.commit()
 
@@ -317,7 +319,7 @@ class TestClearingATransactionTemplatesRecurrence:
             .one()
         )
         overridden.is_override = True
-        overridden.estimated_amount = Decimal("17.99")
+        state_own_amount(overridden, Decimal("17.99"))
         overridden_id = overridden.id
         db.session.commit()
 
@@ -419,7 +421,7 @@ class TestATemplateThatNeverRecurredIsNotSwept:
             name="Streaming",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=template.transaction_type_id,
-            estimated_amount=Decimal("15.99"),
+            amount_ownership=AmountOwnership.own(Decimal("15.99")),
             is_override=False,
             is_deleted=False,
             due_date=seed_periods[6].start_date,

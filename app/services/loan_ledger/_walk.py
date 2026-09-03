@@ -1,11 +1,12 @@
 """The loan walk: ONE running-balance replay over ONE event stream -- FACTS.
 
 The single chronological walk a loan's whole architecture derives from.  It
-seeds the balance at zero and, in event order (:mod:`._events`), applies each
-anchor as a RESET and splits each settled payment on the reset-aware balance
-(:mod:`._split`) -- so the loan's opening, every true-up, and every payment split
-come from ONE running balance and can never disagree on the balance interest
-accrued on, the way three independent walks could.
+seeds the balance at zero and folds the loan's three kinds of fact
+(:mod:`._events`) through the ONE replay (:mod:`._replay`): each accrual period
+CHARGES the loan, each settled payment's cash ALLOCATES against what stands, and
+each anchor RESETS the balance -- so the loan's opening, every true-up, and every
+payment split come from ONE running balance and can never disagree on the balance
+interest accrued on, the way three independent walks could.
 
 **The walk yields FACTS, not a balance-at-T.**  Its output is a
 :class:`LoanLedgerWalk` -- one :class:`~._split.LoanPaymentSplit` per settled
@@ -41,13 +42,13 @@ from datetime import date
 from decimal import Decimal
 
 from app.services import (
-    escrow_calculator,
     loan_loaders,
     loan_resolver,
 )
 from app.services.loan_loaders import LoanAnchorFact
 
-from ._events import merge_anchor_and_payment_events
+from ._events import loan_event_stream
+from ._replay import LoanEventStream, replay_loan_events
 from ._split import LoanPaymentSplit, split_one_payment
 from ._visible import anchor_visible_on, payment_visible_on
 
@@ -121,52 +122,42 @@ class LoanLedgerWalk:
 
 
 def _replay_events(
-    events: list[tuple[date, bool, object]],
-    periods: list,
-    escrow_lines: list,
+    stream: LoanEventStream,
 ) -> tuple[list[LoanPaymentSplit], list[LoanAnchorCorrection]]:
-    """Walk a merged event stream into its splits and anchor corrections.
+    """Replay a loan's event stream into its splits and anchor corrections.
 
-    The running-balance heart of :func:`walk_loan_ledger`, factored out so the
-    loader stays small.  Seeds the balance at zero and, per
-    :func:`._events.merge_anchor_and_payment_events`'s order, records each
-    anchor's correction (with the balance JUST BEFORE its reset) and resets the
-    balance, or splits each payment on the current balance
-    (:func:`._split.split_one_payment`) and advances it.
+    The settled walk's half of the shared replay (plan step
+    **X-au-g-2c-3b-2**): it hands the stream to
+    :func:`._replay.replay_loan_events` -- the ONE rule, seeded at zero because a
+    loan's first event is always its opening assertion -- and maps the outcomes
+    back onto the loan-specific facts its two consumers read.
+
+    **Each payment's accrual-period charge comes off its own outcome**, because
+    the replay already knows which charge stood over it.  Re-deriving that pairing
+    here -- by matching :func:`._charges.installment_slot` between charge and
+    payment, which is how this was first built -- states a SECOND association rule
+    that agrees with the replay's only because the charges were derived from these
+    very payments' due dates.  An adversarial review measured that, and the remedy
+    was to return the association rather than recompute it.
 
     Args:
-        events: The merged ``(governing_date, is_anchor, item)`` stream in walk
-            order.  For a payment the ``governing_date`` IS its due date -- the
-            merge already derived it to order the walk, so it is threaded onto the
-            split here rather than re-derived (plan step E1c).
-        periods: The loan's rate periods (governs each payment's interest rate).
-        escrow_lines: The loan's escrow lines with their full version history;
-            each payment resolves the escrow in effect on its DUE date
-            (``governing_date`` -- contract time, ruling D5) via
-            :func:`~app.services.escrow_calculator.escrow_monthly_as_of`, the
-            same date :func:`._split.split_one_payment` resolves its rate on.
+        stream: The loan's :class:`._replay.LoanEventStream`
+            (:func:`._events.loan_event_stream`).
 
     Returns:
         ``(payment_splits, anchor_corrections)``, both chronological.
     """
-    balance = _ZERO_MONEY
-    payment_splits: list[LoanPaymentSplit] = []
-    anchor_corrections: list[LoanAnchorCorrection] = []
-    for governing_date, is_anchor, item in events:
-        if is_anchor:
-            anchor_corrections.append(
-                LoanAnchorCorrection(anchor=item, owed_before=balance)
+    replay = replay_loan_events(_ZERO_MONEY, stream)
+    return (
+        [split_one_payment(outcome) for outcome in replay.payments],
+        [
+            LoanAnchorCorrection(
+                anchor=outcome.event.source,
+                owed_before=outcome.balance_before,
             )
-            balance = item.anchor_balance
-            continue
-        payment_escrow = escrow_calculator.escrow_monthly_as_of(
-            escrow_lines, governing_date,
-        )
-        split, balance = split_one_payment(
-            item, balance, periods, payment_escrow, governing_date,
-        )
-        payment_splits.append(split)
-    return payment_splits, anchor_corrections
+            for outcome in replay.resets
+        ],
+    )
 
 
 def walk_loan_ledger(
@@ -175,20 +166,26 @@ def walk_loan_ledger(
     """Replay a loan's anchors and settled payments into one running balance.
 
     The SINGLE chronological running-balance walk the whole loan architecture
-    derives from.  Seeds the running balance at zero and, in event order
-    (:func:`._events.merge_anchor_and_payment_events`), applies each anchor as a
-    RESET and splits each settled payment on the reset-aware balance:
+    derives from.  Seeds the running balance at zero and folds the loan's event
+    stream (:func:`._events.loan_event_stream`) through the ONE replay
+    (:func:`._replay.replay_loan_events`), which applies three kinds of fact in
+    contract order:
 
-    * At an anchor (opening or user-trueup): record a
+    * At a CHARGE (an accrual period began): accrue the period's interest on the
+      running balance and impound its escrow, so both stand against the loan
+      until cash clears them.  **One charge per accrual period the payments
+      occupy, not one per payment** (plan step X-au-g-2c-3b-2): a second payment
+      inside one period clears no fresh charge and pays pure principal, where
+      until this step it charged the loan a second month.
+    * At a settled PAYMENT -- INCLUDING one whose pay period has not yet begun
+      (settlement is the confirming event; see
+      :func:`~app.services.loan_loaders.settled_income_shadows`) -- allocate its
+      ACTUAL cash against whatever stands, into interest / escrow / principal /
+      excess, then advance the balance.
+    * At an ANCHOR (opening or user-trueup): record a
       :class:`LoanAnchorCorrection` carrying the balance JUST BEFORE the reset,
       then reset the running balance to the anchor's verified value.  The opening
       anchor is always the first event, so its ``owed_before`` is zero.
-    * At a settled payment -- INCLUDING one whose pay period has not yet begun
-      (settlement is the confirming event; see
-      :func:`~app.services.loan_loaders.settled_income_shadows`) -- divide its
-      ACTUAL cash into interest / escrow / principal / excess on the current
-      running balance (:func:`._split.split_one_payment`), then advance the
-      balance.
 
     Resetting at EVERY anchor -- rather than seeding from the latest anchor only,
     as the resolver does -- is what lets a from-origination sum-of-postings
@@ -200,9 +197,10 @@ def walk_loan_ledger(
     from-origination replay.
 
     **Takes no as-of, and reads no clock** (see the module docstring).  Each
-    payment's escrow is the amount IN EFFECT ON its DUE date (effective-dated,
-    NO inflation, ruling D5's contract time), so a later escrow change never
-    re-splits a past payment.  Reads only (no writes, no commit).
+    accrual period's rate and escrow are those IN EFFECT ON the period's own date
+    -- the earliest installment due in it (effective-dated, NO inflation, ruling
+    D5's contract time) -- so a later escrow or rate change never re-splits a past
+    payment.  Reads only (no writes, no commit).
 
     Args:
         loan_account_id: The loan account whose ledger to walk.
@@ -228,19 +226,16 @@ def walk_loan_ledger(
     periods = loan_resolver.resolve_periods(
         params, loan_loaders.load_rate_changes(loan_account_id),
     )
-    # Every escrow LINE with its full version history, loaded once; each
-    # payment's escrow is resolved (greatest effective_date <= that payment's
-    # DUE date, per line) and summed via the shared ``escrow_monthly_as_of``, so
-    # a since-removed version still applies to a historical payment and a later
+    # Every escrow LINE with its full version history, loaded once; each accrual
+    # period's escrow is resolved (greatest effective_date <= the period's own
+    # date, per line) and summed via the shared ``escrow_monthly_as_of``, so a
+    # since-removed version still applies to a historical period and a later
     # escrow change never re-splits a past payment (plan Section 2 / D3).
     escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
     shadows = loan_loaders.settled_income_shadows(loan_account_id, scenario_id)
-    events = merge_anchor_and_payment_events(
-        anchor_facts, shadows, params.payment_day,
-    )
-    payment_splits, anchor_corrections = _replay_events(
-        events, periods, escrow_lines,
-    )
+    payment_splits, anchor_corrections = _replay_events(loan_event_stream(
+        anchor_facts, shadows, params.payment_day, periods, escrow_lines,
+    ))
     return LoanLedgerWalk(payment_splits, anchor_corrections)
 
 
@@ -253,7 +248,9 @@ def compute_loan_payment_splits(
     :class:`~._split.LoanPaymentSplit` per settled payment (whatever its pay
     period), in chronological order, each dividing its ACTUAL cash into interest /
     escrow / principal / excess on the reset-aware running balance (see
-    :func:`._split.split_one_payment` for the per-payment math).  Because
+    :func:`._replay.replay_loan_events` for that arithmetic --
+    :func:`._split.split_one_payment` performs none of it since plan step
+    X-au-g-2c-3b-2, and only names the parts).  Because
     principal is ``cash - interest - escrow``, an extra or short payment lands in
     principal automatically -- the cash is the authority, where the resolver's
     contractual replay discards it and needs an anchor true-up.
@@ -305,7 +302,8 @@ def dated_deltas(walk: LoanLedgerWalk) -> list[tuple[date, Decimal]]:
     **The deltas are computed in EVENT (contract) order and then re-keyed by
     VISIBLE date, and that is deliberate.**  A payment's split depends on the
     balance at its installment, so the walk runs in due-date order
-    (:func:`.merge_anchor_and_payment_events`); the ledger stores those
+    (:func:`._replay.replay_loan_events`, over
+    :func:`._events.loan_event_stream`); the ledger stores those
     amounts, and a reader counts whichever are visible.  Under the one clock a
     payment's visible date is its SETTLED date and an anchor's is its own date
     (:mod:`._visible`) -- the same day each posting carries in ``entry_date``
@@ -324,7 +322,7 @@ def dated_deltas(walk: LoanLedgerWalk) -> list[tuple[date, Decimal]]:
     Returns:
         ``[(visible_on, delta), ...]`` ascending by ``(visible_on, tag)``,
         where a PAYMENT tags before an ANCHOR on a shared date -- mirroring the
-        walk's own tie-break (:func:`.merge_anchor_and_payment_events`), so
+        walk's own tie-break (:func:`._replay.replay_loan_events`), so
         reading the list shows the same chronology the walk applied.  The
         order within a date is immaterial to a prefix sum (addition commutes);
         mirroring it keeps the two chronologies reading identically.

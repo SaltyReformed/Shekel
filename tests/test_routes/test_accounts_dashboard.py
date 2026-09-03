@@ -23,6 +23,7 @@ from app.services.auth_service import hash_password
 from app.services import account_service
 
 from tests._test_helpers import create_loan_account, loan_params_for
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_savings_account(
@@ -351,7 +352,7 @@ class TestAccountHardDelete:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=txn_type.id,
                 name="Test Expense",
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 status_id=projected.id,
             )
             db.session.add(txn)
@@ -591,7 +592,7 @@ class TestAccountHardDelete:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=txn_type.id,
                 name="Pre-existing Expense",
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 status_id=projected.id,
             )
             db.session.add(txn)

@@ -57,7 +57,10 @@ class LoanPaymentHistoryRow:
     ordinary payment.  The one case they diverge is a payoff OVERPAYMENT, whose
     surplus is a lender refund (a receivable) rather than principal -- there
     ``cash`` exceeds the split sum by that refund; see
-    :func:`app.services.loan_ledger.split_one_payment`.
+    :func:`~app.utils.money.apply_payment_cash`.  A SECOND payment inside one
+    accrual period is the other shape worth expecting: it clears no fresh charge,
+    so its ``interest`` and ``escrow`` are ``0.00`` and its ``principal`` alone
+    equals its cash (plan step X-au-g-2c-3b-2).
 
     Attributes:
         due_date: The monthly installment the payment satisfies

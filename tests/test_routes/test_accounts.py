@@ -61,6 +61,7 @@ from app.services import (
 from app.services.auth_service import hash_password
 from app.services.row_valuation import owned_contribution, settled_figure
 from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 
 #: The out-of-band swap that carries the balance acknowledgement into
@@ -1801,7 +1802,7 @@ class TestTheReconcileRoute:
             name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -3169,7 +3170,7 @@ class TestTheReconcileRoutesUngradedBranches:
             name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal(amount),
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
         )
         db.session.add(txn)
         db.session.flush()
@@ -5287,7 +5288,7 @@ class TestCheckingDetail:
                     name="Paycheck",
                     category_id=category.id,
                     transaction_type_id=income_type.id,
-                    estimated_amount=Decimal("2000.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 ))
                 db.session.add(Transaction(
                     pay_period_id=p.id,
@@ -5297,7 +5298,7 @@ class TestCheckingDetail:
                     name="Expenses",
                     category_id=category.id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("1500.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1500.00")),
                 ))
             db.session.commit()
 
@@ -5352,7 +5353,7 @@ class TestCheckingDetail:
                     name="Paycheck",
                     category_id=category.id,
                     transaction_type_id=income_type.id,
-                    estimated_amount=Decimal("2000.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 ))
                 db.session.add(Transaction(
                     pay_period_id=p.id,
@@ -5362,7 +5363,7 @@ class TestCheckingDetail:
                     name="Bills",
                     category_id=category.id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("1500.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1500.00")),
                 ))
             db.session.commit()
 
@@ -5484,7 +5485,7 @@ class TestCheckingDetail:
                 name="Credit Card Groceries",
                 category_id=category.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             ))
             db.session.commit()
 
@@ -5615,7 +5616,7 @@ def _make_projected_envelope_expense(
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
     )
     db_session.add(txn)
     db_session.flush()
@@ -6239,13 +6240,13 @@ class TestCashDetailContext:
                 pay_period_id=period.id, scenario_id=seed_user["scenario"].id,
                 account_id=acct.id, status_id=projected.id, name="Paycheck",
                 category_id=category.id, transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             ))
             db.session.add(Transaction(
                 pay_period_id=period.id, scenario_id=seed_user["scenario"].id,
                 account_id=acct.id, status_id=projected.id, name="Bills",
                 category_id=category.id, transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
             ))
         db.session.commit()
         return acct, periods

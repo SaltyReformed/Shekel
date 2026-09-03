@@ -45,6 +45,8 @@ from app.services.loan_payment_service import (
 from app.services.transfer_service import TransferSpec, create_transfer
 from app.services import account_service
 from app.services.rate_period_engine import monthly_due_date
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import declare_derived
 
 # The ``payment_day`` of the mortgage ``_create_loan_account`` builds; the
 # loan's contractual due day, which ``get_payment_history`` needs to
@@ -230,7 +232,7 @@ class TestGetPaymentHistory:
                 status_id=projected_id,
                 name="Manual Income",
                 transaction_type_id=income_type_id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -673,10 +675,7 @@ class TestTheFeedPricesADerivedRow:
                 Transaction.transfer_id == xfer.id,
                 Transaction.account_id == loan.id,
             ).one()
-            shadow.estimated_amount = None
-            shadow.amount_source_id = ref_cache.amount_source_id(
-                AmountSourceEnum.PARENT_TRANSFER,
-            )
+            declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
             db.session.commit()
 
             result = get_payment_history(
@@ -709,10 +708,7 @@ class TestTheFeedPricesADerivedRow:
                 Transaction.transfer_id == xfer.id,
                 Transaction.account_id == loan.id,
             ).one()
-            shadow.estimated_amount = None
-            shadow.amount_source_id = ref_cache.amount_source_id(
-                AmountSourceEnum.PARENT_TRANSFER,
-            )
+            declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
             db.session.commit()
 
             with pytest.raises(AmountUnresolvable):

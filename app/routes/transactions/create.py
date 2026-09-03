@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.account import Account
 from app.models.category import Category
@@ -140,6 +141,16 @@ def create_inline():
     # drops empty submits) falls back to the category display name.
     data.setdefault("name", category.display_name)
 
+    # **The submitted figure becomes the row's OWNERSHIP before the splat**
+    # (plan step **X-au-k**).  ``estimated_amount`` is read-only on the model
+    # now, so a bare ``Transaction(**data)`` carrying it raises
+    # ``AttributeError``: the pair a row's amount lives in is ONE attribute,
+    # and a born row states it exactly as any other write door does.  A created
+    # row always OWNS its figure -- no relation prices a row that does not
+    # exist yet -- and the key is always present, because
+    # ``estimated_amount`` is ``required=True`` on both create schemas.
+    data["amount_ownership"] = AmountOwnership.own(data.pop("estimated_amount"))
+
     txn = Transaction(**data)
     db.session.add(txn)
     try:
@@ -192,6 +203,16 @@ def create_transaction():
     # so any submitted value was dropped; assign Projected unconditionally so
     # the only route to a settled status remains the status seam.
     data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
+
+    # **The submitted figure becomes the row's OWNERSHIP before the splat**
+    # (plan step **X-au-k**).  ``estimated_amount`` is read-only on the model
+    # now, so a bare ``Transaction(**data)`` carrying it raises
+    # ``AttributeError``: the pair a row's amount lives in is ONE attribute,
+    # and a born row states it exactly as any other write door does.  A created
+    # row always OWNS its figure -- no relation prices a row that does not
+    # exist yet -- and the key is always present, because
+    # ``estimated_amount`` is ``required=True`` on both create schemas.
+    data["amount_ownership"] = AmountOwnership.own(data.pop("estimated_amount"))
 
     txn = Transaction(**data)
     db.session.add(txn)

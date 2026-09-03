@@ -245,12 +245,7 @@ passed with every refusal accepted.
 (`VERIFY_DEV_DATABASE`); the `ref` ids a `TEMPLATE` copy carries are identical either way, which is
 exactly what made the mismatch invisible.
 
-- [x] **R17 -- a generated row IS its occurrence, not its paycheck.** `4e8b40b3`, migration
-      `c8e5a2f31b47`, ticking `pay_calendar:C5b` with it. Closed **D57** (`$1,482.93` before,
-      `$0.00` after) and **P16**. `OccurrenceClaims` states what a row claims: its `occurs_on`, or
-      its PAY PERIOD where that is NULL -- which this specification had backwards, and the unarchive
-      door prices at `$20,500`. Both indexes re-keyed; the **D19** refusal and its exception,
-      handler and template gone.
+- [x] **R17** `4e8b40b3` -- as built: `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R5 -- a generated row carries THREE dates, in three places.**
 
@@ -318,21 +313,13 @@ accounted for in `historical/recurrence_as_built_2026-08-14.md` and the last two
 | `R7c-a` | `370a30cc` (migration `f2a94c7e1b60`) | The two-axis columns land NULLABLE, backfilled and dual-written, read by nobody. Closed **D12** |
 | `R7c-b` | `900e761a` (migration `b6d41f0a9c27`) | Every reader and the form move onto them; four columns tighten to NOT NULL. Closed **D10**, **D21**, **D24**, **D28**, **D31** |
 
-- [x] **R7c -- THE CUTOVER, the DECOMPOSED parent of three leaves.** `ee35bca7`, ticked with
-      `R7c-c`, its last leaf. Split 2026-08-14 (**R-R18**) as expand / migrate / contract, so the
-      destructive DDL came LAST. Account and its five rulings:
-      `historical/recurrence_r7cc_as_built_2026-08-16.md`.
+- [x] **R7c** `ee35bca7` -- as built: `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [x] **R7c-c -- the closed set dies.** `ee35bca7`, migration `d9f5c1a48b73`, account
-      `historical/recurrence_r7cc_as_built_2026-08-16.md`. Closed **D6**, **D32**, **D37**, **D38**,
-      pay_calendar **P11**; opened **D39**. **Still owed**: `R5` deletes `compute_due_date`, and the
-      WEEK unit `R8-b` frees is where that migration's SQL and its Python twin part.
+- [x] **R7c-c** `ee35bca7` -- as built:
+      `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [x] **R7d-a -- an uncovered installment is priced by the DEFINITION.** `89cb0c1d`, ruling
-      **R-R33**. The ESTIMATED tier asks `standing_installment_cash` what the loan's own recurring
-      payment states for THAT installment, and states its escrow beside the cash. `$0.00` on
-      production, 776 forward figures byte-identical. Closed the loop the first two designs died on
-      and the horizon switch with it; opened **N-352**, **D47**, **P76**.
+- [x] **R7d-a** `89cb0c1d` -- as built:
+      `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R7d -- a loan payment's CLOSING bound stops being a stored column.** DECOMPOSED 2026-08-25
       into seven leaves, one per surface that READS the column, after a census found this
@@ -402,23 +389,16 @@ before deleting the path.
 drives the render lock and the refusal, so after R7d the "Ends" control either unlocks (a change to
 a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides which.
 
-- [x] **R7d-b -- the RESOLVER exists, and nothing reads it.** `0462dc38`, ruling **R-R35**.
-      `loan_payment_window(template, ctx)` answers `ClosesOn` / `Indefinite` / `EMPTY`, the sum type
-      a nullable date could not carry. R-R35 took its SUBJECT from the loan to the DEFINITION; its
-      VALUE still reaches the tie-break through `standing_payment`, D47's surviving half. `$0.00`.
-      Re-scoped **D47**; opened **D48**, **D49**, **D50**.
+- [x] **R7d-b** `0462dc38` -- as built:
+      `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R7d-c -- the DECOMPOSED parent of "generation takes the resolver."** Split into TWO leaves
       2026-08-27 (**R-R38**): the pass has to REACH generation first, and WHO opens it is a question
       about the three write doors, each of which did a write and then a read-dependent write in ONE
       call so no caller could get between them.
 
-- [x] **R7d-c-1 -- the generate pass CARRIES the read pass, and the ROUTE opens it.** `61d81c7f`,
-      ruling **R-R38**, account `historical/recurrence_r7dc1_as_built_2026-08-27.md`.
-      `GenerationSchedule` takes a `BalanceContext` and DERIVES its calendar, and the five doors
-      that create a pay period RECORD and return, so `routes/_period_population` opens the pass
-      between the paydays and the rows. `$0.00` through all three generate doors. Closed **D58**,
-      found by that caller census: the GENERATE route populated nothing.
+- [x] **R7d-c-1** `61d81c7f` -- as built:
+      `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R7d-c-2 -- GENERATION takes the resolver.** Both engines' `resolve_generation_plan` applies
       `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: today it creates
@@ -507,10 +487,7 @@ that has none. Whatever this step rules, it states the value honestly at both si
       PAY PERIOD and from nothing else -- and a weekly row, an nth-weekday row and a shifted row
       each name a date neither source can carry. The count-bounded end left at **R7b-3**.
 
-- [x] **R8-a -- the offer set stops being gated on a derivation that was deleted.** `87e2c5b9`,
-      account `historical/recurrence_r8a_as_built_2026-08-16.md`, which holds four rulings
-      (**R-R23**-**R-R26**) and every measurement -- **read it before R8-b, R8-c, R8-d or R11**.
-      Closed **D20**, opened **D40**.
+- [x] **R8-a** `87e2c5b9` -- as built: `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R8-b -- the WEEK unit.** Blocked by **R5**, and the blocker is measured rather than
       inherited: with the router's refusal lifted a `(2, WEEK)` rule already resolves, walks, places
@@ -551,19 +528,11 @@ that has none. Whatever this step rules, it states the value honestly at both si
 
 Found while X-f3b measured the ledger. Its two leaves are below.
 
-- [x] **R10-a -- a regeneration MAINTAINS its rows.** `5fc13cdb`, ruling **R-R19**, closed **N-292**
-      (`$499.82` of purchases destroyed by a rename, measured; 0 after).
-      **Two things a later step must obey.** The repeat refusal takes a NARROWER blocking set on the
-      maintain path, because a maintain pass rewrites the rule's own row rather than adding beside
-      it. And `recurrence_engine` is a PACKAGE from here, with `DerivedRowFields` the ONE statement
-      of a generated row's derived columns -- a new one belongs there, not in a write path.
+- [x] **R10-a** `5fc13cdb` -- as built:
+      `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [x] **R10-b -- the transfer engine onto the same shape.** `ea776528`, rulings **R-R19** and
-      **R-R32**; both stated premises were measured false first, and the defect that opened is
-      closed by the same commit, which is its record. **Two things a later step must obey.**
-      `DerivedTransferFields` carries `amount`, so **X-au-f** must remove it when a generated
-      transfer's amount goes NULL (N-293); and the maintain DECISION is SHARED, so a new arm goes in
-      `_recurrence_common`.
+- [x] **R10-b** `ea776528` -- as built:
+      `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R11 -- the LEAD placement: fund an occurrence from an EARLIER paycheck.**
 
@@ -636,11 +605,11 @@ names all three hashes and says why `R-F1` stayed.
 `historical/recurrence_completed_span_as_built_2026-08-27.md`. `R-F10` and `R-F12` could not: each
 is identity-paired with a row in another arc (rule 11), so their entries stay here.
 
-- [x] **R-F10 -- delete the gap machinery.** `fe365de1`. Closed **F-10**; the LOSS survives as
-      `pay_calendar:P16`. Account archived to `historical/recurrence_as_built_2026-08-15.md`.
+- [x] **R-F10** `fe365de1` -- as built:
+      `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [x] **R-F12 -- one `PeriodCalendar`, not three period-containing searches.** `4f134bf4`. Closed
-      **F-12**, as `pay_calendar:C2` / `balance:X-l`; an AST census found SIX, not three.
+- [x] **R-F12** `4f134bf4` -- as built:
+      `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R13 -- a DAY-OF-MONTH pay schedule** (ruling **R-R28**).
 
@@ -744,21 +713,14 @@ migration, and needs its own review pass.
       payment RECORD: while the accrual rode on the payment, no cadence could be honoured and no
       second definition summed. Carries **D47**, **D48**.
 
-- [x] **R16-a -- the forward fold charges TIME, not payments.** `e8baa3c0`, ruling **R-R36**.
-      `apply_payment_cash` allocates against charges already standing; `loan_plan` returns
-      `LoanForwardPlan(payments, charges)`, walked merged with a charge before any payment sharing
-      its date. `$0.00` over 776 figures and 4,000 differential trials; the corpus could not see it,
-      so the controls are the two-payments-in-one-month tests. Opened **D51**-**D55**.
+- [x] **R16-a** `e8baa3c0` -- as built:
+      `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R16-b -- the DECOMPOSED parent of the summing.** Split into TWO leaves 2026-08-27
       (**R-R37**); the sum waits on `end_date` holding one fact. Carries **D47**, **D48**, **D53**.
 
-- [x] **R16-b-1 -- the occurrence walk stops TRUNCATING at the saved horizon.** `1b818135`.
-      `PayCalendar.paychecks_from` composes `current_and_future_window` with a `projected_paychecks`
-      continuation `axis_window` stepped a second copy of. 255 dates against 62 through
-      `2036-01-01`, and every production READ DOOR byte-identical over all 43 live rules HEAD vs
-      branch (clone, 2026-08-27); the 776 loan figures prove nothing here, `balance_at` not
-      importing this package at all.
+- [x] **R16-b-1** `1b818135` -- as built:
+      `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R16-b-2 -- the ESTIMATED tier SUMS every definition, on each one's OWN cadence** (findings
       **D47**, **D48**, **D53**).
@@ -795,12 +757,34 @@ extra-principal prefill and the two routes that MUTATE a settings row), and the 
 dashboard's "has a recurring contribution" is a different question again. Which row those three
 write is **D49**.
 
-- [ ] **R16-c -- the PAST and the FUTURE become ONE walk** (finding **D51**).
+- [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**
 
-`loan_ledger._walk._replay_events` and `balance_at._plan_fold._split_plan` are two running-balance
-implementations sharing only the split, and the first still charges a month per settled PAYMENT --
-which the posting ledger then POSTS. One walk over anchors + charges + payments, `as_of` marking
-where recorded fact becomes projection, deletes the second rather than fixing it twice.
+`loan_ledger._walk._replay_events` and `balance_at._plan_fold._split_plan` were two running-balance
+implementations of one rule. **That half is done**: `balance:X-au-g-2c-3b-2` (`3b7716f8`) moved the
+rule to `loan_ledger._replay.replay_loan_events` and both tiers now call it, which also made the
+settled walk charge once per accrual period and CLOSED **D51**.
+**This step SHRANK because part of it SHIPPED EARLY, not because scope was dropped.** What is still
+owed is the STREAM, not the arithmetic: one event list with `as_of` marking where recorded fact
+becomes projection, one seed, and one set of record types, so the two tiers differ in nothing but
+their inputs.
+
+**D51 is CLOSED, and it closed OUTSIDE this arc**: at `balance:X-au-g-2c-3b-2` (`3b7716f8`), which
+made the settled walk charge once per accrual period. It is recorded here rather than only there
+because a reader of THIS arc must be able to find where a finding this arc owned actually went;
+`steps.md`'s row for that balance step carries the forward half ("satisfies **recurrence:D51**"),
+and this is the backward half.
+
+*Its predicate still greps TRUE and the defect is gone*, which is the trap worth recording: a row
+whose WORDS still match while its defect is gone, and a row whose defect remains while its words
+stop matching, are the SAME failure, and only re-reading the code separates them.
+`_walk._replay_events` does still call `split_one_payment` once per settled shadow -- but
+**that call no longer CHARGES anything, and it no longer computes anything**: it copies the four
+parts verbatim off the replay's outcome and names them. The charge is derived once per accrual
+period from the installments the payments satisfy (`charges_for_due_dates`), the replay accumulates
+it, and `apply_payment_cash` clears it at the FIRST payment in that period;
+**a second payment in the same `installment_slot` finds nothing standing and pays pure principal.**
+Measured on a forced due-month collision: interest `$1,014.06` -> `$0.00`, escrow `$616.99` ->
+`$0.00`, principal `$279.90` -> `$1,910.95`.
 **D53 is answered at `R16-b-2` and this step inherits the answer** -- the CONTRACT charges every
 forward period (**R-R37**), repealing "an overdue slot with no record ... holds flat" (B-9) for the
 FUTURE half, which ruled what an unpaid installment PAYS and never what an unpaid month CHARGES.

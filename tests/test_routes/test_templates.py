@@ -65,6 +65,8 @@ from tests.oracles.recurrence_baseline import (
     EVERY_N_PERIODS,
     MONTHLY,
 )
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -142,7 +144,7 @@ def _future_override_txn(seed_user, template, amount="1500.00"):
         .first()
     )
     txn.is_override = True
-    txn.estimated_amount = Decimal(amount)
+    state_own_amount(txn, Decimal(amount))
     db.session.commit()
     return txn
 
@@ -1158,7 +1160,7 @@ class TestGridRowKeyBuilder:
                 name="One-off A",
                 category_id=rent_cat.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             txn_b = Transaction(
                 account_id=account.id,
@@ -1168,7 +1170,7 @@ class TestGridRowKeyBuilder:
                 name="One-off B",
                 category_id=rent_cat.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             db.session.add_all([txn_a, txn_b])
             db.session.flush()
@@ -2425,7 +2427,7 @@ class TestTemplateHardDelete:
                 category_id=salary_cat.id,
                 transaction_type_id=income_type.id,
                 name="Biweekly Paycheck",
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 status_id=received_status.id,
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
@@ -2520,7 +2522,7 @@ class TestTemplateHardDelete:
                 category_id=salary_cat.id,
                 transaction_type_id=income_type.id,
                 name="Past Paycheck",
-                estimated_amount=Decimal("1500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
                 status_id=received_status.id,
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
@@ -2537,7 +2539,7 @@ class TestTemplateHardDelete:
                 category_id=salary_cat.id,
                 transaction_type_id=income_type.id,
                 name="Future Paycheck",
-                estimated_amount=Decimal("1500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
                 status_id=projected_status.id,
             )
             db.session.add_all([received_paycheck, projected_paycheck])
