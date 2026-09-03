@@ -406,6 +406,11 @@ _TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
     regenerate_fn=transfer_recurrence.regenerate_for_template,
     resolve_fn=transfer_recurrence.resolve_conflicts,
     update_endpoint="transfers.update_transfer_template",
+    # A generated TRANSFER still stores its amount (``transfers.amount``), so
+    # "use" hands this kind's row a figure -- unchanged behaviour.  Plan step
+    # balance:X-au-f is what empties that column and makes this False, at
+    # which point the field and its branch go (ruling **R-JD**).
+    use_states_a_figure=True,
 )
 
 

@@ -328,8 +328,37 @@ class TestTheConflictChooserRoundTrip:
     better of a change leaves a version behind, or one who confirms it gets two.
     """
 
+    @staticmethod
+    def _series(template):
+        """The template's price series as ``[(date, amount), ...]``."""
+        return [
+            (v.effective_date, v.amount) for v in tas.amount_versions(template)
+        ]
+
     def _template_with_conflict(self, seed_user):
-        """A recurring template whose latest upcoming instance is hand-edited."""
+        """A recurring template whose latest upcoming instance is hand-edited.
+
+        Returns the template, the overridden row, and the series as the
+        FIXTURE left it.  **Both cases below assert a DELTA against that
+        third value rather than a hard-coded list**, and the reason is worth
+        stating: `_create_template` opens the price series the way the real
+        create door does -- ``set_amount`` at the owner's today, which plan
+        step balance:X-au-e made load-bearing because a template with no
+        series generates rows nothing can price.  An absolute expectation
+        therefore encodes the clock, and CI runs at ``Pacific/Kiritimati``.
+        The claim these cases make is about what the EDIT adds and removes,
+        which is exactly what a delta says.
+
+        **The edit's date is FUTURE for the same reason, and a fixed
+        ``2026-06-01`` was silently wrong once the opening version moved to
+        today.**  ``default_amount`` means the NEWEST stated price, so a
+        statement dated before an existing version does not move the scalar --
+        and the chooser is gated on the scalar having moved
+        (``regenerate_or_conflict_chooser``).  With a back-dated edit the first
+        case stopped rendering the chooser at all and returned 302: it was
+        still asserting something true, about a path that no longer reached the
+        code the class exists to grade.
+        """
         from tests.test_routes.test_templates import (
             _create_template, _future_override_txn,
         )
@@ -341,19 +370,20 @@ class TestTheConflictChooserRoundTrip:
         )
         db.session.commit()
         txn = _future_override_txn(seed_user, template, amount="1500.00")
-        return template, txn
+        return template, txn, self._series(template)
 
     def test_the_chooser_leaves_no_price_behind(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """The first submit renders the chooser and records nothing."""
         with app.app_context():
-            template, _txn = self._template_with_conflict(seed_user)
+            template, _txn, before = self._template_with_conflict(seed_user)
             tid = template.id
 
+            rise = display_today() + timedelta(days=30)
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "effective_from": "2026-06-01",
+                "effective_from": rise.isoformat(),
             })
             assert resp.status_code == 200
             assert b"hand-edited" in resp.data
@@ -361,21 +391,23 @@ class TestTheConflictChooserRoundTrip:
             db.session.expire_all()
             template = db.session.get(TransactionTemplate, tid)
             assert template.default_amount == Decimal("1200.00")
-            assert [
-                (v.effective_date, v.amount) for v in tas.amount_versions(template)
-            ] == [(date(2026, 1, 1), Decimal("1200.00"))]
+            # Nothing recorded and nothing withdrawn: the rollback took the
+            # whole pending edit, price included.
+            assert self._series(template) == before
+            assert (rise, Decimal("1400.00")) not in before
 
     def test_apply_records_the_price_exactly_once(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Apply re-runs the same edit, so the price lands once at its date."""
         with app.app_context():
-            template, txn = self._template_with_conflict(seed_user)
+            template, txn, before = self._template_with_conflict(seed_user)
             tid, txn_id = template.id, txn.id
 
+            rise = display_today() + timedelta(days=30)
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "effective_from": "2026-06-01",
+                "effective_from": rise.isoformat(),
                 "conflict_apply": "1",
                 f"conflict_decision_{txn_id}": "keep",
             }, follow_redirects=True)
@@ -383,11 +415,13 @@ class TestTheConflictChooserRoundTrip:
 
             db.session.expire_all()
             template = db.session.get(TransactionTemplate, tid)
-            assert [
-                (v.effective_date, v.amount) for v in tas.amount_versions(template)
-            ] == [
-                (date(2026, 1, 1), Decimal("1200.00")),
-                (date(2026, 6, 1), Decimal("1400.00")),
+            # Exactly one version added, at the date the edit stated.  A
+            # second pass recording it twice shows up as a longer list; a
+            # pass recording it at the wrong date shows up in the pair.
+            # The rise is dated after every existing version, so appending is
+            # the sorted order rather than an accident of it.
+            assert self._series(template) == before + [
+                (rise, Decimal("1400.00")),
             ]
 
 

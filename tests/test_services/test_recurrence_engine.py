@@ -76,8 +76,10 @@ from tests._test_helpers import (
     make_cadence_rule,
     make_every_period_rule,
     rebuild_calendar_from_spans,
+    resolved_amount,
     settlement_basis_id,
     settlement_if_settling,
+    state_template_price,
 )
 from app.services.settle_day import record_settle_day
 from app.models.amount_ownership import AmountOwnership
@@ -277,6 +279,12 @@ class TestRecurrenceGeneration:
         )
         db.session.add(template)
         db.session.flush()
+        # The PRICE, through the app's one write door.  Both create doors state
+        # one right after the flush, and since plan step balance:X-au-e a
+        # generated row stores no figure and is priced by this series on its
+        # own due date -- a template without one generates rows
+        # ``_stated_amount`` refuses.
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence, **rule_kwargs,
@@ -300,7 +308,7 @@ class TestRecurrenceGeneration:
 
             assert len(created) == len(seed_periods)
             for txn in created:
-                assert txn.estimated_amount == Decimal("100.00")
+                assert resolved_amount(txn) == Decimal("100.00")
                 assert txn.name == "Test Recurring"
 
             # Verify 1:1 mapping between transactions and periods.
@@ -1069,6 +1077,7 @@ class TestGenerateForTemplate:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence, **rule_kwargs,
@@ -1482,6 +1491,7 @@ class TestThePlacedPeriodsBound:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, MONTHLY, starts_on=first_fifteenth,
@@ -2089,6 +2099,7 @@ class TestALegacyScheduleHole:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence, **rule_kwargs,
@@ -2127,6 +2138,7 @@ class TestRegenerateForTemplate:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence, **rule_kwargs,
@@ -2221,7 +2233,10 @@ class TestRegenerateForTemplate:
             txn_id = spent_on.id
             entry_id = self._record_purchase(spent_on, seed_user).id
 
-            template.default_amount = Decimal("200.00")
+            # Through the app's one write door: since plan step
+            # balance:X-au-e the SERIES is what prices the rows, so moving
+            # the scalar alone states a price no row can read.
+            state_template_price(template, Decimal("200.00"))
             db.session.flush()
 
             recurrence_engine.regenerate_for_template(
@@ -2240,7 +2255,7 @@ class TestRegenerateForTemplate:
 
             txn = db.session.get(Transaction, txn_id)
             assert txn is not None, "the row the purchase hangs off was destroyed"
-            assert txn.estimated_amount == Decimal("200.00")
+            assert resolved_amount(txn) == Decimal("200.00")
 
     def test_a_row_the_rule_STOPPED_naming_is_retired_though_the_rule_remains(
         self, app, db, seed_user, seed_periods
@@ -2886,7 +2901,10 @@ class TestRegenerateForTemplate:
             db.session.flush()
             carried_id = carried.id
 
-            template.default_amount = Decimal("200.00")
+            # Through the app's one write door: since plan step
+            # balance:X-au-e the SERIES is what prices the rows, so moving
+            # the scalar alone states a price no row can read.
+            state_template_price(template, Decimal("200.00"))
             db.session.flush()
 
             with pytest.raises(RecurrenceConflict) as raised:
@@ -2900,7 +2918,7 @@ class TestRegenerateForTemplate:
             assert survivor is not None, (
                 "the rule's own row was destroyed beside its override sibling"
             )
-            assert survivor.estimated_amount == Decimal("200.00")
+            assert resolved_amount(survivor) == Decimal("200.00")
             assert db.session.get(
                 Transaction, carried_id,
             ).estimated_amount == Decimal("55.00")
@@ -2939,7 +2957,10 @@ class TestRegenerateForTemplate:
             assert len(old_ids) == 10
 
             # Change the template amount.
-            template.default_amount = Decimal("200.00")
+            # Through the app's one write door: since plan step
+            # balance:X-au-e the SERIES is what prices the rows, so moving
+            # the scalar alone states a price no row can read.
+            state_template_price(template, Decimal("200.00"))
             db.session.flush()
 
             # Regenerate.  Every period the rule names already holds the rule's
@@ -2959,7 +2980,7 @@ class TestRegenerateForTemplate:
             )
             assert sorted(txn.id for txn in surviving) == old_ids
             for txn in surviving:
-                assert txn.estimated_amount == Decimal("200.00")
+                assert resolved_amount(txn) == Decimal("200.00")
 
     def test_regenerate_raises_conflict_for_deleted_entries(
         self, app, db, seed_user, seed_periods
@@ -3023,6 +3044,7 @@ class TestResolveConflicts:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence, **rule_kwargs,
@@ -3062,10 +3084,22 @@ class TestResolveConflicts:
             assert txn.is_override is True
             assert txn.estimated_amount == Decimal("999.99")
 
-    def test_resolve_update_clears_flags_and_applies_amount(
+    def test_resolve_update_hands_the_row_back_to_its_definition(
         self, app, db, seed_user, seed_periods
     ):
-        """action='update' clears flags and applies new_amount."""
+        """action='update' clears the flags and writes a DECLARATION, no figure.
+
+        Plan step balance:X-au-e, ruling **R-JD**.  "Use the template's amount"
+        used to write the template's CURRENT ``default_amount`` onto the row;
+        there is no figure to write now, and the act is to stop overriding so
+        the definition's own series prices the row again.
+
+        The assertion is on all THREE columns the act touches, because two of
+        them are what makes it a hand-back rather than a re-price: the flag
+        clears, the figure goes to ``None``, and ``amount_source_id`` names the
+        template.  Asserting the resolved money alone would pass on a row that
+        still owned the very same number.
+        """
         with app.app_context():
             template = self._make_template_with_rule(
                 seed_user, EVERY_PERIOD
@@ -3084,23 +3118,43 @@ class TestResolveConflicts:
             state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
-            # Resolve as 'update' with new amount.
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("200.00"),
             )
             db.session.flush()
 
             db.session.refresh(txn)
             assert txn.is_override is False
             assert txn.is_deleted is False
-            assert txn.estimated_amount == Decimal("200.00")
+            # The hand-back itself: no figure, and the relation that prices it.
+            assert txn.estimated_amount is None
+            assert txn.amount_source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+            # And what it is now WORTH is the definition's stated price, not
+            # the $999.99 the owner had typed.
+            assert resolved_amount(txn) == Decimal("100.00")
 
-    def test_resolve_update_none_amount_clears_flags_only(
+    def test_resolve_update_prices_a_past_row_from_ITS_date_not_todays(
         self, app, db, seed_user, seed_periods
     ):
-        """action='update' with new_amount=None clears flags but keeps amount."""
+        """A handed-back row takes the price in force on its OWN due date.
+
+        **Finding N-244 as a regression test.**  The old "use" arm wrote the
+        template's CURRENT ``default_amount`` onto whatever row it was given,
+        so resolving an override on a row whose due date preceded a price rise
+        back-dated today's figure onto it -- and cleared ``is_override``, the
+        one flag that would have marked the row as touched.  A $100 history
+        with one row resolved to $120 then read as THREE price changes where
+        one had occurred.
+
+        Nothing writes a figure now, so the row resolves through the series on
+        its own due date and the rise that came after it cannot reach back.
+        The test states the rise AFTER the row's due date and asserts the row
+        is worth the OLD price; on the deleted arm it would be worth the new
+        one.
+        """
         with app.app_context():
             template = self._make_template_with_rule(
                 seed_user, EVERY_PERIOD
@@ -3113,25 +3167,37 @@ class TestResolveConflicts:
             )
             db.session.flush()
 
-            # Override one entry with a custom amount.
             txn = created[0]
+            assert txn.due_date is not None
             txn.is_override = True
             state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
-            # Resolve as 'update' with no new amount.
+            # The series has to ANCHOR before the row, or the rise below
+            # becomes the earliest version and ``amount_as_of`` holds IT flat
+            # backwards -- which is the shape that made a first draft of this
+            # test read $120.00 and call the app wrong.
+            state_template_price(
+                template, Decimal("100.00"),
+                effective_on=txn.due_date - timedelta(days=1),
+            )
+            # The price rises the day AFTER this row's due date.
+            state_template_price(
+                template, Decimal("120.00"),
+                effective_on=txn.due_date + timedelta(days=1),
+            )
+            db.session.flush()
+
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=None,
             )
             db.session.flush()
 
             db.session.refresh(txn)
-            assert txn.is_override is False
-            assert txn.is_deleted is False
-            # Amount unchanged since new_amount was None.
-            assert txn.estimated_amount == Decimal("999.99")
+            assert txn.estimated_amount is None
+            # The price in force on the row's OWN due date, never the newest.
+            assert resolved_amount(txn) == Decimal("100.00")
 
     def test_cross_user_update_blocked(
         self, app, db, seed_user, seed_periods, second_user
@@ -3157,7 +3223,6 @@ class TestResolveConflicts:
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
                 user_id=second_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
@@ -3219,13 +3284,17 @@ class TestResolveConflicts:
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
             db.session.refresh(txn)
             assert txn.is_override is False
-            assert txn.estimated_amount == Decimal("50.00")
+            # Handed back to its definition rather than given a figure
+            # (plan step balance:X-au-e, ruling R-JD): no stored amount,
+            # and what it is worth is the DEFINITION's price, never the figure
+            # a caller used to pass in.
+            assert txn.estimated_amount is None
+            assert resolved_amount(txn) == Decimal("100.00")
 
     def test_mixed_ownership_list(
         self, app, db, seed_user, seed_periods, second_user
@@ -3272,14 +3341,18 @@ class TestResolveConflicts:
             recurrence_engine.resolve_conflicts(
                 [txn_a.id, txn_b.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
             db.session.refresh(txn_a)
             db.session.refresh(txn_b)
             assert txn_a.is_override is False
-            assert txn_a.estimated_amount == Decimal("50.00")
+            # Handed back to its definition rather than given a figure
+            # (plan step balance:X-au-e, ruling R-JD): no stored amount,
+            # and what it is worth is the DEFINITION's price, never the figure
+            # a caller used to pass in.
+            assert txn_a.estimated_amount is None
+            assert resolved_amount(txn_a) == Decimal("100.00")
             assert txn_b.is_override is True
             assert txn_b.estimated_amount == Decimal("888.88")
 
@@ -3396,7 +3469,6 @@ class TestResolveConflictsShadowGuard:
                     [shadow_id],
                     action="update",
                     user_id=seed_user["user"].id,
-                    new_amount=Decimal("9999.99"),
                 )
 
             db.session.rollback()
@@ -3431,7 +3503,6 @@ class TestResolveConflictsShadowGuard:
                 [shadow_id],
                 action="update",
                 user_id=second_user["user"].id,
-                new_amount=Decimal("9999.99"),
             )
             db.session.flush()
 
@@ -3468,6 +3539,7 @@ class TestResolveConflictsShadowGuard:
             )
             db.session.add(template)
             db.session.flush()
+            state_template_price(template)
             # The definition first, then the cadence onto it (plan step R-F6).
             rule = make_every_period_rule(db.session, template)
 
@@ -3489,14 +3561,18 @@ class TestResolveConflictsShadowGuard:
                 [txn.id],
                 action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
             db.session.refresh(txn)
             assert txn.is_override is False
             assert txn.is_deleted is False
-            assert txn.estimated_amount == Decimal("50.00")
+            # Handed back to its definition rather than given a figure
+            # (plan step balance:X-au-e, ruling R-JD): no stored amount,
+            # and what it is worth is the DEFINITION's price, never the figure
+            # a caller used to pass in.
+            assert txn.estimated_amount is None
+            assert resolved_amount(txn) == Decimal("100.00")
 
 
 class TestCrossUserIsolation:
@@ -3527,6 +3603,7 @@ class TestCrossUserIsolation:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence, **rule_kwargs,
@@ -3613,6 +3690,7 @@ class TestNegativePaths:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence, **rule_kwargs,
@@ -3646,7 +3724,7 @@ class TestNegativePaths:
             # Engine generates for all periods regardless of amount.
             assert len(created) == len(seed_periods)
             for txn in created:
-                assert txn.estimated_amount == Decimal("0.00")
+                assert resolved_amount(txn) == Decimal("0.00")
 
     def test_template_with_none_recurrence_rule(
         self, app, db, seed_user, seed_periods
@@ -3674,6 +3752,7 @@ class TestNegativePaths:
             )
             db.session.add(template)
             db.session.flush()
+            state_template_price(template)
             db.session.refresh(template)
 
             created = recurrence_engine.generate_for_template(
@@ -3856,35 +3935,53 @@ class TestNegativePaths:
 
 
 class TestWhatAGeneratedRowsAmountOWNERSHIPIs:
-    """Plan step **balance:X-au-d**: generation states OWNERSHIP, not a figure.
+    """Plan step **balance:X-au-e**: generation states ONE ownership, always.
 
     **This class was ``TestPaycheckAmountFallback`` and its subject is
     deleted.**  It graded ``_get_transaction_amount``'s exception narrowing --
     that a ``ZeroDivisionError`` or an ``InvalidOperation`` out of the paycheck
     calculator fell back to ``template.default_amount`` while an
-    ``AttributeError`` propagated (C-01).  Generation does not run the paycheck
-    calculator any more: a salary-linked definition's rows DECLARE it and are
-    priced by ``income_service.SalaryPricing`` through amount rule 2, so there
-    is no call to raise and no fallback to narrow.  A test whose subject has no
-    code left is deleted rather than weakened.
+    ``AttributeError`` propagated (C-01).  Generation runs no pricing at all
+    now, so there is no call to raise and no fallback to narrow.
 
-    What replaced it is the one question generation still answers about an
-    amount, and it is a question about the DEFINITION rather than about a
-    figure: does this definition STATE its price, or is its price COMPUTED?
-    ``_generated_amount_ownership`` asks
-    ``template_amount_service.owns_its_amount`` -- the app's single eligibility
-    test for a stated price, shared with the write door, the backfill and the
-    conflict chooser -- so there is one statement of it rather than a second
-    salary test written here.
+    **Its second subject is deleted too, and this is that rewrite.**  X-au-d
+    replaced the fallback with a FORK -- ``_generated_amount_ownership`` asking
+    ``template_amount_service.owns_its_amount``, ``own`` over the scalar for a
+    definition that states its price and ``derived`` for one whose price is
+    computed -- and X-au-e deletes the fork rather than one of its arms.  There
+    is no producer left to unit-test, so both cases below grade the public act
+    instead: what ``generate_for_template`` actually WRITES.
+
+    **Both cases are kept even though they now assert the same shape**, and
+    that is the point rather than a redundancy: a producer that declared only
+    the salary rows -- which is exactly what shipped at X-au-d -- passes the
+    first and fails the second.  Deleting the second because it stopped
+    distinguishing anything would delete the only case that says the cutover
+    happened.
     """
 
+    def _generated_row(self, db, seed_user, seed_periods, template):
+        """Generate from *template* and return the first row it wrote."""
+        make_cadence_rule(template, EVERY_PERIOD)
+        db.session.refresh(template)
+        created = recurrence_engine.generate_for_template(
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            ), seed_user["scenario"].id,
+        )
+        db.session.flush()
+        assert created, "the fixture generated no rows to assert about"
+        return created[0]
+
     def test_a_salary_linked_definition_gives_its_rows_a_DECLARATION(
-        self, app, db, seed_user,
+        self, app, db, seed_user, seed_periods,
     ):
         """A definition an ACTIVE profile names prices its rows by computing.
 
         So the row names the definition and holds no figure: the state that
         makes a stale paycheck unrepresentable rather than merely unlikely.
+        Shipped at X-au-d and unchanged by X-au-e.
         """
         with app.app_context():
             # Pylint: ``import-outside-toplevel`` -- the salary models are not
@@ -3893,11 +3990,6 @@ class TestWhatAGeneratedRowsAmountOWNERSHIPIs:
             from app.models.ref import FilingStatus  # pylint: disable=import-outside-toplevel
             # Pylint: ``import-outside-toplevel`` -- see above.
             from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
-            # Pylint: ``import-outside-toplevel`` -- the producer under test is
-            # private to its own module.
-            from app.services.recurrence_engine._amounts import (  # pylint: disable=import-outside-toplevel
-                _generated_amount_ownership,
-            )
 
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
@@ -3921,29 +4013,26 @@ class TestWhatAGeneratedRowsAmountOWNERSHIPIs:
             ))
             db.session.flush()
 
-            ownership = _generated_amount_ownership(template)
+            row = self._generated_row(db, seed_user, seed_periods, template)
 
-            assert ownership.figure is None
-            assert ownership.source_id == ref_cache.amount_source_id(
+            assert row.estimated_amount is None
+            assert row.amount_source_id == ref_cache.amount_source_id(
                 AmountSourceEnum.TEMPLATE,
             )
 
-    def test_a_definition_that_STATES_its_price_gives_its_rows_that_figure(
-        self, app, db, seed_user,
+    def test_a_definition_that_STATES_its_price_ALSO_gives_a_DECLARATION(
+        self, app, db, seed_user, seed_periods,
     ):
-        """The partner case, and the one the deleted class ended on.
+        """The partner case, and the one plan step X-au-e inverted.
 
-        Its last test asserted that a ``None`` salary profile returned
-        ``template.default_amount``; this is the same claim about the same
-        input, asked of the producer that replaced it.  Without it, a producer
-        that declared EVERY row would pass the case above.
+        It asserted ``ownership.figure == Decimal("500.00")`` and
+        ``source_id is None`` -- generation handing an ordinary definition's
+        rows that definition's scalar to OWN.  That is the copy the cutover
+        deleted: the row declares the template and the template's own
+        effective-dated series prices it on the row's due date, which is what
+        the last assertion here reads.
         """
         with app.app_context():
-            # Pylint: ``import-outside-toplevel`` -- see the case above.
-            from app.services.recurrence_engine._amounts import (  # pylint: disable=import-outside-toplevel
-                _generated_amount_ownership,
-            )
-
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
@@ -3954,11 +4043,16 @@ class TestWhatAGeneratedRowsAmountOWNERSHIPIs:
             )
             db.session.add(template)
             db.session.flush()
+            state_template_price(template)
 
-            ownership = _generated_amount_ownership(template)
+            row = self._generated_row(db, seed_user, seed_periods, template)
 
-            assert ownership.source_id is None
-            assert ownership.figure == Decimal("500.00")
+            assert row.estimated_amount is None
+            assert row.amount_source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+            # The figure is not lost, it has one home: the definition's series.
+            assert resolved_amount(row) == Decimal("500.00")
 
 
 class TestEndDate:
@@ -4092,6 +4186,7 @@ class TestEndDateIntegration:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence, **rule_kwargs,
@@ -4201,6 +4296,7 @@ class TestDueDateGeneration:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence, **rule_kwargs,
@@ -4554,6 +4650,7 @@ class TestDueDateGeneration:
             )
             db.session.add(template)
             db.session.flush()
+            state_template_price(template)
             db.session.refresh(template)
 
             created = recurrence_engine.generate_for_template(
@@ -4869,6 +4966,7 @@ class TestARowRecordsItsOccurrence:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         make_cadence_rule(template, cadence, **rule_kwargs)
         db.session.flush()
         db.session.refresh(template)

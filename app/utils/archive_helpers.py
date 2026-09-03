@@ -47,12 +47,34 @@ def template_has_paid_history(template_id: int) -> bool:
     enumeration omitted RECEIVED and enabled irreversible RECEIVED
     income-history deletion).
 
+    **A SOFT-DELETED settled row is payment history too, and dropping the
+    ``is_deleted`` filter is what closes finding N-444** (ruling **R-JE**,
+    developer 2026-09-03).  This predicate gates
+    ``routes/templates/crud.hard_delete_template``, whose bulk delete filters
+    on ``Status.is_settled`` and NOT on ``is_deleted`` -- so a soft-deleted
+    settled row was invisible to the gate AND excluded from the delete, and the
+    template went while the row stayed.  ``fk_transactions_template`` is ON
+    DELETE SET NULL, so what was left was a settled row carrying its money and
+    no link to the definition that made it.  Harmless while such a row OWNED
+    its figure; plan step **balance:X-au-e** declares every non-override
+    template row DERIVED, at which point the same survivor carries
+    ``amount_source_id = template`` with no template to read -- unpriceable by
+    ``_stated_amount`` on any revert to Projected, and unrestorable by
+    ``d7b2e6c1a483``'s downgrade, whose restore joins on the ``template_id``
+    that is now NULL (ledger row **N-440**).  The two halves of the door now
+    ask the same question, so the state is refused rather than guarded.
+
+    The refusal is not free and the developer took it deliberately: a template
+    whose only settled rows were soft-deleted can no longer be permanently
+    deleted, and is archived instead.  Zero such rows exist on the 2026-09-03
+    production clone, so nothing that is deletable today stops being so.
+
     Args:
         template_id: The TransactionTemplate.id to check.
 
     Returns:
-        True if at least one linked transaction has a settled status
-        and is not soft-deleted.
+        True if at least one linked transaction has a settled status,
+        whether or not it is soft-deleted.
     """
 
     return db.session.query(
@@ -61,7 +83,6 @@ def template_has_paid_history(template_id: int) -> bool:
         .filter(
             Transaction.template_id == template_id,
             Status.is_settled.is_(True),
-            Transaction.is_deleted.is_(False),
         ).exists()
     ).scalar()
 
@@ -114,10 +135,21 @@ def template_has_standing_rule(template_id: int) -> bool:
 def transfer_template_has_paid_history(template_id: int) -> bool:
     """Check if a transfer template has any settled transfers.
 
-    Mirrors :func:`template_has_paid_history`: filters on the
-    semantic ``Status.is_settled`` boolean so Received and any
-    future settled status are covered without enumeration.  Audit
-    reference: CRIT-05 / E-22.
+    Filters on the semantic ``Status.is_settled`` boolean so Received and any
+    future settled status are covered without enumeration.  Audit reference:
+    CRIT-05 / E-22.
+
+    **It no longer mirrors :func:`template_has_paid_history`, which is stated
+    rather than left to be discovered.**  That twin dropped its
+    ``is_deleted`` filter at plan step balance:X-au-e (ruling **R-JE**),
+    because a soft-deleted settled TRANSACTION survives its template's hard
+    delete carrying a declaration nothing can price.  This one keeps the
+    filter, and the reason is that the same survivor is not yet reachable
+    here: a generated TRANSFER still stores its own amount, so a survivor with
+    a null ``transfer_template_id`` is priced by rule 1 off the column it
+    holds.  **Plan step balance:X-au-f is what changes that** -- it empties
+    ``transfers.amount`` for a generated transfer -- and that step owes this
+    predicate the same edit its twin has already taken.
 
     Args:
         template_id: The TransferTemplate.id to check.

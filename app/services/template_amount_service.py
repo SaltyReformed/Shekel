@@ -311,9 +311,16 @@ def set_amount(template, amount: Decimal, *, effective_on: date) -> None:
     """State *template*'s amount as ``amount``, in effect from ``effective_on``.
 
     **The one write door for a recurring definition's amount.**  It keeps the
-    scalar (``default_amount``, still authoritative until plan step X-au-e) and
-    the dated series in step within one call, so no caller can move one without
-    the other.  Every route that states a template's amount goes through it: the
+    scalar (``default_amount``) and the dated series in step within one call, so
+    no caller can move one without the other.  **The scalar stopped PRICING a
+    transaction row at plan step balance:X-au-e** -- generation writes no figure
+    and the series answers on each row's own due date -- but it did not go with
+    that step and no step in ``docs/plans/steps.md`` removes it: a generated
+    TRANSFER still stores it (until X-au-f), ``salary_profile_service`` opens an
+    archived profile's series AT it, the conflict chooser gates on it, and the
+    cutover migration's downgrade restores from it.
+
+    Every route that states a template's amount goes through this door: the
     two create forms, the two edit forms, the investment contribution and loan
     payment creators, and the salary paths (which it correctly records nothing
     for).
@@ -335,10 +342,14 @@ def set_amount(template, amount: Decimal, *, effective_on: date) -> None:
     paths reach here and must record nothing.
 
     **The scalar is then re-read off the series, never assigned the argument,
-    and an adversarial review is why.**  ``default_amount`` is what generation
-    writes onto the rows an edit rebuilds from ``effective_from`` forward, so it
-    means "the NEWEST stated price" -- which is the argument only when the
-    argument IS the newest.  Assigning it directly broke both other cases:
+    and an adversarial review is why.**  ``default_amount`` means "the NEWEST
+    stated price" -- which is the argument only when the argument IS the newest.
+    *It meant that because generation wrote the scalar onto the rows an edit
+    rebuilt from ``effective_from`` forward; since plan step balance:X-au-e a
+    transaction's generation writes no figure at all, and the meaning now rests
+    on the two readers below rather than on that write -- the edit form
+    prefills from this column, and a transfer's generation still writes it.*
+    Assigning it directly broke both other cases:
     stating a FUTURE price moved the scalar to it immediately, so the edit form
     (which prefills from that column) then offered the December figure with a
     blank date meaning today, and the next save -- a rename -- recorded the

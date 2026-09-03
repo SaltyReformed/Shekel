@@ -50,6 +50,7 @@ from tests._test_helpers import (
     make_expense_template,
     make_transfer_template,
     populate_in_a_fresh_pass,
+    resolved_amount,
     seam_cash_balance_at,
 )
 
@@ -112,7 +113,7 @@ class TestPopulateFromActiveTemplates:
                     .all()
                 )
                 assert len(txns) == 1
-                assert txns[0].estimated_amount == Decimal("1200.00")
+                assert resolved_amount(txns[0]) == Decimal("1200.00")
 
     def test_includes_transfer_templates(self, app, db, seed_user):
         """Active transfer templates generate transfers with both shadows.
@@ -310,7 +311,7 @@ class TestExtendPayPeriods:
                     .all()
                 )
                 assert len(txns) == 1
-                assert txns[0].estimated_amount == Decimal("1200.00")
+                assert resolved_amount(txns[0]) == Decimal("1200.00")
             assert_pay_period_invariants(db.session, seed_user["user"].id)
 
     def test_archived_template_leaves_new_periods_empty(self, app, db, seed_user):
