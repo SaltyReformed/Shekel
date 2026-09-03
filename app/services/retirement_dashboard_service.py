@@ -190,9 +190,12 @@ def load_gap_inputs(balance_ctx):
             ``budget.pay_schedule`` row, which since plan step C4-b-2 IMPLIES no
             pay periods (``fk_pay_periods_schedule``).
             The gap's pre-retirement income is their paycheck converted to a
-            month, so there is no honest figure without it (plan step
-            R7a-2a; see
-            :attr:`app.services.pay_calendar.PayCalendar.cadence`).
+            month, so there is no honest figure without it.  **Raised where the
+            calendar is BUILT since plan step pay_calendar:C4-d** (ruling
+            R-PC45) -- ``balance_ctx.calendar()`` reaches
+            :func:`app.services.pay_calendar.calendar_for`, which refuses that
+            owner -- rather than where the cadence is read;
+            :attr:`app.services.pay_calendar.PayCalendar.cadence` is total now.
     """
     user_id = balance_ctx.user_id
     settings = (

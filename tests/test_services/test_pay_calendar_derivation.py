@@ -204,90 +204,134 @@ class TestDerivationRefusals:
 
 
 # ---------------------------------------------------------------------------
-# TestTheCadenceIsRequiredOnlyBesideAPayday
+# TestTheCadenceIsRequired
 # ---------------------------------------------------------------------------
 
 
-class TestTheCadenceIsRequiredOnlyBesideAPayday:
-    """Plan step C2-b1: ``cadence_days`` and ``paydays`` travel together.
+class TestTheCadenceIsRequired:
+    """Plan step C4-d (ruling **R-PC45**): a calendar HAS a cadence, always.
 
-    The cadence is read for exactly one thing -- the LAST period's end -- so an
-    owner with no paydays has nothing to read it for, and
-    ``pay_schedule_service.resolve_cadence`` answers ``None`` for exactly that
-    owner (no ``budget.pay_schedule`` row, and no period to infer one from).
-    Production's companion user is one: zero paydays, measured 2026-08-08.
+    **This class replaces ``TestTheCadenceIsRequiredOnlyBesideAPayday``, and
+    the rename is the whole change.**  ``cadence_days`` was ``int | None``:
+    ``None`` legal beside an empty payday set, refused beside a non-empty one,
+    and the pairing policed here at runtime because the type would not express
+    it.  What that absence stood for was an owner with no
+    ``budget.pay_schedule`` row, and ``pay_calendar._loader.calendar_for``
+    refuses that owner now rather than building an empty calendar carrying no
+    cadence -- so nothing constructs the pair and there is nothing conditional
+    left to grade.
 
-    The same absence BESIDE a payday is a different fact -- plan finding P8's
-    broken state -- and this is the only place in the application that refuses
-    it.  Both directions are asserted here because a rule tested in one
-    direction is a rule that can be satisfied by refusing everything.
+    What is graded instead is the unconditional rule and the two things it
+    could quietly get wrong: that the refusal no longer DEPENDS on the payday
+    set (a rule stated for one input shape and not the other is the shape this
+    class used to have), and that an EMPTY calendar is still buildable and
+    still answers -- it is an owner with a schedule row and zero paydays, which
+    ``pay_period_admin.reset_pay_periods`` passes through, and it is the case a
+    "cadence required" rule could break by refusing everything.
     """
 
-    def test_no_paydays_and_no_cadence_derive_an_empty_calendar(self):
-        """The legal pairing, and the reason the empty calendar stays buildable.
+    def test_no_paydays_and_a_cadence_derive_an_empty_calendar(self):
+        """The empty calendar stays buildable, and now carries a real cadence.
 
         ``recurrence._reading.resolved_recurrence`` answers ``None`` for an
         owner with no periods so the Recurring surface still renders; raising
         here would take that page to a 500 for the one owner it is written for.
         """
-        assert derive_periods([], None) == ()
+        assert derive_periods([], 14) == ()
 
-    def test_a_payday_with_no_cadence_is_refused(self):
+    def test_an_absent_cadence_is_refused_beside_a_payday(self):
         """P8's state: a payday exists and its period's end cannot be derived.
 
         Every alternative invents a horizon the owner never chose, so the
-        refusal names the invariant rather than clamping.
+        refusal names the invariant rather than clamping.  The message is
+        ``validate_cadence``'s since plan step C4-d -- ``None`` is one more
+        wrong TYPE beside ``bool`` and ``float`` rather than a state with a
+        refusal of its own.
         """
-        with pytest.raises(PayCalendarError, match="no cadence"):
+        with pytest.raises(PayCalendarError, match="must be a plain int") as excinfo:
             derive_periods([(1, date(2026, 1, 2))], None)
 
-    def test_the_refusal_counts_the_paydays_it_refused(self):
-        """The message names the value, per the project's error-message rule."""
-        with pytest.raises(PayCalendarError, match=r"\b3 payday\(s\)"):
-            derive_periods(
-                [
-                    (1, date(2026, 1, 2)),
-                    (2, date(2026, 1, 16)),
-                    (3, date(2026, 1, 30)),
-                ],
-                None,
-            )
+        # The message NAMES what it refused, which is this project's
+        # error-message rule and which the deleted refusal used to carry (it
+        # counted the paydays).  Eight ``raises`` sites inherited the new
+        # message and an adversarial review found none of them asserting it
+        # says anything at all about the offending value.
+        assert "NoneType" in str(excinfo.value)
 
-    def test_an_absent_cadence_is_refused_after_a_duplicate_payday(self):
-        """Order of refusals: the payday set is graded before the pairing.
+    def test_an_absent_cadence_is_refused_with_NO_paydays_TOO(self):
+        """The refusal stopped depending on the payday set, which IS the step.
 
-        A caller who hands in both faults hears about the one that is a
-        property of the data they supplied, not the one that is a property of
-        their schedule row -- and this pins that order so the two refusals
-        cannot start racing.
+        ``derive_periods([], None)`` was LEGAL before plan step C4-d, and it is
+        the exact pair that made ``cadence_days`` optional at five tiers.
+        Asserted beside the case above rather than instead of it: what changed
+        is that one rule now covers both payday shapes, and a test of only the
+        non-empty shape would pass identically against the old conditional.
         """
-        with pytest.raises(PayCalendarError, match="appears twice"):
+        with pytest.raises(PayCalendarError, match="must be a plain int"):
+            derive_periods([], None)
+
+    def test_the_cadence_is_graded_BEFORE_the_payday_set(self):
+        """Order of refusals, INVERTED by plan step C4-d and pinned as such.
+
+        A caller handing in both faults -- a duplicate payday and no cadence --
+        used to hear "appears twice", because the absent cadence was checked
+        after the payday set was sorted and de-duplicated.  The cadence is
+        validated eagerly now, before the paydays are looked at, which is what
+        ``derive_periods`` already did for every value except ``None`` and what
+        its own ``Args:`` has always said: a bad cadence is a bad caller
+        whether or not this particular owner has paydays yet.  Pinned so the
+        two refusals cannot start racing.
+        """
+        with pytest.raises(PayCalendarError, match="must be a plain int"):
             derive_periods(
                 [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], None,
             )
 
-    def test_a_present_cadence_is_still_graded_beside_an_empty_set(self):
-        """Absence is excused; a WRONG value never is, whatever the payday set.
+    def test_a_duplicate_payday_is_still_refused_beside_a_GOOD_cadence(self):
+        """The payday-set grading survived the reorder, which is what could break.
 
-        ``None`` means "there is no schedule"; ``0`` means "the schedule says
-        zero", which no write door could have produced.
+        The case above proves the cadence is graded first; on its own that is
+        also what a ``derive_periods`` which had stopped checking paydays
+        entirely would report.  This is the other side: a good cadence, and the
+        duplicate is still named.
+        """
+        with pytest.raises(PayCalendarError, match="appears twice"):
+            derive_periods(
+                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], 14,
+            )
+
+    def test_a_present_cadence_is_still_graded_beside_an_empty_set(self):
+        """A WRONG value is refused whatever the payday set.
+
+        ``0`` means "the schedule says zero", which no write door could have
+        produced -- and the eager validation is what makes an empty payday set
+        no excuse for it.
         """
         with pytest.raises(PayCalendarError, match="at least 1 day and at most 365"):
             derive_periods([], 0)
 
-    def test_an_empty_calendar_answers_every_question_without_a_cadence(self):
-        """The pairing is safe because no method reads what is not there.
+    def test_an_empty_calendar_answers_every_question_it_has_an_answer_for(self):
+        """An empty calendar is ordinary, and every search still answers ``None``.
 
         Asserted over the whole public surface rather than the two methods that
-        obviously touch the cadence: the claim being made is that NONE of them
-        reads it, and a spot check of two would not be that claim.
+        obviously touch the cadence: the claim is that a "cadence required"
+        rule did not make the empty calendar unbuildable or turn its searches
+        into refusals.
+
+        **The cadence read is asserted too, and it is the assertion this case
+        did not have before plan step C4-d**: the class it replaces built this
+        calendar with ``cadence_days=None`` and its whole point was that no
+        method READ the cadence.  A calendar carries one now, so the honest
+        version checks that reading it ANSWERS -- which is
+        ``PayCalendar.cadence`` having become total.
         """
         calendar = PayCalendar.from_paydays(
-            paydays=[], cadence_days=None, user_id=1,
+            paydays=[], cadence_days=14, user_id=1,
             history_opens_on=None,
         )
         day = date(2026, 1, 2)
 
+        assert calendar.cadence.cadence_days == 14
         assert calendar.periods == ()
         assert calendar.opening_bound() is None
         assert calendar.horizon() is None
