@@ -66,7 +66,18 @@ CAPS = {
     # 971 + 187 + 20 headroom = 1178, rounded to 1180.  It stays under the
     # 1,200 this document carried before the registries left.
     "balance": 1180,
-    "recurrence": 850,
+    # **RAISED 850 -> 900 by the developer, 2026-09-03**, on rule 4's terms and
+    # by the same calibration that raised the balance README.  The cap BOUND
+    # while minting `recurrence:R7d-h`: the document sat at 843 with 23 open
+    # steps still owing specifications -- 0.3 lines per open step, the same
+    # bind balance hit at 0.2.  **Rule 5's escape was spent FIRST and found
+    # EXHAUSTED**: every shipped step in that document is already condensed to
+    # one line, done on 2026-09-02, so there is no completed span left to
+    # archive.  The number is not invented: bank_import's 260 gave that arc 3.4
+    # lines per open step, and 23 x 3.4 = 78 of room; 843 + 78 = 921, trimmed
+    # to 900 because R7d-h's own specification was already compressed four
+    # times to chase the old cap and 900 still leaves 2.5 lines per open step.
+    "recurrence": 900,
     # **RAISED 500 -> 520 by the developer, 2026-09-01**, same terms and the
     # same arithmetic: 466 of an effective 480 is FOURTEEN lines against 10
     # open steps (1.4 each), and rule 5's escape was spent twice in one day --
