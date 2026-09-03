@@ -66,6 +66,7 @@ def _make_txn_kwargs(seed_user, seed_periods_today, status_name="Projected"):
     expense = db.session.query(TransactionType).filter_by(name="Expense").one()
     return {
         "account_id": seed_user["account"].id,
+        "user_id": seed_periods_today[0].user_id,
         "pay_period_id": seed_periods_today[0].id,
         "scenario_id": seed_user["scenario"].id,
         "status_id": status.id,

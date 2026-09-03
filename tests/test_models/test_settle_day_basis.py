@@ -102,6 +102,7 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     fields = {
+        "user_id": seed_periods[0].user_id,
         "pay_period_id": seed_periods[0].id,
         "scenario_id": seed_user["scenario"].id,
         "account_id": seed_user["account"].id,

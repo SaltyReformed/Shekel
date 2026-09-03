@@ -346,6 +346,7 @@ class TestAccountHardDelete:
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=acct_id,
@@ -586,6 +587,7 @@ class TestAccountHardDelete:
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=acct_id,

@@ -466,13 +466,19 @@ def require_period(
       ``/dashboard`` open a :func:`~app.db_transaction.write_transaction` block
       for the rolling top-up, so each runs read-only, then writable, then
       read-only again over a NEW snapshot.
-    * **A row filed in ANOTHER owner's pay period.**  ``budget.transactions``
-      carries no ``user_id``: its owner IS its pay period's, and nothing
-      requires that owner to be its ACCOUNT's.  0 such rows on production,
-      re-measured 2026-08-31 over all 1,028 rows -- carried across from
-      ``_calendar.py`` with the rest of this argument and RE-TAKEN rather than
-      copied forward, because a measurement quoted as a reason decays
-      invisibly.
+    * **A row filed in ANOTHER owner's pay period -- and it is UNSTORABLE
+      since plan step ``pay_calendar:C13-a``.**  This clause used to read "0
+      such rows on production, re-measured 2026-08-31 over all 1,028 rows",
+      which is the shape the paragraph below warns about: a measurement quoted
+      as a REASON, decaying invisibly because nobody re-checks a premise.  It
+      decayed by being FIXED.  ``budget.transactions`` now carries a
+      ``user_id`` held equal to both its account's owner and its paycheck's by
+      a composite key each (ruling **R-PC32**), so the row this bullet
+      describes cannot be written at all rather than merely being absent.  The
+      handling here is therefore dead weight rather than a live defence, and
+      whether it goes is plan step ``pay_calendar:C13-b``'s decision -- taken
+      BESIDE finding **P75**'s nineteen rather than as one of them, because
+      this is a placement question and P75 counts only the reads that REFUSE.
 
     **The three quieter answers were weighed and refused** (the review that
     parked C4-a-1, 2026-08-25): placing the row against no span hides a

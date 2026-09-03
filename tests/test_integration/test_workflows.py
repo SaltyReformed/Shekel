@@ -213,6 +213,7 @@ class TestCreditPaybackBalance:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -268,6 +269,7 @@ class TestAnchorTrueUpBalance:
 
             # Create an expense in period 1.
             txn = Transaction(
+                user_id=seed_periods[1].user_id,
                 pay_period_id=seed_periods[1].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -342,6 +344,7 @@ class TestCarryForwardWorkflow:
             # Create 2 projected expenses in period 0.
             for name, amount in [("Groceries", "85.00"), ("Gas", "45.00")]:
                 txn = Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -419,6 +422,7 @@ class TestCarryForwardEdgeCases:
             ]
             for name, amount, cat_id in items:
                 txn = Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -478,6 +482,7 @@ class TestCarryForwardEdgeCases:
             existing_ids = []
             for name, amount in [("Internet", Decimal("500.00")), ("Phone", Decimal("200.00"))]:
                 txn = Transaction(
+                    user_id=seed_periods[1].user_id,
                     pay_period_id=seed_periods[1].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -498,6 +503,7 @@ class TestCarryForwardEdgeCases:
                 ("Coffee", Decimal("43.99")),
             ]:
                 txn = Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -564,6 +570,7 @@ class TestCarryForwardEdgeCases:
             ]
             for name, amount, status in status_names:
                 txn = Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -612,6 +619,7 @@ class TestCarryForwardEdgeCases:
             # Source has only non-projected transactions.
             for name, status in [("Paid", done), ("Nope", cancelled)]:
                 txn = Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -658,6 +666,7 @@ class TestCarryForwardEdgeCases:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -705,6 +714,7 @@ class TestCreditWorkflowEdgeCases:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -749,6 +759,7 @@ class TestCreditWorkflowEdgeCases:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -791,6 +802,7 @@ class TestCreditWorkflowEdgeCases:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -817,6 +829,7 @@ class TestCreditWorkflowEdgeCases:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -847,6 +860,7 @@ class TestCreditWorkflowEdgeCases:
 
             last_period = seed_periods[-1]
             txn = Transaction(
+                user_id=last_period.user_id,
                 pay_period_id=last_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -874,6 +888,7 @@ class TestCreditWorkflowEdgeCases:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -921,6 +936,7 @@ class TestCreditWorkflowEdgeCases:
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -966,6 +982,7 @@ class TestFullBudgetWorkflow:
 
             # Step 1: Create 3 projected expenses in period 0.
             txn1 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -976,6 +993,7 @@ class TestFullBudgetWorkflow:
                 amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             txn2 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -986,6 +1004,7 @@ class TestFullBudgetWorkflow:
                 amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             txn3 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,

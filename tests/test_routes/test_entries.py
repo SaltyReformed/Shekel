@@ -131,6 +131,7 @@ def _create_visible_tracked_txn(seed_user, seed_periods):
 
     txn = Transaction(
         template_id=template.id,
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -239,6 +240,7 @@ def _create_other_user_txn():
     ).one()
 
     txn = Transaction(
+        user_id=periods[0].user_id,
         pay_period_id=periods[0].id,
         scenario_id=scenario.id,
         account_id=account.id,
@@ -554,6 +556,7 @@ class TestCreateEntry:
 
             # Ad-hoc transaction (no template, not entry-capable).
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1881,6 +1884,7 @@ class TestEntryTransactionMismatch:
 
         txn2 = Transaction(
             template_id=seed_entry_template["template"].id,
+            user_id=seed_periods[1].user_id,
             pay_period_id=seed_periods[1].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -1974,6 +1978,7 @@ class TestEntryTransactionMismatch:
 
             txn_hidden = Transaction(
                 template_id=template_hidden.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2173,6 +2178,7 @@ class TestPopoverIntegration:
             ).one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,

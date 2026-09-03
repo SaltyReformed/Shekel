@@ -120,6 +120,9 @@ def _declared_row(seed_user, template, period, *, status=StatusEnum.PROJECTED):
     txn = Transaction(
         account_id=seed_user["account"].id,
         template_id=template.id,
+        # The owner, off the period the row is funded in (plan step
+        # ``pay_calendar:C13-a``).
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=ref_cache.status_id(status),
@@ -359,6 +362,7 @@ class TestArchivingFreezesWhatItWasPricing:
             owned = Transaction(
                 account_id=seed_user["account"].id,
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),

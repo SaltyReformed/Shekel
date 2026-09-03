@@ -267,7 +267,12 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
             rather than as an id since plan step balance:X-au-d, because
             :class:`~app.services._recurrence_common.MaintainActs` gives both
             engines' writers one signature and a transfer's needs the template
-            itself.
+            itself.  **Plan step ``pay_calendar:C13-a`` needs it whole for a
+            second, independent reason**: a created row states its OWNER as
+            well as its link, and the template is the one place both are
+            known -- so passing the id would put one object's two fields in
+            two parameters.  Either reason alone justifies the signature;
+            removing one does not license reverting it.
         scenario_id: The scenario every created row is written into.
         projected_id: The ``Projected`` status id for created rows.  ``None``
             only when the rule was cleared, in which case *work.create_in* is
@@ -318,6 +323,12 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     for create in work.create_in:
         txn = Transaction(
             **derived[create.occurs_on]._asdict(),
+            # The OWNER sits here rather than in ``DerivedRowFields``, and the
+            # loop above is exactly why (plan step ``pay_calendar:C13-a``): it
+            # ``setattr``s every derived field onto an EXISTING row, and a row
+            # does not change hands because its template was edited.  Same
+            # argument as ``occurs_on``'s, stated at the top of this function.
+            user_id=template.user_id,
             template_id=template.id,
             pay_period_id=create.period_id,
             occurs_on=create.occurs_on,

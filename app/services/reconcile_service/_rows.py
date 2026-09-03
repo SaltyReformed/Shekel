@@ -135,11 +135,26 @@ class Statement:
 
         **The OWNERSHIP scope for every arm of this package, and it comes off
         the CALENDAR rather than off ``pay_periods.user_id``** (pay-calendar
-        plan step C4-a-2).  ``budget.transactions`` carries no ``user_id``, so
-        whose a row is has to be reached through its paycheck; doing that with
-        a correlated subquery asks the TABLE a question this value already
-        answers, which is two statements of one fact inside one request -- the
-        same defect :attr:`owner_id` exists to remove, one clause down.
+        plan step C4-a-2).  Whose a row is is reached through its paycheck
+        here, and doing that with a correlated subquery would ask the TABLE a
+        question this value already answers -- two statements of one fact
+        inside one request, the same defect :attr:`owner_id` exists to remove
+        one clause down.
+
+        **``budget.transactions`` HAS carried a ``user_id`` since plan step
+        ``pay_calendar:C13-a``, and this scope has not moved onto it.**  The
+        sentence here used to be "it carries no ``user_id``, so ownership has
+        to be reached through the paycheck", which is no longer the reason for
+        anything.  Whether this scope should become one equality on that
+        column, or stay the calendar's saved ids, is a question with an
+        answer already: what this scope needs is the PERIOD SET and not the
+        owner, so ``Transaction.user_id`` cannot replace it.  It is also NOT
+        one of finding **P75**'s nineteen -- that census counts reads that
+        REFUSE and excludes scopes by name -- and the clause is graded:
+        deleting ``_purchases.py``'s copy of it fails
+        ``test_the_PURCHASE_arm_is_scoped_the_same_way`` (measured
+        2026-09-02).  A ``C13-b`` that treated it as a comparison to retire
+        would delete load-bearing code.
 
         **The "is this period SAVED" filter is the CALENDAR's own** since
         pay-calendar plan step C4-a-4:
@@ -535,14 +550,18 @@ def outstanding_rows(
 
     **The consumer it is KEPT for is one line, measured rather than assumed**:
     ``transaction_service._settle.settle_from_entries`` logs
-    ``txn.pay_period.user_id`` (``Transaction`` carries no ``user_id`` of its
-    own), which is the ENVELOPE close alone -- a bill's settle reads no such
-    relationship.  The load stays for what that site SAYS about it rather than
-    for the join: it states that ``pay_period`` is already loaded by the
-    caller, so dropping the option here would put a lazy load, and with it an
-    AUTOFLUSH, in the middle of a settle that has already mutated the row.  It
-    goes when ``pay_calendar:C13`` makes that owner a column and the read has
-    no subject.
+    ``txn.pay_period.user_id``, which is the ENVELOPE close alone -- a bill's
+    settle reads no such relationship.  The load stays for what that site SAYS
+    about it rather than for the join: it states that ``pay_period`` is already
+    loaded by the caller, so dropping the option here would put a lazy load,
+    and with it an AUTOFLUSH, in the middle of a settle that has already
+    mutated the row.
+
+    **The column that removes this reader's subject EXISTS since plan step
+    ``pay_calendar:C13-a``** -- this paragraph used to say the read was
+    necessary because ``Transaction`` carried no ``user_id``.  What has not
+    happened is the READ moving onto it, which is ``C13-b``'s work; until then
+    the option and this note both stand.
 
     **What was NOT measured is said rather than implied** (adversarial code
     review, 2026-08-28, which caught a wider claim here).  The transfer arm's

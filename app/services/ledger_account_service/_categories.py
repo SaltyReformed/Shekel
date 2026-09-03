@@ -176,8 +176,10 @@ def get_or_create_category_ledger_account(
 
     Args:
         user_id: The owning user's id.  Sourced by the caller from
-            ``txn.pay_period.user_id`` (a ``Transaction`` has no
-            ``user_id``).
+            ``txn.pay_period.user_id``; ``txn.user_id`` is the same value and
+            one hydration cheaper since plan step ``pay_calendar:C13-a``.  A
+            read that STAMPS rather than refuses, so NOT one of finding
+            **P75**'s nineteen -- that census excludes it by name.
         category_id: The budget category's id, or None to resolve the
             per-(owner, class) Uncategorized fallback.
         ledger_class: The accounting class, a

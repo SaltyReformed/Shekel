@@ -52,6 +52,7 @@ def _make_txn(seed_user, period, *, status):
     :class:`StatusEnum` member resolved to its id.
     """
     txn = Transaction(
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

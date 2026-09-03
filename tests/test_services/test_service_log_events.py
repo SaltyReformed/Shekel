@@ -345,6 +345,7 @@ def _projected_expense(app, db, seed_user, seed_periods):
     ).filter_by(name="Expense").one()
 
     txn = Transaction(
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -432,6 +433,7 @@ def _envelope_transaction(app, db, seed_user, seed_periods):
     rule = make_every_period_rule(db.session, template)
 
     txn = Transaction(
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -918,6 +920,7 @@ class TestRecurrenceEngineLogging:
         db.session.flush()
 
         s2_txn = Transaction(
+            user_id=s2_periods[0].user_id,
             pay_period_id=s2_periods[0].id,
             scenario_id=seed_second_user["scenario"].id,
             account_id=seed_second_user["account"].id,
@@ -965,6 +968,7 @@ class TestCarryForwardLogging:
 
         # One ad-hoc projected expense in period 0 -- discrete partition.
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,

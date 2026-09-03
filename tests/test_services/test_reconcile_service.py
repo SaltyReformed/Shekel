@@ -17,6 +17,7 @@ from dataclasses import fields, replace
 from datetime import date
 from decimal import Decimal
 
+
 from app import ref_cache
 from app.enums import (
     SettledDayBasisEnum,
@@ -418,6 +419,7 @@ class TestTheOutstandingSet:
             # ``idx_transactions_template_scenario_undated`` holds one undated
             # row per template per paycheck.
             txn_b = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=account_b.id,
@@ -466,6 +468,7 @@ class TestTheOutstandingSet:
                 first_payday=date(2026, 1, 2), num_periods=1, cadence_days=14,
             )[0]
             other_txn = Transaction(
+                user_id=other_period.user_id,
                 pay_period_id=other_period.id,
                 scenario_id=seed_second_user["scenario"].id,
                 account_id=seed_second_user["account"].id,
@@ -493,69 +496,28 @@ class TestTheOutstandingSet:
                 TransactionEntry, other_entry.id,
             ).settled_on is None
 
-    def test_the_OWNER_clause_is_load_bearing_on_its_own(
-        self, app, db, seed_user, seed_second_user, seed_periods,
-        seed_entry_template,
-    ):
-        """The one shape that isolates ``PayPeriod.user_id == owner_id``.
-
-        A transaction on THIS user's account whose pay period belongs to
-        ANOTHER user.  Nothing in the schema forbids the row --
-        ``Transaction.account_id`` and ``Transaction.pay_period_id`` are
-        independent foreign keys with no composite constraint tying them to one
-        owner -- and nothing in the app creates it, so this is a forged /
-        corrupt row and the owner clause is the defence in depth against it.
-
-        It is the ONLY shape that grades that clause.  Every other cross-user
-        fixture puts the foreign row on the foreign ACCOUNT too, which the
-        account clause rejects first, so the owner clause could be deleted and
-        the whole reconcile suite would stay green (measured, in this step's
-        adversarial review).  Here the account clause PASSES by construction and
-        only the owner clause can reject it.
-
-        The consequence if it were dropped: whoever holds the corrupt row's id
-        could have another user's purchase stamped as reconciled against a
-        balance that user never asserted -- and, because ``settled_on`` is then
-        non-NULL, that user's own panel would stop offering it.
-        """
-        with app.app_context():
-            other_period = pay_period_write.record_paydays(
-                user_id=seed_second_user["user"].id,
-                first_payday=date(2026, 1, 2), num_periods=1, cadence_days=14,
-            )[0]
-            crossed = Transaction(
-                # THIS user's account ...
-                account_id=seed_user["account"].id,
-                # ... under the OTHER user's pay period.
-                pay_period_id=other_period.id,
-                scenario_id=seed_second_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Cross-owner groceries",
-                transaction_type_id=(
-                    seed_entry_template["transaction"].transaction_type_id
-                ),
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                is_envelope=True,
-            )
-            db.session.add(crossed)
-            db.session.flush()
-            entry = _make_entry(
-                crossed, seed_second_user["user"], amount="50.00",
-                description="Crossed", purchased_on=_BEFORE_THE_STATEMENT,
-            )
-            db.session.commit()
-
-            # The account clause cannot reject this row -- it IS on this
-            # account.  Stated so the test cannot silently stop isolating.
-            assert crossed.account_id == seed_user["account"].id
-
-            assert self._listed(seed_user) == []
-            assert self._reconcile(seed_user, [entry.id]) == 0
-
-            db.session.expire_all()
-            assert db.session.get(
-                TransactionEntry, entry.id,
-            ).settled_on is None
+    # **``test_the_OWNER_clause_is_load_bearing_on_its_own`` was DELETED at
+    # plan step ``pay_calendar:C13-a``**, and this note is what a reader
+    # looking for it needs.  That case built a transaction on THIS owner's
+    # account under ANOTHER owner's pay period -- a row the schema then
+    # permitted -- to reach the ownership half of this package's scope.
+    # ``fk_transactions_owner_period`` refuses that INSERT now, so the case
+    # could only assert the refusal, which is
+    # ``test_c13a_transaction_owner_key.test_a_stranger_s_account_is_refused``
+    # verbatim and belongs there.
+    #
+    # **What it graded is NOT lost, and a first version of its replacement
+    # said it was.**  The scope it reached is
+    # ``Transaction.pay_period_id.in_(statement.owned_period_ids)`` -- a
+    # PERIOD SET since pay-calendar plan step C4-a-2, not the
+    # ``pay_periods.user_id`` comparison that replacement named -- and
+    # ``TestTheScopeIsTheCALENDARsNotTheTables`` below grades both arms of it
+    # through a short calendar, an input the composite keys still permit.
+    # Measured 2026-09-02: deleting ``_purchases.py``'s clause fails
+    # ``test_the_PURCHASE_arm_is_scoped_the_same_way``.  So the clause is
+    # live, graded, and load-bearing for ``_block_headings``' totality, and
+    # ``C13-b`` must not treat it as one of finding **P75**'s nineteen: those
+    # are reads that REFUSE, and this one SCOPES.
 
     def test_a_mixed_submission_stamps_only_what_is_in_scope(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -768,6 +730,7 @@ class TestTheSetIsGroupedByItsParent:
         db.session.flush()
         txn = Transaction(
             template_id=template.id,
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -867,6 +830,7 @@ class TestTheSetIsGroupedByItsParent:
             first = seed_entry_template["transaction"]
             second = Transaction(
                 template_id=first.template_id,
+                user_id=seed_periods[1].user_id,
                 pay_period_id=seed_periods[1].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1080,6 +1044,7 @@ class TestTheTransactionArm:
         db.session.flush()
         txn = Transaction(
             template_id=template.id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -1564,6 +1529,7 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
         db.session.flush()
         txn = Transaction(
             template_id=template.id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,

@@ -68,6 +68,7 @@ def _settled(
     status_id = ref_cache.status_id(StatusEnum.DONE)
     txn = Transaction(
         account_id=(seed_user["account"] if account is None else account).id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,
@@ -89,6 +90,7 @@ def _projected(db, seed_user, period, name, amount, due_date):
     status_id = ref_cache.status_id(StatusEnum.PROJECTED)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,

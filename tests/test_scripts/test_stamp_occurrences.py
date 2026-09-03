@@ -189,6 +189,7 @@ class TestStampOccurrences:
             orphan = Transaction(
                 account_id=host.account_id,
                 template_id=template.id,
+                user_id=host.user_id,
                 pay_period_id=host.pay_period_id,
                 scenario_id=host.scenario_id,
                 status_id=host.status_id,
@@ -279,6 +280,7 @@ class TestStampOccurrences:
             envelope = Transaction(
                 account_id=host.account_id,
                 template_id=template.id,
+                user_id=host.user_id,
                 # The HOLE's period, deliberately: that occurrence is now free,
                 # so without the provenance filter ``_match_by_period`` alone
                 # stamps this row -- no second defect required.
@@ -469,6 +471,7 @@ class TestStampOccurrences:
             stranded = Transaction(
                 account_id=host.account_id,
                 template_id=template.id,
+                user_id=host.user_id,
                 pay_period_id=host.pay_period_id,
                 scenario_id=host.scenario_id,
                 status_id=host.status_id,

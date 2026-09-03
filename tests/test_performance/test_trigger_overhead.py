@@ -393,6 +393,7 @@ class TestRecurrenceEngineOverhead:
         def _bulk_insert():
             for i, period in enumerate(perf_periods[:100]):
                 txn = Transaction(
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=scenario_id,
                     account_id=account_id,
@@ -466,6 +467,7 @@ class TestRecurrenceEngineOverhead:
         for i, period in enumerate(perf_periods[:batch_size]):
             for copy in range(ROWS_PER_PERIOD):
                 txn = Transaction(
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=scenario_id,
                     account_id=account_id,
@@ -532,6 +534,7 @@ class TestRecurrenceEngineOverhead:
             """Insert a batch of transactions for deletion benchmarking."""
             for i, period in enumerate(perf_periods[:batch_size]):
                 txn = Transaction(
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=scenario_id,
                     account_id=account_id,

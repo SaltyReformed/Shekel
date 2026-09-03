@@ -246,6 +246,7 @@ class TestSyncEntryPayback:
             # Transaction in the last period -- no period follows it.
             txn = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[-1].user_id,
                 pay_period_id=seed_periods[-1].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -628,6 +629,7 @@ class TestPaybackCorrectness:
 
             txn2 = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[2].user_id,
                 pay_period_id=seed_periods[2].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1062,6 +1064,7 @@ class TestLegacyCreditGuard:
             )
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1096,6 +1099,7 @@ class TestLegacyCreditGuard:
             )
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,

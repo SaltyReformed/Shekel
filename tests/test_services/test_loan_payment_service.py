@@ -226,6 +226,7 @@ class TestGetPaymentHistory:
             income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=loan.id,

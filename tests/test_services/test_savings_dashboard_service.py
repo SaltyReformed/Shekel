@@ -2765,6 +2765,7 @@ def _make_projected_envelope_expense(
 
     txn = Transaction(
         template_id=template.id,
+        user_id=pay_period.user_id,
         pay_period_id=pay_period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=target_account_id,

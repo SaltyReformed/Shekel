@@ -132,6 +132,7 @@ def a_transaction(
         template_id = definition.id
     txn = Transaction(
         template_id=template_id,
+        user_id=seed_user["user"].id,
         pay_period_id=(period or seed_user["bootstrap_period"]).id,
         scenario_id=seed_user["scenario"].id,
         account_id=account_id,

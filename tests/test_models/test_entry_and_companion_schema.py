@@ -51,6 +51,7 @@ def _make_txn(seed_user, seed_periods, estimated_amount=Decimal("500.00")):
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     projected_status = db.session.query(Status).filter_by(name="Projected").one()
     txn = Transaction(
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
