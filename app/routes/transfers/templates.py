@@ -25,7 +25,6 @@ from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
 from app.extensions import db
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.account import Account
@@ -207,7 +206,16 @@ def _settle_create_references(data, start_period_id):
     1. **Every user-scoped FK is the owner's** (commit C-27 / F-043).  A
        single-return loop so a future FK adds a row rather than an arm; the
        message-per-FK detail rides on the label.
-    2. **The pay period a NON-REPEATING transfer lands in** is the owner's too.
+    2. **The pay period a NON-REPEATING transfer lands in** is the owner's too,
+       and this is the ONE place the request asks (plan step
+       ``pay_calendar:C13-b``).  It was ``_user_owns(PayPeriod, ...)`` -- fetch
+       the row by primary key, compare its ``user_id`` -- and
+       ``_materialize_one_time_transfer`` then did the same again on the row
+       this one had already cleared.  Now the owner's derived CALENDAR is
+       asked once, where an id another user holds is simply ABSENT, and the
+       RESOLVED period is threaded to that materializer, which re-fetches
+       nothing.  ``transfer_service`` still asks its own tier's question, which
+       is the guarantee a caller skipping this route cannot escape.
        Owner-checked at the route since plan step R7b-4: the check used to live
        inside the recurrence-form helper (``recurrence_spec_from_form``
        since plan step R-F6), because the same ``<select>``
@@ -215,11 +223,9 @@ def _settle_create_references(data, start_period_id):
        have shifted this owner's generation timing.  The recurrence takes a
        DATE now, so the field has one job and one owner.  Guarded on presence
        rather than folded into the loop, because it is OPTIONAL: a repeating
-       transfer submits no period at all and ``_user_owns`` reads ``None`` as
-       "no row".  Checked unconditionally when present, so a crafted POST
-       pairing a foreign period with a repeating cadence is refused rather than
-       ignored; ``_materialize_one_time_transfer`` re-checks as defence in
-       depth.
+       transfer submits no period at all.  Resolved unconditionally when
+       present, so a crafted POST pairing a foreign period with a repeating
+       cadence is refused rather than ignored.
     3. **A loan destination's first occurrence is DERIVED**, and it must be
        settled before the rule is built so nothing is authored that
        ``bind_rule_to_loan`` then replaces (plan step R7c-b, developer ruling
@@ -233,8 +239,18 @@ def _settle_create_references(data, start_period_id):
             by the caller, or ``None``.
 
     Returns:
-        * ``None`` -- every reference checks out and *data* is ready to build.
-        * :class:`Response` -- the refusal redirect, returned verbatim.
+        ``(start_period, refusal)``.  *start_period* is the resolved
+        :class:`~app.services.pay_calendar.DerivedPeriod` the caller threads to
+        :func:`~._instances.materialize_initial_transfers`, or ``None`` when
+        the submission named no period.  *refusal* is ``None`` when every
+        reference checks out and *data* is ready to build, else the redirect
+        the caller returns verbatim.
+
+    Raises:
+        PayCalendarError: When the owner holds no pay schedule, from the
+            calendar this resolves against.  Uncaught, as at every other
+            caller: the form that posts here rendered the owner's periods to
+            choose from (ruling **R-PC42** supplies the handler).
     """
     for model, pk, label in (
         (Account, data.get("from_account_id"), "source account"),
@@ -243,13 +259,18 @@ def _settle_create_references(data, start_period_id):
     ):
         if not _user_owns(model, pk):
             flash(f"Invalid {label}.", "danger")
-            return redirect(url_for("transfers.new_transfer_template"))
+            return None, redirect(url_for("transfers.new_transfer_template"))
 
-    if start_period_id is not None and not _user_owns(PayPeriod, start_period_id):
-        flash("Invalid start period.", "danger")
-        return redirect(url_for("transfers.new_transfer_template"))
+    start_period = None
+    if start_period_id is not None:
+        start_period = calendar_for(current_user.id).period_by_id(
+            start_period_id,
+        )
+        if start_period is None:
+            flash("Invalid start period.", "danger")
+            return None, redirect(url_for("transfers.new_transfer_template"))
 
-    return settle_first_occurrence(
+    return start_period, settle_first_occurrence(
         data, redirect=RedirectTarget("transfers.new_transfer_template"),
     )
 
@@ -268,9 +289,10 @@ def create_transfer_template():
     :func:`_settle_create_references`.  That helper also settles a LOAN
     destination's derived first occurrence, which is why the three steps are
     one call: it reads the destination it has just proved is the owner's.  The
-    follow-up branch (:func:`_materialize_one_time_transfer`) re-fetches the
-    period and verifies ownership a second time, so a malicious
-    ``start_period_id`` cannot leak into the transfer service.  The flash +
+    period is resolved THERE and threaded down, so
+    :func:`~._instances.materialize_initial_transfers` re-fetches nothing --
+    it re-verified the same row a second time until plan step
+    ``pay_calendar:C13-b``.  The flash +
     redirect UX matches the existing template-form pattern; the security
     response rule (404 for both not-found and not-yours) is preserved
     indirectly by re-rendering the same form page rather than confirming
@@ -284,7 +306,7 @@ def create_transfer_template():
     data = payload
 
     start_period_id = data.pop("start_period_id", None)
-    refusal = _settle_create_references(data, start_period_id)
+    start_period, refusal = _settle_create_references(data, start_period_id)
     if refusal is not None:
         return refusal
 
@@ -341,7 +363,7 @@ def create_transfer_template():
     # does.  Returns a redirect Response on a missing / invalid period or a
     # service rejection, which is propagated verbatim.
     materialize_redirect = materialize_initial_transfers(
-        template, rule, start_period_id,
+        template, rule, start_period,
     )
     if materialize_redirect is not None:
         return materialize_redirect

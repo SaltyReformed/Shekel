@@ -754,9 +754,12 @@ class TestTransactionStaleFormPrevention:
         expired its ``status`` relationship -- so the refresh autoflushes.  In
         both topologies that expression sits inside the net.  Everything
         earlier reads columns or already-loaded relationships: ``txn.entries``
-        loads while the row is still clean, and ``settle_from_entries``'
-        ``txn.pay_period.user_id`` is loaded by the route's own fetch, which
-        that helper's comment already states.
+        loads while the row is still clean, and ``settle_from_entries``' owner
+        read is ``txn.user_id`` -- a COLUMN on the row already in the session,
+        which loads nothing at all.  It walked ``txn.pay_period.user_id`` until
+        plan step ``pay_calendar:C13-b``, and the conclusion is STRONGER for
+        the move rather than merely surviving it: the read that had to be
+        already-loaded is now one that cannot load.
         """
         from sqlalchemy import event  # pylint: disable=import-outside-toplevel
 

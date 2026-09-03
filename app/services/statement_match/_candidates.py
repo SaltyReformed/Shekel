@@ -597,7 +597,7 @@ def _transaction_candidates(
       shared gate every cash reader here narrows with rather than a filter
       written again;
     * its pay period is one of the OWNER'S -- ownership, reached through the
-      paycheck and not ``Transaction.user_id`` until ``C13-b`` moves it.  **The
+      paycheck; ``C13-b`` REFUSED ``Transaction.user_id`` here.  **The
       ids come from the CALENDAR rather than from a correlated subquery on
       ``pay_periods.user_id``, and that is what makes the window lookup below
       total**: a row this query returns names a period the calendar was built
@@ -858,7 +858,7 @@ def destinations_for(
 
     * on THIS account, and its pay period is one the OWNER'S CALENDAR holds --
       a statement is one bank's record of one account.  Ownership through the
-      paycheck, not ``Transaction.user_id``, until ``C13-b``.  **The ids come
+      paycheck; ``C13-b`` REFUSED ``Transaction.user_id``.  **The ids come
       from the calendar
       rather than from a correlated subquery on ``pay_periods.user_id``, and
       that is what makes the span lookup below total** (pay-calendar plan step

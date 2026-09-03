@@ -30,7 +30,6 @@ from app.enums import TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
@@ -38,6 +37,7 @@ from app.services import (
     loan_posting_service,
     loan_recurrence_sync,
 )
+from app.services.pay_calendar import DerivedPeriod
 from app.services.transfer_service._ownership import _get_owned_period
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -76,7 +76,7 @@ def _reject_transfer_out_of_loan(from_account: Account) -> None:
 
 
 def _reject_payment_before_origination(
-    to_account: Account, pay_period_id: int, due_date: date | None,
+    to_account: Account, period: DerivedPeriod, due_date: date | None,
 ) -> None:
     """Reject a loan payment whose installment precedes the loan's origination.
 
@@ -124,11 +124,22 @@ def _reject_payment_before_origination(
     -- ``classify_account`` reads the account TYPE only, so a Mortgage-typed
     account can be unconfigured).
 
+    **It TAKES the period rather than its id** (plan step
+    ``pay_calendar:C13-b``).  This was ``pay_period_id`` plus a
+    ``db.session.get(PayPeriod, ...)`` of its own -- a SECOND read, in the same
+    request, of the row the caller's :func:`~._ownership._get_owned_period` had
+    just resolved -- and a ``None`` arm underneath it that had to explain why
+    it stayed silent about a row the caller would refuse anyway.  Taking the
+    value deletes the read, the arm and the explanation, and makes the ordering
+    the caller's comment used to assert ("deliberately AFTER
+    ``_get_owned_period``") a data dependency the signature enforces.
+
     Args:
         to_account: The transfer's destination account (already
             ownership-checked).
-        pay_period_id: The pay period the payment lands in (supplies the
-            installment fallback when *due_date* is ``None``).
+        period: The paycheck the payment lands in, as the owner's calendar
+            derives it -- it supplies the installment fallback when *due_date*
+            is ``None``.
         due_date: The payment's due date, or ``None``.
 
     Raises:
@@ -139,11 +150,6 @@ def _reject_payment_before_origination(
         return
     params = loan_loaders.load_loan_params(to_account.id)
     if params is None:
-        return
-    period = db.session.get(PayPeriod, pay_period_id)
-    if period is None:
-        # The caller's own ownership loader raises for a missing period; leave
-        # that error to it rather than masking it with a different one.
         return
     installment = loan_loaders.installment_for(
         due_date, period.start_date, params.payment_day,
@@ -212,6 +218,18 @@ def _reject_installment_move_before_loan(
     derived from it where the project's security-response rule requires an
     indistinguishable 404.  The later block's own call stays -- it is
     idempotent, and dropping it would make that section depend on this one.
+
+    **That second call is a SECOND walk, and plan step ``pay_calendar:C13-b``
+    measured what it costs rather than arguing about it.**  Both resolutions
+    now derive the owner's calendar (``_ownership._get_owned_period``), where
+    both used to load a ``budget.pay_periods`` row.  Measured 2026-09-03 on
+    ``PATCH /transfers/instance/<id>`` moving a transfer between periods:
+    **21 statements before the step and 23 after, TWO payday reads either
+    side.**  So the duplication is older than this step and this step costs it
+    two statements -- collapsing it would return one of those, which is not
+    enough to restructure a pre-write guard block for.  Left as it is,
+    deliberately, with the number recorded so the next reader weighs a figure
+    rather than this paragraph.
     **The destination account is the caller's already-owned value for the same
     reason** (plan step R10-b): the guard names that account in its refusal
     message, so resolving an unowned id here would answer a cross-user probe
@@ -228,17 +246,48 @@ def _reject_installment_move_before_loan(
             moves no endpoint.
 
     Raises:
-        NotFoundError: If a submitted ``pay_period_id`` is not the user's.
+        NotFoundError: If a submitted ``pay_period_id`` is not the user's, or
+            the paycheck this edit leaves the transfer in is not in the
+            owner's calendar.
         ValidationError: If the resulting installment falls at or before the
             destination loan's origination.
     """
     if not _POSTING_RELEVANT_INSTALLMENT_FIELDS & updates.keys():
         return
-    if "pay_period_id" in updates:
-        _get_owned_period(updates["pay_period_id"], user_id)
+    # ONE resolution for both jobs (plan step ``pay_calendar:C13-b``).  This
+    # was a conditional ``_get_owned_period`` for the ownership half and a
+    # second ``db.session.get(PayPeriod, ...)`` inside the guard for the
+    # installment half -- two reads of one row whenever the edit moved the
+    # period.  The unconditional form also states the paycheck the edit LEAVES
+    # the transfer in, which is the value the guard actually grades.
+    #
+    # **It resolves on paths that previously touched nothing**, because an
+    # argument is evaluated before the guard's own two early returns (a
+    # non-loan destination, a loan with no params): an edit carrying only
+    # ``due_date`` or ``to_account_id`` now reads the transfer's OWN period.
+    # That read can refuse, and what makes it safe to be total is a key on a
+    # DIFFERENT TABLE: ``budget.transfers`` has a plain ``pay_period_id`` FK
+    # and no composite owner key -- that is finding **P83**, still open -- so
+    # the guarantee is transitive, through the shadows, and the key that
+    # carries it is ``fk_transactions_owner_ACCOUNT``.
+    #
+    # *A first version of this comment named ``fk_transactions_owner_period``,
+    # which is the one key in migration ``d4a92f6b13c8`` that CANNOT grade
+    # this*: the backfill is
+    # ``SET user_id = p.user_id FROM budget.pay_periods p``, so that key is
+    # satisfied by construction and refuses nothing.  The account key is not.
+    # A legacy transfer owned by A but filed in B's period puts its shadows on
+    # A's accounts -- ``create_transfer`` owner-checks both endpoints against
+    # ``spec.user_id`` -- while the backfill stamps ``user_id = B``, so
+    # ``(A's account_id, B)`` matches no ``budget.accounts`` row and the
+    # ``ADD CONSTRAINT`` aborts.  **The migration's own docstring says exactly
+    # this** ("the backfill reads the PAY PERIOD, and the account key is what
+    # grades it"), which is where this should have been read the first time.
     _reject_payment_before_origination(
         to_account,
-        updates.get("pay_period_id", xfer.pay_period_id),
+        _get_owned_period(
+            updates.get("pay_period_id", xfer.pay_period_id), user_id,
+        ),
         updates.get("due_date", xfer.due_date),
     )
 
