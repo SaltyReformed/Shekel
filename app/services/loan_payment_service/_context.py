@@ -202,7 +202,7 @@ def load_loan_context(
     # payments at all.  No identity holds over that set.
     #
     # What the floor actually is: a SECOND allocation rule for a question
-    # ``loan_ledger._split.apply_payment_cash`` already answers, and the two
+    # ``app.utils.money.apply_payment_cash`` already answers, and the two
     # DISAGREE -- that one subtracts the full escrow and lets principal go
     # negative (plan D5, "surfaced, never clamped").  On a ``$1,700.00``
     # payment against this loan's ``$1,910.95`` installment the floor reports

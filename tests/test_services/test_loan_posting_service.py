@@ -673,9 +673,11 @@ class TestWalkReadsNoClock:
         Schedule-A deductible interest erased.  Measured on the real Mortgage, the
         same line cost $7,643.80.
 
-        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter in
-        ``loan_ledger.merge_anchor_and_payment_events`` and this reports
-        ``excess=1073.64`` with interest, escrow and principal all $0.00.
+        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter --
+        it would now go in ``loan_ledger.loan_event_stream``, where the reset
+        events are built (it was ``merge_anchor_and_payment_events`` until plan
+        step X-au-g-2c-3b-2) -- and this reports ``excess=1073.64`` with
+        interest, escrow and principal all $0.00.
         """
         with app.app_context():
             loan = self._upcoming_mortgage(seed_user)

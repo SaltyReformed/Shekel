@@ -363,9 +363,9 @@ def standing_installment_cash(
 
     Returns:
         The installment's cash, escrow-INCLUSIVE where the definition states
-        one -- the pairing
-        :func:`~app.services.loan_ledger.split_payment_cash` takes, where the
-        escrow is handed beside it and backed out of principal.
+        one -- the pairing the loan replay takes, where the escrow stands as its
+        accrual period's CHARGE (``loan_ledger.AccrualCharge``) and is backed out
+        of principal by the ONE allocation.
     """
     if standing is None:
         return round_money(contractual_pi + monthly_escrow)

@@ -518,15 +518,23 @@ def owned_contribution(txn) -> Decimal:
     as a REASON decays invisibly, because nobody re-checks a premise; the
     re-census that corrected it is recorded at the foot of this docstring.*
 
-    **RE-CENSUSED AT PLAN STEP X-au-d (2026-09-02), and the re-run is the
+    **RE-CENSUSED AT PLAN STEP X-au-d (2026-09-03), and the re-run is the
     discipline rather than the result.**  Widening the derived class widens what
     this accessor can be handed, so the census is re-run at every cutover that
     widens it -- X-au-g-2c-2 for every transfer shadow, X-au-d for every
     non-override salary row INCLUDING the settled ones.  An adversarial review
     of X-au-d found this paragraph edited without the census being re-run, which
     would have left the next widening reading a date that did not cover it.
-    All seven live call sites are settled-only or guarded, unchanged:
-    ``cash_ledger.settled_cash_leg``, ``loan_ledger._split.split_one_payment``,
+    *The merge of X-au-d with X-au-g-2c-3b-2 then proved the point a second time
+    and from the other direction: the two steps edited THIS paragraph
+    concurrently, and the list below was stale in the branch that had just
+    re-run the census -- because the seventh site MOVED under it rather than
+    changing count.  A census is re-run on the MERGED tree or it is not re-run.*
+    All seven live call sites are settled-only or guarded:
+    ``cash_ledger.settled_cash_leg``, ``loan_ledger._events.loan_event_stream``
+    (which was ``._split.split_one_payment`` until plan step X-au-g-2c-3b-2 moved
+    the cash read onto the event that carries it, and which reads SETTLED income
+    shadows either way),
     ``loan_posting_service._sync`` and ``._display``,
     ``savings_dashboard_service._metrics`` (settled statuses in SQL), and the
     spending report's ``_window`` and ``_breakdown``.  ``statement_match`` and

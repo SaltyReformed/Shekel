@@ -325,7 +325,7 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
     june_charge = {
         charge.on_date: charge for charge in plan.charges
     }[date(2026, 6, 1)]
-    assert june_charge.annual_rate == Decimal("0.12")
+    assert june_charge.period.annual_rate == Decimal("0.12")
     assert june_charge.escrow == Decimal("500.00")
 
 
@@ -404,7 +404,7 @@ def test_two_payments_in_one_month_produce_ONE_charge_at_the_EARLIEST(
     charge = june_charges[0]
     assert charge.on_date == date(2026, 6, 1), "dated at the EARLIEST due"
     # Resolved AT that date: the versions effective 06-10 govern neither.
-    assert charge.annual_rate == _RATE
+    assert charge.period.annual_rate == _RATE
     assert charge.escrow == Decimal("100.00")     # 1,200.00 a year
 
     # And the whole plan holds one charge per occupied month, no more.
