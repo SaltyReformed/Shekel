@@ -12,7 +12,7 @@ shadow stores no figure at all now -- it declares ``PARENT_TRANSFER`` and is
 priced by amount rule 4 -- so the same arithmetic arrives through the amount
 model and there is no stale copy left for an override to beat.  Every case here
 asks :func:`_derived_cash`, which is what a SCREEN reads
-(``cash_ledger.display_amounts_by_id``).
+(``cash_ledger.amounts_by_id``).
 
 Every monetary expectation is hand-computed with the arithmetic shown.
 """
@@ -62,7 +62,7 @@ def _derived_cash(seed_user, rows):
     deleted that rule outright, because a transfer shadow stores no figure for a
     read-time override to supersede.  So the ``{transaction_id: Decimal}`` map
     this file grades is now the amount model's own
-    (``cash_ledger.display_amounts_by_id``), and the assertions below keep their
+    (``cash_ledger.amounts_by_id``), and the assertions below keep their
     original figures.
 
     **It covers EVERY row it is given, where the override map covered only the
@@ -86,7 +86,7 @@ def _derived_cash(seed_user, rows):
     basis = cash_ledger.amount_basis(
         seed_user["user"].id, seed_user["scenario"].id,
     )
-    return cash_ledger.display_amounts_by_id(rows, basis)
+    return cash_ledger.amounts_by_id(rows, basis)
 
 def _build_derived_loan_transfer(seed_user, escrow_annual):
     """Create a $200k/6%/360 mortgage + a derive_from_loan recurring transfer.

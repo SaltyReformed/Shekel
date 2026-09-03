@@ -2441,12 +2441,18 @@ class TestNetBiweeklyMismatchFixes:
     def test_future_year_transactions_use_current_year_tax_configs(
         self, app, auth_client, seed_user, seed_periods_52
     ):
-        """Future-year salary transactions fall back to current-year tax configs.
+        """Future-year salary rows fall back to current-year tax configs.
 
-        When tax configs exist only for 2026, periods in 2027 should use the
-        2026 configs instead of producing zero-tax paychecks.  This prevents
-        the net biweekly mismatch where the salary page (which always uses
-        current-year configs) shows a different amount than the grid.
+        When tax configs exist only for 2026, periods in 2027 must use the 2026
+        configs instead of producing zero-tax paychecks.  This prevents the net
+        biweekly mismatch where the salary page (which always uses current-year
+        configs) shows a different amount than the grid.
+
+        **Read through the AMOUNT MODEL since plan step balance:X-au-d**, where
+        it read ``Transaction.estimated_amount``: a salary row stores no figure
+        at all now, so the per-year resolution the case is about lives in
+        ``income_service.SalaryPricing._net_by_period`` and this asks the rule
+        that consults it.  The claim and the figures are unchanged.
         """
         with app.app_context():
             user = seed_user["user"]
@@ -2493,21 +2499,31 @@ class TestNetBiweeklyMismatchFixes:
 
             gross_biweekly = (Decimal("75000.00") / 26).quantize(Decimal("0.01"))
 
-            # Both should be less than gross (taxes applied).
-            assert txn_2026.estimated_amount < gross_biweekly, (
-                f"2026 txn ({txn_2026.estimated_amount}) should be less than "
-                f"gross ({gross_biweekly}) -- taxes should be applied"
+            # Pylint: ``import-outside-toplevel`` -- the amount model is not
+            # this module's subject and is imported where it is used, as the
+            # recurrence engine above it is.
+            from app.services import cash_ledger  # pylint: disable=import-outside-toplevel
+            priced = cash_ledger.amounts_by_id(
+                [txn_2026, txn_2027],
+                cash_ledger.amount_basis(user.id, seed_user["scenario"].id),
             )
-            assert txn_2027.estimated_amount < gross_biweekly, (
-                f"2027 txn ({txn_2027.estimated_amount}) should be less than "
-                f"gross ({gross_biweekly}) -- fallback taxes should be applied"
+            net_2026 = priced[txn_2026.id]
+            net_2027 = priced[txn_2027.id]
+
+            # Both should be less than gross (taxes applied).
+            assert net_2026 < gross_biweekly, (
+                f"2026 row ({net_2026}) should be less than gross "
+                f"({gross_biweekly}) -- taxes should be applied"
+            )
+            assert net_2027 < gross_biweekly, (
+                f"2027 row ({net_2027}) should be less than gross "
+                f"({gross_biweekly}) -- fallback taxes should be applied"
             )
 
             # Both years should produce the same net pay (same tax configs).
-            assert txn_2026.estimated_amount == txn_2027.estimated_amount, (
-                f"2026 txn ({txn_2026.estimated_amount}) and 2027 txn "
-                f"({txn_2027.estimated_amount}) should match because 2027 "
-                f"falls back to 2026 tax configs"
+            assert net_2026 == net_2027, (
+                f"2026 row ({net_2026}) and 2027 row ({net_2027}) should "
+                "match because 2027 falls back to 2026 tax configs"
             )
 
 

@@ -39,27 +39,35 @@ still exactly ONE definition of each rule, which is the claim this module
 exists to make.  What is genuinely inverted is that upward reach, and plan step
 X-au-g owns unwinding it.
 
-Three rule families live here, split by the question they answer.
+**THE READ-TIME REPAIR IS GONE, and its deletion is what this module's shape
+now records.**  Three functions stood at the top of it -- ``live_override``,
+``live_amounts`` and ``display_amounts_by_id`` -- and beneath them two
+valuations, ``income_amount`` (which consumed the override) and
+``_expense_amount`` (a one-line forward that existed for symmetry with it).
+Every one of them was the same mechanism: a row stored a figure the app also
+COMPUTED, so a lookup laid the computation over the column at read time and
+wrote nothing back (finding **N-224**).  Plan step X-au-g-2c-2 deleted its LOAN
+half by declaring every transfer shadow DERIVED; plan step **X-au-d** deleted
+the SALARY half the same way.  With no stored figure left to supersede,
+``display_amounts_by_id`` was ``amounts_by_id`` and ``income_amount`` was
+``contribution_of`` -- two spellings of one walk, which ``CLAUDE.md`` rule 14
+resolves by deleting a spelling rather than keeping them in step.  What the
+callers ask now is the resolver directly.
+
+Two rule families live here, split by the question they answer.
 
 What a row is worth while it is still PROJECTED -- a reservation, money not yet
-gone -- is two of them, composing in one direction:
-
-  * :func:`live_override` asks the basis's SALARY derivation what supersedes
-    the row's stored figure; it IS the read-time repair ruling R-FI deletes, and
-    the per-kind cutovers take it with the producers it merges -- plan step
-    X-au-g-2c-2 took its LOAN half, X-au-d takes what is left; and
-  * :func:`income_amount` CONSUMES that lookup, falling through to the
-    valuation.  :func:`_expense_amount` no longer asks it at all: the salary
-    half cannot answer for an expense row, so the branch went with the loan
-    half rather than standing as an unreachable rule.
+gone -- is :func:`contribution_of` for an ordinary row and
+:func:`_entry_aware_amount` for one carrying purchases, the second being the
+envelope reservation rather than a second amount rule.
 
 What a row is worth once it has SETTLED -- money that really moved -- is the
-third, and it is deliberately none of the above:
+other, and it is deliberately neither of the above:
 
   * :func:`._cash_leg.settled_cash_leg` is ``owned_contribution - Sigma(credit entries) -
-    Sigma(posted purchases)``, signed by transaction type.  Neither read-time
-    adjustment above can reach a settled row (both filter to ``is_projected``),
-    and a reservation would be meaningless for cash already gone.  It arrived
+    Sigma(posted purchases)``, signed by transaction type.  The reservation
+    above cannot reach a settled row (it filters to ``is_projected``), and one
+    would be meaningless for cash already gone.  It arrived
     here at plan step X-a from ``posting_service``, so the ledger WRITER and the
     cash WALK price one row through the same function.  Its third term is ruling
     **R-FM** (plan step X-f3b): a purchase whose bank posting day is recorded
@@ -69,7 +77,9 @@ third, and it is deliberately none of the above:
 **Why they are one module (plan step D1c).**  They were split across two: the
 override map's producer sat in the cash event sources while the four rules that
 read its output sat inside ``balance_calculator``, a PRODUCER module, where
-the fence had ruled all four explicit non-producers.  A producer module holding
+the fence had ruled all four explicit non-producers.  (The override map itself
+is gone as of plan step X-au-d, above; the reason the valuations live together
+is not.)  A producer module holding
 the valuation rules is what stranded them (finding N-30) -- and
 :func:`_entry_checking_impact` is the formula behind the grid-vs-savings
 divergence (F-002 Pair C / E-25), which a sibling module documented itself as
@@ -99,7 +109,6 @@ from app.utils.balance_predicates import is_projected
 
 from ._amount_source import (
     AmountBasis,
-    amounts_by_id,
     resolve_transaction_amount,
 )
 
@@ -238,136 +247,6 @@ class ReconciledThrough:
         return event_day <= self.observed_day
 
 
-def live_override(txn, basis: AmountBasis):
-    """Return ``txn``'s live override amount, or ``None`` when it has none.
-
-    The one override lookup both valuation legs share.  ``income_amount`` and
-    :func:`_expense_amount` each carried an identical four-line copy of it --
-    harmless while they sat in a producer module, but this module's whole claim
-    is that the per-row rules have ONE home, and two copies of the seam's
-    entry condition is the shape that claim exists to prevent.
-
-    **This IS the read-time repair ruling R-FI deletes, and it is HALF gone.**
-    A salary row and a derive-mode loan shadow both stored a figure the app also
-    computes, so every balance surface showed the live recompute while the
-    column behind it went stale (finding **N-224**).  The per-kind cutovers end
-    that by declaring those rows DERIVED -- at which point the resolver answers
-    them from the same producers and this lookup has nothing left to find.
-    **Plan step X-au-g-2c-2 took the LOAN half**: a transfer shadow stores no
-    figure now, so there is no stale copy for an override to supersede and
-    ``LoanPricing.live_cash`` is deleted with the map it fired from.  What
-    remains is the SALARY half, which plan step **X-au-d** deletes the same way.
-    It stays exactly where it was and outranks everything below it, because
-    moving it would change what a balance says before the schema change that
-    makes the new answer structural.
-
-    It is asked HERE rather than merged into the basis: which rule prices a row
-    is a fact about the row, never about which map its id turned up in (ruling
-    R-FI's refuted discriminator).
-
-    **It asks the derivation directly since plan step X-au-c2b**, where it used
-    to index a map :func:`live_amounts` had built for a whole row set.  It
-    answers ``None`` from the row's own columns before it touches that
-    derivation, so a row set holding no paycheck resolves nothing and issues no
-    query.
-
-    Args:
-        txn: The Transaction being priced.
-        basis: The read pass's :class:`~._amount_source.AmountBasis`.
-
-    Returns:
-        The override ``Decimal`` when either derivation answered for ``txn``,
-        else None.
-    """
-    # Pylint: ``import-outside-toplevel`` -- the PAYCHECK / tax stack stays off
-    # this module's load path, the same reason ``_amount_basis.amount_basis``
-    # imports it at call time (finding N-267).  *The sentence named the
-    # loan-resolver stack too until plan step X-au-g-2a, and that half is now
-    # FALSE: ``_amount_basis`` imports ``._loan_pricing`` outright, so this
-    # module reaches ``loan_resolver`` / ``loan_loaders`` / ``escrow_calculator``
-    # through a module-level chain whatever this line does.  It also named
-    # ``_amount_source.amount_basis``, a symbol that has never existed --
-    # ``amount_basis`` lives in ``._amount_basis``.*
-    # pylint: disable=import-outside-toplevel
-    from app.services.income_service import live_projected_net
-    return live_projected_net(txn, basis.salary)
-
-
-def live_amounts(basis: AmountBasis, rows) -> dict[int, Decimal]:
-    """Return the live derivation's answers over *rows* as ONE map.
-
-    The map form of :func:`live_override`, and it delegates to that per-row
-    question rather than restating it -- which is what keeps the two from coming
-    to disagree.  It exists for the surfaces that want a
-    LOOKUP rather than a per-row question: the grid publishes it so a cell and
-    the balance row beside it read one object (ruling R-Q), and the period
-    figures carry it for the same reason.
-
-    **It takes the rows it is a map OVER** (plan step X-au-c2b).  It used to
-    flatten two ``{transaction_id: Decimal}`` maps the basis carried, which is
-    why the basis had to be built per row set at all; a basis now holds the
-    derivations, and a map keyed by row id is something a caller asks for about
-    ITS OWN rows.  Only the rows a live derivation answers for appear, so the
-    result is still the "is there a live figure for this id" lookup its
-    consumers read it as.
-
-    Args:
-        basis: The read pass's :class:`~._amount_source.AmountBasis`.
-        rows: The loaded rows to build the map over.
-
-    Returns:
-        ``{transaction_id: Decimal}``, empty when no row has a live figure.
-    """
-    answers: dict[int, Decimal] = {}
-    for txn in rows:
-        live = live_override(txn, basis)
-        if live is not None:
-            answers[txn.id] = live
-    return answers
-
-
-def display_amounts_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
-    """Return ``{transaction_id: the figure a SCREEN shows}`` for *rows*.
-
-    **The ONE rule for what a row's amount displays as** (plan step X-au-c2b):
-    what its amount RESOLVES to (:func:`~._amount_source.amounts_by_id`),
-    superseded by a live recompute where one exists (:func:`live_amounts`).
-    Two questions in one answer, and the composition is the answer -- which is
-    why it is a function rather than two lines each caller writes.
-
-    **It exists because an adversarial review found the two lines written
-    twice, differently.**  The grid published the resolved map with the seam's
-    override map laid over it; every HTMX fragment and the companion view
-    published the resolved map ALONE, under the same context key.  So a
-    projected salary row whose profile had moved past its cached column showed
-    the live net on the grid and the stale column in the quick-edit box the same
-    click opened -- and that box is the one a save posts back from.  Three
-    surfaces, three answers, which is finding **N-224**'s shape reproduced by
-    the very step that set out to give a row ONE figure.
-
-    **The override half is TRANSITIONAL and dies with the cutovers.**  Ruling
-    R-FI deletes the read-time repair: once X-au-d and X-au-g declare their rows
-    DERIVED the resolver answers them from the same producers, :func:`live_amounts`
-    finds nothing, and this collapses into :func:`~._amount_source.amounts_by_id`
-    on its own.  Until then a screen must show the repaired figure, because that
-    is what every balance surface already folds (ruling **R-Q**).
-
-    Args:
-        rows: The rows a surface is about to render.
-        basis: The read pass's :class:`~._amount_source.AmountBasis`.
-
-    Returns:
-        ``{transaction_id: Decimal}`` covering every row.
-
-    Raises:
-        AmountUnresolvable: From the resolver, for a row whose rule cannot
-            answer.  A refusal is never a fallback.
-    """
-    displayed = amounts_by_id(rows, basis)
-    displayed.update(live_amounts(basis, rows))
-    return displayed
-
-
 def contributed_amount(txn, resolved: Decimal) -> Decimal:
     """Return what *txn* contributes to a balance, given its RESOLVED amount.
 
@@ -389,8 +268,7 @@ def contributed_amount(txn, resolved: Decimal) -> Decimal:
     Args:
         txn: The row being valued.
         resolved: What its amount resolves to
-            (:func:`~._amount_source.resolve_transaction_amount`), or the
-            reader's own live figure where one supersedes it.
+            (:func:`~._amount_source.resolve_transaction_amount`).
 
     Returns:
         ``0`` for a row that contributes nothing, what the row RECORDED as
@@ -411,9 +289,9 @@ def contributions_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
 
     **It TAKES the basis rather than building one** (plan step X-au-c2b).  A
     basis is pinned to an owner and a scenario, not to a row set, so a caller
-    that also needs the budget map or the live-override map asks all of them
-    against ONE -- which is how a single request stopped running the paycheck
-    engine once per row set (findings **N-268**, **N-269**).  A caller with a
+    that also needs the budget map (:func:`~._amount_source.amounts_by_id`)
+    asks both against ONE -- which is how a single request stopped running the
+    paycheck engine once per row set (findings **N-268**, **N-269**).  A caller with a
     read pass passes ``ctx.amounts()``; one without builds its own with
     :func:`~._amount_source.amount_basis`.
 
@@ -768,77 +646,3 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     return _entry_checking_impact(
         entries, resolve_transaction_amount(txn, basis),
     )
-
-
-def income_amount(txn, basis: AmountBasis):
-    """Return the income contribution for ``txn``, honoring a live override.
-
-    Part of this module's public surface (no leading underscore): the seam's
-    cash fold reaches it from another package, so the override seam resolves
-    in one place rather than per reader.
-
-    Three answers in one expression, in precedence order.  The live override
-    (:func:`live_override`) wins where one exists, so a projected salary
-    paycheck reflects the current salary profile rather than a cached amount a
-    later profile, calibration or code change may have invalidated; absent one
-    the row is valued through the amount model
-    (:func:`contribution_of`) -- ``0`` for a row that contributes
-    nothing, what a SETTLED row recorded as having moved, else what the row's
-    amount RESOLVES to.
-
-    **The override outranks the amount model here, preserved rather than ruled**
-    (plan step X-au-c2), and unreachable on production: the override map's
-    producers take Projected rows only, and a Projected row records nothing.
-    X-au-d deletes the arm outright.  This paragraph also named a SECOND
-    precedence -- ``_freshest_amount`` refusing to refresh a row carrying an
-    ``actual_amount`` -- which plan step X-au-c3 deleted with the column that
-    made a machine's figure and a human's indistinguishable.
-
-    **It takes the ``AmountBasis`` directly since plan step X-f3b**, where it
-    took a ``ProjectedBasis`` wrapper before.  That record bundled TWO
-    per-account facts so they could not be threaded apart -- the amount basis
-    and the account's clearing rule -- and ruling **R-FM** removed the second:
-    the reservation asked it, and a purchase's posted-ness is now a fact about
-    the purchase.  A one-field wrapper carries nothing a caller could get wrong,
-    so it went rather than surviving as a shape whose docstring named a field it
-    no longer had.
-
-    Args:
-        txn: An income Transaction.
-        basis: The account's :class:`~._amount_source.AmountBasis`.
-
-    Returns:
-        Decimal -- the override amount when present, else the row's
-        contribution against the basis.
-    """
-    override = live_override(txn, basis)
-    if override is not None:
-        return override
-    return contribution_of(txn, basis)
-
-
-def _expense_amount(txn, basis: AmountBasis):
-    """Return the expense contribution for ``txn``, from the entry-aware formula.
-
-    The expense-leg analogue of :func:`income_amount`, and the two are no
-    longer symmetric because the repair above them no longer is.
-
-    **It asked :func:`live_override` first until plan step X-au-g-2c-2, and
-    that branch is DELETED rather than left unreachable.**  The seam had two
-    halves and the loan one was the only one an EXPENSE row could take -- a
-    loan payment's cash debit sits on the funding account.  With the loan half
-    gone the seam is salary alone, and ``income_service.salary_net_for``
-    answers ``None`` for any row where ``txn.is_income`` is False, so the call
-    could not return a figure for any expense row that exists.  A dead branch
-    in a money path reads as a rule the reader must account for; deleting it
-    with the half that made it live is what keeps the file honest.
-
-    Args:
-        txn: An expense Transaction.
-        basis: The account's :class:`~._amount_source.AmountBasis`.
-
-    Returns:
-        Decimal -- :func:`_entry_aware_amount`, which preserves the
-        entry-checking formula for envelope expenses.
-    """
-    return _entry_aware_amount(txn, basis)

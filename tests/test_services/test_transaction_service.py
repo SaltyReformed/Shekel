@@ -20,7 +20,12 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    AmountSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
@@ -37,7 +42,7 @@ from app.services import posting_service, status_seam, transaction_service
 # the package attribute would grade nothing.
 from app.services.transaction_service import _settle
 from app.services.row_valuation import owned_contribution, settled_figure
-from app.services.cash_ledger import amount_basis
+from app.services.cash_ledger import amount_basis, amounts_by_id
 from tests._test_helpers import (
     amount_basis_for,
     an_entered_day,
@@ -47,7 +52,7 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from app.models.amount_ownership import AmountOwnership
-from app.services.amount_ownership import state_own_amount
+from app.services.amount_ownership import declare_derived, state_own_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -849,24 +854,41 @@ class TestASettleBooksTheFreshestFigure:
     """Plan step **X-aq**, ruling **R-FE**, finding **N-224**.
 
     **The defect these grade is two answers to one question.**
-    ``transactions.estimated_amount`` is a CACHE of a derivation, and
-    ``income_service.live_projected_net`` recomputes a salary-linked paycheck at
-    READ time without writing back -- so every balance surface showed the live
-    figure while every settle door booked the stored one, and settling moved the
-    projected end balance by the difference.  That is the exact invariant ruling
-    R-DH (c) states and plan step X-f3 is ship-gated on.
+    ``transactions.estimated_amount`` was a CACHE of a derivation that a
+    read-time repair recomputed without writing back -- so every balance
+    surface showed the live figure while every settle door booked the stored
+    one, and settling moved the projected end balance by the difference.  That
+    is the exact invariant ruling R-DH (c) states and plan step X-f3 is
+    ship-gated on.
+
+    **Plan step X-au-d closed it at the source rather than at the settle**, and
+    these cases are what that looks like from here.  A salary row DECLARES the
+    definition that prices it and stores no figure, so there is no cache to
+    book instead of and none to reconcile: what the settle books is what the
+    amount model answers, and its RECORD (``settled_amount`` on the ``derived``
+    basis) is the only figure the row ends up holding.  A test that passed by
+    reading the plan column would now have to report ``None``.
 
     The setup is the sibling suite's, so the expected net is not invented here:
     a ``$104,000`` profile over 26 periods with no tax configs seeded nets
     ``$4,000.00`` a period, which
-    ``test_income_service.TestLiveProjectedNet.test_recomputes_live_ignoring_stored_amount``
-    pins independently.  Every row below stores ``$1.00`` against it, so a test
-    that passed by reading the cache would have to report ``$1.00``.
+    ``test_income_service.TestSalaryNetFor.test_recomputes_live_ignoring_stored_amount``
+    pins independently.
     """
 
     @staticmethod
     def _salary_row(seed_user, period, *, estimated="1.00", is_override=False):
-        """Return a Projected income row whose template IS a salary profile."""
+        """Return a Projected income row whose template IS a salary profile.
+
+        **The row's OWNERSHIP follows its override flag, which is the shape the
+        app produces after plan step X-au-d**: a paycheck nobody has re-priced
+        DECLARES its definition and stores nothing, and one a human re-priced
+        OWNS the figure they typed (the edit door states both together through
+        ``amount_ownership.state_own_amount``, and raises the flag beside it).
+        Building the two independently would let a test assert against a state
+        ``ck_transactions_amount_ownership`` and the write doors between them
+        cannot produce.
+        """
         # pylint: disable=import-outside-toplevel  -- the salary models are not
         # part of this module's subject and importing them at the top would put
         # the paycheck stack on every transaction-service test's load path.
@@ -895,37 +917,40 @@ class TestASettleBooksTheFreshestFigure:
             seed_user, period, template=template, estimated_amount=estimated,
         )
         txn.is_override = is_override
+        if not is_override:
+            declare_derived(txn, AmountSourceEnum.TEMPLATE)
         db.session.flush()
         return txn
 
-    def test_a_stale_estimate_settles_at_the_live_figure(
+    def test_a_declared_paycheck_settles_at_what_its_PROFILE_pays(
         self, app, db, seed_user, seed_periods,
     ):
-        """The row books ``$4,000.00``, not the ``$1.00`` in its column.
+        """The row books ``$4,000.00`` and its plan column stays empty.
 
-        The headline of X-aq.  Before it, this settle booked ``$1.00`` while
-        the grid cell beside it read ``$4,000.00`` -- ``$3,999.00`` of income
-        deleted from the projection by pressing Mark Paid.
+        The headline of X-aq, restated at X-au-d.  Before X-aq this settle
+        booked a stale ``$1.00`` while the grid cell beside it read
+        ``$4,000.00`` -- ``$3,999.00`` of income deleted from the projection by
+        pressing Mark Paid.  X-aq made the settle ask the same producer the
+        grid asked; X-au-d deleted the stale figure, so there is no second
+        answer left for either of them to prefer.
 
-        **The refresh lands in ``estimated_amount`` and ``actual_amount`` stays
-        NULL**, which is the developer's ruling of 2026-08-11 amending R-FE.
-        The stale column IS the cache, so reconciling it is what the settle
-        does; ``actual_amount`` means "a human entered this fact" and three
-        subsystems read its NULL-ness that way -- ``income_service`` (a settled
-        income row's actual is never a recomputable projection),
-        ``spending_analysis`` (only an explicitly entered actual is a surprise)
-        and the grid cell (which strikes through the estimate whenever the two
-        differ).  A machine write there is indistinguishable from a correction
-        afterwards, and permanent: the row leaves ``live_projected_net``'s
-        Projected-only candidate set at this very flip.
+        **The settle writes NO plan column**, which is what the deleted
+        reconciler used to do here.  A derived row has no cache to reconcile,
+        so the only figure this act writes is the RECORD -- and the record says
+        HOW it is known (``settled_basis_id``), which is what keeps a machine's
+        resolution distinguishable from a human's correction.
         """
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
             db.session.commit()
+            assert txn.estimated_amount is None
 
             transaction_service.settle_transaction(txn)
 
-            assert txn.estimated_amount == Decimal("4000.00")
+            assert txn.estimated_amount is None, (
+                "the settle must not hand a derived row back to its owner: "
+                "that is finding N-437, and the plan stays the definition's"
+            )
             # **The settle RECORDS what it booked, and says HOW that figure is
             # known** (plan step X-au-c3).  This asserted ``actual_amount is
             # None`` until that step, because a NULL there was the only signal
@@ -948,15 +973,13 @@ class TestASettleBooksTheFreshestFigure:
         (ruling **R-FB**) is safe: the panel's prefilled amount is what the
         statement says, and a live recompute must not overwrite it.
 
-        **It is also the control for the two columns being SEPARABLE**, which
-        is what the developer's 2026-08-11 amendment to R-FE bought.  Both
-        facts survive one settle and neither is readable off the other: the
-        machine's recompute lands in ``estimated_amount`` (``$4,000.00``, what
-        the projection was holding) and the human's in ``actual_amount``
-        (``$3,912.44``, what the bank really paid).  Under the shipped-then-
-        withdrawn single-column version the recompute was invisible here, so
-        nothing could tell a stale projection from an accurate one after the
-        fact -- and plan step X-ar's reconciler could not have cleaned it.
+        **The two facts stay SEPARABLE**, which is what the record's own basis
+        column buys: the human's ``$3,912.44`` is what the row RECORDS, and the
+        machine's ``$4,000.00`` is what its PLAN still resolves to -- from the
+        definition, not from a column, so the plan is not something this settle
+        wrote.  Under the shipped-then-withdrawn single-column version the
+        resolution was invisible here, so nothing could tell a stale projection
+        from an accurate one after the fact.
         """
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
@@ -967,18 +990,29 @@ class TestASettleBooksTheFreshestFigure:
             )
 
             assert txn.settled_amount == Decimal("3912.44")
-            assert txn.estimated_amount == Decimal("4000.00")
+            assert txn.estimated_amount is None
             assert owned_contribution(txn) == Decimal("3912.44")
+            # The PLAN, asserted rather than described: it still resolves from
+            # the definition, and it is a different number from the record.
+            # An adversarial review of this step found the docstring claiming
+            # this and nothing grading it -- ``estimated_amount is None`` says
+            # the column is empty, not that the derivation still answers.
+            assert amounts_by_id(
+                [txn], amount_basis(txn.account.user_id, txn.scenario_id),
+            )[txn.id] == Decimal("4000.00")
 
     def test_an_overridden_row_is_not_re_derived(
         self, app, db, seed_user, seed_periods,
     ):
-        """``is_override`` means the user set this amount, so nothing recomputes.
+        """A paycheck a human re-priced settles at the figure they typed.
 
-        The rule is the projection's own -- ``live_projected_net`` drops an
-        overridden row -- and this verb inherits it by ASKING that producer
-        rather than restating which rows carry a live value.  Stored
-        ``$1,234.56`` settles at ``$1,234.56`` with the column left NULL.
+        **The REASON changed at plan step X-au-d** and the outcome did not.  It
+        used to hold because the read-time repair dropped an ``is_override``
+        row; it holds now because such a row OWNS its figure, so amount rule 1
+        answers it and no salary producer is consulted at all (finding
+        **N-262**).  The flag is set here because that is what the edit door
+        does beside taking ownership, not because anything reads it to price.
+        Owned ``$1,234.56`` settles at ``$1,234.56``.
         """
         with app.app_context():
             txn = self._salary_row(
@@ -1001,37 +1035,16 @@ class TestASettleBooksTheFreshestFigure:
             assert settled_figure(txn) == Decimal("1234.56")
             assert owned_contribution(txn) == Decimal("1234.56")
 
-    def test_an_agreeing_live_figure_leaves_the_column_null(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Nothing is written when the two answers already agree.
-
-        **Not an optimisation -- a signal.**  ``actual_amount`` is NULL on every
-        uncorrected row, which is what makes "a human typed a figure here"
-        readable at all; ruling R-FB's own production measurement ("11 of 93
-        settled bills carry a hand-typed correction") is made of exactly that
-        NULL.  Storing ``$4,000.00`` into the actual because the derivation
-        agreed would erase it.
-        """
-        with app.app_context():
-            txn = self._salary_row(
-                seed_user, seed_periods[0], estimated="4000.00",
-            )
-            db.session.commit()
-
-            transaction_service.settle_transaction(txn)
-
-            # **The settle RECORDS what it booked, and says HOW that figure is
-            # known** (plan step X-au-c3).  This asserted ``actual_amount is
-            # None`` until that step, because a NULL there was the only signal
-            # that no human had typed a figure -- so a settle with nothing to
-            # correct recorded nothing at all, and every reader fell back to
-            # the row's PLAN.  The signal is a column of its own now, so the
-            # record can state the figure AND stay distinguishable from a
-            # correction.
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
-            assert settled_figure(txn) == Decimal("4000.00")
-            assert owned_contribution(txn) == Decimal("4000.00")
+    # ``test_an_agreeing_live_figure_leaves_the_column_null`` lived here until
+    # plan step X-au-d, and its SUBJECT is deleted rather than the case being
+    # weakened.  It graded the cache reconciler's own suppression rule -- that
+    # a refresh writes nothing when the live figure already equals the stored
+    # one -- so that ``actual_amount``'s NULL-ness stayed readable as "a human
+    # typed this".  There is no reconciler and no cache: a derived row's plan
+    # column is empty before and after every settle, which
+    # ``test_a_declared_paycheck_settles_at_what_its_PROFILE_pays`` asserts
+    # directly.  The signal that survived is ``settled_basis_id``, and the
+    # ``derived``-versus-``corrected`` pair above is its control.
 
     def test_a_row_with_no_live_seam_is_untouched(
         self, app, db, seed_user, seed_periods,
@@ -1091,21 +1104,18 @@ class TestASettleBooksTheFreshestFigure:
     # ``test_a_hand_typed_actual_is_NEVER_overwritten`` lived here until plan
     # step X-au-c3, and its state is unconstructible now rather than merely
     # untested.  It built a PROJECTED salary row carrying
-    # ``actual_amount = 3880.15`` and proved ``_freshest_amount``'s fourth
-    # guard kept the settle from booking ``$4,000.00`` over it.  A figure
+    # ``actual_amount = 3880.15`` and proved a fourth guard on the settle's
+    # cache refresh kept it from booking ``$4,000.00`` over it.  A figure
     # RECORDS a settle now, so ``ck_transactions_settled_amount_needs_basis``
     # refuses one on a row whose money has not moved -- and the door that
     # produced the state is gone with it: the full-edit form's Actual box was
     # deleted, so the only way a human's pre-settle figure reaches a row is
-    # ``estimated_amount``, which ``routes/transactions/mutations`` DOES flag
-    # ``is_override`` for.  That flag is what excludes the row from the
-    # projection's override map, and
+    # ``estimated_amount``, and stating one there is what TAKES OWNERSHIP of
+    # the row (``amount_ownership.state_own_amount``, plan step X-au-d).  That
+    # ownership is why no derived rule prices such a row, and
     # ``test_an_overridden_row_is_not_re_derived`` above is the control on it.
-    # The guard was deleted rather than translated to ``settled_basis_id is not
-    # None``: every caller of ``_freshest_amount`` is pre-settle and both live
-    # producers are Projected-only, so no single-line mutation of the
-    # translated guard could fail a test, and a guard whose only possible test
-    # cannot fail is not a guard (finding **N-184**'s rule).
+    # The refresh and its guards are all deleted with the cache they kept
+    # true.
 
     def test_a_supplied_figure_equal_to_the_booked_one_writes_nothing(
         self, app, db, seed_user, seed_periods,
@@ -1179,56 +1189,58 @@ class TestASettleBooksTheFreshestFigure:
 
             assert "transfer shadow" in str(exc.value)
 
-    def test_the_live_figure_is_resolved_BEFORE_the_status_flip(
+    def test_the_figure_is_resolved_BEFORE_the_status_flip(
         self, app, db, seed_user, seed_periods,
     ):
         """Order is load-bearing, and this is the control that says so.
 
-        ``live_projected_net`` filters to Projected rows, so a verb that asked
-        AFTER ``apply_status_change`` would always be handed an empty map and
-        would silently book the cache -- passing every other test in this class
-        except this one.  Grading it as an ORDER rather than as an outcome:
-        the row is Projected at the moment the resolver is called.
+        A row's valuation answers from its SETTLEMENT RECORD once it has
+        settled (``row_valuation.fixed_contribution``), so a verb that resolved
+        AFTER ``apply_status_change`` would be asking about the very record
+        that call had just written -- circular, and it would book whatever the
+        seam happened to store.  Grading it as an ORDER rather than as an
+        outcome: the row is Projected at the moment the resolution is made.
 
-        Shown to FIRE: moving the :func:`_reconcile_cached_amount` call below
-        ``apply_status_change`` books ``$1.00``.
+        **The reason survived plan step X-au-d and its mechanism did not.**  It
+        used to be that the read-time repair filtered to Projected rows, so
+        asking late always answered "nothing fresher" and the settle silently
+        booked the cache.  There is no repair and no cache; what makes the
+        order load-bearing now is the settlement record itself.
 
         **The LIST is the control on the one-resolution rule too** (developer
         ruling, 2026-08-17).  It is asserted as a whole rather than by
-        membership, so a settle that resolved the derivation twice -- which is
-        what ``booked``, the echo comparison and the cache refresh each doing
-        their own would produce -- fails here with ``[2, 2] != [2]``.  That is
-        the measurement, not a claim about it.
+        membership, so a settle that resolved the amount twice -- which is what
+        the booked figure and the echo comparison each doing their own would
+        produce -- fails here with ``[2, 2] != [2]``.  That is the measurement,
+        not a claim about it.
 
         **The spy is installed on the LEAF that owns the name**, not on the
         package that re-exports the verb, and the difference is not cosmetic:
-        ``_reconcile_cached_amount`` resolves ``_freshest_amount`` as a global
-        of its own module, so patching a package attribute would intercept
-        nothing and this control would pass while grading nothing.  It moved
-        with the code at plan step X-f2-c3, which made ``transaction_service``
-        a package; the assertion is unchanged.
+        ``settle_transaction`` resolves ``settle_amount`` as a global of its
+        own module, so patching a package attribute would intercept nothing and
+        this control would pass while grading nothing.
         """
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
             db.session.commit()
 
             seen_status = []
-            real = _settle._freshest_amount  # noqa: SLF001
+            real = _settle.settle_amount
 
             def _spy(row, basis):
                 seen_status.append(row.status_id)
                 return real(row, basis)
 
-            _settle._freshest_amount = _spy  # noqa: SLF001
+            _settle.settle_amount = _spy
             try:
                 transaction_service.settle_transaction(txn)
             finally:
-                _settle._freshest_amount = real  # noqa: SLF001
+                _settle.settle_amount = real
 
             assert seen_status == [
                 ref_cache.status_id(StatusEnum.PROJECTED),
             ]
-            assert txn.estimated_amount == Decimal("4000.00")
+            assert txn.estimated_amount is None
             # **The settle RECORDS what it booked, and says HOW that figure is
             # known** (plan step X-au-c3).  This asserted ``actual_amount is
             # None`` until that step, because a NULL there was the only signal

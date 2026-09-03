@@ -186,10 +186,6 @@ def _grid_columns(account, ctx):
             }
             for period_id, col in view.columns.items()
         },
-        "amount_overrides": {
-            str(txn_id): _money(amount)
-            for txn_id, amount in sorted(view.amount_overrides.items())
-        },
     }
 
 

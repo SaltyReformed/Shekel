@@ -1785,7 +1785,7 @@ class TestThePassHoldsONEAmountBasis:
             # ONE for the pass, plus ONE per SETTLED ROW -- and the second term
             # is a different question that this step does not answer.  A settle
             # is a single-row WRITE and resolves its own basis by design
-            # (``transaction_service._settle._manual_branch_figures``: "ONE
+            # (``transaction_service._settle.settle_transaction``: "ONE
             # settle resolves ONE basis"); what X-au-j fixes is the READ under
             # it, which used to build one per row PRICED on top of all of that.
             #

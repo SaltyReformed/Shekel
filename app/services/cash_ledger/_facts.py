@@ -434,7 +434,7 @@ def _unwindowed_contributing_rows(
 
     Extracted when the second half was written and ``duplicate-code`` reported
     the eight shared lines.  PRIVATE, and imported across sibling modules exactly
-    as ``_amounts._expense_amount`` already is: it is an implementation detail of
+    as ``_amounts._entry_aware_amount`` already is: it is an implementation detail of
     the two loaders, not a leaf surface a consumer should reach -- which is also
     what keeps it out of the W9909 registry, structure doing what a fence entry
     would otherwise have to.  Sharing it is not tidiness: the account / scenario

@@ -62,8 +62,6 @@ from app.services.cash_ledger import (
     amounts_by_id,
     contribution_of,
     contributions_by_id,
-    display_amounts_by_id,
-    live_amounts,
     owned_amount,
     resolve_transaction_amount,
     resolve_transfer_amount,
@@ -740,26 +738,45 @@ class TestWhatEachRuleAnswers:
         )
         assert _resolve(seed_user, txn) == _OLD_PRICE
 
-    def test_a_salary_row_answers_the_live_net_and_not_the_stored_figure(
+    def test_a_salary_row_answers_its_PROFILE_and_stores_no_figure(
         self, app, db, seed_user, seed_periods,
     ):
-        """The SALARY rule routes to the live recompute rather than the column.
+        """The SALARY rule routes to the profile, and the row holds nothing.
 
-        What is gradeable here is the ROUTING: there is no second producer of a
-        net paycheck, so the assertion is that the rule returns what
-        ``income_service.live_projected_net`` answers for this row and NOT the
-        stored figure beside it.  The arithmetic is the paycheck engine's and is
+        **There is no second producer of a net paycheck since plan step
+        X-au-d**, so an equality against ``income_service.salary_net_for``
+        would be one producer graded against itself -- the shape
+        ``X-au-g-2c-3c`` measured false after 200,000 agreeing draws.  What is
+        gradeable is that the answer TRACKS THE PROFILE and comes from nowhere
+        else: the row carries no figure at all (the declaration empties it), so
+        a column-reading resolver answers ``None``, and re-pricing the PROFILE
+        moves the answer.  The arithmetic is the paycheck engine's and is
         graded by its own suites.
         """
-        template, _profile = _salary_template(seed_user)
+        template, profile = _salary_template(seed_user)
         txn = _template_row(seed_user, seed_periods[0], template, is_income=True)
-        live = income_service.live_projected_net(
-            txn, income_service.salary_pricing(
-                seed_user["user"].id, seed_user["scenario"].id,
-            ),
+        assert txn.estimated_amount is None
+        before = _resolve(seed_user, txn)
+        # PINNED, not merely positive: this suite seeds no tax configs, so the
+        # net IS the gross and the arithmetic is visible -- $75,000 over the
+        # 26 paychecks the seeded calendar's cadence gives.  An adversarial
+        # review of plan step X-au-d noted that ``> 0`` and ``after > before``
+        # are satisfied by any monotone dependence on the salary, so a change
+        # to the divisor or the rounding would pass.
+        assert before == Decimal("2884.62"), "75000 / 26, no tax configs seeded"
+
+        profile.annual_salary = profile.annual_salary * 2
+        db.session.flush()
+        # A FRESH basis: the projection is memoized for the life of one, which
+        # is the sharing ``SalaryPricing`` exists for, so re-asking the old one
+        # would assert the memo rather than the rule.
+        after = _resolve(seed_user, txn)
+
+        assert after == Decimal("5769.23"), "150000 / 26"
+        assert after > before, (
+            "doubling the salary must move the paycheck this rule answers; a "
+            f"rule reading anything else would still answer {before}"
         )
-        assert live != Decimal(_NOT_AN_ANSWER)
-        assert _resolve(seed_user, txn) == live
 
     def test_a_transfer_shadow_answers_its_parents_RULE_not_either_column(
         self, app, db, seed_user, seed_periods,
@@ -984,9 +1001,9 @@ class TestEveryRefusalFires:
         A REAL data state rather than a hand-emptied basis: the classifier calls
         a template salary-linked whatever its transaction type
         (``is_salary_linked_template`` reads only the profiles), while
-        ``live_projected_net`` takes INCOME rows only.  Such a row is claimed by
-        the SALARY rule and answered by nothing -- which is the refusal, and the
-        divergence itself is a finding this step opened against X-au-d.
+        ``income_service.salary_net_for`` takes INCOME rows only.  Such a row is
+        claimed by the SALARY rule and answered by nothing -- which is the
+        refusal.
         """
         template, _profile = _salary_template(
             seed_user, txn_type=TxnTypeEnum.EXPENSE,
@@ -1289,55 +1306,50 @@ class TestTheBatchTier:
         )
         assert resolve_transaction_amount(other, stale) == Decimal("60.00")
 
-    def test_the_repair_holds_the_SALARY_rows_and_the_display_holds_them_all(
+    def test_ONE_map_prices_a_paycheck_a_loan_payment_and_an_owner_together(
         self, app, db, seed_user, seed_periods,
     ):
-        """The read-time repair shrank to salary; the DISPLAY map did not.
+        """The map a screen reads covers every row, each by its own rule.
 
-        ``live_amounts`` held the union of BOTH live derivations until plan step
-        X-au-g-2c-2, and this case asserted that union.  The loan half is gone
-        -- a shadow is DERIVED, so there is no stored figure for a repair to
-        supersede -- so the repair now answers for the paycheck alone.
+        **This case asserted a UNION of two maps until plan step X-au-d.**
+        ``live_amounts`` held the read-time repair's answers and
+        ``display_amounts_by_id`` laid them over the resolved ones; both
+        cutovers deleted the repair (the loan half at X-au-g-2c-2, the salary
+        half at X-au-d), so there is one map and the composition has no second
+        half left to drop.  What the case still has to show is that the ONE map
+        is TOTAL over kinds -- a map that had quietly stopped pricing loan
+        payments, or paychecks, would satisfy a per-kind assertion perfectly.
 
-        **What must NOT have shrunk is what a screen shows**, and that is the
-        half worth guarding: ``display_amounts_by_id`` composes the resolved
-        amount with the repair, so the loan shadows are still priced -- by the
-        RULE now instead of by the override.  Asserting only the first half
-        would pass just as well on a grid that had stopped pricing loan
-        payments at all, which is the money defect this shape can produce.
+        Three rows, three rules, three distinguishable figures: a declared
+        paycheck answered by its profile, a derive-mode loan payment answered
+        by the loan, and a paycheck a HUMAN re-priced answered by its own
+        column.  The third is what stops the first from passing on a resolver
+        that answers rule 2 for every salary-linked row whatever its ownership.
         """
         template, _profile = _salary_template(seed_user)
-        # The paycheck OWNS its figure, and that is what makes the overlay
-        # gradeable.  A DECLARED salary row resolves through rule 2 to the same
-        # live net the repair would lay over it, so deleting the overlay
-        # entirely would change nothing and the assertion below could not fail
-        # -- an equality whose two sides come from one producer.  Owning
-        # ``_NOT_AN_ANSWER`` makes the two sides genuinely different figures.
         paycheck = _template_row(
-            seed_user, seed_periods[0], template, is_income=True, owns=True,
+            seed_user, seed_periods[0], template, is_income=True,
+        )
+        repriced = _template_row(
+            seed_user, seed_periods[1], template, is_income=True, owns=True,
         )
         _shadow, loan_rows = _loan_payment(
             seed_user, seed_periods[0], derive=True,
         )
-        rows = [paycheck, *loan_rows]
+        rows = [paycheck, repriced, *loan_rows]
         basis = _basis_for(seed_user)
 
-        repaired = live_amounts(basis, rows)
-        assert set(repaired) == {paycheck.id}
-        assert repaired[paycheck.id] != Decimal(_NOT_AN_ANSWER)
+        shown = amounts_by_id(rows, basis)
 
-        shown = display_amounts_by_id(rows, basis)
-        assert set(shown) == {paycheck.id, *(row.id for row in loan_rows)}
+        assert set(shown) == {row.id for row in rows}
         assert shown[loan_rows[0].id] == Decimal("1499.10")
         assert shown[loan_rows[1].id] == Decimal("1499.10")
-        # The RESOLVED answer for this row is its own stored column; the SHOWN
-        # answer is the repair laid over it.  Deleting the overlay makes this
-        # line fail with ``_NOT_AN_ANSWER``.
-        assert amounts_by_id([paycheck], basis)[paycheck.id] == Decimal(
-            _NOT_AN_ANSWER,
+        assert shown[repriced.id] == Decimal(_NOT_AN_ANSWER)
+        assert shown[paycheck.id] > Decimal("0")
+        assert shown[paycheck.id] != Decimal(_NOT_AN_ANSWER), (
+            "a DECLARED paycheck is priced by its profile; answering the "
+            "figure the row beside it owns would mean the rule read a column"
         )
-        assert shown[paycheck.id] == repaired[paycheck.id]
-        assert shown[paycheck.id] != Decimal(_NOT_AN_ANSWER)
 
 
 class TestTheRulesDoNotReadTheColumnTheyReplace:
@@ -1502,13 +1514,13 @@ class TestTheBasisIsOneDerivationPerReadPass:
         scenario_id = seed_user["scenario"].id
 
         def _price():
-            return live_amounts(amount_basis(user_id, scenario_id), [row])
+            return amounts_by_id([row], amount_basis(user_id, scenario_id))
 
         _answer, statements = capture_sql_statements(_price)
 
-        assert _answer == {}, (
-            "an ordinary expense row has no live figure; a map that answered "
-            f"one would mean the gate never ran: {_answer}"
+        assert _answer == {row.id: Decimal("35.00")}, (
+            "an ordinary expense row OWNS its figure, so rule 1 answers it "
+            f"from the row itself and no derivation is touched: {_answer}"
         )
         assert statements == [], (
             "building a basis and pricing an ordinary expense row must "
@@ -1526,21 +1538,25 @@ class TestTheBasisIsOneDerivationPerReadPass:
         The second ask must issue no statement at all -- not merely fewer.
         """
         template, _profile = _salary_template(seed_user)
+        # DERIVED, not owning: an OWN paycheck is answered by rule 1 off its own
+        # column and touches no projection at all, so the first ask would issue
+        # no statement and this control would measure nothing (plan step
+        # X-au-d, where the map became ``amounts_by_id``).
         first = _template_row(
-            seed_user, seed_periods[0], template, is_income=True, owns=True,
+            seed_user, seed_periods[0], template, is_income=True,
         )
         second = _template_row(
-            seed_user, seed_periods[1], template, is_income=True, owns=True,
+            seed_user, seed_periods[1], template, is_income=True,
         )
         db.session.commit()
         basis = _basis_for(seed_user)
         _touch(first, second)
 
         _first, first_statements = capture_sql_statements(
-            lambda: live_amounts(basis, [first]),
+            lambda: amounts_by_id([first], basis),
         )
         _second, second_statements = capture_sql_statements(
-            lambda: live_amounts(basis, [second]),
+            lambda: amounts_by_id([second], basis),
         )
 
         assert first_statements, "the first ask must resolve the projection"
@@ -1552,7 +1568,7 @@ class TestTheBasisIsOneDerivationPerReadPass:
         # once and empty afterwards satisfies a count assertion perfectly, and
         # an adversarial review of this file caught exactly that omission: the
         # second ask must be the same live net, not merely cheap.
-        assert _first[first.id] == _second[second.id] != Decimal(_NOT_AN_ANSWER)
+        assert _first[first.id] == _second[second.id] > Decimal("0")
 
     def test_the_loan_resolve_runs_ONCE_however_many_shadows_ask(
         self, app, db, seed_user, seed_periods,
@@ -1614,7 +1630,7 @@ class TestTheBasisIsOneDerivationPerReadPass:
 
         The control is unchanged in kind and stronger in reach -- it now spans
         two packages rather than two callers of one method: what the screen
-        publishes (``display_amounts_by_id``) and what a tick would book
+        publishes (``amounts_by_id``) and what a tick would book
         (``transfer_service.settle_amount``) must be the same figure.
         """
         shadow, rows = _loan_payment(seed_user, seed_periods[0], derive=True)
@@ -1622,7 +1638,7 @@ class TestTheBasisIsOneDerivationPerReadPass:
         basis = _basis_for(seed_user)
         _touch(*rows)
 
-        displayed = display_amounts_by_id(rows, basis)[shadow.id]
+        displayed = amounts_by_id(rows, basis)[shadow.id]
         booked = transfer_settle.settle_amount(shadow, basis)
 
         assert booked == displayed == Decimal("1499.10")
@@ -1773,8 +1789,8 @@ class TestThePinsAreTheContractNow:
             amounts_by_id([txn], foreign)
 
 
-class TestOneRowHasOneDisplAyedFigure:
-    """Every surface shows a row's amount by ONE rule (``display_amounts_by_id``).
+class TestOneRowHasOneDisplayedFigure:
+    """Every surface shows a row's amount by ONE rule (``amounts_by_id``).
 
     An adversarial review found that rule written twice and differently: the
     grid merged the seam's live-override map over its resolved one, while every
@@ -1783,16 +1799,43 @@ class TestOneRowHasOneDisplAyedFigure:
     past its cached column showed the live net on the grid and the stale column
     in the quick-edit box the same click opened -- and that box is what a save
     posts back from, which is how a figure nobody saw gets booked.
+
+    **The composition that defect was in is GONE as of plan step X-au-d**, and
+    the class stays because the property does not: a screen and a balance still
+    have to show one figure per row.  What makes that structural now is that
+    the second answer has no home -- a declared row stores no column for a map
+    to disagree with.
     """
 
-    def test_the_displayed_figure_supersedes_the_stored_column(
+    def test_a_declared_paycheck_displays_its_profiles_net(
         self, app, db, seed_user, seed_periods,
     ):
-        """A salary row displays its LIVE net, not the figure it stores.
+        """A paycheck the definition prices shows what the definition pays.
 
-        The row is built OWNING a deliberately wrong column, so the two answers
-        are distinguishable: reading the column gives ``$999.99`` and the rule
-        gives what the profile pays.
+        The discriminator is the ROW's own column: it is empty, so a resolver
+        that read it would answer ``None`` into a money map rather than a
+        figure.
+        """
+        template, _profile = _salary_template(seed_user)
+        paycheck = _template_row(
+            seed_user, seed_periods[0], template, is_income=True,
+        )
+        basis = _basis_for(seed_user)
+
+        displayed = amounts_by_id([paycheck], basis)[paycheck.id]
+
+        assert paycheck.estimated_amount is None
+        assert displayed > Decimal("0")
+
+    def test_a_paycheck_a_HUMAN_repriced_displays_the_typed_figure(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Ownership decides, not the template's kind (finding **N-262**).
+
+        The partner the case above needs: without it, a resolver answering
+        rule 2 for every salary-linked row whatever its ownership would pass --
+        and that resolver overwrites the figure a human typed, on the screen
+        that same human types it into.
         """
         template, _profile = _salary_template(seed_user)
         paycheck = _template_row(
@@ -1800,29 +1843,19 @@ class TestOneRowHasOneDisplAyedFigure:
         )
         basis = _basis_for(seed_user)
 
-        displayed = display_amounts_by_id([paycheck], basis)[paycheck.id]
-
-        assert displayed != Decimal(_NOT_AN_ANSWER)
-        assert displayed == income_service.salary_net_for(
-            paycheck, basis.salary,
-        )
+        assert amounts_by_id([paycheck], basis) == {
+            paycheck.id: Decimal(_NOT_AN_ANSWER),
+        }
 
     def test_an_ordinary_row_displays_what_it_resolves_to(
         self, app, db, seed_user, seed_periods,
     ):
-        """No live producer answers, so the rule is the resolver's answer.
-
-        The non-vacuity partner: without it the test above would pass for a
-        rule that returned the live map alone and answered nothing for every
-        row that has no live figure -- which is most of the grid.
-        """
+        """The non-salary, non-derived case, so the map is total over kinds."""
         txn = add_txn(db.session, seed_user, seed_periods[0], "Rent", "1200.00")
         db.session.flush()
         basis = _basis_for(seed_user)
 
-        assert display_amounts_by_id([txn], basis) == {
-            txn.id: Decimal("1200.00"),
-        }
+        assert amounts_by_id([txn], basis) == {txn.id: Decimal("1200.00")}
 
 
 class TestPricingReadsNoSTATUS:

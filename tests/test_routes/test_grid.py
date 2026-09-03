@@ -25,7 +25,13 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.services import template_amount_service
+from app.enums import (
+    AmountSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.services import (
     account_service,
     balance_at,
@@ -9446,22 +9452,26 @@ class TestGridInterestAccrual:
         assert resp.status_code == 200
         assert b"modelled-accrual-row" not in resp.data
 
-    def test_refresh_uses_live_income_matching_full_render(
-        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
+    def test_refresh_uses_the_same_income_basis_as_the_full_render(
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The balance-row refresh uses LIVE income, matching the full render.
+        """The balance-row refresh and the full render fold ONE income basis.
 
-        Ruling R-Q retired the caller's choice: the SEAM builds the live
-        override map, so an interest account cannot be projected on the stored
-        estimate by a caller that forgot to thread one.  Before it,
-        ``grid_balance_view`` fell back to the STORED amount on a bare
-        ``None`` for the interest path, so a refresh after a mark-paid could
-        revert the balance to the stored figure while the full page showed the
-        live one -- a flicker with no argument to fix it at the call site.
-        Forces live ($5,000) != stored ($1,000) on an income transaction and
-        asserts the live-income accrued balance appears in BOTH the full
-        ``/grid`` render AND the ``/grid/balance-row`` refresh, with NO
-        override passed anywhere.
+        Ruling R-Q retired the caller's choice: the SEAM owns the basis, so an
+        interest account cannot be projected on a different income figure by a
+        caller that forgot to thread one.  Before it, ``grid_balance_view``
+        fell back to the STORED amount on a bare ``None`` for the interest
+        path, so a refresh after a mark-paid could revert the balance to the
+        stored figure while the full page showed the live one -- a flicker with
+        no argument to fix it at the call site.
+
+        **The divergent figure is a real DATA state since plan step
+        balance:X-au-d**, where it was a monkeypatched read-time repair: the
+        income row DECLARES a definition whose price series states ``$5,000``
+        and stores no figure itself, so a surface reading the column would
+        contribute ``None`` and one asking the amount model contributes
+        ``$5,000``.  Both surfaces must render the same accrued balance, with
+        no override passed anywhere -- there is none to pass.
         """
         hysa = create_hysa_account(
             seed_user, db.session, seed_periods_today[0], Decimal("10000.00"),
@@ -9473,32 +9483,49 @@ class TestGridInterestAccrual:
         income_type = (
             db.session.query(TransactionType).filter_by(name="Income").one()
         )
+        period = seed_periods_today[2]
+        template = TransactionTemplate(
+            user_id=user_id,
+            account_id=hysa.id,
+            category_id=next(iter(seed_user["categories"].values())).id,
+            transaction_type_id=income_type.id,
+            name="Paycheck",
+            # NOT the graded figure: the series states $5,000 and this states
+            # something else, so a producer reading the scalar instead of the
+            # series answers a number no assertion here expects.  A first
+            # version set both to $5,000 and an adversarial review of plan step
+            # X-au-d showed that makes ``_stated_amount``'s empty-series
+            # refusal invisible.
+            default_amount=Decimal("7.77"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        template_amount_service.set_amount(
+            template, Decimal("5000.00"), effective_on=period.start_date,
+        )
         income = Transaction(
             account_id=hysa.id,
-            pay_period_id=seed_periods_today[2].id,
+            template_id=template.id,
+            pay_period_id=period.id,
             scenario_id=scenario.id,
             status_id=status.id,
             name="Paycheck",
+            due_date=period.start_date,
             transaction_type_id=income_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("1000.00")),
+            amount_ownership=AmountOwnership.derived(
+                ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+            ),
         )
         db.session.add(income)
         db.session.commit()
-
-        # The live recompute revalues this income at $5,000 (vs $1,000 stored).
-        monkeypatch.setattr(
-            income_service, "live_projected_net",
-            lambda txn, pricing: (
-                Decimal("5000.00") if txn.id == income.id else None
-            ),
-        )
+        assert income.estimated_amount is None
         current = current_pay_period(user_id)
         # The seam builds the live map itself (ruling R-Q), so no override is
         # threaded here or by the route -- this IS the live figure.
         live_view = balance_at.grid_balance_view(hysa, bctx)
         accrued_live = live_view.columns[current.id].balance
-        # Sanity: the live $5,000 (not the $1,000 stored) is reflected -- the
-        # balance clears the $10,000 anchor + the live deposit.
+        # Sanity: the definition's $5,000 is reflected -- the balance clears
+        # the $10,000 anchor + the deposit.
         assert accrued_live > Decimal("15000.00")
 
         full = auth_client.get(f"/grid?account_id={hysa.id}").data.decode()

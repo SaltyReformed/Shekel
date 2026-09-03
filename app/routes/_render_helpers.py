@@ -21,7 +21,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.cash_ledger import (
     amount_basis,
-    display_amounts_by_id,
+    amounts_by_id,
     recorded_amounts_by_id,
 )
 from app.services.entry_service import build_entry_sums_dict
@@ -60,7 +60,7 @@ class RenderAmounts:
 
     Attributes:
         budgets: ``{transaction_id: what the row's amount IS}`` --
-            :func:`~app.services.cash_ledger.display_amounts_by_id`.
+            :func:`~app.services.cash_ledger.amounts_by_id`.
         settled: ``{transaction_id: what its money DID}``, ``None`` per row that
             has not settled or records nothing --
             :func:`~app.services.cash_ledger.recorded_amounts_by_id`.  The
@@ -88,7 +88,7 @@ def fragment_amounts(txn: Transaction) -> RenderAmounts:
     cell would render an empty string where a figure belongs.
 
     **It answers by the same rule the pages do** --
-    :func:`~app.services.cash_ledger.display_amounts_by_id`, the resolved amount
+    :func:`~app.services.cash_ledger.amounts_by_id`, the resolved amount
     superseded by a live recompute.  An adversarial review found that rule
     written twice and differently: the grid merged the seam's override map over
     its resolved one while every fragment published the resolved map ALONE under
@@ -117,9 +117,24 @@ def fragment_amounts(txn: Transaction) -> RenderAmounts:
         A :class:`RenderAmounts` whose three maps hold one entry each, keyed
         for the templates and the entry builders, which all index a map.
     """
+    # **A SETTLED salary row now costs a projection here, and it did not
+    # before** (plan step balance:X-au-d, named by that step's adversarial
+    # review rather than found later).  Such a row used to resolve through
+    # amount rule 1 -- a column read -- and the read-time repair returned early
+    # on ``is_projected``; it DECLARES its definition now, so rendering one
+    # fragment runs ``paycheck_calculator.project_salary`` over the owner's
+    # whole pay-period set.  Measured on the 2026-09-02 production clone: 8
+    # statements, and one basis, for one row.
+    #
+    # It is not threaded from a read pass because a FRAGMENT has none: this is
+    # the one-row render path, reached by an HTMX swap that loaded nothing else.
+    # A pass-shaped caller (the grid, the fold, the reconcile panel) already
+    # builds one basis for everything it loaded, which is what findings N-228 /
+    # N-268 / N-309 are about; this is the shape those findings do not cover
+    # and the cost is one derivation rather than one per row.
     basis = amount_basis(txn.account.user_id, txn.scenario_id)
     return RenderAmounts(
-        budgets=display_amounts_by_id([txn], basis),
+        budgets=amounts_by_id([txn], basis),
         settled=recorded_amounts_by_id([txn]),
         retained=retained_settle_amounts_by_id([txn]),
     )
