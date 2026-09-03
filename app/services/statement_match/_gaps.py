@@ -50,7 +50,7 @@ from ._offers import BankLine
 from ._pairing import DAY_WINDOW
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
-    # The two day bounds take the ORM rows :func:`~._reads._unmatched_lines`
+    # The two day bounds take the ORM rows :func:`~._undisposed.undisposed_lines`
     # loads, and this module performs no query on them: it reads ``id`` and
     # ``posted_on`` and returns the same objects.  A type-checking import
     # keeps that promise HONEST rather than true by construction: it stops this
@@ -58,7 +58,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     # SQL.  ``_split_at_books_open`` reads ``line.posted_on`` and ``line.id``
     # off live ORM instances, and on an EXPIRED instance either access would
     # emit a SELECT -- so the promise rests on the caller handing over loaded
-    # rows, which :func:`~._reads._unmatched_lines` does.
+    # rows, which :func:`~._undisposed.undisposed_lines` does.
     from app.models.statement_import import BankStatementLine
     from app.services.cash_ledger import CashOpeningFact
 
@@ -316,7 +316,8 @@ def _split_at_calendar_open(
     """Split the account's unmatched lines at the owner's first payday.
 
     Args:
-        recorded: Every recorded line no match explains.
+        recorded: Every recorded line no act has answered (a match, or a
+            recorded skip since plan step ``bank_import:X-gj-4a``).
         opens: The first day the pay calendar covers, or ``None`` for an owner
             with no periods at all -- in which case nothing is BEFORE, because
             "before the calendar" is not a fact about a calendar that does not
@@ -374,7 +375,8 @@ def _split_at_books_open(
 
     Args:
         inside: The unmatched lines the pay calendar covers, in the order
-            :func:`_unmatched_lines` gives -- ascending by posted day.
+            :func:`~._undisposed.undisposed_lines` gives -- ascending by
+            posted day.
         opening: The account's governing
             :class:`~app.services.cash_ledger.CashOpeningFact`, off the pass
             (:attr:`~._scope.ReviewScope.opening`), so the screen and the
@@ -455,8 +457,10 @@ def bounded_lines(
     survives exactly as long as nobody edits it.
 
     Args:
-        recorded: Every recorded line no accepted match explains, ascending by
-            posted day (:func:`~._reads._unmatched_lines`).
+        recorded: Every recorded line no act has ANSWERED -- neither a match
+            nor a recorded skip -- ascending by posted day
+            (:func:`~._undisposed.undisposed_lines`).  *It said "no accepted
+            match explains" until plan step ``bank_import:X-gj-4a``.*
         opens: The first day the owner's pay calendar covers, or ``None`` for
             an owner with no periods at all.
         opening: The account's governing

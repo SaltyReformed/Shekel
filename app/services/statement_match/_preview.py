@@ -274,7 +274,13 @@ def preview_hand_build(
         return HandTotals.untouched()
     matched = matched_subjects(scope.account_id)
     try:
-        lines = load_lines(scope.account_id, submission.line_ids, matched)
+        # **NOT locked**: this is the preview, and a query request runs
+        # in a READ ONLY transaction where PostgreSQL refuses every row
+        # lock.  See :func:`~._resolve.load_lines`' ``for_write``.
+        lines = load_lines(
+            scope.account_id, submission.line_ids, matched,
+            for_write=False,
+        )
         rows = resolve_rows(submission, scope, matched)
     except ValidationError as exc:
         # A line another match has claimed, or a row that moved since the page

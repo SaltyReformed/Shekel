@@ -114,54 +114,32 @@ what it leaves a LATER step is on that step's own entry.
       Reconcile rebuild the developer LOCKED at Loop A round 4 on 2026-08-29, on rulings
       `bank_import:R-HP`..`R-HX`, stated in `rulings.md`. The assessment, the research, the four
       rounds and the locked direction are `docs/design/bank_import_audit.md`. `X-gi` follows it.
-  - [x] **X-gj-1** `a43e8e2f` -- the DECOMPOSED parent of the page, split three ways 2026-08-29 on
-        the two boundaries this package draws: the SERVICES boundary, and **R-GX**'s -- a line to
-        explain is `_reads`', an applied act is `_accepted_view`'s. It ticked with its third leaf.
-        **It posted only to doors that exist** (`apply_reviewed`, `release_match`, `state_rules`)
-        and added no money door. Each leaf shipped a WHOLE page: none rendered a tab or control a
-        later one completes, which **R-HW** forbids.
-    - [x] **X-gj-1a** `bc851df9` -- the service turning a pass into CARDS: one per line with its
-          verb (**R-HP**), what suggested it, the sentence's PARTS, which verbs are OPEN and why a
-          shut one is (**R-HW**), the settled act's card one tense over, the tab counts, the chips
-          (**R-HQ**), and `bank_agreement`'s HEADLINE DAY -- the latest COMPARED day the bank's
-          record can PRICE, not `span.last_day`.
-    - [x] **X-gj-1b** `cfcfcac9` -- the page over that model and the three BANK-LINE tabs: the route
-          pair, the hero with the last import's provenance, chips, legend, tab bar, the card and its
-          opened four-tab panel on ONE footer (**R-HR**, **R-HW**), Find and Match, and the sweeps
-          and Apply (**R-FZ(c)**, **R-HD**). The card's always-for-this-merchant checkbox is DELETED
-          (`bank_import:R-IB`) and the accept door exempts no shape (`bank_import:R-IA`). Minted
-          **X-gk** (`bank_import:R-IC`).
-    - [x] **X-gj-1c** `a43e8e2f` -- the two settled tabs, each act's Undo, and the register RETIRED
-          as a page (**R-HU**): its acts, its bound, its *show the other N* link and its Undo are
-          the tabs'. The Explained CHIP was DELETED rather than re-pointed -- its count is the union
-          of two tabs. Shut **N-389** and **N-403**; opened **N-404**, **N-405**.
+  - [x] **X-gj-1** `a43e8e2f` -- the DECOMPOSED parent of the Reconcile page, split three ways
+        2026-08-29 on the services boundary and **R-GX**'s; ticked with its third leaf. Each leaf
+        shipped a WHOLE page (**R-HW**). As built:
+        `historical/bank_import_x_gj_1_as_built_2026-09-02.md`.
+    - [x] **X-gj-1a** `bc851df9` -- the pass becomes CARDS (**R-HP**, **R-HQ**, **R-HW**).
+    - [x] **X-gj-1b** `cfcfcac9` -- the page and the three bank-line tabs (**R-HR**, **R-IA**,
+          **R-IB**); minted **X-gk**.
+    - [x] **X-gj-1c** `a43e8e2f` -- the two settled tabs and the register RETIRED (**R-HU**). Shut
+          **N-389**, **N-403**; opened **N-404**, **N-405**.
           **`X-gi` must take the review QUEUE with the register**: that page still links to it three
-          times, so deleting one route alone breaks the other's header button.
-  - [ ] **X-gj-2** `feat(import): a rule answers an inflow` -- the DECOMPOSED parent of
-        **R-HT(a)**'s inflow answer, split 2026-08-31 on the developer's ruling. The two halves
-        differ in what they DO and in what they need: the deposit half REPORTS a merchant credit and
-        ships on the schema the app already has; the refund half FILES one and needs the positivity
-        rule moved off `transaction_entries` (**R-II**). Measured 2026-08-29 and reproduced
-        2026-08-31 by running `review_set` on account 1: nine of its sixteen unmatched deposits
-        dissolve -- five dividends and one answer under 2a, three refunds under 2b.
-    - [x] **X-gj-2a -- a standing rule answers a DEPOSIT.** `751eba5d`. The fifth
-          :class:`RuleAnswer` and `merchant_rules.income_category_id`, auto-applied at import.
-          **A LATER step must obey:** a merchant CREDIT is reported UNRESOLVED and never filed here
-          (**R-HX**) -- `X-gj-2b` is what files it.
+          times.
+  - [x] **X-gj-2** `a23315dc` -- the DECOMPOSED parent of **R-HT(a)**'s inflow answer, split
+        2026-08-31; ticked with its last leaf. The deposit half REPORTS a merchant credit, the
+        refund half FILES one and needed the positivity rule moved off `transaction_entries`
+        (**R-II**). As built: `historical/bank_import_x_gj_1_as_built_2026-09-02.md`.
+    - [x] **X-gj-2a** `751eba5d` -- a standing rule answers a DEPOSIT: the fifth `RuleAnswer` and
+          `merchant_rules.income_category_id`, auto-applied at import (**R-HT(a)**, **R-HX**).
     - [x] **X-gj-2b** `a23315dc` -- the DECOMPOSED parent of the refund filing, split three ways
           during the build; ticked with its third leaf. Ruled **R-IK**, **R-IL**, **R-IM**; opened
-          **N-420** and **N-435**; **N-411** was opened and spent inside `X-gj-2b-1`.
-      - [x] **X-gj-2b-1** `9920bed7` -- `ck_transaction_entries_positive_amount` becomes
-            `amount <> 0` (**R-II**), so a merchant credit files as a contra-entry against its
-            merchant's envelope: representable, editable and safe, with no rule filing one yet.
-      - [x] **X-gj-2b-2** `1bfeff07` -- a standing rule FILES a refund (**R-HT(a)**), auto-applied
-            under **R-GH**. A PARTITION CORRECTION and not a new arm: `_creatable_lines`'
-            `amount < 0` and `_recordable_inflows`' `amount > 0` chose the pipeline before the
-            owner's rule was read at all.
-      - [x] **X-gj-2b-3** `a23315dc` -- the census, run twice (by NAME, then by SHAPE) because an
-            ABSENCE is what it had to establish. Both hand-entry doors now take a MAGNITUDE and a
-            Charge/Refund control; an envelope's budget is a NET target (**R-IK**); the spending
-            share divides by what MOVED (**R-IL**); the grid cell goes through `money()` (**R-IM**).
+          **N-420**, **N-435**.
+      - [x] **X-gj-2b-1** `9920bed7` -- the entry positivity check becomes `amount <> 0` (**R-II**).
+      - [x] **X-gj-2b-2** `1bfeff07` -- a rule FILES a refund; a PARTITION correction, not a new
+            arm.
+      - [x] **X-gj-2b-3** `a23315dc` -- the reader census, run by NAME then by SHAPE. Both
+            hand-entry doors take a MAGNITUDE and a Charge/Refund control, so a purchase's sign is
+            PICKED.
   - [ ] **X-gj-3** `feat(import): a rule names a row set` -- the DECOMPOSED parent of **R-HT(b)**'s
         group answer, split 2026-09-01 on the developer's ruling. The two halves differ in what they
         NEED: the ACT of putting a group's difference on a named member is a door and a control and
@@ -202,12 +180,36 @@ what it leaves a LATER step is on that step's own entry.
           `53160470`. An earlier handover said 987, a figure read before `R-IV`'s paragraph and
           before the merge-up -- an undated line count quoted as a reason, which is the shape
           `docs/plans/lessons.md` already names.)*
-  - [ ] **X-gj-4** `feat(import): skip, and the holding state` -- a SKIPPED line's disposition is
-        recorded and undoable, which LIGHTS the SKIP verb the panel renders shut and fills the
-        Skipped tab `X-gj-1b` draws for lines a standing *never a purchase* answer already disposes
-        of. **It opens with a fork the developer decides at the gate**: a nullable disposition
-        column on `bank_statement_lines` or a `statement_line_dispositions` table (append-only,
-        which is what undo and the audit trail want -- the recommendation).
+  - [ ] **X-gj-4** `feat(import): skip, and the holding state` -- the DECOMPOSED parent of the SKIP
+        verb, split 2026-09-02 at its gate. **The fork it opened with is ANSWERED**: **R-JG** takes
+        the act ROW over the nullable column and over the append-only log. The TAB is built before
+        the VERB (**R-GY**, **R-HU**), which the ranks carry and the ids do not.
+    - [x] **X-gj-4a** `758bbe55` -- the STORE and its two doors (**R-JG**):
+          `budget.statement_line_skips`, one row per line, deleted to undo.
+          **A LATER step must obey:** `_resolve.load_lines` refuses matching a skipped line and
+          takes a row lock on a keyword-only `for_write` with NO default -- `_preview` passes
+          `False`, the lock being refused in the `REPEATABLE READ, READ ONLY` transaction a GET runs
+          in. Carries `balance:R-IR`'s split, `_reads.py` 989 -> 838. Opened **N-470**/**N-471**.
+    - [ ] **X-gj-4b** `feat(import): SKIP becomes pressable` -- the VERB (**R-HW**, **R-JI**):
+          `offers_for` stops shutting SKIP, a `skips` list joins the batch schema beside `incomes`,
+          `reconcile_payload` reads `verb=skip`, `apply_reviewed` grows the arm, and the SKIP pane
+          renders its control plus the sentence that a skip closes no difference between books and
+          bank. **SKIP stays SHUT for a line the source files as paying an account the owner holds**
+          (**R-JI**), which the DOOR has refused since `X-gj-4a`. **Built AFTER `X-gj-4c`**: a lit
+          verb needs the tab its result lands on.
+    - [ ] **X-gj-4c** `feat(import): the skipped tab` -- the SKIPPED TAB (**R-JH**): a skipped
+          line's card, its Undo route, and `Tab.holds_settled_acts` generalised to the card KIND a
+          tab holds. **It moves the merchant-answered lines OFF that tab**, back to the inbox under
+          *Nothing suggested* with ADD shut, keeping MATCH and gaining SKIP (**R-JH**). It DELETES
+          `_parked_tab`'s SKIPPED arm, `_sentence.for_parked_never` and
+          `test_reconcile.TestAStandingNeverAnswerIsAlreadyASkip` (**R-JH**, rule 5).
+          **Those lines must leave `parked` ALTOGETHER, not merely lose the tab arm**: dropping the
+          arm alone totals `_parked_tab` on TRANSFERS, and the line then joins a chip carrying a
+          COUNT and a MAGNITUDE -- a money figure for a line no source filed as a payment.
+          **The arm is REACHABLE and an earlier draft of R-JH denied it**: a passing test here
+          answers a `Foundation Donation` swipe *never* and asserts `Tab.SKIPPED == 1`, and
+          `_bars.bar_for` tests `never` BEFORE `account_payments`, so the deletion rests on the
+          semantic argument.
 - [x] **X-gk** `8569e5ec` -- the MERCHANTS surface (**R-IC**): every merchant an account has seen,
       its standing answer or *You have not said*, edited ONE at a time through
       `record_submitted_rules`, so four surfaces keep one grader and one writer. On a 2026-08-31
