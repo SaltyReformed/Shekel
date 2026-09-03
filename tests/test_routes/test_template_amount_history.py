@@ -647,10 +647,14 @@ class TestWithdrawAmountVersion:
     def test_withdrawing_an_interior_entry(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The June entry goes and June falls back on the April price.
+        """An interior entry that MOVES a price is refused through the route.
 
-        Interior, so the newest price the series states is unchanged and
-        nothing generation writes moves.
+        **This case asserted the removal until plan step balance:X-au-e**, on
+        the stated ground that "the newest price the series states is unchanged
+        and nothing generation writes moves". The first half is still true and
+        the second is not: generation writes no figure now, so what June's
+        window prices is read from this series live, and withdrawing the June
+        entry re-prices it.
         """
         with app.app_context():
             template = _template_with_history(seed_user, [
@@ -666,12 +670,68 @@ class TestWithdrawAmountVersion:
                 follow_redirects=True,
             )
             assert resp.status_code == 200
+            assert b"could not be removed" in resp.data
+
+            db.session.expire_all()
+            template = db.session.get(TransactionTemplate, tid)
+            assert len(tas.amount_versions(template)) == 3
+            assert tas.amount_as_of(template, date(2020, 7, 1)) == Decimal("178.32")
+
+    def test_withdrawing_a_REDUNDANT_interior_entry_still_works(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The DOCUMENTED repair path, driven end to end.
+
+        The other half of the rule at the ROUTE tier, and the case that shows
+        the refusal above did not swallow the feature: an entry mis-dated to
+        June is repaired by stating the same amount at the date it should have
+        had, which APPENDS, and the June entry is then withdrawable because
+        its new predecessor states the same figure -- the series answers
+        identically without it.
+
+        **A first draft of this case seeded ``[Apr 178.00, Jun 178.00, Sep
+        165.30]`` directly and found only two versions**: ``set_amount``
+        refuses to write a restatement that changes no answer, so a redundant
+        entry cannot be created through the write door at all. Building the
+        shape the repair actually produces is what makes this a test of the
+        repair rather than of a state the app cannot reach.
+        """
+        with app.app_context():
+            template = _template_with_history(seed_user, [
+                (date(2020, 4, 1), "178.00"),
+                (date(2020, 6, 1), "178.32"),
+                (date(2020, 9, 1), "165.30"),
+            ])
+            # The repair: the June rise actually happened in May.
+            tas.set_amount(
+                template, Decimal("178.32"), effective_on=date(2020, 5, 1),
+            )
+            db.session.commit()
+            assert len(tas.amount_versions(template)) == 4
+            tid = template.id
+            # BY DATE, not by index: the repair above inserted a version
+            # ahead of it, and an index would silently select the new May
+            # entry -- whose predecessor states a different amount, so the
+            # case would assert the refusal while claiming to test the repair.
+            june_id = next(
+                v.id for v in tas.amount_versions(template)
+                if v.effective_date == date(2020, 6, 1)
+            )
+
+            resp = auth_client.post(
+                f"/templates/{tid}/amount-versions/{june_id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
             assert b"Amount history entry removed" in resp.data
 
             db.session.expire_all()
             template = db.session.get(TransactionTemplate, tid)
-            assert len(tas.amount_versions(template)) == 2
-            assert tas.amount_as_of(template, date(2020, 7, 1)) == Decimal("178.00")
+            assert len(tas.amount_versions(template)) == 3
+            # Every date answers what it did before the withdrawal, which is
+            # the whole licence for allowing it.
+            assert tas.amount_as_of(template, date(2020, 7, 1)) == Decimal("178.32")
+            assert tas.amount_as_of(template, date(2020, 4, 15)) == Decimal("178.00")
             assert template.default_amount == Decimal("165.30")
 
     def test_withdrawing_the_earliest_is_refused_with_the_repair(
@@ -799,8 +859,14 @@ class TestWithdrawAmountVersion:
             )
             db.session.commit()
             tid = template.id
-            # The MIDDLE entry: removing it leaves $300.00 the newest price, so
-            # nothing generation writes moves.
+            # The MIDDLE entry, restated at the SAME figure its predecessor
+            # states: since plan step balance:X-au-e a withdrawal is legal only
+            # when the series answers identically without it, and this route
+            # shares that one rule with the transaction side.
+            tas.set_amount(
+                template, Decimal("500.00"), effective_on=date(2020, 5, 21),
+            )
+            db.session.commit()
             middle_id = tas.amount_versions(template)[1].id
 
             resp = auth_client.post(

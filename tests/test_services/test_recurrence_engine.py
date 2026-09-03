@@ -3136,6 +3136,53 @@ class TestResolveConflicts:
             # the $999.99 the owner had typed.
             assert resolved_amount(txn) == Decimal("100.00")
 
+    def test_a_row_whose_TEMPLATE_IS_GONE_is_skipped_not_declared(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A row cannot be handed back to a definition it no longer names.
+
+        ``fk_transactions_template`` is ON DELETE SET NULL, so a row can
+        outlive its template. Declaring such a row would write exactly the
+        state ledger row **N-440** describes -- ``amount_source_id = template``
+        with no template to read -- which ``_rule_within_definition`` answers
+        TEMPLATE for and ``_stated_amount`` then refuses, in a money path.
+
+        **Unreachable from the route** (the hard delete that orphans a row also
+        404s the Apply POST), so this drives the service entry directly: the
+        guard is defence in depth for a published function, and a guard nothing
+        exercises is a guard nobody has seen work.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, EVERY_PERIOD
+            )
+            created = recurrence_engine.generate_for_template(
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            txn = created[0]
+            txn.is_override = True
+            state_own_amount(txn, Decimal("999.99"))
+            # The orphan state the FK produces.
+            txn.template_id = None
+            db.session.flush()
+
+            recurrence_engine.resolve_conflicts(
+                [txn.id], action="update",
+                user_id=seed_user["user"].id,
+            )
+            db.session.flush()
+            db.session.refresh(txn)
+
+            # Untouched: still the owner's figure, still flagged, never
+            # declared -- the one answer that stays true.
+            assert txn.amount_source_id is None
+            assert txn.estimated_amount == Decimal("999.99")
+            assert txn.is_override is True
+
     def test_resolve_update_prices_a_past_row_from_ITS_date_not_todays(
         self, app, db, seed_user, seed_periods
     ):

@@ -23,12 +23,21 @@ occur** (ruling **R-JD**, developer 2026-09-03).  X-au-e's specification had it
 deleted outright, on the ground that a hand-edited month owns its figure and a
 regeneration that writes no figure cannot overwrite one.  Both halves of that
 are true and neither reaches the offer: ``txn.is_override = False`` below is the
-ONLY writer in ``app/`` that clears that flag on an existing transaction -- a
-census of all six ``is_override = False`` writers, the other five being the two
-create paths (``_generate``, ``_maintain``) and three transfer-side doors
-(``transfer_recurrence``, ``transfer_service._create`` twice) -- and this is
-likewise the only per-row un-delete for a soft-deleted one outside archiving and
-unarchiving the whole template.  Deleting it would have stranded every
+only writer in ``app/`` that clears that flag on a TEMPLATE-LINKED transaction,
+and likewise its only per-row un-delete outside archiving and unarchiving the
+whole template.
+
+*The qualifier is load-bearing and a first draft omitted it.*  An AST census of
+every writer of the two flags finds nine that clear one, not six: besides the
+create paths, ``transfer_service._update`` and ``._restore``
+clear ``is_override`` on a shadow through a VARIABLE
+(``shadow.is_override = flag``), which a grep for the literal cannot see, and
+``._restore`` un-deletes both legs.
+Those doors reach SHADOWS only, and ``ck_transactions_one_pricing_link`` makes
+``transfer_id`` exclusive with ``template_id`` -- so the conclusion holds by the
+schema rather than by the count, which is the stronger ground anyway.
+
+Deleting the decision would have stranded every
 overridden row permanently OWN, 40 of them on the 2026-09-03 production clone,
 with no route back to the definition until plan step X-au-h reworks the flag.
 
@@ -157,12 +166,21 @@ def resolve_conflicts(transaction_ids, action, user_id):
             # ``_rule_within_definition`` answers TEMPLATE for a ``None``
             # template and ``_stated_amount`` then refuses in a money path.
             # The row keeps the figure it already owns, which is the only
-            # answer left that is true.  Skipped rather than raised: the id
-            # reached here through ``apply_conflict_decisions``'s allow-list,
-            # so this is a row that lost its template between the raise and
-            # this call, not a caller error.  The same window is what
-            # ``archive_helpers.template_has_paid_history`` now refuses to
-            # open (ruling **R-JE**).
+            # answer left that is true.
+            #
+            # **UNREACHABLE from the route today, and the honest reason is not
+            # the one a first draft gave.**  That comment said it covered "a
+            # row that lost its template between the raise and this call" --
+            # but the only way a row loses its template is that template's
+            # hard delete, and the same delete makes the Apply POST 404 at
+            # ``get_or_404`` before this function runs; the conflict set is
+            # also built by selecting on ``template_id``, so no such id can
+            # reach the allow-list.  What this is is the same DEFENCE IN DEPTH
+            # the ownership check twenty lines up is: ``resolve_conflicts`` is
+            # a published service entry, and a future caller assembling ids
+            # some other way would otherwise write a row no rule can price.
+            # Skipped rather than raised because it is a row to leave alone,
+            # not a caller error, and it is counted in ``skipped_count``.
             if txn.template_id is None:
                 skipped_count += 1
                 continue

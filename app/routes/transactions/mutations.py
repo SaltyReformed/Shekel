@@ -43,6 +43,7 @@ from app.utils.balance_predicates import is_credit
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._gates import (
     _reject_tracking_on_income,
+    _reject_generated_due_date_edit,
     _reject_typed_payback_figure,
     _resolve_status_change,
 )
@@ -307,6 +308,9 @@ def _apply_regular_update(txn, txn_id, data):
         or _reject_tracking_on_income(txn, data)
         # A payback's figure is not its own to state (N-252); see the gate.
         or _reject_typed_payback_figure(txn, data)
+        # Gate 5: a generated row's due date is its definition's, and since
+        # plan step X-au-e it is also what prices the row (balance:X-au-e).
+        or _reject_generated_due_date_edit(txn, data)
     )
     if gate_error is not None:
         return gate_error

@@ -62,6 +62,7 @@ from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.ref import AmountSource, FilingStatus, TransactionType
 from app.models.salary_profile import SalaryProfile
+from app.models.template_amount_version import TemplateAmountVersion
 from app.models.transaction_template import TransactionTemplate
 from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
@@ -1310,6 +1311,107 @@ class TestTheTemplateCutoverKnowsWhatItCannotRestore:
             assert _TEMPLATE_CUTOVER.settled_rows_whose_plan_is_not_recoverable(
                 db.session.connection(),
             ) == []
+
+
+class TestTheTemplateCutoverRefusesRatherThanStrandingARow:
+    """Migration ``c8f3a5d2e714``'s PRE-FLIGHT, driven directly.
+
+    **No cutover in this family had a test of its UPGRADE until this one**, and
+    an adversarial review of X-au-e is what said so: all three exposed their
+    downgrade at module scope "so a test can drive it -- a guard nothing
+    exercises is a guard nobody has seen work", and left the destructive half
+    ungraded. The measurement behind "0 dateless, 0 empty series, `$0.00`
+    differing" was taken on a clone; production moves between a measurement and
+    a deploy, and each of those three violated by ONE row is a silently
+    unpriceable row or a silently moved figure.
+
+    Driven against a clone of production 2026-09-03: empty on all 525, and
+    naming the row after one due date was nulled by hand.
+    """
+
+    def test_a_clean_population_strands_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The ordinary shape: every row is priceable and agrees."""
+        with app.app_context():
+            template = _plain_template(seed_user)
+            db.session.add(TemplateAmountVersion(
+                transaction_template_id=template.id,
+                effective_date=date(2026, 1, 1), amount=Decimal("7.77"),
+            ))
+            txn = _make_transaction(
+                seed_user, seed_periods,
+                template_id=template.id,
+                due_date=date(2026, 3, 1),
+                amount_ownership=AmountOwnership.own(Decimal("7.77")),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            assert _TEMPLATE_CUTOVER.rows_the_declare_would_strand(
+                db.session.connection(),
+            ) == []
+
+    def test_a_row_with_NO_DUE_DATE_is_named_and_the_upgrade_refuses(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The row X-au-e would empty and nothing could then price.
+
+        ``_stated_amount`` refuses a derived row with no due date, and ruling
+        D5 forbids substituting the pay period's bounds -- so declaring such a
+        row makes it permanently unpriceable, and ``routes/grid/page`` prices
+        every row it loads with no handler.
+        """
+        with app.app_context():
+            template = _plain_template(seed_user)
+            db.session.add(TemplateAmountVersion(
+                transaction_template_id=template.id,
+                effective_date=date(2026, 1, 1), amount=Decimal("7.77"),
+            ))
+            txn = _make_transaction(
+                seed_user, seed_periods,
+                template_id=template.id,
+                due_date=None,
+                amount_ownership=AmountOwnership.own(Decimal("7.77")),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            stranded = _TEMPLATE_CUTOVER.rows_the_declare_would_strand(
+                db.session.connection(),
+            )
+            assert [row[0] for row in stranded] == [txn.id]
+            assert "no due_date" in stranded[0][3]
+
+    def test_a_row_whose_FIGURE_DISAGREES_with_the_series_is_named(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The cutover deletes a COPY; a disagreeing row would lose a FACT.
+
+        This is the arm that makes the pre-flight more than a null check: the
+        row is perfectly priceable, and declaring it would still change what
+        it is worth.
+        """
+        with app.app_context():
+            template = _plain_template(seed_user)
+            db.session.add(TemplateAmountVersion(
+                transaction_template_id=template.id,
+                effective_date=date(2026, 1, 1), amount=Decimal("7.77"),
+            ))
+            txn = _make_transaction(
+                seed_user, seed_periods,
+                template_id=template.id,
+                due_date=date(2026, 3, 1),
+                amount_ownership=AmountOwnership.own(Decimal("999.00")),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            stranded = _TEMPLATE_CUTOVER.rows_the_declare_would_strand(
+                db.session.connection(),
+            )
+            assert [row[0] for row in stranded] == [txn.id]
+            assert "disagrees" in stranded[0][3]
 
 
 class TestTheTemplateCutoverRestoresEachRowFromTheRightPlace:

@@ -243,9 +243,13 @@ def _resync_scalar(template) -> None:
     The one rule keeping the scalar and the series in step, applied by both
     writers (:func:`set_amount` and :func:`delete_amount_version`) so neither
     can state it differently.  **The newest price rather than TODAY's**, because
-    that is what the column does: generation writes it onto every row an edit
-    rebuilds from ``effective_from`` forward, so a scheduled rise has to reach
-    the column the moment it is stated or the rows it was stated for would be
+    that is what the column MEANS, and the reason it means that has changed.
+    Generation used to write the scalar onto every row an edit rebuilt from
+    ``effective_from`` forward; since plan step balance:X-au-e a transaction's
+    generation writes no figure at all, and the column's readers are the edit
+    form's prefill, the Recurring list, ``obligations_aggregator`` and a
+    transfer's generation.  A scheduled rise still has to reach the column the
+    moment it is stated or the rows it was stated for would be
     rebuilt at the old figure.  Today's price is a different question, and the
     edit form asks it separately (:func:`current_amount`).
 
@@ -397,6 +401,39 @@ def set_amount(template, amount: Decimal, *, effective_on: date) -> None:
         _resync_scalar(template)
 
 
+def _may_withdraw(versions, index: int) -> bool:
+    """Return whether ``versions[index]`` may be withdrawn from the series.
+
+    **THE one statement of the withdrawal rule**, so
+    :func:`delete_amount_version` and :func:`build_amount_history`'s
+    ``is_deletable`` cannot disagree -- the UI offering a Remove the service
+    then refuses is two spellings of one rule, which is what
+    :class:`AmountVersionRow`'s docstring already claimed was not happening
+    (``CLAUDE.md`` rule 14).  It was ``index > 0`` in the builder against a
+    newest-price test in the service, and after plan step balance:X-au-e the
+    two disagreed about every middle version as well as the newest.
+
+    A version may go only when the version BEFORE it states the same amount:
+    every date it answered is then answered identically without it, so no row,
+    no projection and no balance can move.  The earliest version is never
+    withdrawable -- :func:`amount_as_of` holds flat before it, so removing it
+    re-anchors the whole pre-history.
+
+    Args:
+        versions: The template's versions, ascending (:func:`amount_versions`).
+        index: The position of the version being considered.
+
+    Returns:
+        ``True`` when withdrawing it changes what the series answers on no
+        date at all.
+    """
+    if index == 0:
+        return False
+    return Decimal(str(versions[index - 1].amount)) == Decimal(
+        str(versions[index].amount),
+    )
+
+
 def delete_amount_version(template, version_id: int) -> bool:
     """Withdraw one amount version from *template*'s series.
 
@@ -414,14 +451,31 @@ def delete_amount_version(template, version_id: int) -> bool:
     hand.  A mis-dated earliest is still correctable: state the amount at the
     right date, which becomes the new earliest, then withdraw the old one.
 
-    **A withdrawal that would change the PRICE is refused too**, and that is
-    what keeps this a correction of the RECORD rather than a money-moving act.
-    ``default_amount`` is what generation writes onto the rows an edit rebuilds,
-    so a withdrawal that moved it would leave the already-generated rows
-    disagreeing with the definition -- and unlike every other amount-changing
-    path in the app, this one runs no regeneration and offers no conflict
-    chooser.  Refusing instead means the surviving series always states the same
-    newest price, so no row, no projection and no balance can move.
+    **A withdrawal that would change the PRICE on ANY DATE is refused too**,
+    and that is what keeps this a correction of the RECORD rather than a
+    money-moving act.  Unlike every other amount-changing path in the app, this
+    one runs no regeneration and offers no conflict chooser, so a moved price
+    here moves silently.
+
+    **The predicate compared only the NEWEST price until plan step
+    balance:X-au-e, and that was a live defect the moment rows started
+    resolving.**  While generation copied ``default_amount`` onto each row, a
+    MIDDLE version's withdrawal moved no stored figure and the newest-price
+    test was sufficient.  A generated row resolves through
+    :func:`amount_as_of` on its own due date now, so withdrawing a middle
+    version re-prices every row inside that version's window.  Measured on a
+    production clone 2026-09-03: Geico's series was
+    ``[2026-04-01 $178.00, 2026-06-01 $178.32, 2026-09-01 $165.30]``, the
+    2026-06-01 entry was WITHDRAWABLE, and taking it moved one row from
+    ``$178.32`` to ``$178.00`` under a flash reading only "Amount history entry
+    removed".
+
+    **The rule that replaces it is one sentence and subsumes the old one**: a
+    version may be withdrawn only when the version BEFORE it states the same
+    amount, so the series answers identically on every date once it is gone.
+    For the newest entry that is exactly the old test -- its predecessor
+    becomes the newest -- so the special case disappears rather than being kept
+    beside the general one.
 
     **The correction path stays complete**, because a restatement is what
     changes a price and a withdrawal is what tidies the record afterwards.  An
@@ -441,16 +495,13 @@ def delete_amount_version(template, version_id: int) -> bool:
     Returns:
         ``True`` when the version was removed; ``False`` when no such version
         belongs to this template, when it is the earliest one, or when
-        withdrawing it would change the newest price the series states.
+        withdrawing it would change what the series answers on any date.
     """
     versions = amount_versions(template)
     for index, version in enumerate(versions):
         if version.id != version_id:
             continue
-        survivors = versions[:index] + versions[index + 1:]
-        if index == 0 or not survivors:
-            return False
-        if Decimal(str(survivors[-1].amount)) != Decimal(str(versions[-1].amount)):
+        if not _may_withdraw(versions, index):
             return False
         template.amount_versions.remove(version)
         return True
@@ -552,7 +603,7 @@ def build_amount_history(template, on_date: date) -> list[AmountVersionRow]:
             amount=Decimal(str(version.amount)),
             status_key=status_key,
             status_label=status_label,
-            is_deletable=index > 0,
+            is_deletable=_may_withdraw(versions, index),
         ))
     rows.reverse()
     return rows

@@ -260,14 +260,97 @@ def downgrade_rows(bind) -> tuple:
     return exact.rowcount, placeholder.rowcount
 
 
+def rows_the_declare_would_strand(bind) -> list:
+    """Return the rows this migration must NOT declare, and would.
+
+    **The docstring's three preconditions, asked of the database at the moment
+    the migration runs rather than of a clone the week before.**  "0, 0 and
+    `$0.00` differing" was measured on a clone dumped 2026-09-03; production
+    moves between a measurement and a deploy, and each of the three, violated
+    by one row, is a silent unpriceable row or a silently moved figure:
+
+    * **no ``due_date``** -- rule 3 resolves on the row's own due date, so a
+      declared row without one can never be priced (``_stated_amount``
+      refuses, and ruling D5 forbids substituting the period's bounds);
+    * **an EMPTY series** on its template -- the same refusal, one arm over,
+      and X-au-a ruled it a refusal rather than a fallback to the scalar;
+    * **a stored figure that DISAGREES with what the series answers** on that
+      row's due date -- the cutover is meant to delete a copy, and a row where
+      the two differ is one where it would delete a FACT.
+
+    Module-level so a test can drive it, and modelled on ``a9d3c15e7f42``,
+    which raises with a diagnostic rather than leaving half a series behind.
+
+    Args:
+        bind: A SQLAlchemy connection to probe.
+
+    Returns:
+        ``(id, due_date, estimated_amount, reason)`` per offending row,
+        ascending by id; empty when every row the predicate selects is safe to
+        declare.  Empty on the 2026-09-03 production clone over all 525.
+    """
+    probe = sa.text(f"""
+        SELECT t.id, t.due_date, t.estimated_amount,
+               CASE
+                 WHEN t.due_date IS NULL THEN 'no due_date to resolve on'
+                 WHEN NOT EXISTS (
+                        SELECT 1 FROM budget.template_amount_versions v
+                         WHERE v.transaction_template_id = t.template_id)
+                   THEN 'its template states no price at all'
+                 ELSE 'its figure disagrees with what the series answers'
+               END AS reason
+          FROM budget.transactions AS t
+         WHERE t.template_id IS NOT NULL
+           AND t.template_id NOT IN ({_ACTIVE_SALARY_TEMPLATES_SQL})
+           AND t.is_override = FALSE
+           AND t.amount_source_id IS NULL
+           AND (
+             t.due_date IS NULL
+             OR NOT EXISTS (
+                  SELECT 1 FROM budget.template_amount_versions v
+                   WHERE v.transaction_template_id = t.template_id)
+             OR t.estimated_amount IS DISTINCT FROM COALESCE(
+                  (SELECT v.amount FROM budget.template_amount_versions v
+                    WHERE v.transaction_template_id = t.template_id
+                      AND v.effective_date <= t.due_date
+                    ORDER BY v.effective_date DESC, v.id DESC LIMIT 1),
+                  (SELECT v.amount FROM budget.template_amount_versions v
+                    WHERE v.transaction_template_id = t.template_id
+                    ORDER BY v.effective_date ASC, v.id ASC LIMIT 1))
+           )
+         ORDER BY t.id
+    """)
+    return [tuple(row) for row in bind.execute(probe)]
+
+
 def upgrade():
     """Declare every non-overridden template row derived and empty its figure.
 
-    One statement.  It is idempotent by its ``amount_source_id IS NULL``
-    predicate, so a re-run declares nothing twice, and it touches no row an
-    active salary profile prices.
+    One statement, behind one refusal.  It is idempotent by its
+    ``amount_source_id IS NULL`` predicate, so a re-run declares nothing twice,
+    and it touches no row an active salary profile prices.
+
+    Raises:
+        RuntimeError: When any row the predicate selects could not be priced
+            after the declaration, or stores a figure the series disagrees
+            with (:func:`rows_the_declare_would_strand`).  A refusal leaves
+            every figure in place; declaring anyway would empty a column with
+            nothing able to answer for it.
     """
-    result = op.get_bind().execute(sa.text(_DECLARE_SQL))
+    bind = op.get_bind()
+    stranded = rows_the_declare_would_strand(bind)
+    if stranded:
+        detail = "; ".join(
+            f"txn {row_id} (due {due}, ${figure}): {reason}"
+            for row_id, due, figure, reason in stranded
+        )
+        raise RuntimeError(
+            f"X-au-e: {len(stranded)} row(s) cannot be declared derived "
+            f"because nothing would be able to price them, or because the "
+            f"figure they store is not what their definition's series answers. "
+            f"NOTHING has been changed. {detail}"
+        )
+    result = bind.execute(sa.text(_DECLARE_SQL))
     print(f"X-au-e: {result.rowcount} template row(s) declared derived")
 
 

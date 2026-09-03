@@ -82,6 +82,59 @@ def _resolve_status_change(txn, data):
     return None
 
 
+def _reject_generated_due_date_edit(txn, data):
+    """Refuse a due-date edit on a row a recurring definition generated.
+
+    **A generated row's due date is its DEFINITION's** (plan step
+    balance:X-au-e, developer 2026-09-03).  ``due_date`` is a member of
+    ``recurrence_engine._amounts.DerivedRowFields``: generation computes it
+    from the rule and the period, and the maintain splat rewrites it on every
+    regeneration -- so an edit here never survived a later template save even
+    before this step.  What X-au-e added is that the same date now resolves the
+    row's PRICE through amount rule 3, so the field has gone from an edit that
+    did not last to one that can leave a row no rule is able to price.
+
+    **Clearing it 500ed the whole grid**, and that is measured rather than
+    argued: ``routes/grid/page`` prices every row it loads with no status
+    predicate and no handler -- ``AmountUnresolvable`` has five handlers in
+    ``app/`` and none of them is on that path -- so ONE dateless derived row
+    takes out the grid, the dashboard and the companion until the row is
+    repaired in the database.  Reproduced on a clone of production: the
+    identical act leaves 926 rows pricing cleanly before the cutover and
+    raising after it.
+
+    The popover no longer renders the control for such a row (it shows the
+    date as text and names where the edit belongs), so this is the
+    crafted-request and stale-form backstop this module exists to be.
+
+    **Keyed on PRESENCE rather than on emptiness**, for the reason the payback
+    gate states one function down: what a generated row may not accept is the
+    FIELD.  Moving the date is refused as well as clearing it -- a moved date
+    re-prices the row against a different point in its definition's series,
+    silently, and the next regeneration puts it back.
+
+    **An AD-HOC row is untouched.**  It owns its figure, so amount rule 1
+    answers it off a column and no rule reads its date; clearing it there
+    prices nothing wrongly, which is why the form still offers it.
+
+    Args:
+        txn: The Transaction being edited.
+        data: The schema-loaded PATCH payload.
+
+    Returns:
+        A designed 400 response tuple, or ``None`` when the edit may proceed.
+    """
+    if "due_date" not in data or txn.template_id is None:
+        return None
+    return _error_transaction_response(
+        txn.id,
+        "This instance's due date comes from its recurring transaction, "
+        "which is also what prices it. Change the due day on the recurring "
+        "transaction to move every instance, or type an amount here to make "
+        "this month's figure its own.",
+    )
+
+
 def _reject_typed_payback_figure(txn, data):
     """Reject a hand-typed figure on a CC PAYBACK.
 
