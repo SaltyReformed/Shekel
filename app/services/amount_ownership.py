@@ -71,6 +71,38 @@ def state_own_amount(row, figure: Decimal) -> None:
     row.amount_ownership = AmountOwnership.own(figure)
 
 
+def derived_ownership(relation: AmountSourceEnum) -> AmountOwnership:
+    """Return the ownership of a row PRICED BY *relation*, as a VALUE.
+
+    **The enum-to-id translation, and the one statement of it** (plan step
+    **X-au-d**).  :class:`~app.models.amount_ownership.AmountOwnership` stores
+    the ``ref.amount_sources`` id because that is the storage shape and a
+    model-layer type reads no cache; the vocabulary a caller writes in is the
+    enum, and this is where the two meet.
+
+    **It is a VALUE rather than an act because a born row states its ownership
+    before it exists.**  :func:`declare_derived` below moves an existing row
+    into this state and is written in terms of this function, so the two cannot
+    come to translate the member differently.  The caller that needs the value
+    is the recurrence engine: its
+    :class:`~app.services.recurrence_engine._amounts.DerivedRowFields` carries
+    a row's whole ownership as one field, splatted into a ``Transaction(...)``
+    that has no row to mutate yet.
+
+    Args:
+        relation: Which :class:`~app.enums.AmountSourceEnum` relation prices
+            the row.
+
+    Returns:
+        The :class:`~app.models.amount_ownership.AmountOwnership` to assign.
+
+    Raises:
+        KeyError: When *relation* is not a seeded member
+            (``ref_cache.amount_source_id``).
+    """
+    return AmountOwnership.derived(ref_cache.amount_source_id(relation))
+
+
 def declare_derived(row, relation: AmountSourceEnum) -> None:
     """Declare *row*'s amount DERIVED by *relation*, and empty its figure.
 
@@ -88,10 +120,11 @@ def declare_derived(row, relation: AmountSourceEnum) -> None:
     a loan payment, and why the loan-settings routes need no writer of their
     own.
 
-    **The enum-to-id translation is why this function exists at all.**  The
-    value object stores the ``ref.amount_sources`` id, because that is the
-    storage shape and a model-layer type reads no cache; the vocabulary a
-    caller writes in is the enum, and this is where the two meet.
+    **The enum-to-id translation is :func:`derived_ownership`'s**, above, and
+    this is the ACT over it: a caller holding a row assigns, a caller building
+    one takes the value.  Splitting them that way is what lets the recurrence
+    engine state a born row's ownership without a row to mutate, with one
+    statement of what the member means (plan step **X-au-d**).
 
     Idempotent, and that is load-bearing rather than incidental: the transfer
     door re-declares both legs on every definition-driven amount write, so a
@@ -107,9 +140,7 @@ def declare_derived(row, relation: AmountSourceEnum) -> None:
         KeyError: When *relation* is not a seeded member
             (``ref_cache.amount_source_id``).
     """
-    row.amount_ownership = AmountOwnership.derived(
-        ref_cache.amount_source_id(relation)
-    )
+    row.amount_ownership = derived_ownership(relation)
 
 
 def owns_its_amount(row) -> bool:

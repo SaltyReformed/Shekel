@@ -6336,21 +6336,31 @@ class TestCashDetailContext:
     def test_an_owner_with_no_paydays_gets_the_page_and_no_chips(
         self, app, auth_client, seed_user, db,
     ):
-        """No paydays at all: 200 with empty chips, not a 500.
+        """No PAYDAYS: 200 with empty chips, not a 500.
 
-        **The state that makes the cadence read's ORDERING load-bearing**, and
+        **The state that makes the no-current-period return load-bearing**, and
         it is measured rather than assumed: an account no longer carries an
         anchor PERIOD (rulings R-EH / R-EO deleted both columns), so an owner
-        can hold accounts and no pay periods -- and with no
-        ``budget.pay_schedule`` row either,
-        :attr:`app.services.pay_calendar.PayCalendar.cadence` REFUSES, because
-        nothing has said how often they are paid.
+        can hold accounts and no pay periods.
 
         Recurrence plan step **R-F17** made both forward figures on this page
-        functions of that cadence, so reading it before the no-current-period
-        return would turn this 200 into a 500.  ``_build_horizons`` reads it
-        past its own ``None`` return and the interest chip reads it inside its
+        functions of the owner's cadence.  ``_build_horizons`` reads it past
+        its own ``None`` return and the interest chip reads it inside its
         conditional expression, which is what keeps this case answering.
+
+        **The owner keeps their ``budget.pay_schedule`` row since plan step
+        ``pay_calendar:C4-d``** (ruling **R-PC45**), and the split is the step.
+        This case deleted the row too, so the ORDERING of the cadence read was
+        what stood between it and a 500 --
+        :attr:`app.services.pay_calendar.PayCalendar.cadence` refused a
+        calendar carrying none.  That property is total now and that owner has
+        no calendar at all: they are refused at ``calendar_for`` and get
+        ``errors/no_pay_calendar.html``, which is
+        :meth:`test_an_owner_with_no_schedule_row_gets_the_repair_page` below.
+        What is left here is the state the chips' guards are actually for --
+        paydays gone, rhythm stated -- and those guards are unchanged, because
+        ``_interest_next_year`` dereferences ``current_period.period_index``
+        and a lapsed schedule reaches it too.
 
         **The two conjuncts of the interest chip's guard are covered by
         SEPARATE cases, and a first draft covered only one.**  That draft
@@ -6359,25 +6369,34 @@ class TestCashDetailContext:
         ``interest_next_year is None`` was satisfied by the account kind alone
         and the second conjunct was never exercised.  An adversarial review
         proved it by deleting that conjunct: all 268 cases in this file still
-        passed.  This case is the CADENCE half (a paydayless owner, where
-        reading the cadence at all would raise); the lapsed-schedule case below
-        is the CURRENT-PERIOD half.
+        passed.
+
+        **What THIS case grades, stated narrowly because an adversarial review
+        of plan step ``pay_calendar:C4-d`` measured the wider claim false.**  It
+        used to be the half where reading the cadence would RAISE, and it was
+        that raise the assertions rode on.  With the schedule row kept, both
+        assertions are over-determined: deleting ``or current_period is None``
+        from ``_build_horizons`` leaves this green (a zero-period owner has an
+        empty window anyway), and ``interest_next_year is None`` is satisfied
+        by ``is_interest`` being False on the seeded Checking account.  What
+        survives is worth keeping and is ALL it claims: an owner with a
+        schedule row and no paydays gets a 200 with empty forward figures
+        rather than a 500.  The CURRENT-PERIOD conjunct is graded by the
+        lapsed-schedule case below, on an interest account, where it is not
+        short-circuited.
         """
         with app.app_context():
             uid = seed_user["user"].id
-            # **The owner must hold no stored cadence, and since plan step
-            # ``pay_calendar:C4-b-1`` the fixture writes one** -- the seeded
-            # opening payday comes from ``pay_period_write.record_paydays``,
-            # which upserts the ``budget.pay_schedule`` row in the same call.
-            # So this state is CONSTRUCTED here rather than inherited from a
-            # fixture that happened to supply it, which is the stronger form:
-            # the assertion that used to stand here could only report that the
-            # fixture had changed.  It is still a real owner -- somebody who
-            # has never generated a schedule holds neither row -- and the
-            # periods go FIRST, which is the order the foreign key plan step
-            # ``pay_calendar:C4-b-2`` adds makes the only non-cascading one.
+            # The paydays go and the ``budget.pay_schedule`` row STAYS: the
+            # state is CONSTRUCTED here rather than inherited from a fixture
+            # that happened to supply it, which is the stronger form -- the
+            # assertion that used to stand here could only report that the
+            # fixture had changed.  ``seed_user``'s opening payday comes from
+            # ``pay_period_write.record_paydays``, which upserts the schedule
+            # row in the same call (plan step ``pay_calendar:C4-b-1``), so
+            # deleting the periods alone leaves exactly the owner this case
+            # wants: a stated rhythm and nothing recorded under it.
             db.session.query(PayPeriod).filter_by(user_id=uid).delete()
-            db.session.query(PaySchedule).filter_by(user_id=uid).delete()
             db.session.commit()
 
             context = _capture_cash_detail_context(
@@ -6387,6 +6406,59 @@ class TestCashDetailContext:
             assert context["current_period"] is None
             assert context["horizons"] == []
             assert context["interest_next_year"] is None
+
+    def test_an_owner_with_no_schedule_row_gets_the_repair_page(
+        self, app, auth_client, seed_user, db,
+    ):
+        """The other half of "no paydays", and it is the repair page now.
+
+        **This case is the ANSWER that plan step ``pay_calendar:C4-d`` (ruling
+        R-PC45) moved**, split out of the one above rather than deleted with
+        it.  An owner with no ``budget.pay_schedule`` row -- the companion's
+        shape, production's user 2 -- used to reach this page and render it
+        with three blank chips, because ``calendar_for`` handed them an empty
+        calendar carrying no cadence and each per-period feature guarded
+        separately.  They are refused at ``calendar_for`` now and get
+        ``errors/no_pay_calendar.html``, which is the one answer the
+        application gives that state and which carries the repair link.
+
+        Still a 200 rather than a 500: the ``PayCalendarError`` handler renders
+        the page.  ``@require_owner`` 404s a companion before any of this, so
+        no live page changes.
+        """
+        with app.app_context():
+            uid = seed_user["user"].id
+            # Periods FIRST: ``fk_pay_periods_schedule`` is ON DELETE RESTRICT
+            # since plan step ``pay_calendar:C4-b-2``, so the parent cannot go
+            # under live children.
+            db.session.query(PayPeriod).filter_by(user_id=uid).delete()
+            db.session.query(PaySchedule).filter_by(user_id=uid).delete()
+            db.session.commit()
+
+        # The SAME url ``_capture_cash_detail_context`` drives, because this
+        # case is about that page's answer: a hand-written path is how a route
+        # test comes to grade a 405 or a 404 from the url map and read it as
+        # the refusal under test.
+        response = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/details",
+        )
+
+        assert response.status_code == 200
+        assert b"Pay Calendar Unavailable" in response.data
+        assert b"/pay-periods/generate" in response.data
+
+        # **The link is FOLLOWED, because offering a repair and being a repair
+        # are different claims** -- and an adversarial review of plan step
+        # ``pay_calendar:C4-d`` measured them apart.  ``generate_form``
+        # redirects into the pay-periods settings section, which read
+        # ``calendar_for`` unconditionally, so the recovery page's own repair
+        # answered the recovery page again: a loop, for the one owner the page
+        # is written for.  Asserting the link's PRESENCE cannot see that.
+        repair = auth_client.get("/pay-periods/generate", follow_redirects=True)
+
+        assert repair.status_code == 200
+        assert b"Pay Calendar Unavailable" not in repair.data
+        assert b'name="cadence_days"' in repair.data
 
     def test_an_interest_account_on_a_lapsed_schedule_still_renders(
         self, app, auth_client, seed_user, db,

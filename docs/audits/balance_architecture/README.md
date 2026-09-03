@@ -511,11 +511,12 @@ sentence exists so nobody builds it believing the question was never raised.
   object total across ruling R-FI's two states (**R-IW**); the `_FIGURE_COLUMNS` registry is
   gone and no migration was needed. Closed **N-293**, opened **N-437** and **N-440**. Record in
   `archive/x_au_k_as_built_2026-09-02.md`.
-* [ ] **X-au-d** `refactor(salary): a projected paycheck is not stored` -- the SALARY cutover. The
-  recurrence engine stops pricing salary rows, the 51 live rows go NULL, and
-  `income_service.live_projected_net`, `transaction_service._freshest_amount` and
-  `_reconcile_cached_amount` are deleted. Closes **N-224** and **N-228** (the batch producer called
-  with a one-element list, which disappears with the mechanism rather than by threading a map).
+* [x] **X-au-d** `ed06acf6` -- a paycheck's amount is its salary profile's, and it stores none.
+  59 non-override salary rows declared (**R-JB**: settled ones too), the read-time repair and
+  its whole seam deleted, and FOUR dormant defects the stored figure was absorbing closed or
+  filed -- the archive re-price (**N-261**, `-$9,677.24`), a templates-form 500 (**N-253**),
+  `_freshest_amount`'s conjunct, and **N-444**. Two engines, one pass, one fence fewer.
+  Record in `archive/x_au_d_as_built_2026-09-03.md`.
 * [ ] **X-au-e** `refactor(recurrence): a template row reads its template's series` -- the TEMPLATE
   cutover, onto X-au-a's series. Generation stops pricing, 511 rows go NULL, and regeneration's amount
   arm plus the conflict chooser's keep-vs-use decision are deleted: a hand-edited month owns its
@@ -554,25 +555,12 @@ sentence exists so nobody builds it believing the question was never raised.
       * [x] **X-au-g-2c-3c** `cb6469b2` -- a FIFTH spelling of the accrual deleted; `recurrence:D52`'s 200,000-draw agreement REFUTED at 500,000, `$565.37` against `$565.36`. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
       * [ ] **X-au-g-2c-3b** the DECOMPOSED parent of the CHARGE-CALENDAR half, split 2026-09-02.
         * [x] **X-au-g-2c-3b-1** `fd3afc59` -- the CHARGE calendar moved to `loan_ledger._charges`, the same inversion one tier up. **D53** and **D55** deliberately not taken. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
-        * [ ] **X-au-g-2c-3b-2** `fix(loans): the settled walk charges once per installment` --
-          the walk takes the calendar, so ONE interest accrual and ONE escrow stand per
-          INSTALLMENT rather than per PAYMENT, and `split_payment_cash` is DELETED (one caller; its
-          own docstring concedes it is correct only while a loan takes one payment per accrual
-          period). Carries **N-409**'s second half and satisfies **recurrence:D51**, whose remedy
-          `R16-c` states as deletion -- after this the two walks agree on the RULE, so that merge
-          becomes behaviour-neutral. **MOVES POSTED MONEY.** `$0.00` on production: 0 due-month
-          collisions on either live loan, measured on a clone at `b7a41e2c9d63`; `$1,631.05` on one
-          colliding pair (`$616.99` escrow + `$1,014.06` interest).
-          **TWO OBLIGATIONS IT MUST NOT DISCOVER MID-BUILD.** (a) `split_payment_cash` is an
-          ORACLE, not only a producer: `test_loan_payoff_date_oracle._clears_within` and
-          `test_loan_interest_in_year` re-fold through it DELIBERATELY as the retired
-          one-payment-per-month composition, so agreement is *"the equivalence claim itself"*.
-          Deleting it naively leaves the producer grading itself -- move the composition INTO the
-          tests, still calling `accrue_monthly_interest`, since spelling the primitive inline
-          re-creates the association `2c-3c` just deleted. (b) An ANCHOR reset and a standing
-          charge need a ruling: an anchor is an authoritative balance that already includes accrued
-          interest, so a charge standing at one should be DISCARDED rather than carried across it.
-          Order `charge -> payment -> anchor`. **Both are open developer questions.**
+        * [x] **X-au-g-2c-3b-2** `3b7716f8` -- ONE interest accrual and ONE escrow per
+          INSTALLMENT, `split_payment_cash` deleted, both tiers folded onto the ONE replay
+          `loan_ledger._replay.replay_loan_events` (rule 14). `$0.00` on production, `$1,631.05`
+          on a forced collision. Closes **recurrence:D51**, carries **N-409**'s second half, rules
+          **R-IX**, files **N-439**. As built: `archive/x_au_g_2c_3b_2_2026-09-02.md`. **A later
+          step must NOT delete `tests/oracles/loan_monthly_composition.py`.**
         * [ ] **X-au-g-2c-3b-3** `fix(loans): the engine feed states no allocation` -- the feed
           passes the CASH and `project_forward` charges the month's escrow, which DELETES the floor
           rather than re-dating it. Two earlier remedies were measured wrong first: re-keying the
@@ -610,9 +598,11 @@ sentence exists so nobody builds it believing the question was never raised.
   generated transfer.
   **ITS SHADOW HALF SHIPPED AT `X-au-g-2c-2` (`1f2b98a4`, ruling R-IN)** -- a shadow resolves from
   its parent, the copy in `update_transfer` and the drift corrector in `restore_transfer` are both
-  deleted, and **Transfer Invariant 3 is already STRUCTURAL**. This bullet claimed all three until
-  that step; they are struck rather than left, because a step description that claims work which
-  shipped elsewhere is how the next reader rebuilds it. What this step still owes is the parent,
+  deleted, and **Transfer Invariant 3's AMOUNT clause is STRUCTURAL for a DERIVED shadow -- not for
+  an owner-priced pair, whose TAKE arm still states one figure on the parent AND each leg
+  (`X-au-m`'s subject), and not for the status and period clauses (`X-bi-6`'s)**. This bullet
+  claimed all three until that step; they are struck rather than left, because a step description
+  that claims work which shipped elsewhere is how the next reader rebuilds it. What this step still owes is the parent,
   and one consequence worth naming: once `transfers.amount` is empty for a generated transfer,
   "the owner authored this figure" IS "the parent owns its amount", so
   `transfer_service._amount.apply_amount_ownership`'s `stated_override` parameter dissolves. `uq_transfers_adhoc_dedupe`

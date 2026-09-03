@@ -1561,11 +1561,13 @@ class TestOracleIsNotVacuous:
             ).state.monthly_payment
 
             # Inject $10 of phantom interest into the WALK's accrual only.  The
-            # module binding ``_split.accrue_monthly_interest`` is patched; the
-            # resolver's ``rate_period_engine.accrue_monthly_interest`` is a
-            # DISTINCT import and stays honest, so the two diverge by exactly $10.
+            # module binding ``_replay.accrue_monthly_interest`` is patched -- it
+            # was ``_split``'s until plan step X-au-g-2c-3b-2 moved the accrual
+            # onto the shared replay, and only the BINDING moved; the resolver's
+            # ``rate_period_engine.accrue_monthly_interest`` is a DISTINCT import
+            # and stays honest, so the two diverge by exactly $10.
             monkeypatch.setattr(
-                "app.services.loan_ledger._split"
+                "app.services.loan_ledger._replay"
                 ".accrue_monthly_interest",
                 lambda balance, rate: (
                     accrue_monthly_interest(balance, rate) + Decimal("10.00")
@@ -2636,14 +2638,30 @@ class TestReaderParallelRunAgainstResolver:
     def test_biweekly_due_month_collision_reconciles_and_only_row_dates_differ(
         self, app, db, seed_user, seed_periods,
     ):
-        """Two payments in one due month: balance AND per-period attribution agree.
+        """Two payments in one due month: the two GENESIS producers agree, and
+        the resolver's replay differs by exactly one month's interest.
 
         A biweekly cadence sometimes lands two monthly due dates in one calendar
-        month.  For display the resolver's replay REDISTRIBUTES the second to the
-        next month (``loan_payment_service._redistribute_to_distinct_months``, a
-        resolver-only display fix, because the MONTHLY engine needs one payment
-        per due month); the genesis reader keeps every payment at its true due
-        date.  The only surviving difference is therefore the display ROW DATES.
+        month.  Since plan step **X-au-g-2c-3b-2** the genesis walk charges that
+        month ONCE -- interest is the price of time, not of a transaction -- so
+        the second payment clears no fresh charge and pays pure principal.  The
+        resolver's replay still charges a month per payment RECORD
+        (``rate_period_engine.replay_schedule`` calls ``_replay_payment_row``
+        once per record and applies the CONTRACTUAL P&I, not the actual cash),
+        and it additionally redistributes the second record to the next month for
+        display (``loan_payment_service._redistribute_to_distinct_months``).
+
+        **So this test no longer asserts a three-way equality, and that is a
+        RULING, not a regression** (developer, 2026-09-02).  The ledger and the
+        posted reader still agree, as they must -- the postings are a projection
+        of the one walk.  The resolver's replay is the FOURTH walk over a loan
+        and the last one still charging per record; its balance is ALREADY dead
+        in production (``loan_resolver._payoff._build_forward_inputs`` takes
+        ``replay.balance_as_of`` only ``if confirmed_view is None``, and every
+        production read supplies one since plan step E1d-b), so nothing rendered
+        moves.  It is graded here on the unseeded path deliberately, as an
+        independent oracle, and merging it into the one walk is its own arc.
+        The gap is pinned by its MECHANISM below rather than by a figure.
 
         The per-period BALANCE divergence this test used to pin (review M7 /
         Step-4 note M2) is now CLOSED.  It existed because redistribution
@@ -2686,11 +2704,12 @@ class TestReaderParallelRunAgainstResolver:
             _settle(seed_user, loan, seed_periods[2], amount=scheduled_pi)
             db.session.commit()
 
-            # The balance reconciles three ways despite the collision.
+            # The two GENESIS producers agree, as they always must -- the posted
+            # ledger is a projection of the same walk.
             ledger = _ledger_balance(loan.id, scenario_id)
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
             reader = _posted_balance(loan.id, scenario_id)
-            assert ledger == resolver == reader
+            assert ledger == reader
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
             # Attribution, DISPLAY rows: the confirmed view keeps BOTH rows at the
@@ -2711,10 +2730,21 @@ class TestReaderParallelRunAgainstResolver:
                 ),
                 _AS_OF,
             )
-            assert [
-                row.payment_date
-                for row in replay_state.schedule if row.is_confirmed
-            ] == [date(2026, 2, 1), date(2026, 3, 1)]
+            resolver_rows = [
+                row for row in replay_state.schedule if row.is_confirmed
+            ]
+            assert [row.payment_date for row in resolver_rows] == [
+                date(2026, 2, 1), date(2026, 3, 1),
+            ]
+
+            # THE BALANCE DIVERGENCE, pinned by its MECHANISM rather than by a
+            # magic number: the resolver charges a month per RECORD, so its
+            # second row accrues a month the walk does not, and the gap is
+            # exactly that row's own interest.  Reading it off the resolver's own
+            # row is what makes this a statement about the rule rather than a
+            # transcription of today's arithmetic.
+            assert resolver - ledger == resolver_rows[1].interest
+            assert resolver_rows[1].interest > Decimal("0.00")
 
             # Attribution, LEDGER per-period buckets (the branch's namesake): the
             # reader's per-period map reflects BOTH paydowns by period 2, so it
@@ -2731,9 +2761,11 @@ class TestReaderParallelRunAgainstResolver:
             balance_map = _posted_period_map(loan.id, scenario_id, seed_periods)
             assert balance_map[seed_periods[2].id] == reader
             assert balance_map[seed_periods[2].id] < balance_map[seed_periods[1].id]
-            assert balance_map[seed_periods[2].id] == _resolver_balance(
+            # The resolver's per-period view carries the SAME one-month gap, for
+            # the same reason -- not a second defect.
+            assert _resolver_balance(
                 loan.id, scenario_id, seed_periods[2].start_date,
-            )
+            ) - balance_map[seed_periods[2].id] == resolver_rows[1].interest
 
 
 class TestReadSwitchProductionPath:

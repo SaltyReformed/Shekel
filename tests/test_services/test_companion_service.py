@@ -30,7 +30,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import companion_service
 from app.services.auth_service import hash_password
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import PayCalendarError, calendar_for
 from tests._test_helpers import open_owner_calendar
 from app.models.amount_ownership import AmountOwnership
 
@@ -732,6 +732,14 @@ class TestPeriodNavigationMovedToTheCalendar:
             assert view.period.period_id == seed_periods_today[1].id
             assert view.previous is not None and view.next_period is not None
 
-            # The control: the requester's OWN calendar is empty, so a read
-            # built from ``current_user`` would hide both links.
-            assert calendar_for(companion.id).periods == ()
+            # The control, STRENGTHENED by plan step ``pay_calendar:C4-d``
+            # (ruling R-PC45).  It read ``calendar_for(companion.id).periods
+            # == ()``: the requester's own calendar was EMPTY, so a read built
+            # from ``current_user`` would have hidden both links.  A companion
+            # holds no ``budget.pay_schedule`` row -- production's user 2 is
+            # exactly this -- and ``calendar_for`` refuses that owner now, so
+            # the same mistake is a 500 rather than a silently empty nav.  The
+            # control is the stronger claim, and it is the one the ruling
+            # bought: the wrong owner cannot be resolved quietly.
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
+                calendar_for(companion.id)

@@ -215,14 +215,17 @@ class PayCalendar:
         cadence_days: Days between paydays, from ``budget.pay_schedule``.  Read
             for the last saved period's end and for every projected period past
             it; validated by :func:`~._derive.derive_periods`.
-            **``None`` ONLY when :attr:`paydays` is empty** (plan step C2-b1),
-            and that pairing is enforced rather than documented: an owner with
-            no ``budget.pay_schedule`` row has no pay periods either since plan
-            step C4-b-2 (``fk_pay_periods_schedule``), so they have no last
-            period and the value is provably unread, while the same absence
-            beside a payday is a broken invariant and is refused at
-            construction.  Every method that reads it is reachable only from a
-            non-empty calendar, so none of them tests it.
+            **Not optional, since plan step C4-d** (ruling **R-PC45**).  It was
+            ``int | None`` with ``None`` legal ONLY beside an empty
+            :attr:`paydays`, a pairing enforced at construction and restated as
+            a precondition by every producer it travelled to.  A calendar now
+            HAS a cadence: the owner it stood for -- no ``budget.pay_schedule``
+            row, which since plan step C4-b-2 is also no pay periods
+            (``fk_pay_periods_schedule``) -- has no calendar at all, because
+            :func:`~._loader.calendar_for` refuses them.  **An EMPTY calendar is
+            still ordinary and now carries a real cadence**: an owner holding a
+            schedule row and zero paydays, which
+            ``pay_period_admin.reset_pay_periods`` passes through.
         history_opens_on: How far back this owner's PAYCHECKS reach, from
             ``budget.pay_schedule``, or ``None`` for NOT STATED -- in which
             case the backward rhythm answers nothing and only the RECORD is
@@ -245,7 +248,7 @@ class PayCalendar:
 
     user_id: int
     paydays: "tuple[tuple[int | None, date], ...]"
-    cadence_days: "int | None"
+    cadence_days: int
     history_opens_on: "date | None"
     periods: "tuple[DerivedPeriod, ...]" = field(
         init=False, repr=False, compare=False,
@@ -292,7 +295,7 @@ class PayCalendar:
     def from_paydays(
         cls,
         paydays: "Iterable[tuple[int | None, date]]",
-        cadence_days: "int | None",
+        cadence_days: int,
         user_id: int,
         history_opens_on: "date | None",
     ) -> "PayCalendar":
@@ -304,10 +307,10 @@ class PayCalendar:
                 ``budget.pay_periods.id`` the payday was read from; ``None``
                 marks a period no foreign key can point at.  **The whole set,
                 never a window** -- see the class docstring.
-            cadence_days: Days between paydays, from ``budget.pay_schedule``,
-                or ``None`` for an owner with no row there -- which since plan
-                step C4-b-2 is an owner with no pay periods.  ``None`` beside a
-                non-empty *paydays* is refused.
+            cadence_days: Days between paydays, from ``budget.pay_schedule``.
+                **Required and non-optional since plan step C4-d**: an owner
+                with no row there has no calendar rather than a cadence-less
+                one, so there is no absence for this parameter to carry.
             user_id: The owner these paydays belong to.
             history_opens_on: How far back the owner's paychecks reach, or
                 ``None`` -- see the class docstring.  **Required rather than
@@ -344,38 +347,25 @@ class PayCalendar:
         cadence and nothing else.  Both answer from :attr:`cadence_days`, so
         there is one fact and one derivation however it is reached.
 
+        **TOTAL since plan step C4-d** (ruling **R-PC45**), and the refusal it
+        lost is the point of that step rather than a relaxation.  It raised
+        ``PayCalendarError`` when :attr:`cadence_days` was ``None``, which was
+        reachable for exactly one owner: no ``budget.pay_schedule`` row, hence
+        (``fk_pay_periods_schedule``) no paydays.  That owner has no CALENDAR
+        now -- :func:`~._loader.calendar_for` refuses them where it used to
+        answer an empty one -- so this property is never reached without a
+        cadence and every ``cadence_days is not None`` guard written to keep it
+        off a page has been deleted rather than left standing over a state
+        nothing can produce.  **The refusal did not disappear; it moved UP**, to
+        the one door that knows whether the owner has a schedule at all, where
+        the reason it always gave still holds: every monthly equivalent in the
+        application is a function of this number, and a silently assumed
+        biweekly rhythm would render a weekly-paid owner every figure at half
+        its true value.
+
         Returns:
             The owner's :class:`~._cadence.PayCadence`.
-
-        Raises:
-            PayCalendarError: This calendar holds no cadence, which
-                :attr:`cadence_days` documents as possible ONLY for an empty
-                calendar.  An owner with no paydays and no schedule row has
-                never stated how often they are paid, and every monthly
-                equivalent on every page is a function of that -- so there is
-                nothing to answer with.  Refused rather than defaulted for the
-                reason :func:`app.services.recurrence._resolution._effective_start`
-                refuses the same owner: a broken invariant rather than a state
-                to paper over, and a silently assumed biweekly rhythm would
-                render a weekly-paid owner every figure at half its true value.
-                Unreachable through a registered owner since plan step X-ad-a,
-                which made registration write the ``budget.pay_schedule`` row,
-                and since plan step C4-b-2 the two halves of that owner are one
-                fact rather than two: ``fk_pay_periods_schedule`` means no
-                schedule row IS no paydays.
         """
-        if self.cadence_days is None:
-            raise PayCalendarError(
-                f"user {self.user_id} has no pay cadence, so how many "
-                f"paychecks they receive in a year is unanswerable.  They "
-                f"hold no budget.pay_schedule row, and since "
-                f"fk_pay_periods_schedule that means no paydays either; since "
-                f"plan step X-ad-a registration writes both, so this is "
-                f"companion data or an owner before their first batch rather "
-                f"than a state to default.  Assuming "
-                f"biweekly would report a weekly-paid owner's commitments at "
-                f"half their true monthly value."
-            )
         return PayCadence(cadence_days=self.cadence_days)
 
     # ---- the schedule's own bounds -----------------------------------

@@ -41,7 +41,7 @@ from app.services import loan_ledger, transfer_service
 from app.services.amount_ownership import owns_its_amount
 from app.services.cash_ledger import (
     amount_basis,
-    display_amounts_by_id,
+    amounts_by_id,
     pricing_load_options,
 )
 from tests._test_helpers import (
@@ -549,7 +549,7 @@ class TestALoanPaymentsLegsReadTheLoan:
             )
 
             assert xfer.amount == Decimal("1.00")
-            priced = display_amounts_by_id(legs, basis)
+            priced = amounts_by_id(legs, basis)
             assert set(priced.values()) == {_CONTRACT}
             for leg in legs:
                 assert leg.estimated_amount is None
@@ -619,7 +619,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
         ``LOAN_PAYMENT`` would book the right figure and show the wrong one for
         every day between the edit and the settle.
 
-        ``display_amounts_by_id`` is what the grid publishes (ruling **R-Q**),
+        ``amounts_by_id`` is what the grid publishes (ruling **R-Q**),
         so it is what is asked here.
         """
         with app.app_context():
@@ -628,7 +628,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
             basis = amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
-            assert set(display_amounts_by_id(legs, basis).values()) == {
+            assert set(amounts_by_id(legs, basis).values()) == {
                 _CONTRACT,
             }
 
@@ -641,7 +641,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
             fresh = amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
-            shown = display_amounts_by_id(_shadows(xfer.id), fresh)
+            shown = amounts_by_id(_shadows(xfer.id), fresh)
             assert set(shown.values()) == {_TYPED}
 
 
@@ -742,10 +742,10 @@ class TestTheAmountModelsOwnEagerLoad:
             )
             # The LOAN resolve is a query and is not what this measures, so it
             # is paid once outside the capture.
-            display_amounts_by_id(legs[:1], basis)
+            amounts_by_id(legs[:1], basis)
 
             priced, statements = capture_sql_statements(
-                lambda: display_amounts_by_id(legs, basis),
+                lambda: amounts_by_id(legs, basis),
             )
 
             assert statements == [], (
@@ -781,10 +781,10 @@ class TestTheAmountModelsOwnEagerLoad:
             basis = amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
-            display_amounts_by_id(legs[:1], basis)
+            amounts_by_id(legs[:1], basis)
 
             _priced, statements = capture_sql_statements(
-                lambda: display_amounts_by_id(legs, basis),
+                lambda: amounts_by_id(legs, basis),
             )
 
             assert statements, (

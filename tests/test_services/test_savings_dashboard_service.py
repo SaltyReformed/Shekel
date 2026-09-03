@@ -4105,8 +4105,16 @@ class TestNetWorthHorizon:
     the build rather than inside it.
     """
 
-    def test_none_without_periods(self, app, db, bare_user):
+    def test_none_without_periods(self, app, db, bare_user_with_cadence):
         """No pay periods -> the horizon producer returns None (no axis).
+
+        **``bare_user_with_cadence`` rather than ``bare_user`` since plan step
+        ``pay_calendar:C4-d``** (ruling R-PC45): ``calendar_for`` refuses an
+        owner with no ``budget.pay_schedule`` row, so a bare owner would raise
+        inside ``build_horizon`` and this case would stop being about the
+        horizon producer's own empty answer.  The owner it builds is the one
+        this case has always been about -- no PAY PERIODS -- with the half of
+        them that was never the subject left in place.
 
         **The owner really has none**, and that is the change pay-calendar plan
         step C2-f2d-3 forced.  This case built a ``_DashboardCoreData`` with
@@ -4128,7 +4136,9 @@ class TestNetWorthHorizon:
             )
             core = _DashboardCoreData(
                 accounts=[],
-                balance_ctx=BalanceContext.build(bare_user["user"].id),
+                balance_ctx=BalanceContext.build(
+                    bare_user_with_cadence["user"].id,
+                ),
             )
             assert build_horizon(core, []) is None
 
@@ -6540,24 +6550,24 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
     def test_an_owner_with_no_paydays_is_answered_rather_than_refused(
         self, app, db, seed_user,
     ):
-        """No paydays at all: the narrow per-account producer still answers.
+        """No PAYDAYS: the narrow per-account producer still answers.
 
         **The state that makes ``_build_projection_context``'s guard
         load-bearing**, measured rather than assumed.  An account carries no
         anchor PERIOD any more (rulings R-EH / R-EO deleted both columns), so
-        an owner can hold accounts and no pay periods -- and with no
-        ``budget.pay_schedule`` row either,
-        :attr:`app.services.pay_calendar.PayCalendar.cadence` REFUSES, because
-        nothing has stated how often they are paid.
-
+        an owner can hold accounts and no pay periods.
         ``compute_account_balance_cell`` publishes no horizon for such an
-        owner, so resolving the offsets unconditionally would refuse for a
-        figure the fragment never shows -- byte for byte the defect
-        ``_debt_summary_with_dti``'s own comment records this package paying
-        for once already.  (The FULL dashboard reads ``calendar.cadence``
-        unconditionally for its emergency-fund coverage and refuses for this
-        owner regardless; the narrow producers are what this protects, which
-        is why the case is written against one of them.)
+        owner, and the guard is what keeps the offsets unresolved for a figure
+        the fragment never shows.
+
+        **The owner keeps their ``budget.pay_schedule`` row since plan step
+        ``pay_calendar:C4-d``** (ruling R-PC45), and the split is the step.
+        This case deleted the row as well, so it measured the owner who has
+        stated NOTHING -- for whom ``PayCalendar.cadence`` then refused.  That
+        owner has no calendar at all now and is refused at ``calendar_for``,
+        which is :meth:`test_an_owner_with_NO_SCHEDULE_ROW_is_refused` below.
+        What is left here is the state the guard is actually for: paydays gone,
+        rhythm stated, nothing to publish a horizon over.
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
@@ -6581,17 +6591,55 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
             # periods go FIRST, which is the order the foreign key plan step
             # ``pay_calendar:C4-b-2`` adds makes the only non-cascading one.
             db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
-            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
             db.session.commit()
 
-            # The refusal is real: shown firing on the value the producer
-            # would otherwise read, so this case cannot pass vacuously if
-            # ``cadence`` ever stops raising.
-            with pytest.raises(PayCalendarError):
-                _ = calendar_for(user_id).cadence
+            # The premise, asserted rather than assumed: the owner really has
+            # no payday and really still has a rhythm, so the empty answer
+            # below is the guard's and not a refusal wearing its clothes.
+            calendar = calendar_for(user_id)
+            assert calendar.periods == ()
+            assert calendar.cadence.cadence_days == 14
 
             cell = savings_dashboard_service.compute_account_balance_cell(
                 BalanceContext.build(user_id), seed_user["account"].id,
             )
 
             assert cell.projected == {}
+
+    def test_an_owner_with_NO_SCHEDULE_ROW_is_refused(
+        self, app, db, seed_user,
+    ):
+        """The other half of "no paydays", and it is a refusal (plan step C4-d).
+
+        The owner above states a rhythm and has recorded no payday under it.
+        This one has stated nothing -- no ``budget.pay_schedule`` row, which
+        since ``fk_pay_periods_schedule`` means no paydays either -- and that
+        is the companion's shape, production's user 2.
+
+        Before the ruling this owner reached the narrow producer and got an
+        empty ``projected`` map, because ``_build_projection_context`` guarded
+        the cadence read.  They are refused at ``calendar_for`` now, once, for
+        every surface, so the two halves of "this owner has no rhythm" stop
+        being answered differently by each page that happens to guard.
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
+        from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+            PayCalendarError,
+            calendar_for,
+        )
+        with app.app_context():
+            user_id = seed_user["user"].id
+            # Periods FIRST: ``fk_pay_periods_schedule`` is ON DELETE RESTRICT.
+            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
+            db.session.commit()
+
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
+                calendar_for(user_id)
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
+                savings_dashboard_service.compute_account_balance_cell(
+                    BalanceContext.build(user_id), seed_user["account"].id,
+                )

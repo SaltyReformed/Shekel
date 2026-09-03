@@ -15,7 +15,7 @@ streamed clone of ``shekel-prod-db``), one class each below:
 * **D25** -- ``calculate_paycheck`` received the same truncated list as its
   ``all_periods``, so third-paycheck detection read 1-3 periods instead of 61.
   One salary row was STORED $502.45 below its true net pay.  The read-time
-  recompute (``income_service.live_projected_net``) kept that figure off every
+  recompute (the read-time repair X-au-d deleted) kept that figure off every
   surface, so what it endangered was the stored cache the grid's inline editor
   pre-fills from -- see the migration's docstring for the measurement.
 * **D2** -- a rule's chosen start period was not in the window, so the opening
@@ -73,7 +73,12 @@ from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.routes._period_population import populate_new_periods
-from app.services import pay_period_write, period_population, recurrence_engine
+from app.services import (
+    cash_ledger,
+    pay_period_write,
+    period_population,
+    recurrence_engine,
+)
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import (
@@ -542,6 +547,16 @@ class TestThePaycheckSeesTheWholeSchedule:
     longer something a caller of the generation seam can express -- reaching it
     now means building a SECOND calendar holding one payday, which is a
     different owner's schedule rather than a narrowed view of this one.
+
+    **THE REQUIREMENT MOVED AT PLAN STEP balance:X-au-d AND THESE CASES MOVED
+    WITH IT.**  They asserted the figure GENERATION stored; generation prices
+    nothing now -- a salary row DECLARES its definition and stores no figure at
+    all -- so the whole-schedule requirement lives where the derivation does,
+    in :meth:`~app.services.income_service.SalaryPricing._net_by_period`, which
+    derives its own calendar.  Each case therefore asserts what the AMOUNT
+    MODEL answers for the generated row rather than what the row holds, and
+    D25's defect is graded exactly as before: a producer counting one January
+    payday answers the windowed figure.
     """
 
     def _salary_template(self, seed_user):
@@ -675,7 +690,16 @@ class TestThePaycheckSeesTheWholeSchedule:
             windowed = windowed_break.earnings.net_pay
 
             assert len(created) == 1
-            assert created[0].estimated_amount == whole
+            # The row STORES nothing (plan step balance:X-au-d), so the figure
+            # under test is the one the amount model answers for it -- which is
+            # where the whole-schedule requirement now lives.  A row asserted
+            # by its column would compare ``None`` here.
+            assert created[0].estimated_amount is None
+            priced = cash_ledger.amounts_by_id(
+                created,
+                cash_ledger.amount_basis(seed_user["user"].id, scenario_id),
+            )
+            assert priced[created[0].id] == whole
             assert whole != windowed, (
                 "the window and the whole schedule now agree for this period, "
                 "so this test no longer guards anything -- check that "
@@ -729,8 +753,9 @@ class TestThePaycheckSeesTheWholeSchedule:
 
         The comparison above is relative -- two equal-but-wrong figures would
         satisfy it.  January's FIRST payday pays the $500 deduction and its
-        THIRD does not, so the two generated rows must differ by exactly that,
-        net of the tax the deduction shelters.
+        THIRD does not, so the two rows must differ by exactly that, net of the
+        tax the deduction shelters.  Read through the amount model rather than
+        off the rows, for the reason the class docstring states.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -743,9 +768,12 @@ class TestThePaycheckSeesTheWholeSchedule:
             )
             db.session.flush()
 
+            priced = cash_ledger.amounts_by_id(
+                created,
+                cash_ledger.amount_basis(seed_user["user"].id, scenario_id),
+            )
             by_start = {
-                row.pay_period.start_date: row.estimated_amount
-                for row in created
+                row.pay_period.start_date: priced[row.id] for row in created
             }
             first = by_start[date(2026, 1, 2)]
             third = by_start[date(2026, 1, 30)]

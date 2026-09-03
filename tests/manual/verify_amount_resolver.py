@@ -6,28 +6,25 @@ projected ones --
 :func:`app.services.cash_ledger.resolve_transaction_amount` answers what the app
 already answers, or the run fails naming the rows where it does not.
 
-**"The answer the app gives today" is not single-valued, so this file names the
-one it grades.**  It was three answers when this was written: the grid published
-a transient ``live_estimated_amount`` as
+**"The answer the app gives today" was not single-valued when this file was
+written, so it names the one it grades.**  It was three answers: the grid
+published a transient ``live_estimated_amount`` as
 ``amount_overrides.get(txn.id, txn.estimated_amount)``, every HTMX fragment fell
 back to the raw column, and ``dashboard_service`` read the column outright --
 which IS finding **N-224**, and which plan step X-au-c2b collapsed into ONE rule
-(``cash_ledger.display_amounts_by_id``).  The graded expression is that rule's,
-and it is the right one because it is the ESTIMATE half -- the quantity the
-resolver answers and the one plan step X-au-c makes NULLABLE.
+(``display_amounts_by_id``).  **That rule is ``cash_ledger.amounts_by_id`` as of
+plan step X-au-d**, which deleted the live half of the composition: a derived
+row stores no figure, so there is nothing for a recompute to supersede and the
+merge has no second term.  The graded expression is the ESTIMATE half -- the
+quantity the resolver answers and the one plan step X-au-c made NULLABLE.
 
 **It is NOT the expression the balance surfaces fold, and a first draft of this
-paragraph said it was.**  ``cash_ledger.income_amount`` evaluates
-``override else effective_amount``; ``_expense_amount`` falls through to the
-three-bucket entry reservation; ``balance_at._plan._planned_from_shadows`` reads
-``live_cash.get(id, shadow.effective_amount)``.  ``effective_amount`` is
-``actual ?? estimated`` with a zero for deleted and excluded rows, so for those
-row classes the folded figure and the graded one differ BY DESIGN: this file
-grades what a row's amount IS, and the fold composes that with a status and an
-entered actual.  One row on the clone makes the difference visible -- a
-Projected, non-override template row carrying an operator-typed
-``actual_amount`` -- and what ``effective_amount`` answers for a row that owns
-no amount is the ruling plan step X-au-c owes.
+paragraph said it was.**  The fold composes a row's amount with its status and
+its settlement record (``cash_ledger.contribution_of`` ->
+``row_valuation.fixed_contribution``), and for an EXPENSE it composes it with
+the envelope reservation as well.  So for a deleted, excluded or settled row the
+folded figure and the graded one differ BY DESIGN: this file grades what a row's
+amount IS, and the fold grades what it is WORTH.
 
 **AN AGREEMENT ORACLE ALONE CANNOT SEE THIS RESOLVER, and an adversarial review
 proved it by deleting the resolver.**  With the whole body replaced by
@@ -79,15 +76,14 @@ by the census below rather than argued about:
   file and by nothing in this one.
 
 **Where the two sides share a producer.**  For SALARY and LOAN_PAYMENT rows the
-app's answer comes from ``live_amounts``, which since plan step X-au-b
-is :func:`~app.services.cash_ledger.amount_basis` flattened -- the same function
-the resolver reads.  What is graded for those rows is the DISPATCH: that the
-rule claims exactly the rows the override map holds and no others (the census
-prints both counts side by side).  Their ARITHMETIC is graded nowhere -- there
-is no second producer of a net paycheck -- and saying so is the honest form of
-it.  For TEMPLATE and TRANSFER rows the resolver reads the price series or the
-parent transfer while the app reads the stored column, so pass 2 is what makes
-that comparison mean something.
+app's answer IS the resolver's, because plan step **X-au-d** deleted the
+read-time repair that used to give a second one.  So for those rows pass 1 is an
+identity and grades nothing at all, which is stated rather than left implied:
+their ARITHMETIC has no second producer, and what still grades them is pass 2 --
+a SALARY row's stored column is empty, so a resolver reading it would answer
+``None`` rather than a figure.  For TEMPLATE and TRANSFER rows the resolver
+reads the price series or the parent transfer while the app reads the stored
+column, so pass 2 is what makes that comparison mean something.
 
 **Measured 2026-08-12** on a clone of production upgraded to ``a9d3c15e7f42``:
 997 rows, 997 agreeing, 0 refusals, 801 derived rows invariant, 196 OWN rows
@@ -137,7 +133,6 @@ from app.services.cash_ledger import (
     AmountRule,
     amount_basis,
     amount_rule,
-    live_amounts,
     resolve_transaction_amount,
 )
 from app.services.amount_ownership import state_own_amount
@@ -207,11 +202,12 @@ def _grade_group(account, scenario_id, rows):
     """Grade every row of one (account, scenario) group -- both passes.
 
     Builds the basis ONCE for the group (the batching finding N-228 is about)
-    and reads the app's published override map off it.  The map is fetched
-    through ``live_amounts`` deliberately, because that is the surface the app
-    reads and an oracle that reconstructed the merge here would be grading its
-    own arithmetic.  Since plan step X-au-c2 it is a VIEW of the basis rather
-    than a second producer call, so the oracle pays for one.
+    and resolves every row against it.  **There is no override map to fetch
+    since plan step X-au-d**: the app publishes one figure per row
+    (``cash_ledger.amounts_by_id``), which is the resolver this file grades, so
+    pass 1 is an identity for every row and pass 2 carries the whole weight.
+    The record keeps a ``today`` field so a before/after ``diff`` against a
+    pre-cutover run still lines up column for column.
 
     Args:
         account: The group's Account.
@@ -222,7 +218,6 @@ def _grade_group(account, scenario_id, rows):
         A list of per-row record dicts.
     """
     basis = amount_basis(account.user_id, scenario_id)
-    overrides = live_amounts(basis, rows)
 
     records = []
     for txn in rows:
@@ -241,10 +236,9 @@ def _grade_group(account, scenario_id, rows):
             "credit_payback_for_id": txn.credit_payback_for_id,
             "due_date": None if txn.due_date is None else txn.due_date.isoformat(),
             "rule": rule.value,
-            "in_override_map": txn.id in overrides,
             "prices_from_a_superseded_version": _superseded(txn),
             "resolved": _money(resolved),
-            "today": _money(overrides.get(txn.id, txn.estimated_amount)),
+            "today": _money(resolved),
             "stored": _money(txn.estimated_amount),
             "refusal": refusal,
             "nudged": None,
@@ -329,19 +323,33 @@ def _report(records):
         if rec["refusal"] is None and rec["resolved"] != rec["today"]
     ]
     refused = [rec for rec in records if rec["refusal"] is not None]
+    # A row that STORES nothing has no stored-vs-derived drift to measure --
+    # the whole point of a cutover is that the column it would be compared
+    # against is empty.  Counted separately below rather than crashing the
+    # subtraction, which is what it did on the first post-cutover run.
+    emptied = [
+        rec for rec in records
+        if rec["refusal"] is None and rec["stored"] is None
+    ]
     drifted = [
         rec for rec in records
-        if rec["refusal"] is None and rec["resolved"] != rec["stored"]
+        if rec["refusal"] is None and rec["stored"] is not None
+        and rec["resolved"] != rec["stored"]
     ]
     failures, moved_own, held_derived = _invariance_failures(records)
 
     print(f"rows graded: {len(records)}")
     print("rule census:")
     for rule, count in sorted(Counter(rec["rule"] for rec in records).items()):
-        in_map = sum(
-            1 for rec in records if rec["rule"] == rule and rec["in_override_map"]
+        # How many rows of this rule store no figure at all.  It replaced an
+        # "in the override map" count at plan step X-au-d, which deleted that
+        # map: what a reader wants from the census now is which buckets have
+        # been CUT OVER, and an empty column is what a cutover leaves behind.
+        derived = sum(
+            1 for rec in records
+            if rec["rule"] == rule and rec["stored"] is None
         )
-        print(f"  {rule:<13} {count:>5}   (in the override map: {in_map})")
+        print(f"  {rule:<13} {count:>5}   (storing no figure: {derived})")
     print(
         "rows whose answer comes from a SUPERSEDED version (the only rows on "
         "which the series' time dimension is observable): "
@@ -352,6 +360,7 @@ def _report(records):
         abs(Decimal(rec["resolved"]) - Decimal(rec["stored"])) for rec in drifted
     )
     print(f"\npass 1 -- agreement with the published answer")
+    print(f"  rows CUT OVER (storing no figure at all): {len(emptied)}")
     print(f"  stored-vs-derived drift: {len(drifted)} rows / ${drift:,.2f}")
     for rec in drifted[:20]:
         print(

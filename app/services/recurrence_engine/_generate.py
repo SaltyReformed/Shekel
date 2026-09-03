@@ -21,10 +21,8 @@ from app.services._recurrence_common import (
     TemplateRowSelector,
     occurrences_to_write,
 )
-from app.services.recurrence_engine._amounts import (
-    _derive_row_fields,
-    _get_salary_profile,
-)
+from app.services.recurrence_engine._pass import create_for_unclaimed_occurrences
+from app.services.recurrence_engine._amounts import _derive_row_fields
 from app.services.recurrence_engine._plan import resolve_generation_plan
 from app.utils.log_events import (
     BUSINESS,
@@ -68,36 +66,43 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     if plan is None:
         return []
 
-    # Check if this template has a linked salary profile for paycheck calculation.
-    salary_profile = _get_salary_profile(template)
+    # WHICH occurrences still need a row is the shared decision
+    # (``recurrence_engine._pass.create_for_unclaimed_occurrences``); what a row IS
+    # is this engine's, and that split is the whole of it since plan step
+    # balance:X-au-d.
+    def _new_row(period, occurrence):
+        """Build and stage one generated transaction for *occurrence*.
 
-    # WHICH occurrences still need a row -- the shared decision, so this loop
-    # holds only the part that is about ``budget.transactions``.  See
-    # ``_recurrence_common.occurrences_to_write``.
-    created = []
-    for placement in occurrences_to_write(
-        _selector(template, scenario_id), plan.placements,
-    ):
-        period = placement.period
-        # Every derived column comes from the ONE statement of them
-        # (:class:`DerivedRowFields`); the four below say what this row IS
-        # rather than what the template says.  ``occurs_on`` is deliberately
-        # not among the derived: it is WHICH occurrence this row answers, so a
-        # maintain pass may not rewrite it.
+        Every derived column comes from the ONE statement of them
+        (:class:`~._amounts.DerivedRowFields`); the five below say what this
+        row IS rather than what the template says.  ``occurs_on`` is
+        deliberately not among the derived: it is WHICH occurrence this row
+        answers, so a maintain pass may not rewrite it.
+
+        Args:
+            period: The :class:`~app.services.pay_calendar.DerivedPeriod` the
+                row is funded in.
+            occurrence: The date this row answers.
+
+        Returns:
+            The staged :class:`~app.models.transaction.Transaction`.
+        """
         txn = Transaction(
-            **_derive_row_fields(
-                template, plan.rule, salary_profile, period, schedule.calendar,
-            )._asdict(),
+            **_derive_row_fields(template, plan.rule, period)._asdict(),
             template_id=template.id,
             pay_period_id=period.period_id,
-            occurs_on=placement.occurrence,
+            occurs_on=occurrence,
             scenario_id=scenario_id,
             status_id=plan.projected_id,
             is_override=False,
             is_deleted=False,
         )
         db.session.add(txn)
-        created.append(txn)
+        return txn
+
+    created = create_for_unclaimed_occurrences(
+        _selector(template, scenario_id), plan, _new_row,
+    )
 
     db.session.flush()
     log_event(logger, logging.INFO, EVT_RECURRENCE_GENERATED, BUSINESS,

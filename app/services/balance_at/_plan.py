@@ -72,9 +72,11 @@ overdue slot with no record is neither, so it holds flat -- honest delinquency.
 projected records, its live D3 cash, and the resolver's contractual schedule --
 all above the pure leaf -- so it is a SEAM responsibility, exactly as
 :func:`app.services.balance_at.positions` composes the past fold with the forward
-projection.  The one arithmetic :mod:`._plan_fold` shares with the leaf is
-:func:`app.services.loan_ledger.apply_payment_cash`, so a PLANNED / ESTIMATED
-payment allocates its cash byte-identically to an ACTUAL settled one.
+projection.  What :mod:`._plan_fold` does NOT own is the arithmetic: since plan
+step X-au-g-2c-3b-2 it maps this model onto
+:func:`app.services.loan_ledger.replay_loan_events`, the ONE replay the settled
+walk runs, so a PLANNED / ESTIMATED payment is charged and allocated
+byte-identically to an ACTUAL settled one.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
@@ -91,7 +93,7 @@ from app.services.loan_ledger import (
     charges_for_due_dates,
     installment_slot,
 )
-from app.services.cash_ledger import display_amounts_by_id
+from app.services.cash_ledger import amounts_by_id
 from app.services.loan_ledger import confirmed_shadows_through
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.rate_period_engine import period_for_date
@@ -250,9 +252,9 @@ def _planned_from_shadows(
     """Build the PLANNED tier: one record per projected transfer shadow.
 
     Each projected loan-side income shadow becomes a :class:`PlannedPayment` at
-    what a SCREEN would show for it: its amount as the model resolves it,
-    superseded by a live recompute where one exists
-    (:func:`~app.services.cash_ledger.display_amounts_by_id`).
+    what a SCREEN would show for it, which since plan step X-au-d is simply
+    what the amount model RESOLVES for it
+    (:func:`~app.services.cash_ledger.amounts_by_id`).
 
     **It read ``owned_contribution`` with the live map laid over it by hand
     until plan step X-au-g-2c-1**, and that was the SECOND unrouted reader of a
@@ -265,11 +267,12 @@ def _planned_from_shadows(
     trusting the finding's own count of them, which is the lesson: **"one
     unrouted reader" was itself an unmeasured claim.**
 
-    The two-line merge it replaces -- a resolved figure with a live override on
-    top -- is exactly what ``display_amounts_by_id`` IS, so this is one
-    composition in one place rather than the same composition written at two
-    call sites, which is the defect that function was extracted for
-    (finding **N-224**'s shape).
+    The two-line merge it replaced -- a resolved figure with a live override on
+    top -- was ``display_amounts_by_id``, extracted at X-au-c2b so one
+    composition lived in one place rather than at two call sites (finding
+    **N-224**'s shape).  Both cutovers have since deleted the override term
+    itself, so that function collapsed onto ``amounts_by_id`` and the merge has
+    no second half left to get wrong.
 
     **The cycle a much older draft blamed is DELETED and was never the
     reason.**  It read: asking the resolver here would ask the loan to price
@@ -297,7 +300,8 @@ def _planned_from_shadows(
 
     **The other seven callers of that accessor really are settled-only**, which
     is what makes "two" a census rather than a second guess:
-    ``cash_ledger.settled_cash_leg``, ``loan_ledger._split.split_one_payment``,
+    ``cash_ledger.settled_cash_leg``, ``loan_ledger._events.loan_event_stream``
+    (``._split.split_one_payment`` until plan step X-au-g-2c-3b-2),
     ``loan_posting_service._sync`` and ``._display``,
     ``savings_dashboard_service._metrics``, and the spending report's
     ``_window`` and ``_breakdown`` -- each loading rows filtered to the settled
@@ -354,7 +358,7 @@ def _planned_from_shadows(
         projected_shadows: The loan's projected income shadows
             (:func:`app.services.loan_loaders.projected_income_shadows`).
         priced: ``{transaction_id: the figure a screen shows}``
-            (:func:`app.services.cash_ledger.display_amounts_by_id` over the
+            (:func:`app.services.cash_ledger.amounts_by_id` over the
             pass's own basis).  Indexed with ``[]``: it covers every row it was
             built over, so a shadow it forgot raises where it is read rather
             than defaulting to a fabricated figure.
@@ -367,12 +371,12 @@ def _planned_from_shadows(
     clamp_floor = fwd.as_of + _ONE_DAY
     for shadow in projected_shadows:
         due = loan_payment_due_date(shadow, fwd.payment_day)
-        # ONE map, no fallback.  The ``is None`` dance this replaces existed
+        # ONE map, no fallback.  The ``is None`` dance this replaced existed
         # because a live cash of ``Decimal("0")`` is a real answer (a waived
         # payment) and truthiness would have priced the shadow off the column
-        # the loan supersedes; ``display_amounts_by_id`` composes the two
-        # inside the amount model, so there is no second answer to choose
-        # between here.
+        # the loan superseded.  There is no column left to fall back to and no
+        # override left to choose between: the shadow is DERIVED (plan step
+        # X-au-g-2c-2) and the resolver is its only answer.
         cash = priced[shadow.id]
         planned.append(PlannedPayment(
             due_date=due,
@@ -603,7 +607,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     # basis that called it again, so one request resolved the same loan twice
     # (finding **N-268**'s shape).  Plan step X-au-c2b made the derivation a
     # read-pass value, so both readers ask the same one.
-    priced = display_amounts_by_id(projected_shadows, ctx.amounts())
+    priced = amounts_by_id(projected_shadows, ctx.amounts())
     planned = _planned_from_shadows(projected_shadows, priced, fwd)
 
     # Slots the fold already accounts for and the ESTIMATED tier must NOT

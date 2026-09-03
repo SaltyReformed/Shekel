@@ -212,8 +212,8 @@ def loan_payment_window(
     (:func:`~app.services.loan_loaders.query_shadow_income`) and the PLANNED
     tier (``balance_at._plan.loan_plan``) both already sum every
     one of them with no template filter -- and each of them stops when the loan
-    does, because past payoff
-    :func:`~app.services.loan_ledger.split_payment_cash` routes the whole cash
+    does, because past payoff the ONE allocation
+    (:func:`~app.utils.money.apply_payment_cash`) routes the whole cash
     to ``excess`` (a Refund) rather than to principal.
 
     **What that buys is precise, and it is less than "the tie-break is gone".**

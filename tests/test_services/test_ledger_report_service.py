@@ -396,7 +396,7 @@ class TestIncomeStatementValidationAndEmpty:
                 )
 
     def test_no_baseline_scenario_refuses_rather_than_zeroing(
-        self, app, bare_user,
+        self, app, bare_user_with_cadence,
     ):
         """A baseline-less user gets no statement -- NOT one reporting zeros.
 
@@ -405,12 +405,23 @@ class TestIncomeStatementValidationAndEmpty:
         which is a claim about the user's money; the truth is that this ledger
         cannot be read at all.  See the balance sheet's own test for the full
         argument and for how the review found both.
+
+        **``bare_user_with_cadence`` rather than ``bare_user`` since plan step
+        ``pay_calendar:C4-d``** (ruling R-PC45), and the swap keeps this case
+        pointed at its own subject.  ``calendar_for`` refuses an owner with no
+        ``budget.pay_schedule`` row, and that argument is evaluated BEFORE the
+        call -- so a bare owner would raise ``PayCalendarError`` here and this
+        case would report a pass for a refusal that is not the one it is
+        about.  The fixture gives the owner a schedule row and no paydays,
+        which builds an empty calendar and leaves the missing BASELINE as the
+        only thing wrong with them.
         """
         with app.app_context():
+            user_id = bare_user_with_cadence["user"].id
             with pytest.raises(BaselineMissingError):
                 ledger_report_service.compute_income_statement(
-                    bare_user["user"].id,
-                    calendar_for(bare_user["user"].id),
+                    user_id,
+                    calendar_for(user_id),
                     StatementWindow("year", year=2026),
                 )
 

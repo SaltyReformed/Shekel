@@ -25,8 +25,10 @@ from decimal import Decimal
 
 import pytest
 
-from app.services import loan_ledger, loan_loaders
+from app.models.loan_features import RateHistory
+from app.services import loan_ledger, loan_loaders, loan_resolver
 from app.services.balance_at._fold import fold_loan_balances
+from app.services.rate_period_engine import period_for_date
 from tests._test_helpers import (
     create_loan_account,
     create_loan_with_trueup,
@@ -68,16 +70,22 @@ def _fold(loan, seed_user, on_dates):
     )
 
 
-def _settle(seed_user, db, loan, period, amount):
+def _settle(seed_user, db, loan, period, amount, due_date=None):
     """Settle a Checking -> loan payment, visible from its period start (C2).
 
     Pins the settle day to the period start so the payment is visible from that day
     under C2's settled-date clock -- the deterministic past date these
     hand-computed folds value the balance from.
+
+    ``due_date`` states the installment explicitly; ``None`` (the default) leaves
+    it to the pay-period-start fallback (``monthly_due_date``), which is what an
+    ad-hoc transfer produces.  A test needing two payments in ONE accrual period
+    at DIFFERENT installments must state them, because that fallback resolves
+    every period inside a month to the same date.
     """
     return create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan, period,
-        amount=amount, settled_on=period.start_date,
+        amount=amount, settled_on=period.start_date, due_date=due_date,
     )
 
 
@@ -643,20 +651,260 @@ class TestFoldNegativeControls:
 
             real_split = loan_ledger._walk.split_one_payment
 
-            def fake(shadow, balance, periods, monthly_escrow, due_date):
-                split, _after = real_split(
-                    shadow, balance, periods, monthly_escrow, due_date,
-                )
-                forced = type(split)(
+            def fake(outcome):
+                split = real_split(outcome)
+                return type(split)(
                     income_shadow=split.income_shadow,
                     interest=split.interest, escrow=split.escrow,
                     principal=bad_principal, excess=split.excess,
                     due_date=split.due_date, period=split.period,
                 )
-                return forced, balance - bad_principal
 
             monkeypatch.setattr(
                 "app.services.loan_ledger._walk.split_one_payment", fake,
             )
             on = last_covered_day(seed_periods[1])
             assert _fold(loan, seed_user, [on])[on] == expected
+
+
+class TestTheSettledWalkChargesOncePerInstallment:
+    """One interest accrual and one escrow per ACCRUAL PERIOD, not per payment.
+
+    Plan step **X-au-g-2c-3b-2**.  The settled walk charged a month inside each
+    payment's own split until this step, so two payments landing in one month
+    charged the loan TWO months of interest and TWO months of escrow -- the
+    payment COUNT was the clock, which is the defect plan step R16-a had already
+    removed from the FORWARD fold.  These pin the settled half.
+
+    **FOUR places in the suite give different money under the two rules, and
+    this docstring claimed to be the only one until an adversarial review
+    measured it false.**  The other three are pre-existing and all three FAILED
+    on the cutover -- ``test_confirmed_view`` 's
+    ``test_two_payments_in_one_due_month_show_as_two_rows_in_that_month`` and
+    ``test_a_late_settled_payment_is_dated_at_its_installment_but_visible_late``,
+    and ``test_posting_ledger_loan_reconciliation`` 's
+    ``test_biweekly_due_month_collision_reconciles_and_only_row_dates_differ``.
+    All four are re-anchored on the one-charge rule (developer, 2026-09-02).
+    *The false sentence is recorded rather than deleted because of what it was:
+    a claim a fix wrote about ITSELF, which its own tests could not grade, and a
+    reader who believed it would have concluded the change was measured against
+    the only shape that moves and stopped looking.*
+
+    Every OTHER loan test puts one payment in each month, where charging per
+    payment and charging per period are the same arithmetic -- which is why the
+    rest of the suite is untouched, and why a green suite alone would not have
+    been evidence of anything.
+    """
+
+    def test_two_payments_in_one_month_charge_ONE_interest_and_ONE_escrow(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Two $1,000 payments due 2026-02-01: one $500 accrual, one $100 escrow.
+
+        The loan is trued to $100,000.00 on 2026-01-05 at 6% with a $1,200.00/yr
+        ($100.00/mo) escrow line.  Periods 1 and 2 start on 2026-01-16 and
+        2026-01-30, both before 2026-02-01, so both payments resolve to the SAME
+        installment
+        (``monthly_due_date`` gives the first payment_day-of-month on or after the
+        period start), which is the shape this step exists to get right.
+
+          Charge 2026-02-01: interest round(100,000.00 * 0.06 / 12) = $500.00,
+                             escrow $1,200.00 / 12 = $100.00.
+          P1 ($1,000.00): clears both -> principal 1000 - 500 - 100 = $400.00,
+                          balance $99,600.00.
+          P2 ($1,000.00): nothing stands -> principal $1,000.00, interest $0.00,
+                          escrow $0.00, balance $98,600.00.
+
+        Folded at 2026-02-12 (both settled and visible): $98,600.00.
+
+        **Charging per PAYMENT gives $99,198.00** -- P2 would accrue
+        round(99,600.00 * 0.005) = $498.00 and impound $100.00 again, paying only
+        $402.00 down.  So the assertion is $598.00 away from the rule it replaced,
+        and cannot pass under it.
+        """
+        with app.app_context():
+            loan = _make_loan(
+                seed_user, db, escrow_annual=Decimal("1200.00"),
+            )
+            _settle(seed_user, db, loan, seed_periods[1], Decimal("1000.00"))
+            _settle(seed_user, db, loan, seed_periods[2], Decimal("1000.00"))
+            db.session.commit()
+
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
+            )
+            # The precondition, asserted rather than assumed: both payments
+            # satisfy ONE installment.  If a fixture change ever separated them
+            # this test would silently stop measuring anything.
+            assert [split.due_date for split in splits] == [
+                date(2026, 2, 1), date(2026, 2, 1),
+            ]
+            assert [
+                (split.interest, split.escrow, split.principal)
+                for split in splits
+            ] == [
+                (Decimal("500.00"), Decimal("100.00"), Decimal("400.00")),
+                (Decimal("0.00"), Decimal("0.00"), Decimal("1000.00")),
+            ]
+
+            on = last_covered_day(seed_periods[2])
+            assert _fold(loan, seed_user, [on])[on] == Decimal("98600.00")
+            # THE POSTED MONEY.  The corrections are a projection of this walk,
+            # so the general ledger moves with it -- and the second payment's
+            # correction is EMPTY (an all-principal payment owes none), which is
+            # a path the writer already supported.
+            assert posted_loan_balance_at(
+                loan.id, seed_user["scenario"].id, on,
+            ) == Decimal("98600.00")
+
+    def test_a_later_payment_in_a_period_carries_that_periods_rate(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A rate change INSIDE an accrual period never re-rates a later payment.
+
+        The split carries the rate period its interest accrued at, and the
+        confirmed schedule row displays that rate.  Before plan step
+        X-au-g-2c-3b-2 the split re-resolved the period on each payment's OWN due
+        date, which agreed with the accrual only while one payment fell in each
+        period.
+
+        The loan is trued to $100,000.00 on 2026-01-05 at 6%, with a rate change
+        to 12% effective 2026-02-15.  Two payments satisfy installments in ONE
+        accrual period, on either side of that boundary:
+
+          Charge 2026-02-01 (the EARLIEST installment in the period), at 6%:
+                             interest round(100,000.00 * 0.005) = $500.00.
+          P1 (due 02-01, $1,000.00): principal $500.00, balance $99,500.00.
+          P2 (due 02-20, $1,000.00): nothing stands -> principal $1,000.00.
+
+        P2's own due date sits in the 12% period -- asserted below, so the claim
+        that it reads 6% is a measurement and not a coincidence of a loan with
+        one rate.
+        """
+        with app.app_context():
+            loan = _make_loan(seed_user, db)
+            db.session.add(RateHistory(
+                account_id=loan.id,
+                effective_date=date(2026, 2, 15),
+                interest_rate=Decimal("0.12"),
+                monthly_pi=None,
+            ))
+            db.session.commit()
+            _settle(
+                seed_user, db, loan, seed_periods[2], Decimal("1000.00"),
+                due_date=date(2026, 2, 1),
+            )
+            _settle(
+                seed_user, db, loan, seed_periods[3], Decimal("1000.00"),
+                due_date=date(2026, 2, 20),
+            )
+            db.session.commit()
+
+            # The negative control: the boundary really does fall between the two
+            # installments, so re-resolving on P2's own due date would answer 12%.
+            periods = loan_resolver.resolve_periods(
+                loan_loaders.load_loan_params(loan.id),
+                loan_loaders.load_rate_changes(loan.id),
+            )
+            assert period_for_date(
+                periods, date(2026, 2, 20),
+            ).annual_rate == Decimal("0.12")
+
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
+            )
+            assert [split.due_date for split in splits] == [
+                date(2026, 2, 1), date(2026, 2, 20),
+            ]
+            assert [split.interest for split in splits] == [
+                Decimal("500.00"), Decimal("0.00"),
+            ]
+            # The docstring computes these, so the test asserts them: a walked
+            # figure a docstring shows and no assertion checks is a claim the
+            # suite cannot grade.
+            assert [split.principal for split in splits] == [
+                Decimal("500.00"), Decimal("1000.00"),
+            ]
+            on = last_covered_day(seed_periods[3])
+            assert _fold(loan, seed_user, [on])[on] == Decimal("98500.00")
+            # BOTH carry the accrual period's own rate -- one resolution, so the
+            # rate a row displays is the rate its interest accrued at.
+            assert [split.period.annual_rate for split in splits] == [
+                Decimal("0.06"), Decimal("0.06"),
+            ]
+
+    def test_an_earlier_installment_arriving_later_REVERSES_the_posted_charge(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A payment that becomes a period FOLLOWER has its posted charge reversed.
+
+        The transition the cutover will actually exercise, and the one an
+        incremental sync hides: whichever payment OPENS an accrual period carries
+        its charge, and which payment that is can CHANGE when an earlier-due one
+        arrives afterwards.  The first payment's correction must then reverse the
+        interest and escrow it already posted, at the ``(period, entry_date)`` it
+        posted them under, and its loan-linked leg must move with them.
+
+        Settled in this order, both satisfying February:
+
+          1. due 2026-02-20 (period 3), $1,000.00.  It is the only payment, so it
+             OPENS the period: charge 02-20 -> interest $500.00, escrow $100.00,
+             principal $400.00.  Those legs are POSTED.
+          2. due 2026-02-01 (period 2), $1,000.00.  The charge is dated at the
+             EARLIEST installment now, so it moves to 02-01 and the 02-01 payment
+             clears it; the 02-20 payment becomes a follower and clears nothing.
+
+        Final: (02-01) interest $500.00, escrow $100.00, principal $400.00;
+        (02-20) interest $0.00, escrow $0.00, principal $1,000.00; owed
+        $98,600.00.  **The posted balance agreeing is the assertion that matters**
+        -- it can only hold if step 1's interest and escrow legs were reversed,
+        since they are still on the ledger otherwise.
+
+        The sibling test above cannot reach this: settling in pay-period order
+        makes the opener arrive first, so its follower posts an EMPTY correction
+        the first time and never has to reverse one.
+        """
+        with app.app_context():
+            loan = _make_loan(
+                seed_user, db, escrow_annual=Decimal("1200.00"),
+            )
+            _settle(
+                seed_user, db, loan, seed_periods[3], Decimal("1000.00"),
+                due_date=date(2026, 2, 20),
+            )
+            db.session.commit()
+            # It opened the period on its own, and the charge WAS posted.
+            (opener,) = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
+            )
+            assert (opener.interest, opener.escrow) == (
+                Decimal("500.00"), Decimal("100.00"),
+            )
+
+            _settle(
+                seed_user, db, loan, seed_periods[2], Decimal("1000.00"),
+                due_date=date(2026, 2, 1),
+            )
+            db.session.commit()
+
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
+            )
+            assert [
+                (split.due_date, split.interest, split.escrow, split.principal)
+                for split in splits
+            ] == [
+                (date(2026, 2, 1), Decimal("500.00"), Decimal("100.00"),
+                 Decimal("400.00")),
+                (date(2026, 2, 20), Decimal("0.00"), Decimal("0.00"),
+                 Decimal("1000.00")),
+            ]
+
+            on = last_covered_day(seed_periods[3])
+            assert _fold(loan, seed_user, [on])[on] == Decimal("98600.00")
+            # THE REVERSAL.  Only true if the 02-20 payment's posted interest and
+            # escrow legs were negated when it stopped opening the period.
+            assert posted_loan_balance_at(
+                loan.id, seed_user["scenario"].id, on,
+            ) == Decimal("98600.00")
+

@@ -2786,7 +2786,7 @@ def create_transfer(
 def create_settled_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), settled_amount=None,
-    settled_on=_UNSET_SETTLED_ON, name=None, scenario=None,
+    settled_on=_UNSET_SETTLED_ON, name=None, scenario=None, due_date=None,
 ):
     """Create an ad-hoc transfer and settle it (Paid), returning the parent.
 
@@ -2834,6 +2834,13 @@ def create_settled_transfer(
             settled-with-no-day row builds it with the bare :func:`add_txn`
             instead, which is what that builder is for.
         name: Optional transfer display name.
+        due_date: Optional due date stored on the transfer and mirrored to both
+            shadows, passed straight through to :func:`create_transfer`.
+            ``None`` (the default) leaves it unset, and a loan payment's
+            installment then falls back to its pay-period start.  Pass it when a
+            test needs two settled loan payments in ONE accrual period at
+            DIFFERENT installments -- the period-start fallback resolves both to
+            the same date, so it cannot express that shape.
         scenario: The :class:`~app.models.scenario.Scenario` to place the
             transfer (and both shadows) in.  Defaults to ``None``, which uses
             the seed user's baseline scenario (``seed_user["scenario"]``);
@@ -2853,7 +2860,7 @@ def create_settled_transfer(
 
     transfer = create_transfer(
         seed_user, db_session, from_account, to_account, period,
-        amount=amount, name=name, scenario=scenario,
+        amount=amount, name=name, scenario=scenario, due_date=due_date,
     )
     update_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
     if settled_on is not _UNSET_SETTLED_ON:
@@ -6174,9 +6181,16 @@ def derived_calendar(
 
     The calendar-shaped sibling of :func:`derived_window`, for a producer that
     takes the whole calendar rather than a slice of it -- which
-    ``recurrence_engine._amounts._get_transaction_amount`` does since plan step
-    **R-F16**, because it needs the owner's paycheck COUNT as well as their
-    periods and both must come off one derivation.
+    :meth:`app.services.income_service.SalaryPricing._net_by_period` does,
+    because the paycheck engine needs the owner's paycheck COUNT as well as
+    their periods and both must come off one derivation (plan step **R-F16**).
+
+    *This sentence named ``recurrence_engine._amounts`` until plan step
+    balance:X-au-d, and a mechanical rename left it naming
+    ``_generated_amount_ownership``, which takes a template and reads no
+    calendar at all.  The requirement did not go away when generation stopped
+    pricing -- it MOVED, to the derivation above.  Caught by an adversarial
+    review of that step.*
 
     Args:
         paydays: The paydays opening each period, in any order.
