@@ -554,25 +554,12 @@ sentence exists so nobody builds it believing the question was never raised.
       * [x] **X-au-g-2c-3c** `cb6469b2` -- a FIFTH spelling of the accrual deleted; `recurrence:D52`'s 200,000-draw agreement REFUTED at 500,000, `$565.37` against `$565.36`. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
       * [ ] **X-au-g-2c-3b** the DECOMPOSED parent of the CHARGE-CALENDAR half, split 2026-09-02.
         * [x] **X-au-g-2c-3b-1** `fd3afc59` -- the CHARGE calendar moved to `loan_ledger._charges`, the same inversion one tier up. **D53** and **D55** deliberately not taken. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
-        * [ ] **X-au-g-2c-3b-2** `fix(loans): the settled walk charges once per installment` --
-          the walk takes the calendar, so ONE interest accrual and ONE escrow stand per
-          INSTALLMENT rather than per PAYMENT, and `split_payment_cash` is DELETED (one caller; its
-          own docstring concedes it is correct only while a loan takes one payment per accrual
-          period). Carries **N-409**'s second half and satisfies **recurrence:D51**, whose remedy
-          `R16-c` states as deletion -- after this the two walks agree on the RULE, so that merge
-          becomes behaviour-neutral. **MOVES POSTED MONEY.** `$0.00` on production: 0 due-month
-          collisions on either live loan, measured on a clone at `b7a41e2c9d63`; `$1,631.05` on one
-          colliding pair (`$616.99` escrow + `$1,014.06` interest).
-          **TWO OBLIGATIONS IT MUST NOT DISCOVER MID-BUILD.** (a) `split_payment_cash` is an
-          ORACLE, not only a producer: `test_loan_payoff_date_oracle._clears_within` and
-          `test_loan_interest_in_year` re-fold through it DELIBERATELY as the retired
-          one-payment-per-month composition, so agreement is *"the equivalence claim itself"*.
-          Deleting it naively leaves the producer grading itself -- move the composition INTO the
-          tests, still calling `accrue_monthly_interest`, since spelling the primitive inline
-          re-creates the association `2c-3c` just deleted. (b) An ANCHOR reset and a standing
-          charge need a ruling: an anchor is an authoritative balance that already includes accrued
-          interest, so a charge standing at one should be DISCARDED rather than carried across it.
-          Order `charge -> payment -> anchor`. **Both are open developer questions.**
+        * [x] **X-au-g-2c-3b-2** `3b7716f8` -- ONE interest accrual and ONE escrow per
+          INSTALLMENT, `split_payment_cash` deleted, both tiers folded onto the ONE replay
+          `loan_ledger._replay.replay_loan_events` (rule 14). `$0.00` on production, `$1,631.05`
+          on a forced collision. Closes **recurrence:D51**, carries **N-409**'s second half, rules
+          **R-IX**, files **N-439**. As built: `archive/x_au_g_2c_3b_2_2026-09-02.md`. **A later
+          step must NOT delete `tests/oracles/loan_monthly_composition.py`.**
         * [ ] **X-au-g-2c-3b-3** `fix(loans): the engine feed states no allocation` -- the feed
           passes the CASH and `project_forward` charges the month's escrow, which DELETES the floor
           rather than re-dating it. Two earlier remedies were measured wrong first: re-keying the
