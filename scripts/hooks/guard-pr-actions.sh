@@ -12,7 +12,22 @@
 
 set -uo pipefail
 
-cmd="$(python3 -c '
+if [ -n "${SHEKEL_PR_COORDINATOR:-}" ]; then
+    exit 0
+fi
+
+# The matcher is "Bash", so this hook runs on EVERY Bash call in every
+# session. A raw-substring pre-filter keeps the common case to one shell
+# `case` with no python3 spawn: the two gated verbs contain no JSON-escaped
+# characters, so a payload without the literal substring cannot carry either
+# command, and only a candidate pays for the precise parse below.
+payload="$(cat)"
+case "$payload" in
+    *"gh pr create"* | *"gh pr merge"*) ;;
+    *) exit 0 ;;
+esac
+
+cmd="$(printf '%s' "$payload" | python3 -c '
 import json
 import sys
 
@@ -27,10 +42,6 @@ print(payload.get("tool_input", {}).get("command", ""))
         "(docs/coding-standards.md: gates fail with a clear message, never silently open)." >&2
     exit 2
 }
-
-if [ -n "${SHEKEL_PR_COORDINATOR:-}" ]; then
-    exit 0
-fi
 
 case "$cmd" in
     *"gh pr create"* | *"gh pr merge"*)
