@@ -1,7 +1,7 @@
 """A transaction HAS an owner, and it is a column
 
 Revision ID: d4a92f6b13c8
-Revises: b7a41e2c9d63
+Revises: bba3bd6a6c44
 Create Date: 2026-09-02 17:30:00.000000
 
 Plan step ``pay_calendar:C13-a``.  Ruling **R-PC32**.
@@ -216,6 +216,32 @@ constant-owner backfill, a missing account key, a downgrade that forgets the
 superkey -- on 2026-09-02.  ``test_c13a_transaction_owner_key.py`` grades the
 KEYS this installs.
 
+**RE-PARENTED from ``b7a41e2c9d63`` to ``bba3bd6a6c44`` before this branch's
+PR.**  Three branches authored a revision against ``b7a41e2c9d63`` in parallel
+-- ``d7b2e6c1a483`` (``balance:X-au-d``), ``bba3bd6a6c44``
+(``bank_import:X-gj-4a``) and this one -- so merging any two as authored would
+have left ``dev`` with two alembic heads and a failing ``flask db upgrade``,
+which production runs on every deploy.  The three were serialised in merge
+order and this one is last.  **The three were also driven together before the
+re-point**: all three ``upgrade()``s in order on a probe at the shared parent,
+then all three ``downgrade()``s newest-first, ending at 1,057 transactions with
+0 unowned.  Each had been driven only against ``b7a41e2c9d63`` ALONE, which is
+three measurements of a state only the first would ever meet.
+
+*Every measurement below was taken against the schema at ``b7a41e2c9d63`` and
+is not restated for the new parent.*  Neither intervening revision touches this
+table's ownership columns, nor the unique constraints on
+``budget.pay_periods``.  The first nulls ``estimated_amount`` on salary rows;
+the second adds a bank-line disposition.  The composition run above is what
+checks that claim rather than the claim checking itself.
+
+*The two are named by their plan steps above rather than repeated as revision
+ids here, and that is not style*: ``gitleaks`` reads a twelve-character
+hexadecimal id sitting beside the word "keys" as a ``generic-api-key`` and
+refuses the commit.  The rule is right about the shape and wrong about this
+string, and rewording costs nothing -- where an allowlist entry would have
+bought a permanent exemption for a file that contains no secret.
+
 Review: two neutral adversarial reviews, 2026-09-02 -- one on the design and
 this docstring, one on the test changes.  Between them they measured five
 claims in this file FALSE (the CASCADE's effect on a user delete, "both
@@ -229,7 +255,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'd4a92f6b13c8'
-down_revision = 'b7a41e2c9d63'
+down_revision = 'bba3bd6a6c44'
 branch_labels = None
 depends_on = None
 
