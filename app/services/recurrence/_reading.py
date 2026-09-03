@@ -538,7 +538,15 @@ def rule_occurrences(
     :func:`~app.services.recurrence.resolve` derives and ``end_date`` through
     the occurrence engine's stopping bound (ruling R-R6), so a loan payment's
     ``start_date`` still guarantees no installment is generated before the loan
-    originates (plan step C9a).  Before plan step R4a both bounds filtered
+    originates (plan step C9a).
+
+    **It applies the rule's own window and nothing else, which since plan step
+    R7d-d is a narrower claim than it reads.**  A definition can also be
+    stopped by its DESTINATION -- a transfer into a loan stops when the debt
+    does -- and that stop is resolved against a read pass, which this function
+    does not take.  ``recurring_definition.read_definition`` is the door that
+    composes both; a caller asking THIS one about a loan payment gets the
+    rule's answer alone.  Before plan step R4a both bounds filtered
     candidate PERIODS instead -- ``end_date`` against a period's START -- which
     generated rows dated outside the window the user set (defect D5).
 

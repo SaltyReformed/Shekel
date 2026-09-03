@@ -424,17 +424,22 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: today it creates
       the Van's `$531.94` installment due `2029-02-22` the stale column drops. Carries **D46**.
 
-- [ ] **R7d-d -- the DISPLAY readers take the resolver.**
+- [ ] **R7d-d -- the DISPLAY readers take the resolver, through a COMPOSED DOOR.**
 
 `recurring_view` and `describe` stop reading the column, so the Recurring surface's cadence sentence
-names the derived payoff, not the last value a chokepoint wrote.
+and its next date name the derived payoff rather than the last value a chokepoint wrote.
 
-**It must first decide what a RETIRED loan's payment says, because the resolver made that a function
-of the READ CLOCK** (R7d-b's adversarial review). A retired loan has no forward crossing, so the
-window is `ClosesOn(today)` and tomorrow's render says `ClosesOn(tomorrow)` -- where the stored
-column froze at whichever day a chokepoint last ran. The sum type does NOT tell "closes at the
-payoff" from "closed before this read", so this leaf renders the retired state as a STATE rather
-than a date, or a fourth shape is owed.
+**Both of its questions are RULED by `R-R50`** (developer, 2026-09-02), which carries the
+measurements. A finished loan's payment says it is OVER and names no date -- `loan_payoff_date`
+folds forward only, so the read pass's own now is all there is and `ClosesOn` would state it as the
+loan's; `AlreadyOver` is a fourth shape admitting byte-for-byte what `ClosesOn(as_of)` admitted, and
+`R16-c` is where the real date becomes derivable. And the step reaches as far as the COMPOSED VALUE:
+five surfaces need the conjunction of the authored bound and the derived stop, so it is a value the
+walk already reads (`ResolvedRecurrence.closing`) rather than a narrowing each performs. The answer
+SHAPES move to `recurrence/_closing.py` because `_describe` cannot import `loan_recurrence_sync`
+without a cycle -- rule 14's placement clause -- while the RESOLVER stays, since deciding which
+shape applies means folding a balance. `$0.00`, and no rendered character: both live loan payments'
+column and derived payoff agree exactly.
 
 - [ ] **R7d-e -- `/obligations` and the emergency-fund baseline take the resolver.**
 

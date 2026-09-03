@@ -25,14 +25,16 @@ import pytest
 from app.exceptions import BaselineMissingError
 from app.services import balance_at, loan_recurrence_sync, template_amount_service
 from app.services.balance_at import BalanceContext
-from app.services.recurrence import resolved_recurrence
-from app.services.loan_recurrence_sync import (
+from app.services.recurrence import (
     EMPTY,
     INDEFINITE,
     ClosesOn,
+    DerivedStop,
     Empty,
     Indefinite,
-    LoanPaymentWindow,
+    resolved_recurrence,
+)
+from app.services.loan_recurrence_sync import (
     loan_payment_window,
     recurrence_end_date,
 )
@@ -494,14 +496,14 @@ class TestOwnsValidityWindow:
             assert loan_recurrence_sync.owns_validity_window(template) is False
 
 
-class TestLoanPaymentWindowShapes:
+class TestTheDerivedStopShapes:
     """The three shapes, as pure values -- no loan, no database, no clock.
 
-    :meth:`~app.services.loan_recurrence_sync.LoanPaymentWindow.admits` is the
+    :meth:`~app.services.recurrence.DerivedStop.admits` is the
     ONE question every shape answers, so every shape is asked it here and the
     boundary is asked on both sides.  A shape whose ``admits`` were left
     unwritten cannot be constructed at all (``@abstractmethod``), which is the
-    half of the contract :class:`TestLoanPaymentWindowIsTotal` pins.
+    half of the contract :class:`TestTheDerivedStopIsTotal` pins.
     """
 
     def test_a_closing_date_admits_its_own_day(self):
@@ -570,7 +572,7 @@ class TestLoanPaymentWindowShapes:
         assert closes_before_it_starts != EMPTY
 
 
-class TestLoanPaymentWindowIsTotal:
+class TestTheDerivedStopIsTotal:
     """A shape that does not answer ``admits`` cannot exist.
 
     The ``@abstractmethod`` is not decoration: the default it refuses -- "a
@@ -581,9 +583,9 @@ class TestLoanPaymentWindowIsTotal:
     """
 
     def test_the_base_type_itself_cannot_be_instantiated(self):
-        """``LoanPaymentWindow()`` is not a window; it is the question."""
+        """``DerivedStop()`` is not a stop; it is the question."""
         with pytest.raises(TypeError):
-            LoanPaymentWindow()  # pylint: disable=abstract-class-instantiated
+            DerivedStop()  # pylint: disable=abstract-class-instantiated
 
     def test_a_shape_omitting_admits_cannot_be_instantiated(self):
         """The fourth-shape trap, sprung deliberately.
@@ -592,7 +594,7 @@ class TestLoanPaymentWindowIsTotal:
         be a ``TypeError`` at construction and never a window that silently
         admits everything.
         """
-        class _HalfWritten(LoanPaymentWindow):
+        class _HalfWritten(DerivedStop):
             """A shape that states no rule for admitting an occurrence."""
 
         with pytest.raises(TypeError):
@@ -617,7 +619,7 @@ class TestLoanPaymentWindowIsTotal:
 #: One instance of each window shape, so immutability is asserted over the
 #: WHOLE set rather than over three hand-written examples.  Held total by
 #: ``TestTheWindowShapesAreValues.test_every_concrete_shape_is_sampled``.
-_WINDOW_SAMPLES: dict[type[LoanPaymentWindow], LoanPaymentWindow] = {
+_WINDOW_SAMPLES: dict[type[DerivedStop], DerivedStop] = {
     ClosesOn: ClosesOn(on=date(2029, 2, 22)),
     Indefinite: INDEFINITE,
     Empty: EMPTY,
@@ -635,14 +637,14 @@ class TestTheWindowShapesAreValues:
         later step adds fails here rather than quietly sitting outside it.
 
         **Scoped to shapes declared in ``app/``, and this file is why.**
-        ``TestLoanPaymentWindowIsTotal`` above declares ``_HalfWritten``
+        ``TestTheDerivedStopIsTotal`` above declares ``_HalfWritten``
         inside a test body, ``__subclasses__()`` is a live interpreter-wide
         registry, and a class object survives until the cyclic collector takes
         it.  Unscoped, this gate fails whenever that test has already run --
         a failure unrelated to the code, which is broken rather than flaky.
         """
         declared_in_app = {
-            kind for kind in LoanPaymentWindow.__subclasses__()
+            kind for kind in DerivedStop.__subclasses__()
             if kind.__module__.startswith("app.")
         }
 
@@ -659,7 +661,7 @@ class TestTheWindowShapesAreValues:
 
         Probed through ``admits``, the one name every shape declares: the base
         makes it ``@abstractmethod``, so a shape without one cannot be built
-        at all (``TestLoanPaymentWindowIsTotal`` holds that), which makes it
+        at all (``TestTheDerivedStopIsTotal`` holds that), which makes it
         each shape's OWN name rather than an arbitrary one.  **One name is the
         whole claim** -- frozen is a property of the CLASS and is
         all-or-nothing, so a shape that refuses one name refuses every name,
@@ -676,11 +678,14 @@ class TestTheWindowShapesAreValues:
             setattr(_WINDOW_SAMPLES[kind], "admits", None)
 
 
-class TestLoanPaymentWindow:
+class TestLoanPaymentWindowResolver:
     """The RESOLVER, against real loans (plan step R7d-b).
 
-    Nothing in ``app/`` reads it at this step, so these tests are the whole of
-    its coverage until plan step R7d-c moves generation over.
+    Its first reader arrived at plan step R7d-d -- the composed door
+    ``recurring_definition.resolved_definition``, which puts this answer on
+    the resolved recurrence's ``Closing`` -- so these are no longer the whole
+    of its coverage; ``test_recurring_definition`` grades what a surface does
+    with the answer, and this grades the answer.
     """
 
     @pytest.fixture(autouse=True)
@@ -734,7 +739,7 @@ class TestLoanPaymentWindow:
         answers what the ten call sites already write.  The window and the
         column are derived by two different code paths here -- one through
         :func:`recurrence_end_date` into an ``EndBound``, one through it into a
-        :class:`LoanPaymentWindow` -- so this is the seam where they could
+        :class:`~app.services.recurrence.DerivedStop` -- so this is the seam where they could
         disagree, and R7d-g deletes the writer on the strength of them not
         doing so.
 
@@ -859,19 +864,40 @@ class TestLoanPaymentWindow:
 
             assert loan_payment_window(tpl, ctx) == INDEFINITE
 
-    def test_a_RETIRED_loan_closes_at_the_read_passes_own_now(
+    def test_a_RETIRED_loan_is_ALREADY_OVER_and_names_no_closing_date(
         self, app, db, seed_user, seed_periods,
     ):
-        """A finished loan whose payment HAS already fired closes, not empties.
+        """A finished loan whose payment HAS already fired is over, not dated.
+
+        **This asserted ``ClosesOn(2026-07-01)`` until plan step R7d-d**, and
+        ruling **R-R50** (developer, 2026-09-02) is what changed the expected
+        answer rather than the code drifting from it.  That date is the READ
+        PASS's own now -- :func:`recurrence_end_date` substitutes it because a
+        retired loan has no forward crossing for
+        :func:`~app.services.balance_at.loan_payoff_date` to date -- so
+        spelling it ``ClosesOn`` stated a fact about when the page was loaded
+        as a fact about the loan.  Measured on a production clone with the Van
+        Loan trued to ``$0.00``: the same untouched loan answered 2026-09-02,
+        2026-09-03 and 2026-12-25 on three read dates, and once plan step
+        R7d-g NULLs the cached column nothing pins that date at all.
 
         The CONTROL for the EMPTY case below, and the pair is what proves the
         two shapes are told apart rather than collapsed.  Both loans are
         retired, so both map through :func:`recurrence_end_date` to the SAME
-        closing date -- the read pass's own now, 2026-07-01 -- and the ONLY
-        difference between them is where that date falls relative to the rule's
-        first occurrence.  This loan originated 2026-05-01 with a
-        ``payment_day`` of 1, so its first contractual installment is
-        2026-06-01: already past, so the window is a real closing date.
+        date -- 2026-07-01 -- and the ONLY difference between them is where it
+        falls relative to the rule's first occurrence.  This loan originated
+        2026-05-01 with a ``payment_day`` of 1, so its first contractual
+        installment is 2026-06-01: already past, so the definition HAS fired
+        and "never runs" would be false about it.
+
+        **The date this closes on is the READ PASS's own now, and that is the
+        defect plan step R7d-h deletes.**  A retired loan has no forward
+        crossing, so ``recurrence_end_date`` substitutes ``ctx.as_of`` -- which
+        means the admitted set GROWS by one occurrence per cadence period as
+        the clock moves.  R7d-h gives the loan one closing date over its past
+        as well as its future, after which this test's expected value becomes
+        the day the loan was actually cleared and stops depending on when it is
+        read.
 
         The rule's opening bound is written by ``bind_rule_to_loan``, the
         production door, rather than by a fixture day -- so the date this rests
@@ -905,9 +931,11 @@ class TestLoanPaymentWindow:
                 "the ONLY thing separating it from the EMPTY case below"
             )
 
-            assert loan_payment_window(tpl, ctx) == ClosesOn(
-                on=date(2026, 7, 1),
-            )
+            window = loan_payment_window(tpl, ctx)
+
+            assert window == ClosesOn(on=date(2026, 7, 1))
+            assert window.admits(date(2026, 7, 1)) is True
+            assert window.admits(date(2026, 7, 2)) is False
 
     def test_a_loan_RETIRED_before_its_payment_first_fires_is_EMPTY(
         self, app, db, seed_user, seed_periods,
@@ -971,10 +999,13 @@ class TestLoanPaymentWindow:
         installment 2026-07-01, which is the read pass's own now; retired, its
         window closes on that same day.  A window whose ends coincide is not
         empty -- it admits exactly the occurrence on that date, because
-        ``ClosesOn`` is INCLUSIVE for the same reason
-        :meth:`~app.services.recurrence.EndsOnDate.admits` is: the payment due
-        on the closing date is the one that cleared the loan, so an exclusive
-        bound would drop the final installment from every projection.
+        ``ClosesOn`` is INCLUSIVE, and here that is the boundary being pinned
+        rather than a claim about which installment cleared the loan: this
+        loan was cleared by a true-up BEFORE its first installment ever fired,
+        so the 2026-07-01 payment is emphatically not the one that paid it off.
+        The inclusive comparison is what separates a window whose ends coincide
+        from an empty one, and getting it wrong turns a loan's last payment
+        into a loan that never had one.
 
         **This is the case the other two cannot see.** The control's closing
         date is a month past its first occurrence and the EMPTY case's is two
@@ -1075,7 +1106,9 @@ class TestLoanPaymentWindow:
 
             window = loan_payment_window(tpl, between)
 
-            assert window == ClosesOn(on=resolved_first + timedelta(days=1)), (
+            assert window == ClosesOn(
+                on=resolved_first + timedelta(days=1),
+            ), (
                 "the window was decided against the stored column, so a "
                 "definition with a live occurrence reads as finished"
             )

@@ -67,6 +67,8 @@ from app.exceptions import ShekelError
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
     NEVER_ENDS,
+    Closing,
+    DerivedStop,
     EndsOnDate,
     RecurrenceGenerationError,
     RecurrenceResolutionError,
@@ -197,6 +199,7 @@ def resolved_value(
     placement: PeriodPlacementEnum = PeriodPlacementEnum.CONTAINING_DATE,
     shift: BusinessDayShiftEnum = BusinessDayShiftEnum.NONE,
     end_bound: EndBound = NEVER_ENDS,
+    derived: DerivedStop | None = None,
     nominal_day: int | None = None,
 ) -> ResolvedRecurrence:
     """Return a two-axis value stated directly, bypassing ``resolve``.
@@ -221,7 +224,12 @@ def resolved_value(
         offset_periods: Phase within the ``PERIOD`` cycle.
         placement: How an occurrence maps onto a pay period.
         shift: Weekend/holiday adjustment.
-        end_bound: When the recurrence stops.
+        end_bound: The bound the OWNER authored -- when the rule itself says
+            it stops.
+        derived: A stop the definition did NOT author, from something outside
+            the rule (plan step R7d-d).  ``None`` is "nothing outside the rule
+            bounds this", which is every definition whose destination is not a
+            configured loan.
         nominal_day: The day the rule means when the first occurrence's
             month clamped it.
 
@@ -235,7 +243,7 @@ def resolved_value(
         starts_on=starts_on,
         placement=placement,
         shift=shift,
-        end_bound=end_bound,
+        closing=Closing(authored=end_bound, derived=derived),
         nominal_day=nominal_day,
     )
 
