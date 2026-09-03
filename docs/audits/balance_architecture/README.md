@@ -511,11 +511,12 @@ sentence exists so nobody builds it believing the question was never raised.
   object total across ruling R-FI's two states (**R-IW**); the `_FIGURE_COLUMNS` registry is
   gone and no migration was needed. Closed **N-293**, opened **N-437** and **N-440**. Record in
   `archive/x_au_k_as_built_2026-09-02.md`.
-* [ ] **X-au-d** `refactor(salary): a projected paycheck is not stored` -- the SALARY cutover. The
-  recurrence engine stops pricing salary rows, the 51 live rows go NULL, and
-  `income_service.live_projected_net`, `transaction_service._freshest_amount` and
-  `_reconcile_cached_amount` are deleted. Closes **N-224** and **N-228** (the batch producer called
-  with a one-element list, which disappears with the mechanism rather than by threading a map).
+* [x] **X-au-d** `ed06acf6` -- a paycheck's amount is its salary profile's, and it stores none.
+  59 non-override salary rows declared (**R-JB**: settled ones too), the read-time repair and
+  its whole seam deleted, and FOUR dormant defects the stored figure was absorbing closed or
+  filed -- the archive re-price (**N-261**, `-$9,677.24`), a templates-form 500 (**N-253**),
+  `_freshest_amount`'s conjunct, and **N-444**. Two engines, one pass, one fence fewer.
+  Record in `archive/x_au_d_as_built_2026-09-03.md`.
 * [ ] **X-au-e** `refactor(recurrence): a template row reads its template's series` -- the TEMPLATE
   cutover, onto X-au-a's series. Generation stops pricing, 511 rows go NULL, and regeneration's amount
   arm plus the conflict chooser's keep-vs-use decision are deleted: a hand-edited month owns its
