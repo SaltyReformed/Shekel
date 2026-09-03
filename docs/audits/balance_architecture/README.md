@@ -517,12 +517,12 @@ sentence exists so nobody builds it believing the question was never raised.
   filed -- the archive re-price (**N-261**, `-$9,677.24`), a templates-form 500 (**N-253**),
   `_freshest_amount`'s conjunct, and **N-444**. Two engines, one pass, one fence fewer.
   Record in `archive/x_au_d_as_built_2026-09-03.md`.
-* [ ] **X-au-e** `refactor(recurrence): a template row reads its template's series` -- the TEMPLATE
-  cutover, onto X-au-a's series. Generation stops pricing, 511 rows go NULL, and regeneration's amount
-  arm plus the conflict chooser's keep-vs-use decision are deleted: a hand-edited month owns its
-  figure, so the collision the chooser mediates cannot occur (developer, 2026-08-11). **This is where
-  the measured `$502.45` defect class dies** -- `_get_transaction_amount` priced a third paycheck from
-  a truncated period list, and a generator that prices nothing cannot mis-price.
+* [x] **X-au-e** `c000d7f6` `b846386a` -- a template row reads its template's series. 525 rows
+  declared, generation's last pricing fork deleted, and the `$502.45` class dead with it: a
+  generator that prices nothing cannot mis-price. Closed **N-244**, **N-247**, **N-444**. **This
+  bullet's own claim that the chooser's keep-vs-use decision dies was REFUTED** -- it keeps its
+  offer and loses only its FIGURE (**R-JD**), because `_conflicts` is the one door in `app/` that
+  clears `is_override`. Record in `archive/x_au_e_as_built_2026-09-03.md`.
 * [ ] **X-au-g** the DECOMPOSED parent of the LOAN-PAYMENT cutover, split 2026-08-31 into four
   leaves: the pricing cycle's deletion, the tier move that unwinds the amount model's reach into the
   loan service, the ruling that puts a loan's terms on the installment they govern, and the cutover
