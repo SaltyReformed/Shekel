@@ -18,7 +18,6 @@ from flask_login import current_user
 
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.ref import Status
 from app.routes._render_helpers import (
@@ -38,7 +37,10 @@ from app.services.entry_service import (
     build_entry_sums_dict,
 )
 from app.services.pay_calendar import FiledRow, calendar_for
-from app.utils.auth_helpers import get_accessible_transaction
+from app.utils.auth_helpers import (
+    get_accessible_transaction,
+    log_refused_lookup,
+)
 from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
 from app.utils.error_fragments import INVALID_REFERENCE_MSG, designed_error
@@ -134,9 +136,12 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     to the page-load card: :func:`grid_view_service.build_row_keys` for
     the row label, :func:`build_entry_sums_dict` for the progress
     aggregate, and :func:`build_entry_lists_dict` for the inline
-    envelope entries.  Ownership scoping uses ``txn.pay_period.user_id``
-    (the data owner) so the companion path resolves the linked owner's
-    categories, not the companion's own (empty) set.
+    envelope entries.  Ownership scoping uses ``txn.user_id`` (the data
+    owner) so the companion path resolves the linked owner's categories, not
+    the companion's own (empty) set.  It read that value off the paycheck
+    (``txn.pay_period.user_id``) until plan step ``pay_calendar:C13-b``; the
+    walk hydrated a whole ``budget.pay_periods`` row to learn one integer the
+    transaction carries.
 
     **It derives that owner's pay calendar since pay-calendar plan step
     C4-a-3**, which is one indexed read of ``budget.pay_periods`` and one of
@@ -164,7 +169,7 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     Returns:
         Rendered HTML string for one ``grid/_mobile_card_single.html``.
     """
-    owner_id = txn.pay_period.user_id
+    owner_id = txn.user_id
     categories = (
         db.session.query(Category)
         .filter_by(user_id=owner_id)
@@ -485,8 +490,16 @@ def _finalised_edit_response(txn, data):
 def _get_owned_transaction(txn_id):
     """Fetch a transaction and verify it belongs to the current user.
 
-    Ownership is determined via the pay_period's user_id since
-    transactions don't have a direct user_id column.
+    Ownership is the row's OWN ``user_id`` column since plan step
+    ``pay_calendar:C13-b``.  This read was ``txn.pay_period.user_id``, and the
+    docstring here said "since transactions don't have a direct user_id
+    column" -- a premise plan step ``C13-a`` retired.  The two values cannot
+    disagree: ``fk_transactions_owner_period`` holds the row's owner equal to
+    its paycheck's on every write.
+
+    **Dropping the walk drops a HYDRATION the callers used to inherit**, and
+    :func:`app.routes._render_helpers.render_transaction_cell` is the one that
+    names it -- see its own docstring, which this step re-measured.
 
     Returns:
         Transaction if found and owned by current_user, else None.
@@ -494,9 +507,69 @@ def _get_owned_transaction(txn_id):
     txn = db.session.get(Transaction, txn_id)
     if txn is None:
         return None
-    if txn.pay_period.user_id != current_user.id:
+    if txn.user_id != current_user.id:
         return None
     return txn
+
+
+def _resolve_owned_period(period_id, not_found_msg="Pay period not found"):
+    """Answer ``current_user``'s calendar for *period_id*, or refuse.
+
+    **The ONE way this blueprint asks whether a submitted paycheck is the
+    requester's** (plan step ``pay_calendar:C13-b``).  Three doors -- both
+    create routes and the PATCH door's :func:`_verify_owned_fks_in_update` --
+    passed a ``PayPeriod`` spec to :func:`_resolve_owned_fks` instead: fetch
+    ``budget.pay_periods`` by primary key, compare ``row.user_id`` against the
+    requester.  Those are three of the EIGHT primary-key refetches finding
+    **P75** counts.
+
+    **Why the calendar and not the composite key.**  ``C13-a`` made a
+    transaction filed in a stranger's paycheck UNSTORABLE
+    (``fk_transactions_owner_period``), so deleting these checks outright
+    would still refuse the write -- but as an ``IntegrityError`` the create
+    routes translate into ``400 "Invalid reference..."``, where the security
+    response rule asks for the 404 that "not found" gets.  The key answers
+    STORAGE; this answers INPUT, and they are two different questions.  A
+    calendar holds ONE owner's whole schedule, so a foreign id is ABSENT
+    rather than present-and-rejected: the two answers the rule wants
+    indistinguishable are one answer, with no comparison left for a later edit
+    to drop.  It is the shape plan step C2-f3e ruled for the READ doors, and
+    the developer ruled this step to extend it to the write doors (2026-09-03).
+
+    **It LOGS where ``_resolve_owned_fks`` is silent**, and that is
+    :func:`~app.utils.auth_helpers.log_refused_lookup`'s stated rule rather
+    than an addition: an owner-scoped lookup cannot tell "no such row" from
+    "not yours", which is the stronger security property and exactly why it
+    must not also mean no trail.
+
+    Args:
+        period_id: A submitted ``budget.pay_periods.id``, or ``None``.
+        not_found_msg: The 404 body.  Defaults to the write doors' wording;
+            the grid-cell fragments pass their own uniform ``"Not found"`` so
+            no fragment's body says which of its four ids was wrong.
+
+    Returns:
+        ``(period, None)`` with the resolved
+        :class:`~app.services.pay_calendar.DerivedPeriod`, or
+        ``(None, (not_found_msg, 404))`` -- a Flask response tuple the caller
+        returns directly to HTMX.
+
+    Raises:
+        PayCalendarError: The owner's paydays cannot define a calendar (see
+            :func:`~app.services.pay_calendar.calendar_for`).  Uncaught, as at
+            every other route that derives one -- but note it CHANGES what a
+            schedule-less owner meets at these three write doors: the
+            application handler (**R-PC42**) renders the recovery card at
+            **200** where the primary-key compare answered
+            ``("Pay period not found", 404)``.  Nothing leaks -- that card
+            names no submitted id -- and the state is unreachable for an owner
+            registration has served since plan step ``balance:X-ad-a``.
+    """
+    period = calendar_for(current_user.id).period_by_id(period_id)
+    if period is None:
+        log_refused_lookup("PayPeriod", period_id)
+        return None, (not_found_msg, 404)
+    return period, None
 
 
 def _resolve_owned_fks(specs):
@@ -507,12 +580,14 @@ def _resolve_owned_fks(specs):
     form-partial routes (:func:`get_quick_create`,
     :func:`get_full_create`, :func:`get_empty_cell`, which reach it through
     their one shared ``_resolve_grid_cell``) and the PATCH door's own
-    :func:`_verify_owned_fks_in_update`.  **A ``PayPeriod`` spec no longer
-    arrives from the three form-partial routes**: plan step C2-f3e answers the
-    period from the owner's derived pay calendar, where an id another user
-    holds is simply absent and there is no ``user_id`` comparison to write.
-    The other three call sites still pass one, and whether they should is
-    ledger row **P75**'s question rather than this docstring's.  For each
+    :func:`_verify_owned_fks_in_update`.  **No ``PayPeriod`` spec arrives here
+    any more**: plan step C2-f3e answered the period from the owner's derived
+    pay calendar on the three form-partial routes, and plan step
+    ``pay_calendar:C13-b`` moved the last three -- the two create doors and
+    the PATCH door -- onto :func:`_resolve_owned_period`, which is that same
+    lookup given a name.  What is left here fetches by primary key and
+    compares, because no derivation owns ``budget.accounts``,
+    ``budget.categories`` or ``budget.scenarios``.  For each
     ``(model, obj_id, not_found_msg)`` spec the row is fetched by
     primary key and confirmed to belong to ``current_user``; a missing
     row and a cross-user row return the identical 404 so an attacker
@@ -556,7 +631,11 @@ def _verify_owned_fks_in_update(data):
 
     Used by :func:`update_transaction` to reject ``pay_period_id``
     and ``category_id`` values that belong to another user before
-    any state-changing work runs.  Without this probe an
+    any state-changing work runs.  The period goes through
+    :func:`_resolve_owned_period` since plan step ``pay_calendar:C13-b`` --
+    the owner's calendar, asked FIRST so the message order this door's 404
+    strings depend on is unchanged -- and the category through
+    :func:`_resolve_owned_fks`.  Without this probe an
     authenticated owner could submit a victim's ``pay_period_id``
     or ``category_id`` and the unfiltered ``setattr`` loop in
     :func:`update_transaction` would silently re-parent the
@@ -583,9 +662,11 @@ def _verify_owned_fks_in_update(data):
         ``None`` on success.  On failure, a Flask response tuple
         ``(body, 404)`` the caller returns directly to HTMX.
     """
-    specs = []
     if "pay_period_id" in data:
-        specs.append((PayPeriod, data["pay_period_id"], "Pay period not found"))
+        _, error = _resolve_owned_period(data["pay_period_id"])
+        if error is not None:
+            return error
+    specs = []
     if "category_id" in data:
         specs.append((Category, data["category_id"], "Category not found"))
     _, error = _resolve_owned_fks(specs)

@@ -20,7 +20,7 @@ from app.services.cash_ledger import (
     amount_basis,
     resolve_transaction_amount,
 )
-from app.services.pay_calendar import DerivedPeriod, calendar_for
+from app.services.pay_calendar import DerivedPeriod, FiledRow, calendar_for
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.balance_predicates import is_credit, is_projected
 from app.utils.log_events import (
@@ -97,8 +97,8 @@ def lock_source_transaction_for_payback(
         The locked Transaction with refreshed column attributes.
 
     Raises:
-        NotFoundError: If the row does not exist or its pay-period
-            does not belong to ``owner_id``.
+        NotFoundError: If the row does not exist or does not belong to
+            ``owner_id``.
     """
     txn = (
         db.session.query(Transaction)
@@ -109,10 +109,11 @@ def lock_source_transaction_for_payback(
     )
     if txn is None:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
-    # Defense-in-depth: verify ownership via pay period.  Performed
-    # after the lock is acquired so an attacker probing for valid
+    # Defense-in-depth: verify ownership on the row's own owner column
+    # (``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``).
+    # Performed after the lock is acquired so an attacker probing for valid
     # IDs cannot race the lock window to confirm existence.
-    if txn.pay_period.user_id != owner_id:
+    if txn.user_id != owner_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
     return txn
 
@@ -405,15 +406,29 @@ def mark_as_credit(transaction_id, user_id):
     category = get_or_create_cc_category(user_id)
 
     # Find the next pay period, asked of the owner's one calendar (plan step
-    # C2-f) rather than of a ``period_index + 1`` query.  The payday comes off
-    # the relationship ``lock_source_transaction_for_payback`` has already
-    # loaded -- this line was a second ``db.session.get(PayPeriod, ...)`` for a
-    # row the session was holding -- and it is the payday rather than the end
-    # deliberately: ``start_date`` is the only fact in that row, so this
-    # survives plan step C4 unchanged.  The entry-level twin
+    # C2-f) rather than of a ``period_index + 1`` query.  It is the payday
+    # rather than the end deliberately: ``start_date`` is the only fact in
+    # that row, so this survives plan step C4 unchanged.  The entry-level twin
     # (``entry_credit_workflow._create_payback``) reads it the same way.
-    next_period = calendar_for(user_id).period_starting_after(
-        txn.pay_period.start_date,
+    #
+    # **The payday it counts FROM comes out of that same calendar** since plan
+    # step ``pay_calendar:C13-b``.  It was ``txn.pay_period.start_date``, and
+    # the comment here said the payday "comes off the relationship
+    # ``lock_source_transaction_for_payback`` has already loaded".  That door
+    # loaded it as a side effect of walking ``txn.pay_period.user_id`` for its
+    # ownership check; the check reads ``txn.user_id`` now and hydrates
+    # nothing, so the same expression would have become a LAZY load -- a
+    # second read of a span the derivation on this line already holds.
+    #
+    # **The READ ORDER, stated because ``require_period`` requires every caller
+    # to state its own**: the ROW is read first, the paydays second, so a
+    # concurrent DESTRUCTIVE pay-period door -- reset, regenerate or truncate
+    # -- committing between them raises rather than answering off a stale
+    # picture.  That is balance finding **N-358**, whose remedy is
+    # `balance:X-i5`.
+    calendar = calendar_for(user_id)
+    next_period = calendar.period_starting_after(
+        calendar.require_period(FiledRow.for_row(txn)).start_date,
     )
     if next_period is None:
         raise ValidationError(
@@ -492,8 +507,8 @@ def unmark_credit(transaction_id, user_id):
     Args:
         transaction_id: The ID of the credited transaction.
         user_id: The ID of the user who owns the transaction.
-            Defense-in-depth: ownership is verified via the
-            transaction's pay period.
+            Defense-in-depth: ownership is verified against the row's own
+            ``user_id`` column.
 
     Raises:
         NotFoundError: If the transaction doesn't exist or doesn't
@@ -506,8 +521,9 @@ def unmark_credit(transaction_id, user_id):
     txn = db.session.get(Transaction, transaction_id)
     if txn is None:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
-    # Defense-in-depth: verify ownership via pay period.
-    if txn.pay_period.user_id != user_id:
+    # Defense-in-depth: verify ownership on the row's own owner column
+    # (``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``).
+    if txn.user_id != user_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)

@@ -26,7 +26,7 @@ from app.enums import (
     StatusEnum,
     TxnTypeEnum,
 )
-from app.exceptions import ValidationError
+from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.journal_entry import JournalEntry
@@ -2013,3 +2013,94 @@ class TestTheRetainedMapAnswersOnlyARetainedCORRECTION:
             assert transaction_service.retained_settle_amounts_by_id(
                 [txn],
             ) == {txn.id: None}
+
+
+class TestTheDeleteDoorReconcilesItsOwnerArgument:
+    """``delete_transaction`` checks the owner it is handed against the row.
+
+    Finding **N-373**, landed at plan step **pay_calendar:C13-b**.  This door
+    took an ``owner_id`` for its events and reconciled it against the row
+    NOWHERE, while its sibling ``entry_service.delete_entry`` re-validated --
+    so of the two doors ``statement_match._release._remove`` calls, one asked
+    and one trusted.  Both live callers prove ownership first, so the finding
+    measured ``$0.00`` and no reachable defect; what it names is a PERMISSION
+    a third caller would inherit.
+
+    It is ONE comparison because ``budget.transactions`` carries its owner as
+    a COLUMN since plan step ``C13-a``.  Before that the predicate was a join
+    walk through the paycheck, which is why the finding was sequenced behind
+    the key rather than fixed when it was raised.
+
+    The refusal is a ``NotFoundError`` naming only the row's id -- the same
+    shape and the same silence as the sibling door, per the security response
+    rule that "not yours" and "not found" read alike.
+    """
+
+    def test_a_foreign_owner_is_refused(
+        self, app, seed_user, seed_periods, second_user,
+    ):
+        """A caller naming another user as the owner gets the 404 shape."""
+        with app.app_context():
+            template = _make_envelope_template(seed_user)
+            txn = _make_projected_txn(
+                seed_user, seed_periods[0], template=template,
+            )
+            db.session.flush()
+
+            with pytest.raises(NotFoundError) as exc:
+                transaction_service.delete_transaction(
+                    txn, second_user["user"].id,
+                )
+            assert str(txn.id) in str(exc.value)
+            assert not txn.is_deleted
+
+    def test_the_owner_is_refused_BEFORE_the_deletion_rules(
+        self, app, seed_user, seed_periods, second_user,
+    ):
+        """The ownership arm runs ahead of ``deletion_refusal``.
+
+        Ordering is the half a status code cannot show: a foreign caller must
+        be told NOTHING about the row, so the ownership refusal has to come
+        before the rules that name WHY a row may not be deleted.  The row here
+        is one ``deletion_refusal`` rejects by name -- a CC payback -- so the
+        two arms give different exceptions and the order is observable: put
+        ownership second and this call comes back as a ``ValidationError``
+        whose sentence tells a stranger the row is a payback.
+
+        The OWNER's own call is made too, and it must reach that
+        ``ValidationError``: without it this case would also pass on a door
+        that refused everything.
+        """
+        with app.app_context():
+            template = _make_envelope_template(seed_user)
+            source = _make_projected_txn(
+                seed_user, seed_periods[0], template=template,
+            )
+            # Built directly: a payback carries no template, because
+            # ``ck_transactions_one_pricing_link`` allows a row exactly one
+            # pricing parent.
+            payback = Transaction(
+                user_id=seed_user["user"].id,
+                pay_period_id=seed_periods[1].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Tracked Expense (payback)",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                credit_payback_for_id=source.id,
+            )
+            db.session.add(payback)
+            db.session.flush()
+
+            with pytest.raises(NotFoundError) as exc:
+                transaction_service.delete_transaction(
+                    payback, second_user["user"].id,
+                )
+            assert "payback" not in str(exc.value).lower()
+
+            with pytest.raises(ValidationError):
+                transaction_service.delete_transaction(
+                    payback, seed_user["user"].id,
+                )

@@ -20,7 +20,6 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.extensions import db
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.transfer import Transfer
@@ -172,18 +171,25 @@ def update_transfer(xfer_id):
         return _stale_transfer_response(xfer_id), 409
 
     # --- Route-boundary FK ownership (commit C-27 / F-043) ---
-    # The user-scoped FKs ``TransferUpdateSchema`` exposes are
-    # ``category_id`` and ``pay_period_id``; ``status_id`` references
-    # the ref table and needs no ownership probe.  Each is verified
-    # only when present and non-``None`` -- ``allow_none=True`` on
-    # ``category_id`` means clearing it (NULL) is legitimate and the
-    # service drops it through unchanged.  The service's
-    # ``_get_owned_*`` helpers re-check, but enforcing it here keeps
-    # the boundary visible and guards a future refactor that bypasses
-    # them.  Single-return loop so adding a future FK does not push the
-    # function past pylint's too-many-returns threshold; all failures
-    # collapse to 404 per the project security response rule.
-    for model, field in ((Category, "category_id"), (PayPeriod, "pay_period_id")):
+    # ``category_id`` is verified only when present and non-``None`` --
+    # ``allow_none=True`` on it means clearing it (NULL) is legitimate and the
+    # service drops it through unchanged.  ``status_id`` references the ref
+    # table and needs no ownership probe.  Single-return loop so adding a
+    # future FK does not push the function past pylint's too-many-returns
+    # threshold; all failures collapse to 404 per the project security
+    # response rule.
+    #
+    # **``pay_period_id`` is NOT here any more** (plan step
+    # ``pay_calendar:C13-b``, developer 2026-09-03).  This loop carried it,
+    # duplicating ``transfer_service._ownership._get_owned_period``, which
+    # ``update_transfer`` reaches unconditionally and whose ``NotFoundError``
+    # this route already turns into the identical ``"Not found", 404``.  The
+    # duplicate was F-043's deliberate defence in depth, written when the two
+    # tiers had no shared producer to point at; the service tier now asks the
+    # owner's derived CALENDAR, one answer with no comparison in it, and one
+    # walk is what this step is for.  ``category_id`` stays because no
+    # derivation owns ``budget.categories``.
+    for model, field in ((Category, "category_id"),):
         value = data.get(field)
         if value is not None and not _user_owns(model, value):
             return "Not found", 404
@@ -302,10 +308,19 @@ def create_ad_hoc():
     # single ``return`` so adding a sixth FK in the future does
     # not push the function past pylint's too-many-returns
     # threshold.
+    #
+    # **``pay_period_id`` left this tuple at plan step
+    # ``pay_calendar:C13-b``** (developer 2026-09-03): it duplicated
+    # ``transfer_service._ownership._get_owned_period``, which
+    # ``create_transfer`` reaches unconditionally and whose ``NotFoundError``
+    # the ``except`` below already answers with this same 404.  That service
+    # call asks the owner's derived calendar now -- one answer, no comparison
+    # -- and the four route-boundary copies of it collapsed into it.  The
+    # other four entries stay: no derivation owns their tables, so the route
+    # probe is still the first place the question can be asked.
     for model, pk in (
         (Account, data["from_account_id"]),
         (Account, data["to_account_id"]),
-        (PayPeriod, data["pay_period_id"]),
         (Scenario, data["scenario_id"]),
         (Category, data["category_id"]),
     ):

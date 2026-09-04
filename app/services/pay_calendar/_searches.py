@@ -474,11 +474,17 @@ def require_period(
       decayed by being FIXED.  ``budget.transactions`` now carries a
       ``user_id`` held equal to both its account's owner and its paycheck's by
       a composite key each (ruling **R-PC32**), so the row this bullet
-      describes cannot be written at all rather than merely being absent.  The
-      handling here is therefore dead weight rather than a live defence, and
-      whether it goes is plan step ``pay_calendar:C13-b``'s decision -- taken
-      BESIDE finding **P75**'s nineteen rather than as one of them, because
-      this is a placement question and P75 counts only the reads that REFUSE.
+      describes cannot be written at all rather than merely being absent.
+      **``C13-b`` took the decision this clause was left for, and the handling
+      STAYS** (2026-09-03): the refusal is reached by TWO states and only this
+      one became unstorable.  The other -- a picture assembled from more than
+      one moment, the bullet above -- is live, owned by `balance:X-i5`, and
+      reaches this same raise.  So what is dead weight is this BULLET's claim
+      on the handling, not the handling; a caller whose calendar no longer
+      holds a row's period still gets a refusal rather than a wrong span.
+      Taken beside finding **P75**'s nineteen rather than as one of them,
+      because it was a placement question and P75 counts only the reads that
+      REFUSE.
 
     **The three quieter answers were weighed and refused** (the review that
     parked C4-a-1, 2026-08-25): placing the row against no span hides a

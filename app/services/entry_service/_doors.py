@@ -280,8 +280,10 @@ def create_entry(
     if txn is None:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
-    # Ownership: verify via pay period (security response rule: 404).
-    if txn.pay_period.user_id != owner_id:
+    # Ownership: the row's own owner column (security response rule: 404).
+    # It was ``txn.pay_period.user_id`` until plan step
+    # ``pay_calendar:C13-b``.
+    if txn.user_id != owner_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
     # Entry-capable: purchase tracking must be enabled, via the template
@@ -473,9 +475,11 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     if entry is None:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
-    # Re-validate ownership through the parent transaction chain.
+    # Re-validate ownership on the parent transaction's OWN owner column
+    # (plan step ``pay_calendar:C13-b``; it walked
+    # ``entry.transaction.pay_period.user_id`` until then).
     owner_id = resolve_owner_id(user_id)
-    if entry.transaction.pay_period.user_id != owner_id:
+    if entry.transaction.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
     # A settled row's purchases are closed to RE-PRICING (finding **N-229**),
@@ -654,9 +658,11 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     if entry is None:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
-    # Re-validate ownership through the parent transaction chain.
+    # Re-validate ownership on the parent transaction's OWN owner column
+    # (plan step ``pay_calendar:C13-b``; it walked
+    # ``entry.transaction.pay_period.user_id`` until then).
     owner_id = resolve_owner_id(user_id)
-    if entry.transaction.pay_period.user_id != owner_id:
+    if entry.transaction.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
     # **A settled row's close may not be re-priced by a removal, and whether
@@ -737,7 +743,7 @@ def get_entries_for_transaction(
     txn = db.session.get(Transaction, transaction_id)
     if txn is None:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
-    if txn.pay_period.user_id != owner_id:
+    if txn.user_id != owner_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
     # The entries relationship is ordered by ``purchased_on`` via the

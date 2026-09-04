@@ -361,8 +361,10 @@ class TestSyncEntryPayback:
         """sync_entry_payback raises NotFoundError when owner_id doesn't match.
 
         Defense-in-depth: even if the caller already checked ownership,
-        sync verifies via pay_period.user_id to prevent payback creation
-        under the wrong user.
+        sync verifies the row's own ``user_id`` column to prevent payback
+        creation under the wrong user.  It walked ``pay_period.user_id`` until
+        plan step ``pay_calendar:C13-b``; the two are held equal by
+        ``fk_transactions_owner_period``.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
