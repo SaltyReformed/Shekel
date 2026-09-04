@@ -579,10 +579,18 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             # rather than left to whoever adds the next count.
             or self.deposited_count
             # **A skip changes a RECORD, which is what this predicate asks**
-            # -- and it is one of the TWO arms here that are not about money,
-            # the other being the repeat below it (plan step
-            # ``bank_import:X-gj-4b``).  *This said "the one arm", in the same
-            # commit that added the second* -- the identical
+            # -- and it is not a money effect at all, the repeat below it
+            # being the other arm of that kind (plan step
+            # ``bank_import:X-gj-4b``).  **No count is asserted over the arms**,
+            # because the membership test would be undefined: ``redated_count``
+            # corrects a PURCHASE day and :mod:`._receipt_sentences` says in as
+            # many words that it "moves no money at all", so a reader applying
+            # this comment's own words finds three.  A count whose scope is
+            # left to the reader is how "one" survived three passes in
+            # ``outcome_counts``; this one inherited the number and not the
+            # precision, and the census of 2026-09-04 caught it.  *It said
+            # "the one arm", in the same commit that added the second* -- the
+            # identical
             # said-ONE-while-introducing-TWO shape that took four adversarial
             # passes to kill in ``outcome_counts``, live in the other home of
             # the same fact.  Found by pass five 2026-09-04, outside its own

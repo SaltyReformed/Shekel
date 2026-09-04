@@ -164,8 +164,10 @@ class SkippedLine:
             have to be paired by position.
             **It was the bare ``line_id`` until plan step
             ``bank_import:X-gj-4b``**, which put this door in a BATCH: that
-            pass writes one receipt sentence per act, every other sentence in
-            :mod:`._batch` names its act's figure and its day, and ruling
+            pass writes one receipt sentence per act, and every sentence in
+            :mod:`._receipt_sentences` names its act's figure and its day --
+            *this said :mod:`._batch`, which defines none of them since the
+            split* -- and ruling
             **R-GD(a)**'s rule is that a consent naming a count and no figure
             is a consent to an amount nobody stated.  The door is holding the
             row already, so carrying it costs no read; deriving the figure in

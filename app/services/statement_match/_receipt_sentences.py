@@ -15,9 +15,14 @@ here.
 **They are strings and not spans, and the difference is the audience.**  A
 card's sentence is laid out by a template that inks each part
 (:class:`~._sentence.Ink`), so a service that formatted one would be choosing
-presentation it cannot see.  A receipt item is quoted verbatim into a list --
-by two surfaces, and into ``system.audit_log`` -- so what it needs is to read
-as one sentence wherever it lands.
+presentation it cannot see.  A receipt item is quoted verbatim into a list by
+THREE surfaces -- the Reconcile page, the hand-build workbench and the review
+queue, which :func:`~app.routes.accounts._statement_doors.log_pass_applied`
+calls three ways of performing one act -- so what it needs is to read as one
+sentence wherever it lands.  *An earlier draft said two surfaces and claimed
+the sentence also reaches ``system.audit_log``; it does not -- what that door
+logs is :func:`~app.routes.accounts._statement_doors.outcome_counts`' figures,
+and ``system.audit_log`` is written by row triggers.*
 
 **Each names its act's FIGURE and its DAY**, which is ruling **R-GD(a)**'s
 rule and the reason :attr:`~._batch.AppliedItem.line_ids` is documented as a
@@ -25,8 +30,9 @@ correlation key rather than a label: a ``bank_statement_lines`` id is opaque
 and appears nowhere the owner can see, so the sentence is what identifies the
 act on screen.
 
-**Nothing changed on the way across** except the four names, which lost their
-leading underscore because a sibling module calls them now -- the rule
+**Nothing changed on the way across** except THREE names, which lost their
+leading underscore because a sibling module calls them now; ``skip_summary``
+is new in this step and was never private.  The rule is
 :func:`~._cards.parked_card` set and :mod:`._card_sections` followed one split
 earlier in this same step.
 
@@ -200,7 +206,10 @@ def skip_summary(skipped) -> str:
     :func:`~._sentence.for_skip` makes the same argument for the card.
 
     **It says what the act did NOT do**, which no other sentence on this
-    receipt has to: every sibling here reports money moving, and this one
+    receipt has to: every sibling here reports an act CLASS that moves money,
+    though not every clause of one does -- :func:`match_summary` can report
+    *confirmed what you already had*, and a corrected purchase day moves
+    nothing either.  This one
     reports a line leaving the inbox while the difference between the books
     and the bank stays exactly where it was.  An owner who read *skipped* as
     *resolved* would be reading the hero's own figure wrong.
