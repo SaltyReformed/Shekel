@@ -285,7 +285,7 @@ class TestABackDatedAssertionNoLongerRedefinesTheOpening:
             ) == Decimal("1000.00")
 
             append_balance_assertion(
-                db.session, account, seed_periods[0], Decimal("250.00"),
+                db.session, account, Decimal("250.00"),
                 settle_instant_on(opened_on - timedelta(days=14)),
             )
             db.session.commit()

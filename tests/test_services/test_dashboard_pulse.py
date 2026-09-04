@@ -231,7 +231,7 @@ class TestPulseHero:
         """
         with app.app_context():
             _add_anchor_history(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 "1000.00", days_ago=5,
             )
             db.session.commit()
@@ -256,7 +256,7 @@ class TestPulseHero:
         with app.app_context():
             account = seed_user["account"]
             _add_anchor_history(
-                db.session, account, seed_periods[0], "1000.00", days_ago=20,
+                db.session, account, "1000.00", days_ago=20,
             )
             db.session.commit()
 

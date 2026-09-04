@@ -53,7 +53,7 @@ def _build_a_difference(seed_user, seed_periods):
         settled_on=_ON, name="Groceries",
     )
     append_balance_assertion(
-        db.session, seed_user["account"], seed_periods[4],
+        db.session, seed_user["account"],
         Decimal("1000.00"), settle_instant_on(_ON),
     )
     db.session.commit()
@@ -89,7 +89,7 @@ def _reconciled_account(seed_user, seed_periods):
         settled_on=date(2026, 3, 2), name="Groceries", account=account,
     )
     append_balance_assertion(
-        db.session, account, seed_periods[4],
+        db.session, account,
         Decimal("350.00"), settle_instant_on(date(2026, 3, 2)),
     )
     return account

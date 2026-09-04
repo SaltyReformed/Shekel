@@ -184,7 +184,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
         """
         with app.app_context():
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[6],
+                db.session, seed_user["account"],
                 Decimal("1300.00"), _instant(2026, 4, 6),
             )
             db.session.commit()
@@ -318,7 +318,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
                 date(2026, 4, 9), is_income=True,
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[7],
+                db.session, seed_user["account"],
                 Decimal("2600.00"), _instant(2026, 4, 10),
             )
             _projected(
@@ -400,7 +400,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
             # clocks, and a balance typed today for a day in January is an
             # ordinary back-dated assertion.
             append_balance_assertion(
-                db.session, account, seed_periods[0],
+                db.session, account,
                 Decimal("1750.00"),
                 _instant(opening_day.year, opening_day.month,
                          opening_day.day, 18),
@@ -450,7 +450,7 @@ class TestItCannotDisagreeWithTheBalanceSeriesBesideIt:
                 date(2026, 4, 6),
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[6],
+                db.session, seed_user["account"],
                 Decimal("1300.00"), _instant(2026, 4, 8),
             )
             _projected(

@@ -557,7 +557,7 @@ class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
         with app.app_context():
             self._unpair(db)
             anchor = append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(last_covered_day(seed_periods[0])),
             )
             txn = self._dated_row(
@@ -584,7 +584,7 @@ class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
         with app.app_context():
             self._unpair(db)
             anchor = append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(last_covered_day(seed_periods[0])),
             )
             moved = anchor.observed_on - timedelta(days=4)
@@ -626,7 +626,7 @@ class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
         with app.app_context():
             self._unpair(db)
             anchor = append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(last_covered_day(seed_periods[0])),
             )
             self._dated_row(
