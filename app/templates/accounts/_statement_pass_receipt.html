@@ -126,8 +126,8 @@
       {% endif %}
       {# A REPEAT wrote nothing, and says so rather than being folded into
          the count above -- that count answers how many decisions were
-         RECORDED. Reachable only from a stale tab, because a skipped line is
-         not in the pass; without this line such a pass rendered "Nothing
+         RECORDED. Reachable from a stale or duplicated tab and from two
+         submits of one page, though never from a single press; without this line such a pass rendered "Nothing
          moved. Everything that was applied confirmed a day you already had"
          over an act that confirmed no day. #}
       {% if outcome.already_skipped_count %}

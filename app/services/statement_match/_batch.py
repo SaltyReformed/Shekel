@@ -379,7 +379,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     merchant credit a rule files as a NEGATIVE purchase reported through
     ``recorded_count``, whose caption says *as a purchase your records did not
     have, dated the day your bank took it* -- which the bank did not do.
-    ``refunded_count`` was the newest until this step.
+  
     ``deposited_count`` (ruling **bank_import:R-GW**) is here for
     ``repriced_count``'s reason: without
     it a pass that recorded a deposit reports through ``recorded_count``,
@@ -393,9 +393,10 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     other field can be read as covering.
     :class:`~._accept.AcceptedMatch` carries the same disable for the same
     reason.  *(This paragraph called ``repriced_count`` "the eighth" until
-    2026-08-23; it is the sixth field declared.  An ordinal nobody can check
-    against the list beside it is exactly the kind of claim this codebase
-    keeps measuring wrong, so it is gone rather than corrected.)*
+    2026-08-23; it is declared in the field block below, where an ordinal can
+    be READ OFF rather than asserted.  An ordinal nobody can check against the
+    list beside it is exactly the kind of claim this codebase keeps measuring
+    wrong, so it is gone rather than corrected.)*
 
     Attributes:
         applied: The acts that landed, in the order they were applied.
@@ -452,6 +453,27 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
         residual_count: How many matched GROUPS had their difference recorded
             as an ordinary uncategorized row (plan step
             ``bank_import:X-f6d-4``, ruling **R-FN**).
+        residual_total: What those differences come to, signed and netted.
+            **A figure beside the count rather than instead of it**, because
+            the two answer different questions and the netting is why: seven
+            payroll deposits at `+$0.05` and one refund at `-$0.35` net to
+            `$0.00`, and a receipt saying "8 differences recorded" over a
+            total of nothing would be true and useless.  The count says how
+            many rows the owner now has to categorise; the total says how much
+            money reached the Uncategorized bucket.
+        skipped_count: How many bank lines the owner recorded as explained by
+            NOTHING (ruling **bank_import:R-JG**).  **It counts what was
+            WRITTEN and not what was pressed**: a repeat press finds the
+            decision already standing and writes nothing
+            (:attr:`~._skipping.SkippedLine.was_already_skipped`), so it is an
+            applied item with its own sentence and it does NOT increment this
+            -- a count that included it would claim a record changed when none
+            did, and the reader that would then state it falsely is the
+            RECEIPT's own caption (*recorded as explained by nothing*) and
+            the audit field beside it.  **Not** :attr:`moved_nothing`, which
+            ORs both counts and would answer identically either way; that
+            predicate's reason to exist lives on
+            :attr:`already_skipped_count`, where it is true.
         already_skipped_count: How many skips this pass found ALREADY
             standing and wrote nothing for
             (:attr:`~._skipping.SkippedLine.was_already_skipped`).  **Its own
@@ -468,22 +490,6 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             PRESS can produce one: ``reconcile_payload`` dedupes on
             ``set(form.getlist("ok"))``, so one body yields one item a line.  Named by
             adversarial review 2026-09-04.
-        skipped_count: How many bank lines the owner recorded as explained by
-            NOTHING (ruling **bank_import:R-JG**).  **It counts what was
-            WRITTEN and not what was pressed**: a repeat press finds the
-            decision already standing and writes nothing
-            (:attr:`~._skipping.SkippedLine.was_already_skipped`), so it is an
-            applied item with its own sentence and it does NOT increment this
-            -- a count that included it would claim a record changed when none
-            did, which is the one thing :attr:`moved_nothing` reads it for.
-        residual_total: What those differences come to, signed and netted.
-            **A figure beside the count rather than instead of it**, because
-            the two answer different questions and the netting is why: seven
-            payroll deposits at `+$0.05` and one refund at `-$0.35` net to
-            `$0.00`, and a receipt saying "8 differences recorded" over a
-            total of nothing would be true and useless.  The count says how
-            many rows the owner now has to categorise; the total says how much
-            money reached the Uncategorized bucket.
     """
 
     applied: "tuple[AppliedItem, ...]"
@@ -534,7 +540,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
 
     @property
     def moved_nothing(self) -> bool:
-        """Return whether this pass has nothing to report but confirmations.
+        """Return whether every act that LANDED did nothing but confirm.
 
         **It is NOT "changed no record at all", and that sentence stood here
         until plan step ``bank_import:X-gj-4b``** (adversarial review

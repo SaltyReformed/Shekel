@@ -388,6 +388,15 @@ def for_skip() -> "tuple[Span, ...]":
     rather than claimed to be one, which is the only reason it could be
     caught wrong twice.**
 
+    **Five is exact for the PHRASE and not for this paragraph's own wider
+    framing**, which is *what a skip does NOT do*: the skip card's Undo
+    confirm says *no money moves and no date changes* (a ``data-confirm``
+    attribute, so it is not PRINTED beside the card and **R-HR** is
+    untouched).  Said because the next reader greps for the claim rather than
+    for the sentence.  *The clause about which copy an earlier correction
+    missed is a QUOTE and not a measurement* -- three of the five sites are
+    new in one commit and no intermediate commit distinguishes them.
+
     **It names no MERCHANT**, where :func:`for_parked_transfer` does.  That
     sentence names one because the merchant IS what the money went to; here
     the card's own facts column already prints it above, and a sentence

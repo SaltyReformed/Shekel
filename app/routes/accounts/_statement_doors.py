@@ -570,8 +570,9 @@ def outcome_counts(outcome) -> dict:
     adversarial financial review 2026-08-23.
 
     **Every count, including the ones a given door cannot produce.**  A
-    hand-built match carries no creation and no income, so ``recorded_count``,
-    ``refunded_count``, ``envelopes_created`` and ``deposited_count`` are
+    hand-built match carries no creation, no income and no skip, so
+    ``recorded_count``, ``refunded_count``, ``envelopes_created``,
+    ``deposited_count``, ``skipped_count`` and ``already_skipped_count`` are
     structurally zero there
     -- and they are still emitted, because an audit trail whose FIELDS depend
     on which door wrote the row cannot be queried across the two.
@@ -608,7 +609,9 @@ def outcome_counts(outcome) -> dict:
         # count here that reports no MONEY**, and it is emitted anyway: a
         # trail whose fields depend on which door wrote the row cannot be
         # queried across them, and *how many lines this pass stopped asking
-        # about* is exactly the question a skip answers.
+        # about* is exactly the question a skip answers.  **They are the TWO
+        # counts here that report no money**, not one: the repeat beside it
+        # reports a press that wrote nothing at all.
         "skipped_count": outcome.skipped_count,
         "already_skipped_count": outcome.already_skipped_count,
     }

@@ -340,7 +340,7 @@ def apply_hand_match(account_id):
         split one audit trail in two and make "how many matches were recorded
         on this account" a question needing a union.  The counts come from the
         one statement of them (:func:`~._statement_doors.outcome_counts`),
-        including the three this door cannot produce -- an audit trail whose
+        including the six this door cannot produce -- an audit trail whose
         FIELDS depend on which door wrote the row cannot be queried across the
         two.
 

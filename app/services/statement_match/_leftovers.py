@@ -717,9 +717,16 @@ class Leftovers:
     """
 
     # Pylint: ``duplicate-code`` -- Incidental field-block similarity with
-    # :class:`~._reads.ReviewSet`, which publishes all six of these names
-    # because it is what this value is assembled INTO, five of them carrying
-    # the same value.  It is five annotation lines and no logic:
+    # :class:`~._reads.ReviewSet`, which publishes SIX of this value's seven
+    # names because it is what this value is assembled INTO -- five of them
+    # carrying the same value.  **The FENCE below is narrower than either
+    # number and deliberately so**: it covers five annotation lines and no
+    # logic, of which four carry the same value, because
+    # :attr:`account_payments` is separated from the run in BOTH classes
+    # (by ``impossible_day_count`` here and by ``bounds`` there) and so
+    # extends no similarity run.  *An earlier correction re-counted the
+    # published names and left the fence's own figures describing them,
+    # which named no set that exists.*
     # ``ReviewSet.creatable`` is
     # :func:`~._verdict.ruled` over this one and is a different value under
     # the same name, and the two are separate types deliberately -- this is
