@@ -56,6 +56,43 @@ from app.utils.money import round_money
 _ZERO_MONEY = Decimal("0.00")
 
 
+def _collapsed_prefix(
+    start: Decimal, steps: list[tuple[date, Decimal]],
+) -> tuple[list[date], list[Decimal]]:
+    """Prefix-sum *steps* from *start*, collapsing steps that SHARE a date.
+
+    The running-balance series both date readers in this module share: the
+    sampler (:func:`sample_cumulative`) bisects it, and the backward
+    zero-crossing (:func:`last_closed_on`) scans it.  It exists as one function
+    because the COLLAPSE is the load-bearing part -- a date carrying several
+    events has ONE balance, its combined prefix, so a payoff and a balance
+    true-up landing on the same visible date read as that date's net and never
+    as two states within it.  Written twice, the sampled balance and the
+    crossing date could disagree about whether a loan was closed on such a day.
+
+    Args:
+        start: The balance before any step.
+        steps: ``(date, delta)`` pairs, ASCENDING by date (the caller sorts).
+
+    Returns:
+        ``(boundaries, cumulative_at_boundary)`` -- one entry per DISTINCT date
+        in *steps*, ascending, each carrying the running total through the end
+        of that date.  Both lists are empty for empty *steps*.  The values are
+        NOT quantized; each reader rounds at the point it compares or returns.
+    """
+    boundaries: list[date] = []
+    cumulative_at_boundary: list[Decimal] = []
+    running = start
+    for on_date, delta in steps:
+        running += delta
+        if boundaries and boundaries[-1] == on_date:
+            cumulative_at_boundary[-1] = running
+            continue
+        boundaries.append(on_date)
+        cumulative_at_boundary.append(running)
+    return boundaries, cumulative_at_boundary
+
+
 def sample_cumulative(
     start: Decimal,
     steps: list[tuple[date, Decimal]],
@@ -85,16 +122,7 @@ def sample_cumulative(
     Returns:
         ``{date: cent-quantized cumulative}`` -- one per distinct requested date.
     """
-    boundaries: list[date] = []
-    cumulative_at_boundary: list[Decimal] = []
-    running = start
-    for on_date, delta in steps:
-        running += delta
-        if boundaries and boundaries[-1] == on_date:
-            cumulative_at_boundary[-1] = running
-            continue
-        boundaries.append(on_date)
-        cumulative_at_boundary.append(running)
+    boundaries, cumulative_at_boundary = _collapsed_prefix(start, steps)
 
     sampled: dict[date, Decimal] = {}
     for on_date in dates:
@@ -139,6 +167,78 @@ def fold_from_walk(
     # The fold's balance seeds at ZERO and the empty prefix (before any event)
     # is 0.00 -- the honest fold of no facts.
     return sample_cumulative(_ZERO_MONEY, dated_deltas(walk), dates)
+
+
+def last_closed_on(walk: LoanLedgerWalk, as_of: date) -> date | None:
+    """Return the date *walk*'s loan LAST became closed at or before *as_of*.
+
+    The BACKWARD zero-crossing, and the half
+    :func:`~app.services.balance_at._plan_fold.plan_payoff_date` structurally
+    cannot answer: that one folds FORWARD from the confirmed present seed, so a
+    loan already at zero has no crossing left ahead of it and returns ``None`` --
+    which does not mean *never*, it means *not my half* (plan step
+    ``recurrence:R7d-h``).  This reads the same rule the other way, over the
+    RECORDED events rather than the forward plan, so the two together answer a
+    loan's closing date across its whole timeline.
+
+    It scans the SAME collapsed running balance :func:`sample_cumulative` bisects
+    (:func:`_collapsed_prefix`) and rounds each date's balance the way
+    :func:`fold_from_walk` rounds a sampled one, so the date this returns is a
+    date the fold itself reports ``<= 0.00`` on -- the crossing and the balance
+    beside it cannot disagree.
+
+    **A loan that closed, was trued back UP, and closed again has TWO crossings,
+    and this returns the LATER** (developer, 2026-09-03).  The alternative reads
+    a loan's whole reopened span as already finished: with a payoff on
+    2026-09-01, a ``$1,200.00`` true-up on 2026-10-15 and a ``$1,200.00`` payment
+    clearing it on 2026-11-20, taking the FIRST crossing stops the loan's
+    recurrence on 2026-09-01, so the payment that actually settled in November
+    has no projected row behind it and generation silently under-produces across
+    the span.  The later crossing is also what "the day it last became closed"
+    means literally.
+
+    **The zero before a loan exists is not a closed loan.**  A date before any
+    recorded fact folds to ``0.00`` -- the empty prefix's honest answer
+    (:func:`fold_from_walk`) -- but the loan had not been borrowed yet, so the
+    scan treats the state before the first event as OPEN.  Two consequences: a
+    loan with no fact by *as_of* answers ``None``, and one whose FIRST visible
+    balance is already ``<= 0`` closes on that first date rather than answering
+    "never".  The second is reachable through a ``$0.00`` true-up dated ON the
+    origination date -- ``anchor_service`` admits ``anchor_date >=
+    origination_date``, and the two facts then collapse onto one boundary.  It
+    is NOT reachable through a zero OPENING anchor, which is synthesized from
+    ``original_principal`` and forbidden by
+    ``ck_loan_params_orig_principal`` (``original_principal > 0``).
+
+    Args:
+        walk: The loan's :class:`~app.services.loan_ledger.LoanLedgerWalk`
+            (:func:`app.services.loan_ledger.walk_loan_ledger`) -- the read
+            pass's memoized one where the caller holds a context.
+        as_of: The read pass's as-of.  Events visible AFTER it are not read, so
+            a loan closed only in the future is not closed here.
+
+    Returns:
+        The date the loan last went to a ``<= 0.00`` balance and stayed there
+        through *as_of*, or ``None`` when it is not closed at *as_of* (it still
+        owes, or it has no recorded fact yet).
+    """
+    boundaries, cumulative_at_boundary = _collapsed_prefix(
+        _ZERO_MONEY, dated_deltas(walk),
+    )
+    # Only what is VISIBLE by as_of: the count of distinct dates at or before it.
+    count = bisect_right(boundaries, as_of)
+    if count == 0:
+        return None
+    became_closed_on: date | None = None
+    # The loan does not exist before its first recorded fact, so the state going
+    # in is OPEN rather than closed (see the docstring).
+    was_open = True
+    for index in range(count):
+        is_closed = round_money(cumulative_at_boundary[index]) <= _ZERO_MONEY
+        if is_closed and was_open:
+            became_closed_on = boundaries[index]
+        was_open = not is_closed
+    return None if was_open else became_closed_on
 
 
 def fold_loan_balances(

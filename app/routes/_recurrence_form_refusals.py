@@ -155,10 +155,28 @@ def refuse_inverted_window(
     it, stored where it did not -- which is the same present-versus-absent rule
     :func:`update_recurrence_rule_from_form` applies when it writes them.
 
+    **A definition whose window the APP derives is skipped, and that is the
+    same ruling one level down** (plan step ``recurrence:R7d-h``).  The CHECK
+    was held back because a derived empty window is correct at nought
+    occurrences; this door reads the identical stored pair, so refusing on it
+    makes the door the constraint the ruling declined to add.  It became
+    reachable when a retired loan's closing bound stopped being the read pass's
+    own now -- which drifted PAST ``starts_on`` and healed itself -- and became
+    the day the loan actually closed, which for a loan cleared before its first
+    installment is permanently earlier than the start the sync writes.  Without
+    this skip the owner is refused on an ordinary cadence edit, is told "ends
+    before it starts", and has no control to fix it: the form locks the start
+    and the "Ends" bound for a loan payment but not the "Repeats" select.
+    :func:`~app.services.loan_recurrence_sync.owns_validity_window` is the same
+    predicate the form's LOCK asks, so the control set and this refusal cannot
+    disagree about who owns the pair.  Plan step ``recurrence:R7d-f`` moves the
+    rest of this module's loan-payment reads off the column.
+
     Args:
         template: The template being updated.  A template with no rule is
             skipped: the create branch authors from a submission the schema has
-            already compared.
+            already compared.  A template whose validity window the app derives
+            is skipped too, per the paragraph above.
         data: The validated payload, NOT mutated -- the delegated helper pops
             the recurrence keys afterwards and must still see them.
         end_bound: The submitted closing bound, or ``None`` when the form
@@ -172,6 +190,10 @@ def refuse_inverted_window(
     """
     rule = template.recurrence_rule
     if rule is None or data.get("recurrence_unit") is None:
+        return None
+    if owns_validity_window(template):
+        # The app WRITES this pair from the loan's own facts, so an inverted
+        # one is its answer and not the owner's mistake (see the docstring).
         return None
     starts_on = (
         data[RECURRENCE_STARTS_ON_KEY] if RECURRENCE_STARTS_ON_KEY in data else rule.starts_on
