@@ -233,8 +233,10 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `profiles.py:253`, `views.py:63`, `cockpit.py:284` -- having taken the derivation at
       `C2-f2d-3` and kept the process clock. **`C2-f3a` CLOSED P49 and was wrong to**; its
       adversarial design review caught that before the commit. Five one-line reads, in a step of
-      their own because a clock change on money-adjacent screens gets its own review. Closes
-      **P49**.
+      their own because a clock change on money-adjacent screens gets its own review.
+      **It grows the INSTRUMENT** (`balance:N-138`, re-keyed here 2026-09-03): a pylint checker
+      forbidding the process clock -- `date.today()`, `datetime.now()` -- outside one clock module,
+      so the five reads stay moved. Closes **P49**, **N-138**.
 - [ ] **C11 -- the LAYER predicate.** The four service modules that still open their own read pass
       take one instead -- `calendar_service`, `investment_dashboard_service/_context` and
       `/_orchestrator`, `tax_report_service` -- and the gate becomes the layer rule rather than a
@@ -242,8 +244,32 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `loan_recurrence_sync` is a WRITER and takes its own by design, so the rule carves it out or
       takes it from its caller. Collapses the +1 `C2-f3a` left on `/analytics/taxes`. Closes
       **P56**, **P69**.
-- [x] **C13 -- a transaction's owner is a COLUMN.** `e2c325dc`. The DECOMPOSED parent, ruling
-      **R-PC32**, split in two 2026-09-02 and ticked with `C13-b`. Closes **P75**.
+- [ ] **C14 -- the pay schedule carries its shift convention** (ruling **R-PC47**; closes **F-4** =
+      **N-398**, **P78**, **P80**). **MOVES MONEY.** A payday is a RECORDED FACT that may fall off
+      the cadence, and the shift is the employer's stated convention rather than noise: 1 January
+      2026 fell on a holiday and was paid 31 December 2025, so 2025 was a 27-paycheck tax year and
+      2026 has 26, one `$3,526.00` gross paycheck across a year boundary that a forecast counting
+      nominal dates gets wrong in both years. `budget.pay_schedule` gains a convention (none,
+      preceding business day, following business day); ONE business-day module holds the weekend
+      rule and the computed US federal holiday set, called by the pay calendar's projection here and
+      by `recurrence:R8-d` for recurring cash dates, so that step SHRINKS to consuming it; the
+      rhythm applies the convention, so it reproduces the shift from the rule alone and **N-398**'s
+      stored correction per shifted payday is never needed. A recorded payday that differs from the
+      prediction is an exception the integrity sweep WARNS on, never a refusal (**P80**); the
+      tolerance is this step's own ruling. The eight fixtures built on a calendar-monthly payday set
+      no door can write (**P78**) re-point at a schedule a door CAN write; calendar-monthly is
+      `R13`'s cadence kind, not a shift. Which paycheck a monthly-cadence deduction skips moves with
+      the shifted month, which is why the step is a money step.
+- [ ] **C15 -- the retire-later solve runs only when an assumption moved** (ruling **R-PC52**;
+      closes **P60**). The readiness card re-solves the retire-later binary search -- about nine
+      projection walks of pure compute no query cost covers -- on every refresh, so a slider-only
+      change went `159 -> 426` ms while its queries fell `100 -> 97`, the PRICE of P59's fix. The
+      card is split so the solve refreshes only when an assumption it reads has changed and a
+      stepper move costs one probe; the developer rejected accepting the cost though it sits inside
+      the 500 ms input debounce.
+- [ ] **C13 -- a transaction's owner is a COLUMN.** RE-OPENED 2026-09-03 for a third leaf, `C13-c`
+      (**R-PC48**); its first two shipped at `e2c325dc`. The DECOMPOSED parent, ruling **R-PC32**,
+      split in two 2026-09-02 and ticked with `C13-b`. Closes **P75**.
 - [x] **C13-a -- the KEY.** `8e707c4c`. Migration `d4a92f6b13c8`: `user_id` backfilled from
       `pay_periods.user_id`, then both composite FKs. The `auth.users` key is `ON DELETE RESTRICT`
       and NOT `UserScopedMixin`'s CASCADE (developer, 2026-09-02) -- the only candidate shape that
@@ -256,13 +282,23 @@ their only live specimen from them, which both `_staging` docstrings predict and
       Closed **P75**, **N-373**. **What a later step must obey**: the period-set SCOPES in
       `statement_match._candidates` and `reconcile_service._rows` were weighed and REFUSED -- each
       is also what makes its span lookup TOTAL. As-built: `historical/c13b_as_built_2026-09-03.md`.
-- [ ] **C12 -- one current-paycheck producer.** The THREE implementations become one, which needs a
-      RULING first because it changes what `/savings` and `/retirement` publish. The merged producer
-      gives `income_service`'s amount basis a threaded calendar, so `balance:X-i1` and this step
-      decide for each other. It also owes `paycheck_calculator.py`'s 1000-line ceiling, which
-      `recurrence:R-F16` took from EXACTLY 1000 to 873 on 2026-08-19 -- so the headroom is real now
-      and this step's own growth is what would spend it (re-measured at C2-f3e; row **P64** and
-      section 0 said zero and were stale). Closes **P62**, **P63**, **P64**'s engine half.
+- [ ] **C13-c -- eight keys hold six more tables' rows to ONE owner** (ruling **R-PC48**; finding
+      **P83**). `budget.transfers` carries `user_id`, `from_account_id`, `to_account_id` and
+      `pay_period_id` with no key holding them to one owner, and the same shape stands on
+      `transaction_templates`, `ledger_accounts`, `savings_goals`, `statement_imports` and
+      `journal_entries` -- **P75**'s defect on six more tables, 0 mismatched rows on production
+      across all seven column pairs, expressible-not-present. `fk_statement_matches_owner` and
+      `fk_account_external_identities_owner` are already this construction, so each is a superkey
+      plus a composite foreign key -- three on `transfers`, one on each other table, eight keys --
+      in ONE migration, and it DELETES `integrity_check.py`'s DC-09, the hand-written fence for
+      exactly this one table over, rather than joining it (`CLAUDE.md` rule 14). Filed here as
+      `C13`'s third leaf though the tables span three arcs: a migration does not care which arc a
+      table's steps live in.
+
+*`C12` (one current-paycheck producer) moved to the `salary` arc on 2026-09-03 (**R-SAL1**) with its
+rows **P62**, **P63** and **P64**'s engine half; its specification is
+`implementation_plan_salary.md`, section 4, under its unchanged id.*
+
 - [x] **C3 -- the writer writes paydays, forward-only.** `7e3fb33b`, as-built in
       `historical/pay_calendar_as_built_2026-08-16.md`. **Must not be undone**: `pay_period_write`
       is the ONE place in `app/` that constructs or deletes a pay period, and R-PC1's coverage half
@@ -322,7 +358,10 @@ their only live specimen from them, which both `_staging` docstrings predict and
 **Starts with the two rulings section 3 names**, neither of which the 2026-08-08 lock ruling
 answers: what happens to a row whose date `attribution_date` would now CLAMP into the wrong half,
 and whether the newly split-off payday is repopulated (understated income) or not (a doubled bill).
-Not required by the normalization and deliberately last. Closes **P10**.
+Not required by the normalization and deliberately last. **It also takes P46** (**R-PC49**,
+2026-09-03): the period-move control offers every paycheck the owner holds and
+`classify_period_lock`, which this step already consults, is the one thing that refuses a move.
+Closes **P10**, **P46**.
 
 - [ ] **C7 -- the ledger entry derives its paycheck.**
 
@@ -353,7 +392,9 @@ key and not dead weight.
 Recording paydays and setting the forward cadence are two operations welded onto one form, on
 generate / regenerate / reset. After C4 the column's only job is projecting past the last recorded
 payday, so it is a FORECAST SETTING rather than a property of any batch, and the normalized shape is
-one control that sets it beside payday forms that only record paydays.
+one control that sets it beside payday forms that only record paydays. **It also takes P47**
+(**R-PC50**, 2026-09-03): the four date-range registers stand, and the reconcile panel and the
+dashboard pulse -- one hand-rendered range written twice -- read `period.range_label`.
 **C3-b took the extend door's half by DELETING its input** (finding **P29**) and the developer ruled
 2026-08-11 that the remaining three are a UX step rather than a writer step, sequenced after C4 so
 the control lands on a column whose job has already narrowed. Closes **P30**.
@@ -373,7 +414,10 @@ close it than the reason R-AG had to leave it open. **MOVES MONEY, OWN PR**, and
 a production clone rather than an argument. Closes **P7**; carries **P42**, **P44** and **P50** --
 the /savings and /retirement seeding defects `C2-e`'s reviews opened, and the savings-goal divisor
 that counts only saved periods -- because every one is the projection's own reach rather than a
-reader move.
+reader move. **The CASH tier joins the same projection** (`balance:N-394`, re-keyed here
+2026-09-03): the analytics month card froze at the last saved payday because `cash_balance_at` stops
+there -- every month to 2030-12 read one identical `$9,539.92` -- and one projection past the
+horizon for every tier is this step's rule.
 
 ## 5. Findings ledger
 

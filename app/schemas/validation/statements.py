@@ -397,6 +397,27 @@ class StatementMatchReleaseSchema(BaseSchema):
     )
 
 
+class StatementSkipReleaseSchema(BaseSchema):
+    """Validate the id of the skip being undone (plan step X-gj-4c-2).
+
+    Its own schema for the reason :class:`StatementMatchReleaseSchema` is
+    separate from :class:`StatementMatchSchema`, applied one act over: a match
+    and a skip are different objects in different tables, and one schema
+    carrying both ids would have each optional and refuse a submission naming
+    neither.
+
+    **The id is a :class:`~app.schemas.validation._helpers.RowId`, not
+    ``fields.Integer``** (plan step X-ae, finding **N-141**): it names a ROW,
+    and ``Integer`` reads ``'١٢'``, ``' 12 '``, ``'+12'``, ``'1_0'``,
+    ``'007'``, ``'-5'`` and ``'0'`` as ids -- two of which name no row at all.
+    """
+
+    skip_id = RowId(
+        required=True,
+        error_messages={"required": "Which skip do you want to undo?"},
+    )
+
+
 class AgreementDaySchema(BaseSchema):
     """The one day the books-vs-bank drill-down is asked about.
 

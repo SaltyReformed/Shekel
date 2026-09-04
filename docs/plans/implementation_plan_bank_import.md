@@ -73,9 +73,10 @@ than a second copy here (rule 16): **N-239** and **N-323**.
         shape would mean building it twice.
   - [ ] **X-f6g** `refactor(reconcile): a statement-covered account reconciles from statements` --
         the reconcile panel stops offering an account whose statements the owner imports
-        (**R-GD(d)**). **It owes a specification pass before it is picked up, and that pass IS the
-        first half of the step**: the panel is the balance arc's surface, and what "statement
-        coverage" means for a day no import spans is undecided. Nothing here starts by deleting it.
+        (**R-GD(d)**). **Its specification pass FOLDED into `balance:X-bj-1` on 2026-09-03**
+        (**R-JN**): coverage is defined ONCE, by the level relation, as a level row's own span, and
+        **N-343** went with it. What remains here is the panel change, reading that coverage; ranked
+        below the card arc with the other enhancements (**R-JL**).
   - [ ] **X-f6b** `feat(import): the statement arrives without being fetched` -- the automated
         SOURCE ADAPTER (**R-FP**), RE-SCOPED 2026-08-24: the daily fetch lands on standing rules
         (**R-GH**), never a review queue, and its per-sync balance is the corroboration source the
@@ -87,7 +88,9 @@ than a second copy here (rule 16): **N-239** and **N-323**.
         are already measured in R-FP's context) is worth minting once the card ledger exists
         (`credit_card:CC1a`..`CC1c`); no step for it exists yet, deliberately.
 
-**The X-ga..X-gh leaves are the standing-consent REDESIGN the developer approved 2026-08-24**
+**The release is cut after `X-gj-4b` merges and before `X-gi`** (`bank_import:R-JK`, 2026-09-03).
+
+**The X-ga..X-gj leaves are the standing-consent REDESIGN the developer approved 2026-08-24**
 (**R-GH**..**R-GL**; argument: `docs/audits/bank_import_redesign/README.md`), and
 **the shipped X-gb..X-gf-3b-2 span is ARCHIVED under rule 5** to the five
 `historical/bank_import_x_*` files: every finding it did not close is a live `ledger.md` row, and
@@ -145,7 +148,7 @@ what it leaves a LATER step is on that step's own entry.
         developer 2026-09-02). The ACT of landing a group's difference on a named member shipped;
         the RULE that would have remembered the row set was refused on a census. The record is
         `historical/bank_import_x_gj_3b_withdrawn_2026-09-02.md`, and it carries R-JJ's
-        measurements, the rejected options and the one question left open for `recurrence:R18`.
+        measurements, the rejected options and the one question left open for `salary:R18`.
     - [x] **X-gj-3a -- a group's difference may land on a member the OWNER names.** `e42dcd6b`,
           ruling **R-IU**. `bank_cash_for` becomes `DifferenceLanding`: the bank's total less the
           OTHER members, which at a lone row is the bank total, so nothing shipped moves. No member
@@ -199,6 +202,9 @@ what it leaves a LATER step is on that step's own entry.
       waits on `X-gj` and deletes what that page orphans -- the review, register and workbench
       routes and templates, the evidence-group rendering (`_queue.py`'s `_SAID`, the per-row
       sentence composers `_notes_for`), and whatever else the census finds unreachable.
+      **It also decides N-470** (re-pointed 2026-09-03 when `X-gh` withdrew): two figures on the
+      import-delete receipt -- `anchors_released`, `merchants_forgotten` -- computed and rendered by
+      nothing, which the census either wires to the flash or deletes.
       **It is a CENSUS before it is a deletion**: it may delete nothing it has not first shown to be
       orphaned, because a route that looks dead to a reading is not the same as one no door reaches
       (**N-112**'s shape). What the archived X-gf span leaves it: `apply=hand` is already DELETED
@@ -211,8 +217,8 @@ what it leaves a LATER step is on that step's own entry.
       two-source -- debit swipes from SECU lines, card swipes from card-side charges -- and the
       card-tender entry shape the loop must design over is what CC3c rewrites. Designing over the
       payback shape the card arc deletes is the mistake that withdrew `balance:X-au-i`.
-- [ ] **X-gh** `feat(balance): the bank's balance asserts the anchor` -- **R-GL**, designed against
-      the post-cutover assertion (after `balance:X-f3c`), with the residue surfaced as an exception
-      and the hand true-up demoted to a correction. **The residue is not hypothetical**: `X-gb`
-      reversed `$7,769.58` of double-booked spending and the balance did not move, because 60 hand
-      true-ups were absorbing it -- which is what this step stops happening silently.
+
+*`X-gh` (**R-GL**, *the bank's balance asserts the anchor*) was WITHDRAWN on 2026-09-03 as
+superseded by `balance:R-IS` and **R-JN**: under the level relation `balance:X-bj-1` builds, the
+bank's closing is an OBSERVATION and neither asserts nor restates. The record is
+`historical/decision_sweep_2026-09-03.md`; **N-470** went to `X-gi` and **N-434** to `X-bj-1`.*

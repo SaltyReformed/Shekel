@@ -5145,7 +5145,7 @@ class TestGridPeriodSubtotalCanonical:
             # claimed the purchases were inside an anchor asserted four
             # periods earlier (finding N-132 / R8).
             append_balance_assertion(
-                db.session, seed_user["account"], current,
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(current.start_date),
             )
             for amt in (
@@ -5292,7 +5292,7 @@ class TestGridPeriodSubtotalCanonical:
             # stays $0.00.  See the docstring: it was $1,000.00 while a posted
             # purchase was no fact.
             append_balance_assertion(
-                db.session, seed_user["account"], target_period,
+                db.session, seed_user["account"],
                 Decimal("750.00"),
                 settle_instant_on(target_period.start_date),
             )

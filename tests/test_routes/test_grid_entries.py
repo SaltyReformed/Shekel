@@ -926,7 +926,7 @@ class TestTheEntryListContextHasOneProducer:
             record_settle_day(inside, an_entered_day(asserted_on))
             record_settle_day(outside, an_entered_day(asserted_on + timedelta(days=1)))
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods_today[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(asserted_on),
             )
             db.session.commit()

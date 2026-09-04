@@ -124,6 +124,11 @@ The public surface, and what each piece is for:
   what they were; what changes is that :func:`review_set` stops asking.  A
   line carries at most ONE answer, so :func:`skip_line` refuses a line an
   accepted match already explains and ABSORBS a repeat of the same decision.
+  **Where a recorded skip is FOUND and undone is the Reconcile page's Skipped
+  tab** (plan step ``bank_import:X-gj-4c-2``), which reads that store through
+  :func:`reconcile_page` -- so the reader is not exported either, for the
+  reason nothing else on that page is: only the route imports, and it imports
+  the page.
 * :func:`awaiting_review_count` -- how many of an account's recorded lines
   still have no answer, which is the figure the GRID's bank control renders.
   It applies the review pass's own four predicates and no others, so a badge

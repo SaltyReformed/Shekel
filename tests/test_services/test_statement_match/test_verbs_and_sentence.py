@@ -54,6 +54,7 @@ from app.services.statement_match._sentence import (
     choose,
     for_placement,
     for_proposal,
+    for_skip,
 )
 from app.services.statement_match._verbs import (
     MATCH_SHUT_NO_ROWS,
@@ -215,6 +216,33 @@ class TestTheSentenceOpensOnTheVerb:
         assert spans[0].ink is Ink.CHOOSE
         assert not any(span.text == Verb.ADD.word for span in spans)
 
+    def test_a_recorded_skip_opens_on_the_PAST_tense_verb(self):
+        """Plan step ``bank_import:X-gj-4c-2``, ruling **R-JG**.
+
+        The Skipped tab is the same card one tense over, so its first word is
+        ``Skipped`` and not ``Skip`` -- a present-tense verb on a settled card
+        describes work still to do, which is the whole reason
+        :attr:`~app.services.statement_match._verbs.Verb.past` exists.
+
+        **The whole sentence is asserted, not only the opener.**  This composer
+        takes no argument, so every span of it is a decision made once at the
+        site; a case that graded the first word alone would leave the rest
+        ungraded forever -- which is what
+        :meth:`TestTheSentenceOpensOnTheVerb
+        .test_the_period_span_is_BRACKETED_and_carries_the_paycheck` was added
+        to correct one composer over.
+        """
+        spans = for_skip()
+
+        assert spans[0].text == Verb.SKIP.past == "Skipped"
+        assert spans[0].ink is Ink.VERB
+        assert [(span.text, span.ink) for span in spans] == [
+            ("Skipped", Ink.VERB),
+            ("as", Ink.PLAIN),
+            ("explained by nothing", Ink.STRONG),
+        ]
+        assert all(span.money is None for span in spans)
+
 
 class TestASpanCarriesWordsOrAFigureAndNeverBoth:
     """The invariant that lets a template ask one question per span."""
@@ -257,6 +285,11 @@ class TestASpanCarriesWordsOrAFigureAndNeverBoth:
             # value is how a case and its helper come to describe two rows.
             destination=_a_destination(),
         )),
+        # The Skipped tab's sentence (plan step ``bank_import:X-gj-4c-2``).
+        # It joins the sweep for the reason every other composer is here: this
+        # contract is what lets the template join spans with one space, and a
+        # composer outside the sweep is one nothing holds to it.
+        for_skip(),
     ])
     def test_no_span_opens_with_a_mark_that_must_hug_the_word_before(
         self, spans,

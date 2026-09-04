@@ -41,13 +41,14 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
-from flask import Response, flash, redirect
+from flask import Response, flash, redirect, request
 from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.extensions import db
 from app.exceptions import ValidationError
 from app.routes._commit_helpers import DbErrorContext, handle_db_error
+from app.schemas.validation import form_payload
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_BATCH_APPLIED,
@@ -130,6 +131,71 @@ def run_statement_door(
     message, category = on_success(result)
     flash(message, category)
     return redirect(ctx.target)
+
+
+def run_one_id_door(
+    schema, field: str, ctx: StatementDoorContext,
+    act_for: Callable, on_success: Callable,
+) -> Response:
+    """Grade a form naming ONE row id, then run *act_for* on it.
+
+    Plan step ``bank_import:X-gj-4c-2`` extracted this, and the reason is the
+    module docstring's own: *three copies of a rollback-and-flash are three
+    places for a refusal to stop being rendered.*  Two doors here name exactly
+    one act and nothing else -- releasing a match
+    (:func:`~._statement_release.release_and_return`) and undoing a skip
+    (:func:`~.statement_reconcile.unskip_from_reconcile`) -- and they were
+    STRUCTURALLY identical for eight lines, five of them byte-identical:
+    build the payload, validate, flash the refusal and redirect, load the id,
+    hand it to :func:`run_statement_door`.  The three that differed named the
+    schema and the field.
+
+    **Pylint's cross-file ``duplicate-code`` did NOT report it**, and that is
+    why this is written down rather than left to the gate.  The longest
+    byte-identical run was FOUR lines (``return run_statement_door(`` through
+    ``refusal=ValidationError,``), and the checker requires more than its
+    ``min-similarity-lines`` to fire -- so at the default of 4 a four-line run
+    is silent, and it takes 5 to report.  *An earlier version of this
+    paragraph said "byte-identical for seven lines" and "three consecutive
+    lines against a minimum of four"; both were measured false, and the second
+    would have taught a reader that four identical lines ARE caught.*  A gate
+    is a floor.  Named by adversarial review 2026-09-04.
+
+    **It is the VALIDATE half only, and the two acts stay separate.**  What
+    the doors share is the shape of grading a one-id form; what they do not
+    share is the act, the receipt or the refusal story, which is why undoing a
+    skip does not go through ``release_and_return``.  Folding those would be a
+    helper for two things that only look alike.
+
+    Args:
+        schema: The Marshmallow schema naming the id field, one instance
+            constructed at the caller's import like every sibling's.
+        field: Which key to read off the loaded payload.
+        ctx: What this door needs in order to fail well
+            (:class:`StatementDoorContext`), whose ``target`` is where every
+            outcome redirects -- including the schema refusal below, which is
+            why the caller builds it before validating.
+        act_for: ``row_id -> (() -> result)``.  The service call, bound to the
+            graded id.  It MUST NOT commit; :func:`run_statement_door` owns
+            the unit of work.
+        on_success: ``result -> (message, category)``, called AFTER the commit.
+
+    Returns:
+        A redirect to ``ctx.target``, with exactly one flash set -- the
+        schema's refusal, the door's, or the receipt.
+    """
+    payload = form_payload(request.form, schema)
+    errors = schema.validate(payload)
+    if errors:
+        # **A schema refusal redirects to the SAME target as every other
+        # outcome**, which is :class:`StatementDoorContext`'s own rule stated
+        # one tier up: a door that redirected elsewhere on failure would lose
+        # the flash it just set.
+        flash(refusal_sentence(errors), "warning")
+        return redirect(ctx.target)
+    return run_statement_door(
+        ctx, lambda: act_for(schema.load(payload)[field]), on_success,
+    )
 
 
 @dataclass(frozen=True)

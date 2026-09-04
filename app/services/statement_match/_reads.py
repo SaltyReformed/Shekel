@@ -626,8 +626,21 @@ def _could_have_been_shown(
     return window[0] <= covered[1] and window[1] >= covered[0]
 
 
-def _as_bank_line(row: BankStatementLine) -> BankLine:
+def as_bank_line(row: BankStatementLine) -> BankLine:
     """Return *row* as the value the proposer and the screen share.
+
+    **PUBLIC since plan step ``bank_import:X-gj-4c-2``, and the promotion is
+    ``CLAUDE.md`` rule 14 rather than a widening for its own sake.**  A second
+    reader needs it -- :func:`~._skipping.skipped_acts`, which lists the
+    recorded skips the Skipped tab renders -- and every one of its eight fields
+    would otherwise be spelled a second time, including the ``Decimal(str(...))``
+    that keeps a float off a money value.  It stays HERE rather than moving
+    beside :class:`~._offers.BankLine`, which is the placement rule 14 asks for
+    first: :mod:`._offers` stands at 996 lines against pylint's 1,000-line
+    ceiling, so taking it would owe that module a split -- and ruling
+    **balance:R-IR** puts a split on the session that BREAKS the module, which
+    this one does not.  Recorded so the next reader knows the home is a
+    constraint rather than a judgment.
 
     Args:
         row: A recorded line.
@@ -806,7 +819,7 @@ def review_set(scope: ReviewScope) -> ReviewSet:
     matched = matched_subjects(account_id)
     candidates = scope.candidates
     offerable = unmatched_rows(candidates, matched)
-    bank_lines = [_as_bank_line(line) for line in lines.inside]
+    bank_lines = [as_bank_line(line) for line in lines.inside]
     proposed = propose(bank_lines, offerable)
     proposals = proposed.proposals
     unmatched = _unexplained(bank_lines, proposals)

@@ -8,14 +8,22 @@ file holding both passed the 1,000-line ceiling that already split
 :mod:`._accepted_view` out of :mod:`._reads`.
 
 **The same card renders on all five tabs**, which is the whole design: the
-inbox, the two holding tabs and the two settled tabs are one list seen five
-ways, not five screens.  Two kinds exist because a line the books have not
-settled and an act already applied carry disjoint facts -- a
-:class:`LineCard` has a bank line and a :class:`~._panel.VerbPanel`, an
-:class:`ActCard` has an Undo and what it would destroy -- and one value
-holding empty versions of the other's fields is a control one Jinja condition
-away from rendering, which is what :class:`~._bars.BarredLine` exists to
-refuse.
+inbox, the holding tab, the skipped tab and the two settled tabs are one list
+seen five ways, not five screens.  THREE kinds exist because the three
+subjects carry disjoint facts -- a :class:`LineCard` has a bank line and a
+:class:`~._panel.VerbPanel`, an :class:`ActCard` has an Undo and what it would
+destroy, a :class:`SkipCard` has a bank line and an Undo that destroys nothing
+-- and one value holding empty versions of another's fields is a control one
+Jinja condition away from rendering, which is what
+:class:`~._bars.BarredLine` exists to refuse.
+
+*It said TWO until plan step ``bank_import:X-gj-4c-2``*, which built the
+Skipped tab: a recorded skip is neither a bank line the books have not settled
+nor a :class:`~app.models.statement_match.StatementMatch`, so it is neither of
+the first two kinds and could be made to look like one only by leaving fields
+empty.  Which kind a tab holds is the TAB's own fact (:class:`CardKind`), and
+that value replaced a BOOLEAN for exactly this reason -- a two-valued answer
+has no third arm to give.
 
 **What the card SHOWS and what the panel DISCLOSES are two values** (ruling
 **R-HR**, plan step ``X-gj-1b``).  :class:`LineCard` carried twelve attributes
@@ -41,6 +49,7 @@ from ._rules import is_inflow
 from ._sentence import NAMED_ROW_LIMIT, Span, choose, for_accepted
 from ._sentence import for_income_placement
 from ._sentence import for_parked_transfer, for_placement, for_proposal
+from ._sentence import for_skip
 from ._verbs import ADD_SHUT_BY_A_PROPOSAL, Verb, VerbOffer, offers_for
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
@@ -49,6 +58,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._leftovers import CreatableLine, RecordableInflow
     from ._offers import BankLine, MatchProposal
     from ._reads import ArrivalsAlreadyHeld, ReviewSet
+    from ._skipping import SkippedAct
 
 
 class Section(enum.Enum):
@@ -88,6 +98,105 @@ _SECTION_HEADINGS: "dict[Section, str]" = {
     Section.PROPOSED: "Proposed",
     Section.NOTHING: "Nothing suggested",
 }
+
+
+class CardKind(enum.Enum):
+    """Which of the three card values a tab's sections hold.
+
+    Plan step ``bank_import:X-gj-4c-2``.  **The ONE fact a template needs in
+    order to pick a partial**, and it is the service's rather than a Jinja
+    condition over a tab's name: the three kinds carry disjoint fields and
+    disjoint controls, so a template that guessed would print a field that is
+    not there.
+
+    **It replaced a BOOLEAN**, ``Tab.holds_settled_acts``, and the
+    replacement is what the Skipped tab forced rather than a tidy-up.  That
+    predicate partitioned five tabs into *acts* and *bank lines*; a recorded
+    skip is an ACT with no :class:`~app.models.statement_match.StatementMatch`
+    behind it and a bank line the reader can print, so it answers the
+    boolean's question with neither value.  A third arm cannot be added to a
+    two-valued answer, and widening the boolean's meaning is how a tab comes
+    to render the wrong partial with nothing raising.
+
+    **It is carried on the PAGE and not on the TAB** (developer ruling,
+    2026-09-04), and that placement is the whole of what makes it one fact.
+    A ``Tab.holds`` property read from a table beside a dispatch that
+    independently built the cards was ONE fact with TWO homes: set the table
+    to :attr:`ACT` for the Skipped tab and the page still built
+    :class:`SkipCard` values, the template still picked the act partial, and
+    the page 500'd on a field that is not there -- with nothing but a test
+    holding the two in step.  :attr:`~._reconcile.ReconcilePage.kind` is set
+    BY the dispatch that builds the sections, so the disagreement is
+    unrepresentable and the reconciling test is deleted rather than kept.
+    ``CLAUDE.md`` rule 14: where a rule says two places must always agree,
+    they are one value with two homes, and the remedy is to delete a home.
+
+    **What that buys is LOCALITY, not impossibility, and the difference is
+    worth stating exactly.**  Each arm of :func:`~._reconcile._tab_sections`
+    still writes a :class:`CardKind` literal beside the builder it calls, so
+    ``CardKind.ACT, skip_sections(...)`` still compiles.  What changed is that
+    the two halves are now one line apart in one function instead of a table
+    in one module and a dispatch in another -- a mistake a reader SEES rather
+    than one only a test can find.  *An earlier draft of this paragraph said
+    the disagreement was "unrepresentable", which is the word the design
+    doctrine reserves for a defect that cannot be written; adversarial review
+    named the overclaim, and the test below this module's own change says the
+    opposite four lines from where the docstring said it.*
+
+    * ``LINE`` -- :class:`LineCard`: a bank line the books have not settled.
+      It renders INSIDE the Apply form, because its OK is what that form
+      submits.
+    * ``ACT`` -- :class:`ActCard`: an accepted match, with the Undo that
+      destroys what it created.
+    * ``SKIP`` -- :class:`SkipCard`: a recorded skip, with the Undo that
+      destroys the decision and nothing else.
+
+    The last two render OUTSIDE the Apply form: an Undo is a ``form``, a form
+    cannot nest in a form, and neither tab has anything to Apply.
+    """
+
+    LINE = "line"
+    ACT = "act"
+    SKIP = "skip"
+
+    @property
+    def is_line(self) -> bool:
+        """Return whether this tab's cards are bank lines to explain.
+
+        **A predicate rather than a value for a template to compare**, which
+        is the rule :attr:`~._verbs.VerbOffer.is_match` states: a screen
+        comparing an enum's own string is one rename away from silently
+        rendering nothing.
+
+        Returns:
+            ``True`` for :attr:`LINE`.
+        """
+        return self is CardKind.LINE
+
+    @property
+    def is_act(self) -> bool:
+        """Return whether this tab's cards are accepted matches.
+
+        See :attr:`is_line`.
+
+        Returns:
+            ``True`` for :attr:`ACT`.
+        """
+        return self is CardKind.ACT
+
+    @property
+    def is_skip(self) -> bool:
+        """Return whether this tab's cards are recorded skips.
+
+        See :attr:`is_line`.  **The three DO partition** :class:`CardKind`, so
+        a body rendering one arm each covers every page -- and the route test
+        driven from :class:`~._reconcile.Tab` is what holds that true, because
+        a fourth kind with no arm would render a blank tab rather than raise.
+
+        Returns:
+            ``True`` for :attr:`SKIP`.
+        """
+        return self is CardKind.SKIP
 
 
 @dataclass(frozen=True)
@@ -312,6 +421,45 @@ class ActCard:
 
 
 @dataclass(frozen=True)
+class SkipCard:
+    """One recorded skip, as the same card with an Undo that destroys nothing.
+
+    Plan step ``bank_import:X-gj-4c-2``, rulings **bank_import:R-JG** and
+    **R-JH**.  The locked direction gives the Skipped tab in three words --
+    ``docs/design/bank_import_audit.md``: *the same card with Undo* -- and this
+    is that card.
+
+    Attributes:
+        skip: The recorded act (:class:`~._skipping.SkippedAct`) -- the
+            ``skip_id`` the Undo submits, and the bank's own record of the
+            line it disposes of.
+        sentence: The past-tense sentence (:func:`~._sentence.for_skip`).
+
+    **Two fields and not a flattened copy**, which is :class:`ActCard`'s own
+    argument one act over: everything the card prints is already on the act,
+    and a second spelling is how an Undo comes to name a line the door will
+    not find.
+
+    **It is NOT an** :class:`ActCard`, and the distinction is a field rather
+    than a preference: that value carries an
+    :class:`~._accepted_view.AcceptedGroup`, whose ``rows``, ``removes`` and
+    ``agrees`` a skip has none of -- there is no app row to hold, nothing for
+    an Undo to remove (:func:`~._skipping.unskip_line`), and nothing that could
+    stop agreeing.  Reusing it would mean three empty fields and a template one
+    condition away from printing *Undo removes 0 row(s)* over a decision.
+
+    **It is NOT a** :class:`LineCard` **either**, though both print a bank
+    line: that value carries a :class:`~._panel.VerbPanel` and an OK, and a
+    skipped line is out of the pass entirely -- no verb is offered for it and
+    no OK can reach it, so the panel would be four shut verbs nobody asked
+    for.
+    """
+
+    skip: "SkippedAct"
+    sentence: "tuple[Span, ...]"
+
+
+@dataclass(frozen=True)
 class CardSection:
     """One thin rule, and the cards under it.
 
@@ -319,10 +467,14 @@ class CardSection:
         section: Which of the three To-explain sections
             (:class:`Section`), or ``None`` for a tab that has one unnamed
             section.
-        cards: The cards, all of one kind: :class:`LineCard` on To explain,
-            Transfers and Skipped; :class:`ActCard` on Explained and Filed by
-            rules.  Which kind is the TAB's fact, so the two are rendered by
-            two partials and neither ever meets the other's type.
+        cards: The cards, all of one kind: :class:`LineCard` on To explain
+            and Transfers, :class:`ActCard` on Explained and Filed by rules,
+            :class:`SkipCard` on Skipped.  Which kind is the TAB's fact
+            (:class:`CardKind`), so the three are rendered by three partials
+            and none ever meets another's type.  *It named Skipped among the
+            bank-line tabs until plan step ``bank_import:X-gj-4c-2``, which
+            was true of the lines a standing answer barred and is not true of
+            a recorded skip.*
         withheld: How many cards a BOUND left out -- ``0`` where none did.
             **No default**, which is the discipline
             :attr:`~._accepted_view.AcceptedGroup.applied_by_rule` keeps for
@@ -340,7 +492,7 @@ class CardSection:
     """
 
     section: "Section | None"
-    cards: "tuple[LineCard, ...] | tuple[ActCard, ...]"
+    cards: "tuple[LineCard, ...] | tuple[ActCard, ...] | tuple[SkipCard, ...]"
     withheld: int
 
     @property
@@ -773,6 +925,41 @@ def _newest_first(cards) -> "tuple[LineCard, ...]":
     """
     return tuple(
         sorted(cards, key=lambda card: card.line.posted_on, reverse=True)
+    )
+
+
+def skip_sections(register) -> "tuple[CardSection, ...]":
+    """Return the recorded skips, as one unnamed section of cards.
+
+    Plan step ``bank_import:X-gj-4c-2``.  :func:`act_sections`' twin one act
+    over, and a separate builder rather than a parameter on that one, because
+    the two build DIFFERENT card types from different values -- which is the
+    whole reason :class:`SkipCard` is not an :class:`ActCard`.
+
+    Args:
+        register: The :class:`~._skipping.SkippedRegister` -- the acts to
+            render, in the reader's own order (newest bank day first), and how
+            many the bound left out.
+
+    Returns:
+        One :class:`CardSection`, or ``()`` where the account has no skip --
+        because an empty section is ABSENT rather than rendered empty, which
+        is this module's rule for every other list.  **The bound travels with
+        the cards**, exactly as :func:`act_sections` carries the settled one,
+        so the tab can say how many it did not render (ruling
+        **bank_import:R-GX**).
+    """
+    if not register.shown:
+        return ()
+    return (
+        CardSection(
+            section=None,
+            cards=tuple(
+                SkipCard(skip=act, sentence=for_skip())
+                for act in register.shown
+            ),
+            withheld=register.withheld_count,
+        ),
     )
 
 

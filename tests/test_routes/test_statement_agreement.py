@@ -156,7 +156,7 @@ def a_disagreement(db, seed_user, seed_periods):
     )
     _settled(db, seed_user, seed_periods[4], "Card payback", "100.00", day)
     append_balance_assertion(
-        db.session, seed_user["account"], seed_periods[4],
+        db.session, seed_user["account"],
         Decimal("1025.00"), _instant(2026, 3, 3),
     )
     db.session.commit()

@@ -553,8 +553,7 @@ class TestHeroCaptions:
         """
         with app.app_context():
             _add_anchor_history(
-                db.session, seed_user["account"],
-                seed_periods_today[0], "1000.00", days_ago=20,
+                db.session, seed_user["account"], "1000.00", days_ago=20,
             )
             db.session.commit()
 
@@ -587,7 +586,7 @@ class TestHeroCaptions:
             # account's only assertion.  The table is append-only since plan
             # step X-f3c-2c, and superseding is what an owner does anyway.*
             _add_anchor_history(
-                db.session, account, cur, "100.00", days_ago=1,
+                db.session, account, "100.00", days_ago=1,
             )
             _add_txn(
                 db.session, seed_user, cur, "Big Bill", "500.00",
