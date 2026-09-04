@@ -41,9 +41,10 @@ and only those three, 3 failed / 7 passed.  Both directions were run; neither
 was inferred.
 
 **The toolchain cases grade the review's H-1**, which is a regression this fix
-introduced before review caught it: ``hook_repo_root`` had FIVE consumers, and
-one of them -- the ``_hook_venv_bin`` PATH prefix -- was asking "where does the
-pinned toolchain live", not "which tree is being edited".  For that question the
+introduced before review caught it: ``hook_repo_root`` had consumers in five
+files, and a further one inside ``_hooklib.sh`` itself -- the ``_hook_venv_bin``
+PATH prefix -- was asking "where does the pinned toolchain live", not "which
+tree is being edited".  For that question the
 PRIMARY checkout is the right answer, because worktrees carry no ``.venv`` of
 their own.  Re-pointing it at the session's worktree left the venv path naming
 a directory that does not exist, so ``pylint`` became unresolvable and the two

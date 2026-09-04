@@ -41,8 +41,9 @@
 #     ``post-edit-python.sh``, ``post-edit-template.sh``, ``post-edit-deps.sh``,
 #     ``stop-check.sh`` and ``guard-migrations.sh``, whose developer-approval
 #     prompt on a hand-edited ``migrations/versions/*.py`` was therefore also
-#     inoperative in every worktree -- and the ``_hook_venv_bin`` prefix below
-#     was a sixth call site inside this file, asking a different question.
+#     inoperative in every worktree -- and, inside this file, the
+#     ``_hook_venv_bin`` prefix below was a further consumer asking a different
+#     question.
 #   * ``stop-check.sh`` cd'd to the primary checkout and linted a tree the
 #     session was not editing -- reporting another lane's uncommitted work as
 #     this lane's failure, and passing this lane's real one.
