@@ -9,6 +9,18 @@ carry a ``migration_derived`` opening the balance fold READS, so a door
 reachable only from the card would leave the accounts most likely to hold a
 wrong figure with no way to correct one.
 
+**Both entrances existed and an ARCHIVED account could click NEITHER** (finding
+**N-430**, closed by plan step X-f3c-2b-2d).  The cockpit replaces an archived
+account's cell with a drawer card, and that card emitted no ``href`` naming its
+account at all -- so the surface "every account kind reaches" was reachable only
+by typing its URL, and the account-10 repair runbook had to unarchive the twin
+and re-archive it to restate books the door would have accepted either way.  The
+drawer card carries the same plain *Edit* link the live cell's kebab does now,
+so the FORM entrance is reached from both states of an account.  The second
+entrance is not, and deliberately is not chased here: it sits on a cash detail
+page an archived account links to from nowhere, which is **N-453**'s question
+and ``balance:X-f4``'s to answer.
+
 **What is graded here and what is graded one layer down.**  The service suite
 (``tests/test_services/test_opening_restatement.py``) owns the money: the
 append, ruling **R-EQ**'s did-this-change decision, both day bounds, and the
@@ -32,6 +44,7 @@ from app import ref_cache
 from app.enums import AccountOpeningSourceEnum
 from app.extensions import db
 from app.services import account_service, cash_ledger
+from app.models.account import Account
 from app.models.account_opening import AccountOpening
 from app.utils.dates import display_today
 from tests._test_helpers import (
@@ -132,6 +145,51 @@ class TestTheCardIsRendered:
             html = resp.data.decode()
             assert f"/accounts/{account_id}/edit#books-opening" in html
             assert "Restate" in html
+
+    def test_an_ARCHIVED_accounts_drawer_card_REACHES_the_form(
+        self, app, auth_client, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Finding **N-430**: the entrance an archived account could not click.
+
+        **The destination is FETCHED, not merely asserted.**  A card that
+        emitted an ``href`` to a page carrying no form would satisfy the letter
+        of "the card links to the edit page" and leave N-430 exactly where it
+        was, and a bare href assertion cannot tell the two apart.  The GET below
+        rebuilds the URL from ``account_id`` rather than parsing it back out of
+        the page, which is equivalent only because the assertion above pins the
+        rendered ``href`` to that exact string -- said rather than implied,
+        because "follows the link" would be a shade stronger than the code.
+
+        **The href is matched WHOLE, closing quote included, so the fragment
+        cannot creep back in.**  ``#books-opening`` names an anchor a loan's
+        edit page does not render; a link carrying it would have to be withheld
+        from an archived loan, which is the gate this step's design exists
+        without.  A substring match on the path would pass either way.
+        """
+        with app.app_context():
+            account = create_account_of_type(
+                seed_user, db.session, "Savings", "Closed Savings",
+            )
+            account.is_active = False
+            db.session.commit()
+            account_id = account.id
+
+            cockpit = auth_client.get("/savings")
+            # Asserted rather than assumed: without it a 500 reaches the split
+            # as an ``IndexError``, which fails honestly but names the wrong
+            # thing.  The split literal occurs exactly ONCE in the template
+            # tree, and the drawer is skipped whole when nothing is archived --
+            # so ``[1]`` cannot pick another region and cannot be silently
+            # empty.
+            assert cockpit.status_code == 200
+            drawer = cockpit.data.decode().split('id="archivedAccounts"')[1]
+
+            assert "Closed Savings" in drawer
+            assert f'href="/accounts/{account_id}/edit"' in drawer
+
+            landed = auth_client.get(f"/accounts/{account_id}/edit")
+            assert landed.status_code == 200
+            assert "When the books opened" in landed.data.decode()
 
 
 class TestTheDoor:
@@ -264,6 +322,56 @@ class TestTheDoor:
             assert cash_ledger.account_opening_fact(loan.id).opening_id == (
                 standing.opening_id
             )
+
+    def test_an_ARCHIVED_account_can_COMPLETE_a_restatement(
+        self, app, auth_client, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """A REGRESSION GUARD on the capability this step makes clickable.
+
+        **It would pass on the pre-fix tree, and saying so is the point.**  The
+        door already accepted an archived account's restatement when reached by
+        a typed URL -- finding **N-430** records exactly that, "both doors
+        ACCEPT the write when reached directly" -- so this case grades nothing
+        X-f3c-2b-2d changed and must not be read as its evidence.  What it
+        guards is the future: the step points an owner at this write from the
+        cockpit, and the account-10 runbook's stop rules turn on the twin being
+        restatable while still archived, so an ``is_active`` filter reaching
+        this path silently would now break a prescribed procedure.  That is a
+        live hazard rather than a hypothetical one --
+        ``account_posting_service/_sync.py`` documents that its re-sync is
+        DELIBERATELY not filtered on ``is_active``, which is a decision only a
+        test can keep.
+
+        No other case anywhere in ``tests/`` archives an account and restates
+        it: ``test_opening_restatement.py`` mentions neither ``is_active`` nor
+        archiving in any of its 27 cases, and every route case in this file
+        restates an ACTIVE account.  A door that rendered fine and then refused,
+        or silently no-opped, on an archived one would pass all of them.
+        """
+        with app.app_context():
+            account = create_account_of_type(
+                seed_user, db.session, "Savings", "Closed Writable",
+            )
+            account.is_active = False
+            db.session.commit()
+            account_id = account.id
+            before = cash_ledger.account_opening_fact(account_id)
+            new_day = before.opened_on - _ONE_DAY
+
+            resp = _restate(
+                auth_client, account_id, new_day, Decimal("123.45"),
+            )
+
+            assert resp.status_code == 200
+            after = cash_ledger.account_opening_fact(account_id)
+            # A NEW row governs -- not the old one re-read, which is what a
+            # refused or no-op write would leave behind.
+            assert after.opening_id != before.opening_id
+            assert after.opened_on == new_day
+            assert after.opening_equity == Decimal("123.45")
+            # And the account is still archived: the door moved a figure, not
+            # the state that made the reach a finding.
+            assert db.session.get(Account, account_id).is_active is False
 
 
 class TestWhatTheCardSAYS:
@@ -438,8 +546,14 @@ class TestWhatTheCardSAYS:
 
         Adversarial review, 2026-08-31: the context builder read through
         ``account_opening_fact``, which RAISES for an account carrying no
-        opening row -- so the one page offering rename, archive and hard-delete
-        would 500 for exactly the account most needing repair.  It reads the
+        opening row -- so the one page offering rename, re-type and hard-delete
+        would 500 for exactly the account most needing repair.  (It said
+        "archive" until X-f3c-2b-2d's review measured that false: no template
+        but the live cell's kebab references ``accounts.archive_account``, and
+        ``accounts/form.html`` renders no ``is_active`` control.  The twin of
+        this sentence in ``routes/accounts/opening.py`` is still wrong and is
+        reported rather than fixed, being outside that step's scope.)  It reads
+        the
         non-raising twin now and returns ``None``.
         """
         with app.app_context():
