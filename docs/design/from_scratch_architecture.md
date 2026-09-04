@@ -459,8 +459,10 @@ defect this arc exists to remove, shipped on purpose.
 
 **The re-cut, taking Section 4.3's measurement seriously:**
 
-1. **`tracks_purchases` becomes a stored column**, one writer, template-derived backfill. Green, no
-   fold change -- and it makes Section 4.3's 30-row error unconstructible.
+1. **`tracks_purchases` DERIVES through one accessor from the template's flag** -- ruled
+   `balance:R-JQ` on 2026-09-03, correcting this list's *stored column, template-derived backfill*,
+   which was the cache `R-IY` deletes. Green, no fold change -- and it makes Section 4.3's 30-row
+   error unconstructible.
 2. **Entries gain the full movement column set, `scenario_id` included**, backfilled from their
    parent. Additive; downgrade is a column drop.
 3. **`settle_from_entries` becomes the ONLY settle path.** The MANUAL branch writes a single

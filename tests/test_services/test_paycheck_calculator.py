@@ -4209,9 +4209,9 @@ class TestTheGrossContractIsDocumented:
         ("rulings.md", "| balance | R-HW |"),
         ("rulings.md", "| balance | R-IA |"),
         ("rulings.md", "| balance | R-IF |"),
-        ("ledger.md", "| balance | N-391 "),
-        ("ledger.md", "| balance | N-398 "),
-        ("ledger.md", "| balance | N-399 "),
+        ("ledger.md", "| salary | N-391 "),
+        ("ledger.md", "| pay_calendar | N-398 "),
+        ("ledger.md", "| recurrence | N-399 "),
     ])
     def test_the_plan_identifiers_this_step_cites_actually_exist(
         self, registry, ident,

@@ -194,7 +194,7 @@ def gross_per_paycheck(
     besides: that one converts a rate and is deliberately NOT quantized (its
     module forbids quantizing at all), where this one is a money boundary.
 
-    **The stored input is the ANNUAL salary, and plan step balance:X-av flips
+    **The stored input is the ANNUAL salary, and plan step salary:X-av flips
     it.** Under ruling R-HW the FACT is what one paycheck pays and the annual
     figure is the derivation; until that lands, the annual is what the profile
     holds and this is where it is converted.  So this function is the seam that
