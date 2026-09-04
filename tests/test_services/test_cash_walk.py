@@ -121,7 +121,7 @@ def _opened_at(account, at, books_open_on=None):
     return row
 
 
-def _assert_balance(account, period, balance, at, recorded_at=None):
+def _assert_balance(account, balance, at, recorded_at=None):
     """Append one balance ASSERTION (true-up) at a pinned instant (shared).
 
     *recorded_at* separates the two clocks: *at* supplies the BUSINESS day,
@@ -129,7 +129,7 @@ def _assert_balance(account, period, balance, at, recorded_at=None):
     exercising a back-dated assertion.
     """
     return append_balance_assertion(
-        db.session, account, period, balance, at, recorded_at=recorded_at,
+        db.session, account, balance, at, recorded_at=recorded_at,
     )
 
 
@@ -338,7 +338,7 @@ class TestTheClosingBalancePartition:
         period = seed_periods[6]
         _opened_at(account, _instant(2026, 1, 1))
         _assert_balance(
-            account, period, Decimal("2932.41"),
+            account, Decimal("2932.41"),
             _instant(2026, 7, 24, 12, 57, 8),
         )
         # Both were RECORDED minutes after the assertion and both carry its own
@@ -367,7 +367,7 @@ class TestTheClosingBalancePartition:
         period = seed_periods[6]
         _opened_at(account, _instant(2026, 1, 1))
         asserted_at = _instant(2026, 7, 24, 12, 57, 8)
-        _assert_balance(account, period, Decimal("2932.41"), asserted_at)
+        _assert_balance(account, Decimal("2932.41"), asserted_at)
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("50.00"),
             settled_on=date(2026, 7, 24),
@@ -393,7 +393,7 @@ class TestTheClosingBalancePartition:
         period = seed_periods[6]
         _opened_at(account, _instant(2026, 1, 1))
         asserted_at = _instant(2026, 7, 24, 12, 57, 8)
-        _assert_balance(account, period, Decimal("2932.41"), asserted_at)
+        _assert_balance(account, Decimal("2932.41"), asserted_at)
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("77.00"),
             settled_on=asserted_at.astimezone(DISPLAY_TIMEZONE).date(),
@@ -427,7 +427,7 @@ class TestTheClosingBalancePartition:
         period = seed_periods[6]
         _opened_at(account, _instant(2026, 1, 1))
         asserted_at = _instant(2026, 7, 24, 12, 57, 8)
-        _assert_balance(account, period, Decimal("2932.41"), asserted_at)
+        _assert_balance(account, Decimal("2932.41"), asserted_at)
         earlier = create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("40.00"),
             settled_on=date(2026, 7, 24), name="before",
@@ -491,13 +491,13 @@ class TestEveryAssertionIsReplayed:
             settled_on=date(2026, 2, 1), name="feb spend",
         )
         march = _instant(2026, 3, 1)
-        _assert_balance(account, period, Decimal("900.00"), march)
+        _assert_balance(account, Decimal("900.00"), march)
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("300.00"),
             settled_on=date(2026, 4, 1), name="apr spend",
         )
         may = _instant(2026, 5, 1)
-        _assert_balance(account, period, Decimal("500.00"), may)
+        _assert_balance(account, Decimal("500.00"), may)
         db.session.commit()
 
         corrections = _corrections(account, scenario)
@@ -1134,7 +1134,7 @@ class TestTheStepsReconstructTheReplay:
             settled_on=date(2026, 2, 1), name="pre",
         )
         _assert_balance(
-            account, period, Decimal("2000.00"), _instant(2026, 3, 1),
+            account, Decimal("2000.00"), _instant(2026, 3, 1),
         )
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("250.00"),
@@ -1160,10 +1160,9 @@ class TestTheStepsReconstructTheReplay:
         wins and the walk ends on $800.00, not $700.00.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        period = seed_periods[0]
         same = _instant(2026, 3, 1, 9, 0, 0)
-        _assert_balance(account, period, Decimal("700.00"), same)
-        _assert_balance(account, period, Decimal("800.00"), same)
+        _assert_balance(account, Decimal("700.00"), same)
+        _assert_balance(account, Decimal("800.00"), same)
         db.session.commit()
 
         facts = cash_anchor_facts(account.id)
@@ -1196,7 +1195,7 @@ class TestTheStepsReconstructTheReplay:
             settled_on=date(2026, 3, 1), name="morning",
         )
         _assert_balance(
-            account, period, Decimal("5000.00"), _instant(2026, 3, 1, 17, 0, 0),
+            account, Decimal("5000.00"), _instant(2026, 3, 1, 17, 0, 0),
         )
         db.session.commit()
 
@@ -1258,11 +1257,11 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         account, scenario = seed_user["account"], seed_user["scenario"]
         _opened_at(account, _instant(2026, 1, 1))
         _assert_balance(
-            account, seed_periods[0], Decimal("1200.00"),
+            account, Decimal("1200.00"),
             _instant(2026, 2, 15, 9, 0, 0),
         )
         _assert_balance(
-            account, seed_periods[0], Decimal("1400.00"),
+            account, Decimal("1400.00"),
             _instant(2026, 3, 20, 9, 0, 0),
         )
         db.session.commit()
@@ -1296,7 +1295,7 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         _opened_at(account, _instant(2026, 1, 1))
         # Recorded FIRST, for the LATER business day.
         _assert_balance(
-            account, seed_periods[0], Decimal("1400.00"),
+            account, Decimal("1400.00"),
             _instant(2026, 3, 20, 9, 0, 0),
         )
         # Recorded SECOND, for an EARLIER business day -- the back-fill.  The
@@ -1306,7 +1305,7 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         # so a loader ordering by ``created_at`` answered the same thing and
         # the test could not fail).
         _assert_balance(
-            account, seed_periods[0], Decimal("1200.00"),
+            account, Decimal("1200.00"),
             _instant(2026, 2, 15, 9, 0, 0),
             recorded_at=_instant(2026, 4, 1, 9, 0, 0),
         )
@@ -1369,14 +1368,14 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         account, scenario = seed_user["account"], seed_user["scenario"]
         _opened_at(account, _instant(2026, 1, 1))
         _assert_balance(
-            account, seed_periods[0], Decimal("1000.00"),
+            account, Decimal("1000.00"),
             _instant(2026, 3, 1, 9, 0, 0),
         )
         other = create_savings_account(
             seed_user, db.session, "Other", Decimal("5000.00"),
         )
         _assert_balance(
-            other, seed_periods[0], Decimal("5000.00"),
+            other, Decimal("5000.00"),
             _instant(2026, 9, 9, 9, 0, 0),
         )
         db.session.commit()
@@ -1446,10 +1445,10 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         )
         first_at = _instant(2026, 2, 15, 9, 0, 0)
         _assert_balance(
-            account, seed_periods[0], Decimal("2000.00"), first_at,
+            account, Decimal("2000.00"), first_at,
         )
         later = _assert_balance(
-            account, seed_periods[0], Decimal("3000.00"),
+            account, Decimal("3000.00"),
             _instant(2026, 2, 28, 9, 0, 0),
         )
         db.session.commit()
@@ -1490,7 +1489,7 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
             settled_on=date(2026, 2, 10), name="ticked on the 28th",
         )
         ticked = _assert_balance(
-            account, seed_periods[0], Decimal("3000.00"),
+            account, Decimal("3000.00"),
             _instant(2026, 2, 28, 9, 0, 0),
         )
         txn.reconciled_by_id = ticked.id
@@ -1501,7 +1500,7 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         )
 
         _assert_balance(
-            account, seed_periods[0], Decimal("2500.00"),
+            account, Decimal("2500.00"),
             _instant(2026, 2, 20, 9, 0, 0),
         )
         db.session.commit()
@@ -1545,10 +1544,10 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         first_at = _instant(2026, 2, 15, 9, 0, 0)
         second_at = _instant(2026, 2, 15, 17, 0, 0)
         _assert_balance(
-            account, seed_periods[0], Decimal("2000.00"), first_at,
+            account, Decimal("2000.00"), first_at,
         )
         governing = _assert_balance(
-            account, seed_periods[0], Decimal("2500.00"), second_at,
+            account, Decimal("2500.00"), second_at,
         )
         db.session.commit()
 
@@ -1626,10 +1625,10 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         first_at = _instant(2026, 2, 15, 9, 0, 0)
         second_at = _instant(2026, 2, 15, 17, 0, 0)
         _assert_balance(
-            account, seed_periods[0], Decimal("2000.00"), first_at,
+            account, Decimal("2000.00"), first_at,
         )
         governing = _assert_balance(
-            account, seed_periods[0], Decimal("2500.00"), second_at,
+            account, Decimal("2500.00"), second_at,
         )
         db.session.commit()
 
@@ -1738,7 +1737,7 @@ class TestTheSourceOrderIsLoadBearing:
         )
         asserted_at = _instant(2026, 2, 15, 9, 0, 0)
         _assert_balance(
-            account, seed_periods[0], Decimal("2000.00"), asserted_at,
+            account, Decimal("2000.00"), asserted_at,
         )
         db.session.commit()
 

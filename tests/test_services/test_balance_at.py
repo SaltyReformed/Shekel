@@ -5777,12 +5777,12 @@ class TestCashAnchorHistory:
             typed_day = periods[3].start_date
 
             append_balance_assertion(
-                db.session, account, periods[1], Decimal("640.00"),
+                db.session, account, Decimal("640.00"),
                 settle_instant_on(back_day),
                 recorded_at=settle_instant_on(typed_day),
             )
             append_balance_assertion(
-                db.session, account, periods[2], Decimal("710.00"),
+                db.session, account, Decimal("710.00"),
                 settle_instant_on(last_covered_day(periods[2])),
             )
             db.session.commit()

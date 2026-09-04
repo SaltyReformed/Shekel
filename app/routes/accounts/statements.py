@@ -583,13 +583,18 @@ def import_statement(account_id):
         **Recording what the bank said does not depend on the budget being
         derivable, and this arm is the whole of what makes that true.**
         ``ReviewScope.build`` raises ``PayCalendarError`` when the owner's
-        paydays cannot define a calendar -- two on one day is enough, and
-        NOTHING registers a handler for it, so it reaches the browser as a bare
-        500 -- and ``BaselineMissingError`` when no scenario can price a row.
-        Neither is a fact about the statement.  Letting either propagate would
-        roll the import back and tell the owner nothing, on a page whose own
-        GET renders perfectly well without a calendar: ``statements()`` builds
-        no scope at all.
+        paydays cannot define a calendar -- two on one day is enough -- and
+        ``BaselineMissingError`` when no scenario can price a row.  Neither is a
+        fact about the statement.  Both have an application-level handler
+        (``error_handlers.pay_calendar_underivable`` since plan step
+        ``pay_calendar:C4-b-2``, and the baseline recovery page before it), so
+        letting either propagate would not 500 -- it would ROLL THE IMPORT
+        BACK and answer with a recovery page, on a request whose own GET
+        renders perfectly well without a calendar: ``statements()`` builds no
+        scope at all.  This door degrades the FILING ahead of those handlers
+        because the recording is what the owner asked for and it needs
+        neither.  *Until 2026-09-03 this paragraph said no handler existed,
+        which was true when written and false since C4-b-2 (finding P82).*
 
         **It does not contradict ruling R-BW**, which sends a request whose
         ANSWER needs a baseline to the setup-recovery page.  This request's

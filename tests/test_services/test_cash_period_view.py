@@ -467,7 +467,7 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         append_balance_assertion(
-            db.session, account, seed_periods[4], Decimal("1500.00"),
+            db.session, account, Decimal("1500.00"),
             _instant(2026, 3, 1),
         )
         db.session.commit()
@@ -630,7 +630,7 @@ class TestTheIdentityHoldsOnEveryPeriod:
             settled_on=date(2026, 3, 20), name="late rent",
         )
         append_balance_assertion(
-            db.session, account, seed_periods[4], Decimal("1500.00"),
+            db.session, account, Decimal("1500.00"),
             _instant(2026, 3, 1),
         )
         envelope = create_envelope_txn(

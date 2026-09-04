@@ -395,7 +395,7 @@ class TestTheOpeningEquityIsTheSeed:
                 settled_on=date(2026, 4, day), name=f"apr-{day}",
             )
         append_balance_assertion(
-            db.session, account, seed_periods[8], Decimal("4879.26"),
+            db.session, account, Decimal("4879.26"),
             at=_instant(2026, 5, 1),
         )
         db.session.commit()
@@ -450,7 +450,7 @@ class TestTheOpeningEquityIsTheSeed:
             settled_on=date(2026, 3, 27), name="deposit",
         )
         append_balance_assertion(
-            db.session, account, seed_periods[7], Decimal("5363.56"),
+            db.session, account, Decimal("5363.56"),
             at=_instant(2026, 4, 6),
         )
         db.session.commit()
@@ -501,7 +501,7 @@ class TestTheOpeningEquityIsTheSeed:
             settled_on=date(2026, 1, 15), name="between-books-and-assertion",
         )
         append_balance_assertion(
-            db.session, account, seed_periods[3], Decimal("2000.00"),
+            db.session, account, Decimal("2000.00"),
             _instant(2026, 3, 1),
         )
         create_settled_cash_transaction(
@@ -608,7 +608,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
             observed_on=seed_periods[0].start_date,
         )
         append_balance_assertion(
-            db.session, money_market, seed_periods[4], Decimal("5644.27"),
+            db.session, money_market, Decimal("5644.27"),
             _instant(2026, 3, 1, 12, 20, 20),
         )
         create_settled_transfer(
@@ -648,7 +648,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
             settled_on=date(2026, 3, 1), name="earlier",
         )
         append_balance_assertion(
-            db.session, account, seed_periods[4], Decimal("2932.41"),
+            db.session, account, Decimal("2932.41"),
             _instant(2026, 3, 1, 12, 57, 8),
         )
         db.session.commit()
@@ -682,7 +682,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
             settled_on=date(2026, 3, 1), name="before",
         )
         append_balance_assertion(
-            db.session, account, seed_periods[4], Decimal("2932.41"),
+            db.session, account, Decimal("2932.41"),
             _instant(2026, 3, 1, 12, 57, 8),
         )
         create_settled_cash_transaction(
@@ -722,7 +722,7 @@ class TestEveryAssertionIsReplayed:
             settled_on=date(2026, 2, 1), name="feb spend",
         )
         append_balance_assertion(
-            db.session, account, seed_periods[4], Decimal("900.00"),
+            db.session, account, Decimal("900.00"),
             _instant(2026, 3, 1),
         )
         create_settled_cash_transaction(
@@ -730,7 +730,7 @@ class TestEveryAssertionIsReplayed:
             settled_on=date(2026, 4, 1), name="apr spend",
         )
         append_balance_assertion(
-            db.session, account, seed_periods[8], Decimal("500.00"),
+            db.session, account, Decimal("500.00"),
             _instant(2026, 5, 1),
         )
         db.session.commit()
@@ -780,7 +780,7 @@ class TestThePlannedTier:
         as_of = date(2026, 4, 2)
         _opened_at(account, _instant(2026, 1, 1))
         append_balance_assertion(
-            db.session, account, seed_periods[6], Decimal("2932.41"),
+            db.session, account, Decimal("2932.41"),
             _instant(2026, 4, 2, 12, 57, 8),
         )
         create_settled_cash_transaction(

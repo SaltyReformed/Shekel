@@ -2559,7 +2559,7 @@ class TestTheReconcileRoute:
                 [("64.20", purchased_on, False, None)],
             )
             append_balance_assertion(
-                db.session, account, seed_periods_today[0],
+                db.session, account,
                 Decimal("1000.00"), settle_instant_on(asserted_on),
             )
             db.session.commit()
