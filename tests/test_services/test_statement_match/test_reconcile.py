@@ -1039,8 +1039,7 @@ class TestACaptionCountsOnlyWhatItsTabCanDraw:
 
 
 class TestWhichKindOfCARDAPageHoldsIsSTATEDByWhatBuiltThem:
-    """Plan steps ``bank_import:X-gj-1c`` and ``X-gj-4c-2``; developer ruling
-    2026-09-04.
+    """Plan steps ``bank_import:X-gj-1c`` and ``X-gj-4c-2``; ruling **R-JX**.
 
     **The two RECONCILING cases that used to live here are DELETED, and the
     deletion is the point.**  Which kind a tab held was a ``Tab.holds``
