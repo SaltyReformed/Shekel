@@ -27,16 +27,21 @@
 # reverse of what stood here, and the reversal is MEASURED rather than tidy.
 # ``CLAUDE_PROJECT_DIR`` resolves to the PRIMARY checkout whatever worktree the
 # session is actually in -- ``session-start.sh`` has said exactly that in its
-# own header since it was written, and reads ``$PWD`` for this reason. That one
-# hook was fixed and this shared helper was not, so every OTHER hook inherited
-# the bug:
+# own header since it was written, and reads ``$PWD`` for this reason. It was
+# never FIXED -- one commit, and it was born reading ``$PWD`` -- so the
+# knowledge lived in one hook from the start and was never carried into this
+# shared helper, and every other hook inherited the bug:
 #
 #   * ``hook_target_relpath`` normalized each edited file against the primary
 #     root. A worktree file is not under it, so the function returned an
 #     ABSOLUTE path and every caller's ``case`` pattern missed -- silently
 #     SKIPPING the gate. The comment below still calls that outcome "correct",
 #     which it is for a file genuinely outside the project and is not for a
-#     worktree file.
+#     worktree file. FIVE files source this helper, not four:
+#     ``post-edit-python.sh``, ``post-edit-template.sh``, ``post-edit-deps.sh``,
+#     ``stop-check.sh`` -- and ``guard-migrations.sh``, whose developer-approval
+#     prompt on a hand-edited ``migrations/versions/*.py`` was therefore also
+#     inoperative in every worktree.
 #   * ``stop-check.sh`` cd'd to the primary checkout and linted a tree the
 #     session was not editing -- reporting another lane's uncommitted work as
 #     this lane's failure, and passing this lane's real one.
@@ -60,6 +65,31 @@ hook_repo_root() {
     printf '%s\n' "${root%/}"
 }
 
+# Echo the checkout that holds the TOOLCHAIN. Deliberately NOT
+# hook_repo_root: "which tree is being edited" and "where does pylint live" are
+# two questions, and one function answering both is what made the worktree fix
+# above a regression before review caught it (2026-09-04).
+#
+# **Worktrees borrow the PRIMARY checkout's venv and have none of their own.**
+# Measured 2026-09-04 across the eight worktrees on this machine: a real .venv
+# in the primary, a SYMLINK to it in one worktree, and nothing in the other six
+# -- and no pylint anywhere else on the box (/usr/bin, /usr/local/bin and
+# ~/.local/bin all lack it). .gitignore ignores .venv/, so a worktree never
+# acquires one by checkout. A symlinked .venv is borrowing the primary's too,
+# not an exception to the convention.
+#
+# So this stays anchored to CLAUDE_PROJECT_DIR. Pointing it at the session's
+# own worktree leaves _hook_venv_bin naming a directory that does not exist,
+# the guard below skips the PATH prefix, and `pylint` becomes unresolvable --
+# at which point every gate captures "command not found" into its output
+# variable, finds it non-empty, and hard-blocks the edit while blaming a
+# financial-correctness rule. That is exactly the infrastructure-error failure
+# the paragraph below records happening once already.
+hook_toolchain_root() {
+    local root="${CLAUDE_PROJECT_DIR:-$PWD}"
+    printf '%s\n' "${root%/}"
+}
+
 # Put the repo venv's bin first on PATH so every hook resolves the PINNED
 # toolchain (pylint et al. from requirements.txt), not whatever the launching
 # shell happens to expose. Observed 2026-07-08: a session started without the
@@ -67,7 +97,7 @@ hook_repo_root() {
 # fail-closed gates blocked every Python edit on infrastructure error rather
 # than on a finding. Guarded so a missing venv (e.g. CI, which installs the
 # toolchain globally) leaves PATH untouched.
-_hook_venv_bin="$(hook_repo_root)/.venv/bin"
+_hook_venv_bin="$(hook_toolchain_root)/.venv/bin"
 if [ -d "$_hook_venv_bin" ]; then
     PATH="$_hook_venv_bin:$PATH"
 fi
