@@ -570,7 +570,7 @@ that has none. Whatever this step rules, it states the value honestly at both si
       **RULED 2026-08-16 (R-R26)**: "non-business day" is weekends plus the eleven US federal
       holidays DERIVED as rules rather than seeded as rows, which needs no per-year migration and
       composes with the nth-weekday machinery R8-c builds. **The holiday set and the weekend rule
-      live in the ONE business-day module `pay_calendar:C14` builds** (**R-PC47**, 2026-09-03), so
+      live in the ONE business-day module `pay_calendar:C14-a` builds** (**R-PC47**, 2026-09-03), so
       this step CONSUMES it for the cash date rather than building a second copy. The shift applies
       to the CASH date only -- a bill due Aug 1 paid Friday because Aug 1 is a Sunday still
       satisfies the Aug 1 installment, so `due_on` is never shifted. `RecurrenceSpec` carries no
