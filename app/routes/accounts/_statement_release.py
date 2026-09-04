@@ -118,10 +118,12 @@ def release_and_return(account, target_endpoint: str, **target_args):
     """
     target = url_for(target_endpoint, account_id=account.id, **target_args)
     # **The one-id door's shared VALIDATE half** (:func:`~._statement_doors
-    # .run_one_id_door`, plan step ``bank_import:X-gj-4c-2``).  This door and
-    # the skip's undo were byte-identical for seven lines, and pylint's
-    # cross-file ``duplicate-code`` could not see it -- three consecutive
-    # identical lines against a default minimum of four.
+    # .run_one_id_door`, plan step ``bank_import:X-gj-4c-2``), which carries
+    # WHY it exists and what the gate did not see.  Stated THERE and not here:
+    # a measurement in two homes is what this very extraction is about, and
+    # this copy stood with two numbers its twin had already recorded as
+    # measured FALSE -- the correction was applied to one and not the other.
+    # Found by an unprimed adversarial review 2026-09-04.
     return run_one_id_door(
         _release_schema, "match_id",
         StatementDoorContext(

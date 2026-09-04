@@ -175,9 +175,15 @@ def run_one_id_door(
             (:class:`StatementDoorContext`), whose ``target`` is where every
             outcome redirects -- including the schema refusal below, which is
             why the caller builds it before validating.
-        act_for: ``row_id -> (() -> result)``.  The service call, bound to the
-            graded id.  It MUST NOT commit; :func:`run_statement_door` owns
-            the unit of work.
+        act_for: ``row_id -> result``.  The service call, applied to the graded
+            id -- THIS function wraps it in the zero-argument callable
+            :func:`run_statement_door` takes, so *act_for* is not itself a
+            factory.  It MUST NOT
+            commit; that function owns the unit of work.  *An earlier version
+            documented ``row_id -> (() -> result)``, which both live callers
+            contradict: a third written to that contract would hand
+            ``on_success`` a lambda object where the service's return value
+            belongs, and build a receipt off a function.*
         on_success: ``result -> (message, category)``, called AFTER the commit.
 
     Returns:

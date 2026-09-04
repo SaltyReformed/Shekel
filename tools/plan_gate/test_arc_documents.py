@@ -111,7 +111,21 @@ CAPS = {
     # bank_import number, eight open steps owing a few lines each plus the
     # argument, and the forcing function biting well before the balance
     # README's scale.  Raised only when it binds and he is asked (rule 4).
-    "salary": 260,
+    #
+    # **RAISED 260 -> 280 by the developer, 2026-09-04**, the first time it
+    # bound, and the reason generalises to every NEWLY MINTED arc: rule 5's
+    # escape is *archive a completed span*, and a new document HAS no completed
+    # span -- this one had shipped exactly one leaf, worth four lines as a
+    # pointer.  So the cap's only available remedy here was the one rule 4
+    # forbids, trimming a live step's specification to fit.  It bound on
+    # `R14`'s decomposition into `R14-a` (shipped) and `R14-b`, which is the
+    # cheapest possible growth: a preamble duplicating `R-SAL6` had already
+    # been deleted, the shipped entry condensed to a pointer, and a paragraph
+    # `D45`'s own ledger row carries removed.  What was left was the deletion
+    # census and a developer ruling, both instruction.  Section 2's evidence
+    # table was the only archivable-looking span and is not one -- every row is
+    # a dated measurement an OPEN finding still cites.
+    "salary": 280,
 }
 
 #: The signpost's cap, per document.  The balance README's reached 1,019 lines

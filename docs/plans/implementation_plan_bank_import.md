@@ -171,26 +171,22 @@ what it leaves a LATER step is on that step's own entry.
           bank. **SKIP stays SHUT for a line the source files as paying an account the owner holds**
           (**R-JI**), which the DOOR has refused since `X-gj-4a`. **Built AFTER `X-gj-4c-2`**: a lit
           verb needs the tab its result lands on.
-    - [ ] **X-gj-4c** `feat(import): the skipped tab` -- the DECOMPOSED parent of the SKIPPED TAB
-          (**R-JH**), split 2026-09-03 at its gate on the developer's ruling.
-          **The two halves differ in what they are ABOUT**: one is where a line the owner has merely
-          answered for BELONGS, and the other is what a RECORDED skip renders as. The order is
-          forced -- the tab's own reader must not land while `_parked_tab` is still filing bank
-          lines onto that tab, or `Tab.SKIPPED` would hold two KINDS of card at once, which is the
-          state the card-KIND generalisation exists to make unrepresentable.
+    - [x] **X-gj-4c** `56f97b98` -- the DECOMPOSED parent of the SKIPPED TAB (**R-JH**), split
+          2026-09-03 at its gate; ticked with its second leaf. Its ORDER argument -- why the reader
+          could not land while `_parked_tab` still filed bank lines onto that tab -- is spent, and
+          lives on in `_reconcile.py` where the code agrees with it.
       - [x] **X-gj-4c-1** `456d6bd2` -- a *never a purchase* answer is not a disposition (**R-JH**):
             those lines leave `parked` ALTOGETHER for `ReviewSet.answered_never` and render in the
             INBOX, so `_parked_tab`, `_sentence.for_parked_never` and
             `TestAStandingNeverAnswerIsAlreadyASkip` are DELETED; `ParkedLine` is `BarredLine`.
             **A LATER step must obey:** `parked` is account-payments ONLY, so its chip's MAGNITUDE
             is theirs alone; and `X-gj-4c-2` MUST precede `X-gj-4b`, or a skip lands on no surface.
-      - [ ] **X-gj-4c-2** `feat(import): the skipped tab` -- the TAB: a reader over
-            `budget.statement_line_skips`, the card a skipped line renders as, its Undo route
-            through `unskip_line`, and `Tab.holds_settled_acts` generalised to the card KIND a tab
-            holds -- three kinds now, because a recorded skip is neither a bank line nor a
-            `StatementMatch`. **Until it lands the tab reads 0 for every account and that is TRUE**:
-            no route calls `skip_line`, so the store cannot hold a row until `X-gj-4b` lights the
-            verb.
+      - [x] **X-gj-4c-2** `56f97b98` -- the TAB: the reader over `budget.statement_line_skips`, the
+            card, the Undo through `unskip_line`, and the card KIND, with `Tab.holds_settled_acts`
+            and `_TAB_CARD_KIND` DELETED for a `CardKind` the building arm states. BOUNDED at
+            `REGISTER_LIMIT` with a *show the other N* link (**R-GX**, **R-JW**); the card KIND is
+            **R-JX**. **A LATER step must obey:** `X-gj-4b`'s ordering blocker is discharged, and
+            `_verbs.SKIP_WAITS` is now false in both clauses.
 - [x] **X-gk** `8569e5ec` -- the MERCHANTS surface (**R-IC**): every merchant an account has seen,
       its standing answer or *You have not said*, edited ONE at a time through
       `record_submitted_rules`, so four surfaces keep one grader and one writer. On a 2026-08-31
