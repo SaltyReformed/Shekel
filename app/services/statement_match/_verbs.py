@@ -3,9 +3,13 @@
 Ruling **bank_import:R-HP**, plan step ``bank_import:X-gj-1a``.  Every bank
 line ends with exactly one of MATCH, ADD, TRANSFER or SKIP, and the Reconcile
 inbox is the lines with none yet.  The service partition underneath -- a
-proposal, a creatable outflow, a parked outflow, a recordable inflow -- stays
-load-bearing and stops being the reader's vocabulary, which is the half of
-ruling **R-HB** this keeps.
+proposal, a creatable outflow, a recordable inflow, a barred line the owner's
+own answer shuts ADD for, a parked one a source files as an account payment --
+stays load-bearing and stops being the reader's vocabulary, which is the half
+of ruling **R-HB** this keeps.  *It named four until plan step
+``bank_import:X-gj-4c`` split the barred lines in two* (ruling
+**bank_import:R-JH**), which is a count of the pass's lists rather than of the
+verbs and moves with them.
 
 **A verb is OFFERED only where its door is open, and which those are is stated
 HERE rather than in a Jinja condition** (ruling **R-HW**).  Two of the four
@@ -19,9 +23,12 @@ have no door in the app at all today:
   the purchases it covers (finding **N-337**, owner ``credit_card:CC3b``,
   ruling **R-GJ**).  :mod:`._bars` PARKS such a line rather than letting it
   become spending.
-* SKIP waits for a place to record the disposition, which plan step
-  ``bank_import:X-gj-4`` decides the shape of.  A skip nothing stores is a
-  line that comes back on the next visit.
+* SKIP waits for its verb to be LIT, which is plan step
+  ``bank_import:X-gj-4b``.  The place to record the disposition exists --
+  ``budget.statement_line_skips`` and its two doors shipped at ``X-gj-4a``
+  (ruling **bank_import:R-JG**) -- and nothing calls them yet, so
+  :data:`SKIP_WAITS` still holds: a skip this build could take would be a line
+  that comes back on the next visit.
 
 **The panel renders all four anyway** (ruling **R-HW**, developer 2026-08-29):
 the vocabulary is taught by the panel itself, so a verb absent from three
@@ -84,9 +91,20 @@ class Verb(enum.Enum):
     def past(self) -> str:
         """Return the word a SETTLED card's sentence opens on.
 
-        The Explained, Filed-by-rules and Skipped tabs render the same card
-        with the sentence in the past tense, which is one word's difference
-        and not a second composition.
+        The Explained and Filed-by-rules tabs render the same card with the
+        sentence in the past tense, which is one word's difference and not a
+        second composition; the Skipped tab joins them at plan step
+        ``bank_import:X-gj-4c-2``, which builds the card a recorded skip
+        renders as.
+
+        *This named the Skipped tab as a present reader until plan step
+        ``bank_import:X-gj-4c-1``, and it was never one*: what that tab held
+        was the lines a standing *never a purchase* answer barred, whose
+        past-tense sentence was ``_sentence.for_parked_never`` -- deleted by
+        ruling **bank_import:R-JH**, because that answer states no
+        disposition.  So :attr:`SKIP` has no past-tense reader today, exactly
+        as :attr:`TRANSFER` has none: the table is TOTAL over the four
+        (:data:`_WORDS`) rather than sized to its current callers.
 
         Returns:
             The capitalised past-tense word.

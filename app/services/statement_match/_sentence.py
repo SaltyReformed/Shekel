@@ -325,6 +325,20 @@ def for_parked_transfer(parked: "BarredLine") -> "tuple[Span, ...]":
     and what the app is waiting for; it carries no control, because there is
     no door (see :data:`~._verbs.TRANSFER_WAITS`).
 
+    **It is the only sentence composed FROM a bar**, and it had a twin --
+    ``for_parked_never``, which opened on ``Skipped`` for a line the owner had
+    answered *never a purchase* for.  Ruling **bank_import:R-JH** DELETED it
+    (plan step ``bank_import:X-gj-4c``): that answer claims nothing about what
+    a line IS, so a past-tense sentence reporting a disposition the owner never
+    made was the card stating the app's own inference as their decision.  Such
+    a line reads :func:`choose` in the inbox now
+    (:func:`~._cards.answered_never_card`) -- which is a sentence about what
+    the app does NOT know, composed from no bar at all, and is why the claim
+    above is about the composition and not about the line.  Recorded here
+    because the remaining sentence's name -- *for a parked line* -- reads as a
+    partition with two arms, and one of them is gone rather than merely
+    unused.
+
     Args:
         parked: The :class:`~._bars.BarredLine`, which must be one a source
             files as paying an account the owner holds.
@@ -337,41 +351,6 @@ def for_parked_transfer(parked: "BarredLine") -> "tuple[Span, ...]":
         Span.words("to", Ink.PLAIN),
         Span.words(parked.line.merchant_label, Ink.STRONG),
         Span.words("waiting for that account", Ink.MUTED),
-    )
-
-
-def for_parked_never(parked: "BarredLine") -> "tuple[Span, ...]":
-    """Return the sentence for a merchant the owner said is never a purchase.
-
-    **This line is already SKIPPED, and by a standing decision rather than a
-    stored disposition** -- which is why it needs none of plan step
-    ``bank_import:X-gj-4``'s store to leave the inbox: the owner has said, once
-    and for this merchant, that its money is not spending, and ruling
-    **R-HP** calls a line deliberately explained by nothing a SKIP.  Ruling
-    **R-HQ** then puts it on the tab that owns it rather than in a queue that
-    offers it no act.
-
-    **It is NOT a transfer and must not sit with them.**  The two bars are
-    different kinds of fact (:class:`~._bars.CreationBar`): one is a decision
-    the owner made, the other an observation about where the money went, and a
-    screen that filed the first under Transfers would tell someone their bank
-    had decided for them.  Measured 2026-08-29 on the developer's own account:
-    0 of his 9 parked lines are this shape -- all nine carry BOTH bars, so all
-    nine are transfers -- which makes this the arm that has never rendered,
-    built because the predicate is real and the data is one account's.
-
-    Args:
-        parked: The :class:`~._bars.BarredLine`, barred by the owner's own
-            answer and NOT also filed as paying an account they hold.
-
-    Returns:
-        The spans, in the past tense: the decision has already been made.
-    """
-    return (
-        Span.words(Verb.SKIP.past, Ink.VERB),
-        Span.words("because", Ink.PLAIN),
-        Span.words(parked.line.merchant_label, Ink.STRONG),
-        Span.words("is never a purchase", Ink.PLAIN),
     )
 
 

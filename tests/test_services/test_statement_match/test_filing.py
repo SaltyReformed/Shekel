@@ -987,7 +987,8 @@ class TestEveryBoundThePassPublishesWITHHOLDS:
         """Return a ReviewSet publishing *bounds* and nothing else."""
         return ReviewSet(
             proposals=(), unmatched=(), unmatched_rows=(),
-            creatable=(), parked=(), recordable_inflows=(),
+            creatable=(), parked=(), answered_never=(),
+            recordable_inflows=(),
             merchants=MerchantSection(merchants=(), templates=()),
             bounds=ReviewBounds(
                 calendar_opens=None,

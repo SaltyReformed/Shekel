@@ -530,9 +530,12 @@ def _notes_for(
 def _rows(review: "ReviewSet") -> "tuple[QueueRow, ...]":
     """Return every unexplained line as a queue row, evidence and act set.
 
-    **Each of the three lists states its own act**, which is what keeps the
+    **Each of the four lists states its own act**, which is what keeps the
     mechanism partition load-bearing without it being inferred anywhere: the
-    builder knows which list it is walking.
+    builder knows which list it is walking.  *It said THREE until plan step
+    ``bank_import:X-gj-4c`` split the barred lines in two; two of the four
+    state the same act, which is what the sentence claims and not a count of
+    distinct acts.*
 
     **A parked line's positive signal is the BAR itself.**  Ruling **R-GJ**'s
     two arms are a merchant a source files as a payment to an account the owner
@@ -565,8 +568,9 @@ def _rows(review: "ReviewSet") -> "tuple[QueueRow, ...]":
         review: The pass, which owns both evidence signals.
 
     Returns:
-        The rows, creatable then parked then inflows -- the grouping reorders
-        them and the order inside a group is each list's own.
+        The rows, creatable then parked then answered-never then inflows --
+        the grouping reorders them and the order inside a group is each list's
+        own.
     """
     rows: "list[QueueRow]" = []
     for creatable in review.creatable:
@@ -575,8 +579,19 @@ def _rows(review: "ReviewSet") -> "tuple[QueueRow, ...]":
         # already hold in another shape reaches this queue with no positive
         # signal unless a rule withheld for it.  Finding **N-381**.
         rows.append(_row(review, creatable, QueueAct.RECORD_PURCHASE, None))
+    # **BOTH barred lists, with the SAME act.**  Ruling **bank_import:R-JH**
+    # split what was one ``parked`` list in two (plan step
+    # ``bank_import:X-gj-4c``), and the split is about where the RECONCILE page
+    # renders a line, not about what this retiring screen can offer for it:
+    # this queue has one control per row and none of it is a MATCH, so both
+    # lists are ``NONE_OPEN`` here exactly as the single list was.  **Walked
+    # rather than left out**: a line absent from both loops would be an
+    # unexplained line this screen silently stops asking about, which is the
+    # class ``X-gi``'s census exists to prevent rather than to create.
     for parked in review.parked:
         rows.append(_row(review, parked, QueueAct.NONE_OPEN, None))
+    for barred in review.answered_never:
+        rows.append(_row(review, barred, QueueAct.NONE_OPEN, None))
     for inflow in review.recordable_inflows:
         # **Read ONCE and carried**, because it decides the group AND is
         # printed beside the line; asking again in the template would be the

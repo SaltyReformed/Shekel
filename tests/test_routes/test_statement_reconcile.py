@@ -1151,6 +1151,109 @@ class TestAVerbWithNoDoorRendersNoControl:
         )
 
 
+class TestANeverAnswerReturnsItsLineToTheInbox:
+    """Ruling **bank_import:R-JH**, plan step ``bank_import:X-gj-4c-1``.
+
+    **Read off the markup a browser would receive**, because what this step
+    moved is where a line RENDERS and the service test one tier down cannot
+    see a tab bar, an Apply form or a link.  A standing *never a purchase*
+    answer shuts the ADD door and claims nothing about what the line is, so
+    the line is inbox work rather than a disposition.
+
+    **The staging is deliberately an ORDINARY swipe merchant.**  A merchant a
+    source ALSO files as paying an account the owner holds is a transfer
+    whatever they answered, stays parked, and is graded by
+    :class:`TestAVerbWithNoDoorRendersNoControl`.
+    """
+
+    @staticmethod
+    def _a_never_answered_swipe(seed_user, db):
+        """Stage one outflow whose merchant the owner answered NEVER for.
+
+        Args:
+            seed_user: The seeded user bundle.
+            db: The session fixture.
+
+        Returns:
+            The staged bank line.
+        """
+        an_envelope(seed_user)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Foundation Donation", amount="-4.00",
+        )
+        a_rule(seed_user, "Foundation Donation")
+        db.session.commit()
+        return line
+
+    def test_the_card_is_on_TO_EXPLAIN_under_nothing_suggested(
+        self, auth_client, db, seed_user,
+    ):
+        """The tab bar counts it as work, and the section heading says so."""
+        self._a_never_answered_swipe(seed_user, db)
+
+        page = _page(auth_client, seed_user)
+
+        assert "Foundation Donation" in page
+        assert "Nothing suggested" in page
+
+    def test_it_is_on_NEITHER_holding_tab(self, auth_client, db, seed_user):
+        """Both halves, and the TRANSFERS half is the one that renders money.
+
+        Leaving the line in ``parked`` and merely dropping the tab arm would
+        total that list on TRANSFERS, whose holding chip carries a COUNT and a
+        MAGNITUDE -- so the line would arrive under a rendered money figure the
+        bank never filed as a payment.
+        """
+        self._a_never_answered_swipe(seed_user, db)
+
+        transfers = _page(auth_client, seed_user, "transfers")
+        skipped = _page(auth_client, seed_user, "skipped")
+
+        assert "Foundation Donation" not in transfers
+        assert "Foundation Donation" not in skipped
+        assert "waiting for the account they paid" not in transfers
+
+    def test_ADD_renders_the_owner_s_own_reason_and_NO_destination_chooser(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-GJ**'s bar, one tab over from where it used to render.
+
+        **The chooser is what this asserts the absence of**, not the sentence:
+        a warning paragraph over a working select is the shape that ruling cost
+        `$7,412.94` to learn, and putting these lines back in the inbox is
+        exactly the change that could have reintroduced it.
+        """
+        line = self._a_never_answered_swipe(seed_user, db)
+
+        page = _page(auth_client, seed_user)
+
+        assert "You have said Foundation Donation is never a purchase" in page
+        assert f'name="destination-{line.id}"' not in page, (
+            "a barred line must render no destination chooser, on any tab"
+        )
+
+    def test_it_keeps_the_CONSENT_and_the_door_that_changes_the_answer(
+        self, auth_client, db, seed_user,
+    ):
+        """**Why R-HQ is not breached by putting this line in the inbox.**
+
+        MATCH is open, so the card has an act and the ``ok`` checkbox has to be
+        in the document for it -- the same reason a parked card payment keeps
+        one.  And unlike that line this one has an answer worth changing, so
+        the panel names the merchants page.
+        """
+        line = self._a_never_answered_swipe(seed_user, db)
+        a_transaction(seed_user, name="Groceries", is_envelope=True)
+        db.session.commit()
+
+        page = _page(auth_client, seed_user)
+
+        assert f'name="ok" value="{line.id}"' in page, (
+            "a line whose only shut door is ADD must still be matchable"
+        )
+        assert "Change what you have said about Foundation Donation" in page
+
+
 class TestTheHeroSaysWhatTheLastImportDid:
     """The provenance line the locked direction prints right of the figures.
 

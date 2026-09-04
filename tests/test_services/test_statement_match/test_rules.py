@@ -1081,8 +1081,12 @@ class TestTheSectionTheScreenRenders:
         since plan step ``bank_import:X-ga`` it cannot render a control either.
         A merchant answered *never a purchase* is not one line of the create
         card with its select disabled: it is not in that card at all, and it is
-        listed among the parked lines instead, where the only act offered is
-        the hand-built group match ruling R-GJ leaves open.
+        listed among the pass's ``answered_never`` lines instead -- which is
+        where ruling **bank_import:R-JH** put it at plan step
+        ``bank_import:X-gj-4c``, having been in ``parked`` before that.  Both
+        lists are out of ``creatable``, which is the fact this case grades:
+        what changed is where such a line RENDERS, never whether the create
+        door would take it.
 
         The other half of the old sweep rule -- a rule that does not reach
         this line's pay period places nothing either -- is graded by
@@ -1105,7 +1109,13 @@ class TestTheSectionTheScreenRenders:
         review = review_set(a_scope(seed_user))
 
         assert [item.line.merchant for item in review.creatable] == ["Amazon"]
-        assert [item.line.merchant for item in review.parked] == ["Capital One"]
+        assert [
+            item.line.merchant for item in review.answered_never
+        ] == ["Capital One"]
+        # **And in NEITHER of the other two**, which is what makes the line
+        # above a partition claim rather than a membership one: a line counted
+        # twice would put it on a holding tab AND in the inbox.
+        assert review.parked == ()
         # **The sweep is counted on the GROUP that offers it** since plan step
         # ``bank_import:X-gf-3b-2`` (developer ruling 2026-08-28), which is
         # what keeps the caption's number and the control's reach one fact.

@@ -381,9 +381,13 @@ class BarredLine:
     payment to an account the owner holds is parked exactly as its debits are.
 
     Ruling **R-GJ**'s other arm: a line the create door is closed for is not
-    hidden, it is PARKED -- listed with the reason, and still tickable on the
+    hidden, it is LISTED -- with the reason, and still tickable on the
     hand-build surface, which is where a card payment meets the payback rows
-    it repays.  Measured: the one Capital One line handled that way
+    it repays.  *It said PARKED until plan step ``bank_import:X-gj-4c``*, which
+    is now true of only one of the two lists this value lands in
+    (:attr:`~._reads.ReviewSet.parked`); the other is the inbox, and *listed
+    with the reason* is what both have in common.  Measured: the one Capital
+    One line handled that way
     (`-$466.47`, 2026-06-17) is grouped with four ``CC Payback`` rows whose
     RECORDED figures sum to exactly `$466.47`, so that one needed no difference
     at all.  Naming one where a group does leave it is ruling **R-FN**'s
@@ -391,9 +395,22 @@ class BarredLine:
 
     **It is NOT a** :class:`~._leftovers.CreatableLine` **with the controls turned
     off.**  That value carries the destinations a line may be recorded into and
-    the placement suggesting one of them, and a parked line has neither -- a
-    record that carried empty versions of both would be a control one Jinja
-    condition away from rendering again.
+    the placement suggesting one of them, and a barred line has neither.
+
+    *That paragraph used to end "-- a record that carried empty versions of
+    both would be a control one Jinja condition away from rendering again",
+    and plan step ``bank_import:X-gj-4c`` measured the claim false*: a
+    :class:`~._leftovers.CreatableLine` whose pay period no calendar covers
+    already carries exactly those empty versions and has shipped since finding
+    **N-325**, so the empty-collection shape is not what keeps a control from
+    rendering -- the shut ADD offer is
+    (:attr:`~._verbs.VerbOffer.waiting_for`).  **The separation still stands on
+    its other leg, and that leg is stronger**: ``_queue.py``'s ``_rows``
+    dispatches on WHICH LIST it drew a line from, so a barred line inside
+    ``creatable`` would render there as ``QueueAct.RECORD_PURCHASE`` -- a
+    destination chooser over a line :func:`reject_barred_line` refuses by name,
+    which is this ruling's own `$7,412.94` shape on a screen that stays live
+    until ``X-gi``.
 
     Attributes:
         line: The bank's own record of the movement.
@@ -567,8 +584,10 @@ def reject_barred_line(
 
     **The door's half of a structural refusal**, plan step
     ``bank_import:X-ga``.  The screen does not render a create control for such
-    a line at all (:attr:`~._reads.ReviewSet.parked`), so this fires only on a
-    stale page or a crafted body -- and it has to exist for exactly that
+    a line at all -- whichever list the pass put it in
+    (:attr:`~._reads.ReviewSet.parked` or ``answered_never``, plan step
+    ``bank_import:X-gj-4c``, and this door is blind to which) -- so this fires
+    only on a stale page or a crafted body -- and it has to exist for exactly that
     reason: the last version of this rule was a paragraph on the screen with a
     working select underneath it, and one YTD pass booked
     **`$7,412.94`** of Capital One payments the app already held as ``CC
