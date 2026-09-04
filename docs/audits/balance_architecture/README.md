@@ -495,17 +495,12 @@ sentence exists so nobody builds it believing the question was never raised.
   **Two obligations RESTATED from leaves archived 2026-08-26**, binding the leaves that REMAIN: a
   derived row's answer must be INVARIANT under a change to its own amount column, agreement being
   blind to the resolver (X-au-b); and the basis is REQUIRED on both `settle_amount` twins, pinned once in `cash_ledger.baseline_amount_basis` (X-au-j).
-* [ ] **X-au-c** the amount model's SEAM -- the DECOMPOSED parent of three leaves (developer,
-  2026-08-12), because the census this step's own specification demanded as its first act came back
-  at ~25 code reads across 15 modules and it is not one session's work. The split puts the schema
-  where nothing can move a figure, then the readers where every change is provably byte-identical,
-  then the money. It ticks with the last of them.
-  **Three of its leaves left for `archive/x_au_c_as_built_2026-08-26.md`** under rule 5 on
-  2026-08-26. **What still binds the leaves that REMAIN**, restated because rule 5 forbids a live
-  sentence depending on an archived one: `get_payment_history` may never take the resolver and
-  nothing reachable from `loan_payment_service` may NAME `cash_ledger`, which is why the
-  producer-free arms live in `row_valuation.py`; and the amount rules read no STATUS, the basis
-  pinning `date.today()` being `X-i2`'s money rather than theirs.
+* [x] **X-au-c** `3d1379d1` -- the amount model's SEAM, the DECOMPOSED parent of three leaves
+  (developer, 2026-08-12); ticked with `X-au-c3`, its last. Records: `archive/x_au_c_as_built_2026-08-26.md`
+  and `archive/eight_shipped_steps_2026-09-01.md`. **What still binds LATER steps** (rule 5 forbids a
+  live sentence depending on an archived one): `get_payment_history` may never take the resolver;
+  nothing reachable from `loan_payment_service` may NAME `cash_ledger` (the producer-free arms live
+  in `row_valuation.py`); and the amount rules read no STATUS -- the `date.today()` basis is `X-i2`'s.
   * [x] **X-au-c3** `3d1379d1` -- a settle RECORDS what moved rather than refreshing an amount. What a later leaf must obey is in this phase's preamble, not here. Record in `archive/eight_shipped_steps_2026-09-01.md`.
 * [x] **X-au-k** `7315ecd9` -- a row's amount ownership is ONE mapped attribute over a value
   object total across ruling R-FI's two states (**R-IW**); the `_FIGURE_COLUMNS` registry is
