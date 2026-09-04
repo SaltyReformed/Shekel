@@ -2414,9 +2414,10 @@ class TestAccountArchivalDashboard:
         """Finding **N-430**, closed by plan step ``balance:X-f3c-2b-2d``.
 
         The archived card emitted no ``href`` naming its account at all, so the
-        account edit page -- the surface carrying rename, archive, hard-delete
-        and the books-opening restatement form -- was reachable for an archived
-        account only by typing its URL.  It carries the live cell's kebab *Edit*
+        account edit page -- the surface carrying rename, re-type, hard-delete
+        and the books-opening restatement form, but NOT archive, which lives
+        only on the live cell's kebab -- was reachable for an archived account
+        only by typing its URL.  It carries the live cell's kebab *Edit*
         item now, promoted to the card face by the same rule that put
         hard-delete there.
 
@@ -2458,6 +2459,13 @@ class TestAccountArchivalDashboard:
             assert f'href="/accounts/{second_id}/edit"' in archived_section
             assert 'aria-label="Edit Closed Alpha"' in archived_section
             assert 'aria-label="Edit Closed Beta"' in archived_section
+            # The VISIBLE word, which is the half of WCAG 2.5.3 the two
+            # assertions above cannot see: they pin the accessible name, and an
+            # icon-only link with no text node at all satisfies both while
+            # voiding the claim that the visible label LEADS that name.  The
+            # docstring above and the template's own comment each state it; this
+            # is what grades it.
+            assert archived_section.count("</i> Edit") == 2
 
     def test_an_archived_LOANS_card_links_to_its_edit_page_TOO(
         self, app, auth_client, seed_user, seed_periods,
@@ -2468,9 +2476,9 @@ class TestAccountArchivalDashboard:
         would have to ask whether the account has a books-opening card and be
         withheld from an amortizing one, whose edit page renders none -- and
         that gate would take an archived loan's ONLY reach to the page that can
-        rename or re-type it, on a cockpit that actively prompts an owner to
-        archive a paid-off loan.  The plain *Edit* link needs no such question,
-        so this case asserts the loan is offered it.
+        rename or re-type it, on a cockpit that badges a paid-off loan and
+        offers Archive on every live cell's kebab.  The plain *Edit* link needs
+        no such question, so this case asserts the loan is offered it.
 
         Its destination is graded where it belongs: that a loan's edit page
         carries no books-opening card is

@@ -336,11 +336,15 @@ class TestTheDoor:
         guards is the future: the step points an owner at this write from the
         cockpit, and the account-10 runbook's stop rules turn on the twin being
         restatable while still archived, so an ``is_active`` filter reaching
-        this path silently would now break a prescribed procedure.  That is a
-        live hazard rather than a hypothetical one --
-        ``account_posting_service/_sync.py`` documents that its re-sync is
-        DELIBERATELY not filtered on ``is_active``, which is a decision only a
-        test can keep.
+        this path silently would now break a prescribed procedure.
+
+        **What it does NOT keep**, said because an earlier draft of this
+        docstring claimed it did: ``_non_loan_accounts_id_query`` in
+        ``account_posting_service/_sync.py`` is deliberately un-filtered on
+        ``is_active``, and this case does not grade that decision.  The door
+        calls ``sync_account_anchor_postings_all_scenarios(account.id)`` with an
+        explicit id, so it never reaches that enumerator; only the all-owners
+        sweep and the per-user resync do.
 
         No other case anywhere in ``tests/`` archives an account and restates
         it: ``test_opening_restatement.py`` mentions neither ``is_active`` nor
@@ -552,9 +556,8 @@ class TestWhatTheCardSAYS:
         but the live cell's kebab references ``accounts.archive_account``, and
         ``accounts/form.html`` renders no ``is_active`` control.  The twin of
         this sentence in ``routes/accounts/opening.py`` is still wrong and is
-        reported rather than fixed, being outside that step's scope.)  It reads
-        the
-        non-raising twin now and returns ``None``.
+        reported rather than fixed, being outside that step's scope -- finding
+        N-454.)  It reads the non-raising twin now and returns ``None``.
         """
         with app.app_context():
             account = account_never_asserted(

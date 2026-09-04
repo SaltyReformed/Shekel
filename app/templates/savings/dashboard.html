@@ -279,11 +279,13 @@
 
                    IT IS THE KEBAB'S OWN Edit ITEM, promoted to a direct
                    affordance by the SAME rule that put hard-delete beside it
-                   (P4): an archived card has no cell kebab, so what the kebab
-                   offers sits on the card face.  Same destination, wording and
-                   icon as savings/_cockpit.html's dropdown item -- one account
-                   edit page, reached the same way from both states of an
-                   account.
+                   (P4): an archived card has no cell kebab, so the ITEM an
+                   archived account still has a use for sits on the card face.
+                   Not everything the kebab offers -- it also offers Transfer
+                   and Archive, and neither means anything for an account that
+                   is already archived.  Same destination, wording and icon as
+                   savings/_cockpit.html's dropdown item -- one account edit
+                   page, reached the same way from both states of an account.
 
                    UNGATED, AND CARRYING NO #books-opening FRAGMENT, WHICH ARE
                    THE SAME DECISION.  The fragment would name an anchor a
@@ -298,20 +300,18 @@
                    rename, RE-TYPE and hard-delete are on that page for every
                    account there is.
 
-                   ARCHIVE IS NOT, AND THIS SENTENCE SAID IT WAS.  accounts/
-                   form.html renders name, type, Update, Cancel and the
-                   hard-delete Danger Zone -- no is_active control -- and
-                   accounts.archive_account is referenced by exactly ONE
-                   template in the repository, the live cell's kebab.  The
-                   conclusion survives on the three that are really there, but
-                   the enumeration was wrong in the direction that matters most
-                   for THIS card: clicking Edit on an archived account reaches a
-                   page that cannot unarchive it, and saving a rename redirects
-                   to a cockpit whose drawer is collapsed by default.  The
-                   claim is inherited from routes/accounts/opening.py, which
-                   states it of the same page and is equally wrong there
-                   (reported, out of this step's scope).  Caught by adversarial
-                   review, 2026-09-04.
+                   ARCHIVE IS NOT ON THAT PAGE, and the omission is the one
+                   thing this link cannot fix.  accounts/form.html renders name,
+                   type, Update, Cancel and the hard-delete Danger Zone -- no
+                   is_active control -- and accounts.archive_account is
+                   referenced by exactly ONE template in the repository, the
+                   live cell's kebab.  So clicking Edit on an archived account
+                   reaches a page that cannot return it to active, and saving a
+                   rename redirects to a cockpit whose archived drawer is
+                   collapsed by default, leaving the account just renamed off
+                   screen.  routes/accounts/opening.py states the same wrong
+                   enumeration of this page and is reported rather than fixed,
+                   being outside this step (finding N-454).
 
                    NAMED FOR ITS ACCOUNT, as both sibling controls are: the
                    drawer renders one card per archived account, so N bare
