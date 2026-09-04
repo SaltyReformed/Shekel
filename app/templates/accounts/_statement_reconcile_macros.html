@@ -687,3 +687,49 @@
   <p class="mb-0">Nothing on this tab.</p>
 </div>
 {% endmacro %}
+
+{% macro show_the_other(account, page, withheld, noun) %}
+{#- THE BOUND, SAID, AND A WAY PAST IT -- stated ONCE for every bounded tab.
+
+    Rulings bank_import:R-GX and R-JW; plan steps X-gj-1c (the settled tabs)
+    and X-gj-4c-2 (the Skipped tab).  A truncated list that does not say it is
+    truncated is a page claiming to be the whole record, and each of these tabs
+    is the only surface its own kind of act can be found and undone on -- so
+    what a bound withholds has to be REACHABLE rather than merely unlisted.
+
+    IT IS A MACRO BECAUSE THE THIRD ARM MADE IT A COPY.  X-gj-4c-2 gave the
+    Skipped tab the same bound and left this paragraph duplicated beside the
+    settled tabs' -- the same `url_for(..., all=1)`, the same count, the same
+    sentence shape, differing in one noun and one trailing clause.  Jinja has
+    no cross-file duplicate-code gate, so nothing would have said so; an
+    unprimed adversarial review did, and its point is that the DUPLICATED half
+    was the one carrying a bound the owner has to trust, while the half already
+    extracted (`nothing_on_this_tab`) said nothing at all.
+
+    IT IS NOT FINDING N-389, and an earlier draft of this comment said it was.
+    That finding is a caption counting an act its tab COULD NOT RENDER -- a
+    silent disagreement.  A bound is a deliberate truncation that ANNOUNCES
+    itself, which is what this paragraph is, and `_skipping.py` refuses the
+    conflation in as many words: what a caption may legitimately exceed is
+    what the bound renders.
+
+    THE COUNT AND THE LINK ARE THE SERVICE'S AND THE ROUTE'S.  `withheld` is
+    `CardSection.withheld`, derived where the cards were built; the href is
+    `url_for` over the tab this page is already on.  Nothing here computes.
+
+    THE TAIL IS THE CALLER'S BLOCK, because what a tab owes past the link is
+    its own: the settled tabs promise that an act which no longer holds is
+    listed whatever its age, and the Skipped tab has no such promise to make.
+
+    THE BLOCK IS OPTIONAL AND THE GUARD IS WHY.  `caller` is undefined unless
+    the macro is invoked through `{% call %}`, so an unguarded `{{ caller() }}`
+    turns a plain `{{ show_the_other(...) }}` into an UndefinedError -- a 500
+    on the reconcile page for a future bounded tab with nothing to add, rather
+    than the missing tail its author expected.  A documented trap is still a
+    trap when no call site exercises it; the guard makes the empty case the
+    thing it looks like.  Named by adversarial review. -#}
+<p class="rec-more small">
+  <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab=page.tab.value, all=1) }}">Show
+  the other {{ withheld }} {{ noun }}</a>{% if caller is defined %}{{ caller() }}{% endif %}
+</p>
+{% endmacro %}

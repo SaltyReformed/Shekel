@@ -118,16 +118,17 @@ class CardKind(enum.Enum):
     two-valued answer, and widening the boolean's meaning is how a tab comes
     to render the wrong partial with nothing raising.
 
-    **It is carried on the PAGE and not on the TAB** (developer ruling,
-    2026-09-04), and that placement is the whole of what makes it one fact.
+    **It is carried on the PAGE and not on the TAB** (**R-JX**), and that
+    placement is the whole of what makes it one fact.
     A ``Tab.holds`` property read from a table beside a dispatch that
     independently built the cards was ONE fact with TWO homes: set the table
     to :attr:`ACT` for the Skipped tab and the page still built
     :class:`SkipCard` values, the template still picked the act partial, and
     the page 500'd on a field that is not there -- with nothing but a test
     holding the two in step.  :attr:`~._reconcile.ReconcilePage.kind` is set
-    BY the dispatch that builds the sections, so the disagreement is
-    unrepresentable and the reconciling test is deleted rather than kept.
+    BY the dispatch that builds the sections, so the two-home disagreement is
+    gone and its reconciling test with it -- LOCAL rather than impossible,
+    which the paragraph below states exactly and **R-JX** insists on.
     ``CLAUDE.md`` rule 14: where a rule says two places must always agree,
     they are one value with two homes, and the remedy is to delete a home.
 

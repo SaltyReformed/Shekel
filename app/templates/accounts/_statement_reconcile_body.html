@@ -1,5 +1,5 @@
 {% from "_money_macros.html" import money %}
-{% from "accounts/_statement_reconcile_macros.html" import act_card, line_card, nothing_on_this_tab, skip_card %}
+{% from "accounts/_statement_reconcile_macros.html" import act_card, line_card, nothing_on_this_tab, show_the_other, skip_card %}
 
 {# THE WHOLE RECONCILE SURFACE, and the Apply door's own answer.
 
@@ -399,18 +399,13 @@
        card) }}
   {% endfor %}
   {% if section.withheld %}
-  {# THE BOUND, SAID, AND A WAY PAST IT (ruling R-GX, carried over from the
-     register at plan step X-gj-1c).  A truncated list that does not say it is
-     truncated is a page claiming to be the whole record, and these tabs are
-     now the only surface where an act can be found and undone.  Every act that
-     NO LONGER HOLDS is above this whatever its age -- which is
-     `accepted_register`'s rule, not a promise made here. #}
-  <p class="rec-more small">
-    <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab=page.tab.value, all=1) }}">Show
-    the other {{ section.withheld }} act(s)</a>
+  {# The settled tabs' own tail: every act that NO LONGER HOLDS is above this
+     whatever its age, which is `accepted_register`'s rule and not a promise
+     made here. #}
+  {% call show_the_other(account, page, section.withheld, "act(s)") %}
     -- the newest are listed above, and any that no longer hold are always
     listed whatever their age.
-  </p>
+  {% endcall %}
   {% endif %}
   {% else %}
   {{ nothing_on_this_tab() }}
@@ -450,16 +445,9 @@
        card) }}
   {% endfor %}
   {% if section.withheld %}
-  {# THE BOUND, SAID, AND A WAY PAST IT (ruling R-GX, developer 2026-09-04).
-     A truncated list that does not say it is truncated is a page claiming to
-     be the whole record, and this tab is the only surface a skipped line can
-     be found and undone on -- so the withheld ones must be reachable rather
-     than merely unlisted. #}
-  <p class="rec-more small">
-    <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab=page.tab.value, all=1) }}">Show
-    the other {{ section.withheld }} skip(s)</a>
+  {% call show_the_other(account, page, section.withheld, "skip(s)") %}
     -- the newest are listed above.
-  </p>
+  {% endcall %}
   {% endif %}
   {% else %}
   {{ nothing_on_this_tab() }}
