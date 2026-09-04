@@ -93,17 +93,17 @@ class Verb(enum.Enum):
 
         The Explained and Filed-by-rules tabs render the same card with the
         sentence in the past tense, which is one word's difference and not a
-        second composition; the Skipped tab joins them at plan step
-        ``bank_import:X-gj-4c-2``, which builds the card a recorded skip
-        renders as.
+        second composition; the Skipped tab JOINED them at plan step
+        ``bank_import:X-gj-4c-2``, which built the card a recorded skip
+        renders as (:func:`~._sentence.for_skip`).
 
         *This named the Skipped tab as a present reader until plan step
         ``bank_import:X-gj-4c-1``, and it was never one*: what that tab held
         was the lines a standing *never a purchase* answer barred, whose
         past-tense sentence was ``_sentence.for_parked_never`` -- deleted by
         ruling **bank_import:R-JH**, because that answer states no
-        disposition.  So :attr:`SKIP` has no past-tense reader today, exactly
-        as :attr:`TRANSFER` has none: the table is TOTAL over the four
+        disposition.  Three of the four have a past-tense reader now, and
+        :attr:`TRANSFER` has none: the table is TOTAL over the four
         (:data:`_WORDS`) rather than sized to its current callers.
 
         Returns:

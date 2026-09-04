@@ -8,11 +8,14 @@
  * document (base.html).  Every control it guards was therefore clickable
  * BEFORE the listener that guards it existed: the statement review page is
  * 537 KB of HTML, and finding N-345 records an Undo submitted before the modal
- * bound, so the act ran with no dialog shown (ruling R-GP).  23 controls
- * across 17 templates depend on this listener (re-counted 2026-08-27 over
+ * bound, so the act ran with no dialog shown (ruling R-GP).  24 controls
+ * across 18 templates depend on this listener (re-counted 2026-09-04 over
  * data-confirm= and hx-confirm= ATTRIBUTES, excluding the two documentation
  * examples in _confirm_modal.html and one occurrence inside a Jinja comment;
- * a first count said 29 and had counted all three).  It read 22 until plan
+ * a first count said 29 and had counted all three).  **The 24th is the
+ * SKIPPED tab's Undo** (plan step bank_import:X-gj-4c-2), which is also
+ * what took the template count to 18: _statement_reconcile_macros.html
+ * carried no confirm control until then.  It read 22 until plan
  * step bank_import:X-gf-2, whose ruling bank_import:R-GY gave the statement
  * undo a SECOND dialog -- the arm for a press that destroys the match record
  * without destroying a row.

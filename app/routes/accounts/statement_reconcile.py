@@ -22,11 +22,17 @@ RECEIPT's per-merchant standing-rule offer posts through
 module opens no door of its own**, which is what lets a whole screen ship
 without a migration and without a new money path.
 
-**Five routes, and only ONE of them re-renders without writing.**  The page and
-Apply are the pair; UNDO is a plain POST-redirect-GET back to the tab it was
-pressed on; the standing-rule offer's own door writes ``budget.merchant_rules``
-and commits (ruling **bank_import:R-IB**); and the MATCH pane re-renders one
-card's candidate rows and what the ticked ones come to, writing nothing.
+**Six routes, and only ONE of them re-renders without writing.**  The page and
+Apply are the pair; the two UNDOs are plain POST-redirect-GETs back to the tab
+they were pressed on -- a match's, which destroys rows the act created, and a
+skip's, which destroys only the decision (plan step ``bank_import:X-gj-4c-2``);
+the standing-rule offer's own door writes ``budget.merchant_rules`` and commits
+(ruling **bank_import:R-IB**); and the MATCH pane re-renders one card's
+candidate rows and what the ticked ones come to, writing nothing.  *It said
+FIVE until the skip's undo landed*, and the count is corrected here rather than
+left to a reader because the sentence goes on to enumerate them BY POSITION --
+the same trap the parenthetical below already records this paragraph falling
+into once.
 *(This paragraph said "three routes, and the third is a READ" until
 **bank_import:R-IB** added the rule door, at which point the third route in
 file order was the one that WRITES -- a reader counting routes would have
@@ -40,10 +46,11 @@ finding **N-374** rebuilt one surface later.
 **It serves every tab the service builds** (plan step ``bank_import:X-gj-1c``).
 The two whose cards are ACTS already applied -- Explained and Filed by rules --
 arrived with that step, and with them the ``_TABS_SERVED`` tuple that had 404'd
-them: a subset constant equal to the whole enum guards nothing.  The two kinds
-of card are two values in the service and two partials here, and an act's Undo
-is a `form`, so an act tab renders OUTSIDE the Apply form rather than inside
-it.
+them: a subset constant equal to the whole enum guards nothing.  The THREE
+kinds of card are three values in the service and three partials here -- plan
+step ``bank_import:X-gj-4c-2`` added the recorded SKIP, which is neither a bank
+line nor a match -- and both an act's Undo and a skip's are a `form`, so those
+two tabs render OUTSIDE the Apply form rather than inside it.
 
 **The old routes stay alive beside this page** until ``bank_import:X-gi``'s
 census deletes them, which is ruling **R-HU**'s own sequencing: every door
@@ -63,12 +70,15 @@ from dataclasses import dataclass, replace
 
 from flask import abort, render_template, request, url_for
 from flask_login import current_user, login_required
+from app.exceptions import ValidationError
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.routes.accounts._statement_doors import (
+    StatementDoorContext,
     fragment_door,
     log_pass_applied,
     refusal_sentence,
+    run_one_id_door,
     run_statement_fragment_door,
     submitted_batch,
     submitted_item_count,
@@ -83,6 +93,7 @@ from app.schemas.validation.statement_reconcile import (
 from app.schemas.validation.statements import (
     StatementBatchSchema,
     StatementMatchSchema,
+    StatementSkipReleaseSchema,
 )
 from app.services import balance_at, bank_agreement
 from app.services.category_service import list_active_categories
@@ -98,6 +109,7 @@ from app.services.statement_match import (
     reconcile_page,
     review_set,
     rules_worth_offering,
+    unskip_line,
 )
 from app.utils.auth_helpers import require_owner
 from app.utils.error_fragments import designed_error
@@ -111,6 +123,11 @@ _logger = logging.getLogger(__name__)
 #: pass are graded by one set of rules.
 _batch_schema = StatementBatchSchema()
 _match_schema = StatementMatchSchema()
+
+#: The Skipped tab's Undo names ONE act, exactly as the settled tabs' does, and
+#: it is a different schema over a different table (plan step
+#: ``bank_import:X-gj-4c-2``).
+_unskip_schema = StatementSkipReleaseSchema()
 
 #: The partial the page, the Apply door and every refusal arm render.  ONE
 #: template, so what htmx swaps in after a POST cannot drift from what a
@@ -183,12 +200,14 @@ def _requested_tab() -> Tab:
 def _asked_for_everything() -> bool:
     """Return whether the request asked for the whole settled record.
 
-    Plan step ``bank_import:X-gj-1c``.  **The bound the register offered to
-    lift, carried onto the tab that replaces it** (**R-HU**): the two settled
-    tabs render :data:`~app.services.statement_match.REGISTER_LIMIT` acts and
-    say how many they withheld, and this is what the *show the other N* link
-    asks.  On the developer's own account it reaches 171 of 221 acts, so
-    retiring the register without it would put them out of reach.
+    Plan steps ``bank_import:X-gj-1c`` and ``X-gj-4c-2``.  **The bound the
+    register offered to lift, carried onto the tabs that replace it**
+    (**R-HU**, **R-GX**): three tabs now render
+    :data:`~app.services.statement_match.REGISTER_LIMIT` rows and say how many
+    they withheld -- the two settled ones and the Skipped tab -- and this is
+    what each of their *show the other N* links asks.  On the developer's own
+    account it reaches 171 of 221 acts, so retiring the register without it
+    would put them out of reach.
 
     A PRESENCE test and not a value one, exactly as the register's own reader
     is: the link either carries the flag or it does not, so there is no
@@ -335,9 +354,12 @@ def _reconcile_context(account, scope, tab, answer: _Answer) -> dict:
             account, balance_at.BalanceContext.build(scope.owner_id),
         ),
         tab,
-        # **The bound, or the whole record** (plan step
-        # ``bank_import:X-gj-1c``).  It reaches only the two settled tabs; the
-        # service says which and the template never asks.
+        # **The bound, or the whole record** (plan steps
+        # ``bank_import:X-gj-1c`` and ``X-gj-4c-2``).  ONE bound for every
+        # bounded arm -- the two settled tabs and, since the developer's
+        # ruling of 2026-09-04, the Skipped tab; the service says which arms
+        # read it and the template never asks.  *It said "only the two settled
+        # tabs" until that ruling.*
         None if show_all else REGISTER_LIMIT,
     )
     return {
@@ -843,4 +865,126 @@ def release_from_reconcile(account_id):
         # ``url_for`` drops a ``None`` argument, so the ordinary render
         # redirects to the plain URL rather than to one carrying ``all=``.
         all=1 if _asked_for_everything() else None,
+    )
+
+
+def _unskip_report(line_id: int) -> "tuple[str, str]":
+    """Return the flash for one undone skip: what came back.
+
+    **It names no figure and no removal**, which is the whole difference from
+    :func:`~._statement_release._release_report` one act over: undoing a match
+    destroys rows that match created and owes the owner their count and their
+    money, and undoing a skip destroys a DECISION and takes nothing back.  A
+    receipt reporting `$0.00` removed would be inventing a fact about money on
+    a screen whose one job is to be trusted about money.
+
+    **It says the difference is unchanged**, and that is the sentence this act
+    is easiest to misread: skipping never closed the gap between the books and
+    the bank (:mod:`~app.services.statement_match._skipping`), so undoing one
+    cannot re-open it.
+
+    **It names NO row id.**  ``budget.bank_statement_lines.id`` appears nowhere
+    the owner can see -- a card shows the merchant, the day and the bank's raw
+    words -- so a receipt quoting one would be the only figure on this screen
+    naming nothing on it, and :func:`~._statement_release._release_report`
+    deliberately quotes none either.  *A first version interpolated it*, which
+    adversarial review found was the sole flash in ``app/routes/`` to do so.
+    The line identifies itself by being back in the inbox, which is where this
+    sentence sends the reader.
+
+    Args:
+        line_id: The bank line that is unexplained again, which
+            :func:`~app.services.statement_match.unskip_line` returns.
+            **Received and not printed**: this door names ONE act on purpose,
+            so the caller is told which line it freed even where the receipt
+            does not quote the number.
+
+    Returns:
+        ``(message, category)``.
+    """
+    del line_id
+    return (
+        "Skip undone.  That statement line is waiting to be explained again; "
+        "nothing else changed, because skipping had recorded no money and "
+        "closed no difference between your books and your bank.",
+        "info",
+    )
+
+
+@accounts_bp.route(
+    "/accounts/<int:account_id>/statements/reconcile/unskip",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def unskip_from_reconcile(account_id):
+    """Undo one recorded skip and come back to the Skipped tab.
+
+    Plan step ``bank_import:X-gj-4c-2``, rulings **bank_import:R-JG** and
+    **R-GY**.  **IT MOVES NO MONEY AND CAN MOVE NONE** -- the only table
+    :func:`~app.services.statement_match.unskip_line` touches is
+    ``budget.statement_line_skips``, which holds no figure -- which is what
+    separates it from :func:`release_from_reconcile` beside it, whose act
+    destroys rows and owes a confirmation naming their money.  What this
+    restores is the QUESTION: the line is unexplained again and the inbox asks
+    about it.
+
+    **A plain POST-redirect-GET**, which is the shape the other Undo on this
+    page already takes and for its stated reason: this names ONE act and either
+    does it or refuses it, so a flash carries the whole answer -- where Apply
+    reports per-item outcomes no flash can hold.  It also keeps the control a
+    ``form``, which is why the Skipped tab renders outside the Apply form: a
+    form cannot nest in a form.
+
+    **It does NOT go through**
+    :func:`~._statement_release.release_and_return`, and the reason is the
+    subject rather than the shape.  That helper exists because ONE act -- the
+    release of a match -- is offered from three surfaces and its refusal story
+    and receipt must be identical on all of them.  This is a different act on a
+    different table with a different receipt, offered from exactly one surface,
+    so folding the two would be a shared helper for two things that only look
+    alike, which is what ``CLAUDE.md`` rule 13 refuses.
+
+    **It comes back to the VIEW, not merely to the page**, which is
+    :func:`release_from_reconcile`'s own rule one act over: which tab is open
+    and whether the bound is lifted are both read here through the page's own
+    two readers, so an undo pressed on the Skipped tab while showing every
+    skip answers with the Skipped tab showing every skip.  *An earlier version
+    of this docstring argued the opposite* -- that the tab needed no bound, so
+    ``all`` was an argument this page could not honour -- and the developer
+    ruled on 2026-09-04 that it takes ruling **R-GX**'s shape after all.
+
+    Args:
+        account_id: The account being reconciled.
+
+    Returns:
+        A redirect back to the tab the control was pressed on, carrying the
+        receipt or the refusal.  A 404 when the account is not the caller's or
+        is a kind that has no bank statement -- the security response rule's
+        answer for both "not found" and "not yours".
+    """
+    account = load_cash_account_or_404(account_id)
+    target = url_for(
+        "accounts.statement_reconcile",
+        account_id=account.id, tab=_requested_tab().value,
+        # ``url_for`` drops a ``None`` argument, so the ordinary render
+        # redirects to the plain URL rather than to one carrying ``all=``.
+        all=1 if _asked_for_everything() else None,
+    )
+
+    return run_one_id_door(
+        _unskip_schema, "skip_id",
+        StatementDoorContext(
+            logger=_logger,
+            refusal=ValidationError,
+            log_message="user_id=%d failed to undo a skip on account %d",
+            log_args=(current_user.id, account.id),
+            flash_message=(
+                "Something went wrong undoing that skip.  Nothing was "
+                "changed."
+            ),
+            target=target,
+        ),
+        lambda skip_id: unskip_line(skip_id, current_user.id, account.id),
+        _unskip_report,
     )
