@@ -380,7 +380,7 @@ class TestTheAccrualWindow:
             apy=Decimal("0.05000"),
         )
         append_balance_assertion(
-            db.session, account, seed_periods[3], "10500.00",
+            db.session, account, "10500.00",
             _instant(2026, 2, 13),
         )
         db.session.commit()
@@ -474,7 +474,7 @@ class TestAnAssertionAlwaysWins:
         ):
             period = seed_periods[index]
             append_balance_assertion(
-                db.session, account, period, balance,
+                db.session, account, balance,
                 settle_instant_on(period.start_date),
             )
         db.session.commit()

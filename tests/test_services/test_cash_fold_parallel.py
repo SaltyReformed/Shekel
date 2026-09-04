@@ -213,7 +213,7 @@ class TestEveryFindingIsClosedAtTheSeam:
         account = seed_user["account"]
         as_of = date(2026, 4, 5)
         append_balance_assertion(
-            db.session, account, seed_periods[4], Decimal("5644.27"),
+            db.session, account, Decimal("5644.27"),
             _instant(2026, 3, 1),
         )
         create_settled_cash_transaction(
@@ -304,7 +304,7 @@ class TestEveryFindingIsClosedAtTheSeam:
         account = seed_user["account"]
         as_of = date(2026, 4, 5)
         append_balance_assertion(
-            db.session, account, seed_periods[4], Decimal("5644.27"),
+            db.session, account, Decimal("5644.27"),
             _instant(2026, 3, 1),
         )
         db.session.commit()

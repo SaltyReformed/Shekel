@@ -1210,7 +1210,7 @@ class TestTheDerivedPostedIndicator:
             )
             record_settle_day(entry, an_entered_day(_PURCHASED_ON))
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
             )
             db.session.commit()
@@ -1237,7 +1237,7 @@ class TestTheDerivedPostedIndicator:
                 purchased_on=_PURCHASED_ON,
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
             )
             db.session.commit()
@@ -1274,7 +1274,7 @@ class TestTheDerivedPostedIndicator:
             )
             record_settle_day(entry, an_entered_day(_POSTED_AFTER_THE_STATEMENT))
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
             )
             db.session.commit()
@@ -1302,7 +1302,7 @@ class TestTheDerivedPostedIndicator:
                 purchased_on=_PURCHASED_ON, is_credit=True,
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
             )
             db.session.commit()
@@ -1373,7 +1373,7 @@ class TestTheSettledOnEditPath:
             )
             record_settle_day(entry, an_entered_day(_PURCHASED_ON))
             statement = append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
             )
             entry.reconciled_by_id = statement.id
@@ -2222,7 +2222,7 @@ class TestAnUntouchedSaveDoesNotLaunderTheDaysBASIS:
     _MADE_ON = date(2026, 1, 5)
     _ASSERTED_FOR = date(2026, 2, 20)
 
-    def _ticked_purchase(self, txn, seed_user, seed_periods):
+    def _ticked_purchase(self, txn, seed_user):
         """Return a purchase in the state the reconcile panel's tick leaves.
 
         An ``asserted`` day -- the day a BALANCE was asserted for, which is an
@@ -2233,7 +2233,7 @@ class TestAnUntouchedSaveDoesNotLaunderTheDaysBASIS:
             purchased_on=self._MADE_ON,
         )
         anchor = append_balance_assertion(
-            db.session, seed_user["account"], seed_periods[0],
+            db.session, seed_user["account"],
             Decimal("1000.00"), settle_instant_on(self._ASSERTED_FOR),
         )
         record_settle_day(entry, an_asserted_day(self._ASSERTED_FOR))
@@ -2248,7 +2248,7 @@ class TestAnUntouchedSaveDoesNotLaunderTheDaysBASIS:
         """The defect itself, through the real PATCH the popover sends."""
         with app.app_context():
             txn = seed_entry_template["transaction"]
-            entry = self._ticked_purchase(txn, seed_user, seed_periods)
+            entry = self._ticked_purchase(txn, seed_user)
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
@@ -2273,7 +2273,7 @@ class TestAnUntouchedSaveDoesNotLaunderTheDaysBASIS:
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
-            entry = self._ticked_purchase(txn, seed_user, seed_periods)
+            entry = self._ticked_purchase(txn, seed_user)
 
             auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
@@ -2298,7 +2298,7 @@ class TestAnUntouchedSaveDoesNotLaunderTheDaysBASIS:
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
-            entry = self._ticked_purchase(txn, seed_user, seed_periods)
+            entry = self._ticked_purchase(txn, seed_user)
             corrected = self._ASSERTED_FOR - timedelta(days=3)
 
             resp = auth_client.patch(

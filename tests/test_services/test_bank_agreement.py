@@ -129,7 +129,7 @@ class TestATrueUpCannotHideADisagreement:
                 date(2026, 3, 3),
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[4],
+                db.session, seed_user["account"],
                 Decimal("1234.00"), _instant(2026, 3, 3),
             )
             db.session.commit()
@@ -164,7 +164,7 @@ class TestATrueUpCannotHideADisagreement:
                 date(2026, 3, 3),
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[4],
+                db.session, seed_user["account"],
                 Decimal("1025.00"), _instant(2026, 3, 3),
             )
             db.session.commit()

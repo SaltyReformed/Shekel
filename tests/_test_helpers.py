@@ -3848,7 +3848,7 @@ def observed_day_of(instant):
     return to_display_date(instant)
 
 
-def add_anchor_history(db_session, account, period, balance, days_ago=0):
+def add_anchor_history(db_session, account, balance, days_ago=0):
     """Append an :class:`AccountAnchorHistory` row ``days_ago`` before now.
 
     The shared anchor-history builder for the dashboard route and
@@ -3863,8 +3863,6 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
         db_session: The test ``db.session``.
         account: The :class:`~app.models.account.Account` the anchor
             belongs to.
-        period: The :class:`~app.models.pay_period.PayPeriod` the anchor
-            is recorded against.
         balance: The anchor balance (str or Decimal-coercible).
         days_ago: How many days before now to date the row (default 0).
 
@@ -4471,7 +4469,7 @@ def restate_account_opening(db_session, account, opened_on):
 
 
 def append_balance_assertion(
-    db_session, account, period, balance, at, recorded_at=None,
+    db_session, account, balance, at, recorded_at=None,
 ):
     """Append one balance ASSERTION (a true-up) at a pinned instant.
 
@@ -4488,6 +4486,13 @@ def append_balance_assertion(
     append-only, so the re-stamp had to go; measuring the reason first is what
     made it cost no caller anything.
 
+    **It takes no pay period, because an assertion is filed under none** (ruling
+    R-EO deleted ``pay_period_id`` from the row).  It carried a ``period``
+    parameter its body never read until 2026-09-03, and 43 call sites
+    computed one to pass it -- the shape ruling R-EH deleted from
+    ``resolve_anchor``'s ``scenario_id``: a parameter that scopes nothing tells
+    its caller the row is filed under something (finding N-393).
+
     **The row carries TWO clocks and this helper can now separate them**
     (*recorded_at*).  ``observed_on`` is the BUSINESS day the balance was true
     for and ``created_at`` is when it was typed; since plan step 2 made
@@ -4501,8 +4506,6 @@ def append_balance_assertion(
     Args:
         db_session: The test ``db.session``.
         account: The :class:`~app.models.account.Account` asserting.
-        period: The :class:`~app.models.pay_period.PayPeriod` the assertion is
-            filed against.
         balance: The asserted balance (str or Decimal-coercible).
         at: The aware-UTC instant whose display-timezone day becomes the
             BUSINESS day (``observed_on``).

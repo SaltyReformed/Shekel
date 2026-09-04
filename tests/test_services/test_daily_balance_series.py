@@ -333,7 +333,7 @@ class TestDailySeriesEdges:
             # $1,000.00 -- no settled row has moved the account, so this
             # assertion books nothing.
             append_balance_assertion(
-                db.session, account, seed_periods[5], Decimal("1000.00"),
+                db.session, account, Decimal("1000.00"),
                 settle_instant_on(date(2026, 3, 19)),
             )
             mark_purchase_settled(db.session, account, entry)
