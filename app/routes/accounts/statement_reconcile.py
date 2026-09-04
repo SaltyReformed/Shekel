@@ -357,7 +357,7 @@ def _reconcile_context(account, scope, tab, answer: _Answer) -> dict:
         # **The bound, or the whole record** (plan steps
         # ``bank_import:X-gj-1c`` and ``X-gj-4c-2``).  ONE bound for every
         # bounded arm -- the two settled tabs and, since the developer's
-        # ruling of 2026-09-04, the Skipped tab; the service says which arms
+        # ruling **R-JW**, the Skipped tab; the service says which arms
         # read it and the template never asks.  *It said "only the two settled
         # tabs" until that ruling.*
         None if show_all else REGISTER_LIMIT,
@@ -895,9 +895,12 @@ def _unskip_report(line_id: int) -> "tuple[str, str]":
     Args:
         line_id: The bank line that is unexplained again, which
             :func:`~app.services.statement_match.unskip_line` returns.
-            **Received and not printed**: this door names ONE act on purpose,
-            so the caller is told which line it freed even where the receipt
-            does not quote the number.
+            **Taken because the callback contract passes it and deleted
+            because this receipt does not print it**: the door returns the
+            line for the SERVICE's own rule -- one act, one named subject --
+            and ``app/`` has no other reader.  *An earlier version claimed
+            the caller "is told" which line it freed, which is circular over
+            a value the next line discards.*
 
     Returns:
         ``(message, category)``.
@@ -952,7 +955,7 @@ def unskip_from_reconcile(account_id):
     skip answers with the Skipped tab showing every skip.  *An earlier version
     of this docstring argued the opposite* -- that the tab needed no bound, so
     ``all`` was an argument this page could not honour -- and the developer
-    ruled on 2026-09-04 that it takes ruling **R-GX**'s shape after all.
+    ruled at **R-JW** that it takes ruling **R-GX**'s shape after all.
 
     Args:
         account_id: The account being reconciled.

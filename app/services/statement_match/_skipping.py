@@ -361,8 +361,12 @@ def unskip_line(skip_id: int, owner_id: int, account_id: int) -> int:
         account_id: The account it must belong to.
 
     Returns:
-        The bank line that is unexplained again, so the surface that pressed
-        this can name it.
+        The bank line that is unexplained again.  **The reason is the DOOR's
+        symmetry and not a surface's need**: every act door here reports what
+        it acted on, and the tests grade this one.  *An earlier version said
+        "so the surface that pressed this can name it", which no surface does
+        -- ``_unskip_report`` deletes the value and the receipt names no row
+        id, because none is visible anywhere on the screen.*
 
     Raises:
         ValidationError: When *skip_id* names no skip on this owner's account.
@@ -472,7 +476,29 @@ def skipped_count(owner_id: int, account_id: int) -> int:
     the cards of ONE tab and takes every other tab's count cheaply, which is
     the measurement ruling **R-GX** established for the settled tabs.
 
-    **It cannot disagree with what the tab draws, and that is structural.**
+    **It cannot disagree with what the tab draws, and that is structural --
+    on two legs, and an earlier draft of this paragraph named only one.**
+
+    WITHIN one read: :func:`skipped_acts` narrows on the same clause
+    (:func:`_mine`), its joins can neither drop nor duplicate a row, and its
+    window ``count`` is evaluated over the filtered set BEFORE ``LIMIT``.
+    ACROSS the two reads: a query request runs at ``REPEATABLE READ, READ
+    ONLY`` (:mod:`app.db_transaction`, whose own comment says the isolation
+    level "is what gives the pass one snapshot"), and the Reconcile page is a
+    GET -- so the tab bar's figure and the register's total are two statements
+    against ONE snapshot and cannot see different sets however much commits
+    under them.
+
+    *This paragraph has now been wrong in BOTH directions, which is why it
+    names its legs.*  It first claimed "structural" with only the first leg,
+    and an adversarial review called that an overstatement.  The correction
+    then said the two reads race under ``READ COMMITTED`` -- false for the
+    render it described, because a GET is not a command, and false again in
+    saying such a race "needs two concurrent writes" when ONE committed write
+    between the statements would do it.  What survives: the only two-snapshot
+    path is a POST re-render naming ``tab=skipped``, which no rendered control
+    emits (the Skipped tab sits outside the Apply form, **R-HW**) and which
+    ``_requested_tab`` would have to be handed by a crafted body.
     :func:`skipped_acts` narrows on the same clause (:func:`_mine`) and adds
     TWO joins, neither of which can drop a row.  The INNER join to the line
     cannot, because ``fk_statement_line_skips_line_account`` guarantees the
@@ -511,7 +537,7 @@ class SkippedRegister:
     """The recorded skips a tab renders, and how many it withheld.
 
     Plan step ``bank_import:X-gj-4c-2``, ruling **bank_import:R-GX** applied to
-    a third tab (developer, 2026-09-04).  **The count travels with the rows**
+    a third tab (**R-JW**).  **The count travels with the rows**
     for the reason :class:`~._accepted_view.AcceptedRegister` states: a
     truncated list that does not say it is truncated is a page claiming to be
     the whole record -- and this tab is the only surface a skipped line can be
@@ -555,7 +581,7 @@ def skipped_acts(
 
     **It BOUNDS what it renders at** :data:`~._accepted_view.REGISTER_LIMIT`
     **and says how many it withheld**, which is ruling **bank_import:R-GX**'s
-    shape on a third tab (developer, 2026-09-04).
+    shape on a third tab (**R-JW**).
 
     **It is the PAGE's one bound and not a second constant.**  A first version
     of this step declared a ``SKIPPED_LIMIT`` of its own and defended the

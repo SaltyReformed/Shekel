@@ -140,7 +140,6 @@ _TAB_LABELS: "dict[Tab, str]" = {
 }
 
 
-
 #: The sweep classes in RISK ORDER, each with the phrase that names what one
 #: click would do.  Ruling **R-FZ(c)**: *the riskiest class may not ride the
 #: same click as the safest*, so there is one control per class and never a
@@ -322,7 +321,7 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             order to pick a partial, and it is set by the arm that BUILT the
             cards (:func:`_tab_sections`) rather than looked up from a table
             beside it.  **That placement is the whole of it** (developer
-            ruling, 2026-09-04): a ``Tab.holds`` property over a table was one
+            ruling **R-JX**): a ``Tab.holds`` property over a table was one
             fact with two homes, agreeing only because a test said so, and a
             table saying ACT over a dispatch building skips rendered the wrong
             partial and 500'd on a field that is not there.  Here the two
@@ -607,7 +606,7 @@ def reconcile_page(
             link asks for (plan steps ``bank_import:X-gj-1c`` and
             ``X-gj-4c-2``).  Three tabs read it: the two settled ones and
             Skipped.  *It was "how many SETTLED acts" until the developer
-            ruled the Skipped tab bounded, 2026-09-04.*  It defaults to
+            ruled the Skipped tab bounded at **R-JW**.*  It defaults to
             :data:`~._accepted_view.REGISTER_LIMIT`, and an act that NO LONGER
             HOLDS is never subject to it whatever this says: which acts the
             bound may reach is
@@ -674,8 +673,10 @@ def reconcile_page(
     counts = accepted_counts(scope.owner_id, scope.account_id)
     # **A COUNT and not a list**, on every render whichever tab is open, which
     # is the rule the two settled tabs' counts already keep: this page builds
-    # the cards of ONE tab.  The two readers cannot disagree, and
-    # :func:`~._skipping.skipped_count` records why that is structural.
+    # the cards of ONE tab.  **The two reads here share one SNAPSHOT** -- a
+    # query request runs at ``REPEATABLE READ`` (:mod:`app.db_transaction`) --
+    # so this figure and the open tab's own total cannot see different sets;
+    # :func:`~._skipping.skipped_count` records both legs of that.
     skipped = skipped_count(scope.owner_id, scope.account_id)
     # **Distinct LINES, not proposals**, which is the spelling
     # :attr:`~._reads.ReviewSet.explained_by_a_proposal` records the reason
@@ -713,7 +714,7 @@ def reconcile_page(
     return ReconcilePage(
         tab=tab,
         # **The kind comes back FROM the builder**, so the page cannot claim a
-        # kind its own cards are not (developer ruling, 2026-09-04).
+        # kind its own cards are not (**R-JX**).
         kind=kind,
         hero=_hero(agreement, to_explain),
         # **One row read, and one COUNT where that row exists.**  The
@@ -775,7 +776,7 @@ def _tab_sections(
     rather than rendering an empty page.
 
     **It returns the KIND beside the sections, and that pairing is the point**
-    (developer ruling, 2026-09-04).  Which kind a tab holds used to be a
+    (**R-JX**).  Which kind a tab holds used to be a
     ``Tab.holds`` property over a table -- one fact in two homes, in two
     modules, agreeing only because a test said so.  The arm that BUILDS a kind
     of card is the only thing that knows which kind it built, so it says so,
@@ -796,7 +797,7 @@ def _tab_sections(
             two derivations of one list.
         limit: How many rows a bounded arm may render, or ``None`` for all of
             them.  **THREE arms read it** -- the two settled ones and Skipped
-            (developer ruling 2026-09-04) -- while the inbox is bounded by what
+            (**R-JW**) -- while the inbox is bounded by what
             the pass found and a holding tab renders every line in its state
             (see :func:`_holding`).  *This said it "reaches only the two
             settled arms" while the line below already passed it to the skip

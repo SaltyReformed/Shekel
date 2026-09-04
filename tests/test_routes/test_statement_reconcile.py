@@ -268,7 +268,7 @@ def _unskip_url(account_id, tab=None, show_all=False):
 
     Returns:
         The URL, spelled as the template spells it.  **It takes ``all`` exactly
-        as :func:`_release_url` does** (developer ruling 2026-09-04): the tab
+        as :func:`_release_url` does** (**R-JW**): the tab
         bounds at ``REGISTER_LIMIT`` and offers a link past it, so an undo
         pressed while showing everything has a view to come back to.
     """
@@ -2931,7 +2931,7 @@ class TestTheSkippedTabIsWhereASkipIsFoundAndUndone:
 
 class TestTheSkippedBoundIsWiredToThePage:
     """Ruling **bank_import:R-GX**'s bound, on the tab that got it last
-    (developer, 2026-09-04).
+    (**R-JW**).
 
     ``test_skipping`` grades the reader's arithmetic; this grades that the
     PAGE threads the parameter, that the link past the bound is rendered and
@@ -2979,7 +2979,13 @@ class TestTheSkippedBoundIsWiredToThePage:
         ).get_data(as_text=True)
 
         assert bounded.count('name="skip_id"') == REGISTER_LIMIT
-        assert "Show\n    the other 1 skip(s)" in bounded
+        # **Whitespace-NORMALISED**, which is the idiom the settled tabs' own
+        # bound test already uses.  This read the raw bytes with their exact
+        # indentation until the *show the other N* paragraph became a shared
+        # macro, at which point a behaviour test failed over a reindent with
+        # no behaviour changed -- the coupling an adversarial review had
+        # already named on this file's tab-count assertion.
+        assert "the other 1 skip(s)" in " ".join(bounded.split())
         assert everything.count('name="skip_id"') == REGISTER_LIMIT + 1
         assert "Every skip on this tab is listed." in everything
         assert "skip(s)</a>" not in everything

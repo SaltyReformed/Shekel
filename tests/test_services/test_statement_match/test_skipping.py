@@ -1281,8 +1281,7 @@ class TestTheReaderOverWhatTheDoorsRecorded:
 
 
 class TestTheSkippedTabIsBOUNDEDAndSaysWhatItWithheld:
-    """Ruling **bank_import:R-GX**'s shape on a third tab (developer,
-    2026-09-04).
+    """Ruling **bank_import:R-GX**'s shape on a third tab (**R-JW**).
 
     **The bound governs BYTES, which is what R-GX actually says.**  This step
     first shipped the tab unbounded and defended it on the claim that the
