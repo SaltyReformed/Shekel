@@ -84,8 +84,10 @@ One limit does survive, and it belongs to the ledger rather than to a
 disagreement.  An entry's ``pay_period_id`` and its ``entry_date`` are NOT "two
 columns that cannot drift": whenever no period contains the day, the entry is
 filed in a period its own date falls outside, by construction and deliberately
--- the alternative is a correction with no period at all, and
-``journal_entries.pay_period_id`` is NOT NULL.  What the derivation buys is that
+-- the alternative is a correction filed under no paycheck at all, which a
+double-entry ledger may not produce; ``journal_entries.pay_period_id``'s
+``NOT NULL`` EXPRESSES that obligation rather than causing it (ruling
+**pay_calendar:R-PC53**).  What the derivation buys is that
 the drift is a function of the CALENDAR rather than of which clock a writer
 happened to read, and that it self-heals the moment the containing period
 exists.

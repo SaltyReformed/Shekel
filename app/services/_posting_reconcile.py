@@ -9,8 +9,10 @@ finding) and both agree exactly:
 * :func:`account_owner_id` -- resolve any account's owner id (both packages
   need it for the per-account equity ledger and the entry header).
 * :func:`filing_calendar_for` -- the owner's pay calendar, refused when it is
-  empty (both packages file every correction's entry under a period, and
-  ``journal_entries.pay_period_id`` is ``NOT NULL``).
+  empty (both packages file every correction's entry under a period because a
+  double-entry ledger must; ``journal_entries.pay_period_id``'s ``NOT NULL``
+  EXPRESSES that obligation rather than causing it -- ruling
+  **pay_calendar:R-PC53**).
 * :func:`summed_posting_legs` -- the grouped "what is already posted" query
   shape every posted-leg reader shares.
 * :func:`account_chart_row_ids` -- the ids of one real account's own chart
