@@ -35,6 +35,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
+from app.routes._authored_figure import figure_was_authored
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _error_transaction_response,
@@ -78,8 +79,23 @@ def _apply_shadow_update(txn, txn_id, data):
         return finalised_error
 
     # Map transaction field names to transfer service kwargs.
+    #
+    # **The THIRD door onto a transfer's amount, and the one that is easy to
+    # miss** -- a PATCH addressed to a transfer SHADOW is answered by updating
+    # its PARENT, so a figure submitted here is a figure submitted for the
+    # transfer.  It therefore owes the same authorship fact the transfer
+    # popover owes (ruling **R-JR**, plan step X-au-h); a door that mapped the
+    # figure across without it would re-open findings **N-436** and **N-448**
+    # through a route neither is written about.
+    #
+    # An UNAUTHORED figure is not forwarded at all, matching
+    # ``transfers.mutations``: the transfer service's amount arm CLEARS the
+    # relation that prices the row, so passing an echo would un-derive a
+    # generated transfer on a save that touched only its status.
     svc_kwargs = {}
-    if "estimated_amount" in data:
+    amount_authored = figure_was_authored(data, "estimated_amount")
+    svc_kwargs["amount_authored"] = amount_authored
+    if amount_authored:
         svc_kwargs["amount"] = data["estimated_amount"]
     if "settled_amount" in data:
         svc_kwargs["settled_amount"] = data["settled_amount"]

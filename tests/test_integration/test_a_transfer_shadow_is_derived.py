@@ -26,6 +26,7 @@ On production this moved ``$0.00``: measured 2026-09-01 at stamp
 on a seeded mortgage.
 """
 
+import re
 from decimal import Decimal
 
 import pytest
@@ -161,6 +162,10 @@ class TestWhoOwnsTheFigureAfterAnEdit:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id, amount=Decimal("400.00"),
+                # The DEFINITION states this figure, not a human (R-JR).  The
+                # service refuses an amount with no authorship, so the two
+                # directions are stated rather than one being a default.
+                amount_authored=False,
             )
             db.session.commit()
 
@@ -184,7 +189,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("400.00"), is_override=True,
+                amount=Decimal("400.00"), amount_authored=True,
+                is_override=True,
             )
             db.session.commit()
 
@@ -216,7 +222,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
             user_id = seed_user["user"].id
 
             transfer_service.update_transfer(
-                xfer.id, user_id, amount=Decimal("400.00"), is_override=True,
+                xfer.id, user_id, amount=Decimal("400.00"),
+                amount_authored=True, is_override=True,
             )
             db.session.commit()
             assert all(
@@ -303,7 +310,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
             user_id = seed_user["user"].id
 
             transfer_service.update_transfer(
-                xfer.id, user_id, amount=_TYPED, is_override=True,
+                xfer.id, user_id, amount=_TYPED, amount_authored=True,
+                is_override=True,
             )
             db.session.commit()
             assert {shadow_amount(leg) for leg in _shadows(xfer.id)} == {_TYPED}
@@ -358,7 +366,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 data={
                     "version_id": str(xfer.version_id),
                     "amount": str(xfer.amount),
-                    "pay_period_id": str(seed_periods[1].id),
+                    "amount_as_rendered": str(xfer.amount),
+                    "pay_period_id":str(seed_periods[1].id),
                     "status_id": str(xfer.status_id),
                     "notes": "",
                 },
@@ -404,7 +413,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 data={
                     "version_id": str(xfer.version_id),
                     "amount": str(_TYPED),
-                    "pay_period_id": str(xfer.pay_period_id),
+                    "amount_as_rendered": str(xfer.amount),
+                    "pay_period_id":str(xfer.pay_period_id),
                     "status_id": str(xfer.status_id),
                     "notes": "",
                 },
@@ -423,7 +433,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 data={
                     "version_id": str(xfer.version_id),
                     "amount": str(xfer.amount),
-                    "pay_period_id": str(seed_periods[1].id),
+                    "amount_as_rendered": str(xfer.amount),
+                    "pay_period_id":str(seed_periods[1].id),
                     "status_id": str(xfer.status_id),
                     "notes": "",
                 },
@@ -466,7 +477,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 data={
                     "version_id": str(xfer.version_id),
                     "amount": str(_TYPED),
-                    "pay_period_id": str(xfer.pay_period_id),
+                    "amount_as_rendered": str(xfer.amount),
+                    "pay_period_id":str(xfer.pay_period_id),
                     "status_id": str(xfer.status_id),
                     "notes": "",
                 },
@@ -483,7 +495,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 data={
                     "version_id": str(xfer.version_id),
                     "amount": str(xfer.amount),
-                    "pay_period_id": str(xfer.pay_period_id),
+                    "amount_as_rendered": str(xfer.amount),
+                    "pay_period_id":str(xfer.pay_period_id),
                     "status_id": str(xfer.status_id),
                     "notes": "escrow went up in March",
                 },
@@ -495,6 +508,115 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 assert shadow_amount(leg) == _TYPED, (
                     "a notes-only save must not revert the owner's figure"
                 )
+
+    def test_the_SHADOW_door_echo_leaves_the_parent_alone(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """The THIRD door onto a transfer's amount, which had no coverage at all.
+
+        A PATCH addressed to a transfer SHADOW is answered by updating its
+        PARENT (``routes/transactions/_shadow_mutations``), so a figure
+        submitted there is a figure submitted for the transfer -- and neither
+        N-436 nor N-448 is written about that route.
+
+        **This door is the one where the old presence test cost real money**,
+        because it renders a DIFFERENT figure from the transfer popover: the
+        shadow's box is primed with the RESOLVED amount, while the transfer
+        popover renders the stored ``xfer.amount``.  On a derive-mode loan
+        payment those differ -- the contract's figure against a stale stored
+        one -- so an untouched save through this door rewrote the parent's
+        stored amount to the resolved figure and called it a human's.
+
+        The payload is read out of the rendered fragment rather than assembled,
+        which is the only way to grade a door whose rendered value is not the
+        column.
+        """
+        with app.app_context():
+            xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer_id, shadow_id = xfer.id, shadow.id
+            stored_before = xfer.amount
+
+            edit = auth_client.get(f"/transactions/{shadow_id}/quick-edit")
+            assert edit.status_code == 200
+            body = edit.data.decode()
+            shown = re.search(
+                r'name="estimated_amount"[^>]*value="([^"]*)"', body,
+            )
+            companion = re.search(
+                r'name="estimated_amount_as_rendered"[^>]*value="([^"]*)"', body,
+            )
+            assert shown is not None, "the shadow's box renders a figure"
+            assert companion is not None, (
+                "the shadow door owes the companion like every other door"
+            )
+            assert companion.group(1) == shown.group(1)
+            # The precondition that makes this door dangerous: what it SHOWS is
+            # not what the parent STORES.
+            assert Decimal(shown.group(1)) != stored_before
+
+            resp = auth_client.patch(f"/transactions/{shadow_id}", data={
+                "estimated_amount": shown.group(1),
+                "estimated_amount_as_rendered": companion.group(1),
+                "version_id": str(shadow.version_id),
+            })
+            assert resp.status_code == 200, resp.data
+
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer_id).amount == stored_before, (
+                "an echo through the shadow door must not rewrite the parent"
+            )
+            for leg in _shadows(xfer_id):
+                assert owns_its_amount(leg) is False, "still the contract's"
+
+    def test_an_AD_HOC_retype_now_TAKES_both_legs(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """The arm that CHANGED at plan step X-au-h, stated so it is not a surprise.
+
+        The old discriminator was ``is_override``, and
+        ``routes/transfers/mutations.py`` raises that flag only for a
+        template-linked row -- so an AD-HOC transfer's retype fell to the
+        definition arm and left both legs DERIVED.  Authorship is now stated by
+        the door for every row, so an ad-hoc retype takes them.
+
+        **It moves no money and cannot**: an ad-hoc transfer has no template,
+        ``loan_payment_settings`` is keyed by ``transfer_template_id``, so it
+        can never be a derive-mode loan payment -- the arm where a leg's
+        derivation differs from its parent's figure.  Both arms answer the
+        typed figure.  What changes is that three rows now STORE it where one
+        did, which is the shape X-au-m finishes.
+
+        Graded because an adversarial review found the paragraph documenting the
+        old arm had been deleted along with the comparison it described, leaving
+        the change undocumented AND untested in either direction.
+        """
+        with app.app_context():
+            xfer, _legs = _plain_pair(seed_user, seed_periods)
+            xfer_id = xfer.id
+            assert xfer.transfer_template_id is None, "the ad-hoc precondition"
+            for leg in _shadows(xfer_id):
+                assert owns_its_amount(leg) is False, "born derived"
+
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer_id}",
+                data={
+                    "amount": "400.00",
+                    "amount_as_rendered": str(xfer.amount),
+                    "status_id": str(xfer.status_id),
+                    "notes": "",
+                },
+            )
+            assert resp.status_code == 200, resp.data
+
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer_id).is_override is False, (
+                "the route raises the flag only for a template-linked row"
+            )
+            for leg in _shadows(xfer_id):
+                assert owns_its_amount(leg) is True, (
+                    "a retype is authored at every door now, template or not"
+                )
+                assert shadow_amount(leg) == Decimal("400.00")
                 assert owns_its_amount(leg) is True
 
     def test_a_later_definition_write_hands_a_taken_leg_back(
@@ -513,11 +635,15 @@ class TestWhoOwnsTheFigureAfterAnEdit:
             user_id = seed_user["user"].id
 
             transfer_service.update_transfer(
-                xfer.id, user_id, amount=Decimal("400.00"), is_override=True,
+                xfer.id, user_id, amount=Decimal("400.00"),
+                amount_authored=True, is_override=True,
             )
             db.session.commit()
             transfer_service.update_transfer(
                 xfer.id, user_id, amount=Decimal("500.00"),
+                # The definition re-prices the pair (R-JR): not a human, so the
+                # taken leg is handed back rather than left at a stale figure.
+                amount_authored=False,
             )
             db.session.commit()
 
@@ -581,6 +707,7 @@ class TestALoanPaymentsLegsReadTheLoan:
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
                 amount=_TYPED,
+                amount_authored=True,
                 is_override=True,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
             )
@@ -634,7 +761,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=_TYPED, is_override=True,
+                amount=_TYPED, amount_authored=True, is_override=True,
             )
             db.session.commit()
 

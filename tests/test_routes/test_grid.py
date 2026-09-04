@@ -921,7 +921,10 @@ class TestTransactionCRUD:
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "200.00"},
+                data={
+                    "estimated_amount": "200.00",
+                    "estimated_amount_as_rendered": "123.45",
+                },
             )
             assert response.status_code == 200
             assert b"200" in response.data
@@ -1531,6 +1534,115 @@ class TestTransactionCRUD:
             db.session.refresh(row)
             assert row.due_date == was
 
+    def test_a_NOTES_only_save_does_not_take_a_GENERATED_rows_amount(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Finding **N-248**, closed by ruling **R-JR** (plan step X-au-h).
+
+        The popover renders the Estimated box on every correctable row and an
+        HTML form posts every input it renders, so the door's old test -- *is
+        ``estimated_amount`` PRESENT?* -- was true of a save that touched only
+        the notes. The row then OWNED a figure nobody chose and stopped
+        tracking its definition, silently and with no control that undid it.
+
+        **The payload here is read out of the rendered popover rather than
+        assembled**, which is the whole point: `feedback_a_route_test_must_post_
+        what_the_template_emits` records that a hand-picked payload once graded
+        an arm that was dead in a browser, and this defect lives precisely in
+        the gap between what a form sends and what a test remembers to send.
+        Extracting both values also grades the template half -- if the popover
+        ever stops emitting the companion, this fails here rather than silently
+        landing every save on the fail-closed arm.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.flush()
+            row = _generate_first_row(template, seed_user, seed_periods_today)
+            assert row is not None, "the fixture generated no rows"
+            # The precondition: this row is DERIVED, so ownership is a real
+            # state change rather than a no-op on a row that already owns.
+            assert row.amount_source_id is not None
+            assert row.estimated_amount is None
+            assert row.is_override is False
+
+            edit = auth_client.get(f"/transactions/{row.id}/full-edit")
+            assert edit.status_code == 200
+            body = edit.data.decode()
+            shown = re.search(
+                r'name="estimated_amount"[^>]*value="([^"]*)"', body,
+            )
+            companion = re.search(
+                r'name="estimated_amount_as_rendered"[^>]*value="([^"]*)"', body,
+            )
+            assert shown is not None, "the popover renders an amount box"
+            assert companion is not None, (
+                "the popover must post what it rendered (R-JR); without the "
+                "companion every save lands on the fail-closed arm and takes "
+                "ownership, which is the defect this case exists for"
+            )
+            assert companion.group(1) == shown.group(1), (
+                "the companion and the box must render from ONE expression"
+            )
+
+            resp = auth_client.patch(f"/transactions/{row.id}", data={
+                "estimated_amount": shown.group(1),
+                "estimated_amount_as_rendered": companion.group(1),
+                "pay_period_id": str(row.pay_period_id),
+                "status_id": str(row.status_id),
+                "notes": "rent went up in March",
+                "version_id": row.version_id,
+            })
+            assert resp.status_code == 200, resp.data
+
+            db.session.refresh(row)
+            assert row.notes == "rent went up in March", "the save landed"
+            assert row.is_override is False, (
+                "a notes-only save must not make the row the owner's"
+            )
+            assert row.amount_source_id is not None, (
+                "a notes-only save must not take the row's amount"
+            )
+            assert row.estimated_amount is None
+
+    def test_a_RETYPED_amount_on_a_generated_row_still_takes_it(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The control for the case above, and its fail set must be disjoint.
+
+        Closing **N-248** by refusing every figure would be the same defect
+        pointed the other way -- an owner could no longer re-price one instance
+        -- and a suite that only asserted "ownership was not taken" would call
+        that a pass. This asserts the door still hears a real retype.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.flush()
+            row = _generate_first_row(template, seed_user, seed_periods_today)
+            assert row.amount_source_id is not None
+
+            edit = auth_client.get(f"/transactions/{row.id}/full-edit")
+            companion = re.search(
+                r'name="estimated_amount_as_rendered"[^>]*value="([^"]*)"',
+                edit.data.decode(),
+            )
+            assert companion is not None
+            typed = Decimal(companion.group(1)) + Decimal("10.00")
+
+            resp = auth_client.patch(f"/transactions/{row.id}", data={
+                "estimated_amount": str(typed),
+                "estimated_amount_as_rendered": companion.group(1),
+                "pay_period_id": str(row.pay_period_id),
+                "status_id": str(row.status_id),
+                "notes": "",
+                "version_id": row.version_id,
+            })
+            assert resp.status_code == 200, resp.data
+
+            db.session.refresh(row)
+            assert row.estimated_amount == typed, "the typed figure is stored"
+            assert row.amount_source_id is None, "and the row now OWNS it"
+            assert row.is_override is True, "so the row is the owner's"
+
     def test_full_edit_clears_due_date(
         self, app, auth_client, seed_user, seed_periods_today
     ):
@@ -1659,6 +1771,7 @@ class TestTransactionCRUD:
             # balanceChanged trigger (no full reload).
             inplace_resp = auth_client.patch(f"/transactions/{txn.id}", data={
                 "estimated_amount": "130.00",
+                "estimated_amount_as_rendered": str(txn.estimated_amount),
                 "pay_period_id": target_period.id,
                 "version_id": txn.version_id,
             })
@@ -3980,7 +4093,10 @@ class TestTransactionNameRows:
             # GI-2: PATCH updates amount.
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "95.00"},
+                data={
+                    "estimated_amount": "95.00",
+                    "estimated_amount_as_rendered": "80.00",
+                },
             )
             assert resp.status_code == 200
             assert b"95" in resp.data
@@ -4859,7 +4975,10 @@ class TestTooltipContent:
             # PATCH the amount.
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "95.50"},
+                data={
+                    "estimated_amount": "95.50",
+                    "estimated_amount_as_rendered": "80.00",
+                },
             )
             assert resp.status_code == 200
             html = resp.data.decode()

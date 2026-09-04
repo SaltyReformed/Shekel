@@ -259,6 +259,9 @@ class TestThePatchDoorRefusesATypedFigure:
 
             resp = auth_client.patch(f"/transactions/{payback_id}", data={
                 "estimated_amount": "123.18",
+                # A CRAFTED payload, so it is well-formed (R-JR) and the
+                # refusal under test is the payback gate, not the schema.
+                "estimated_amount_as_rendered": "181.58",
                 "version_id": version,
             })
 
@@ -325,6 +328,7 @@ class TestThePatchDoorRefusesATypedFigure:
 
             resp = auth_client.patch(f"/transactions/{source_id}", data={
                 "estimated_amount": "200.00",
+                "estimated_amount_as_rendered": "500.00",
                 "version_id": version,
             })
 

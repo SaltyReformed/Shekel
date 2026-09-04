@@ -109,7 +109,7 @@ class TestUpdateShadowGuard:
 
             resp = auth_client.patch(
                 f"/transactions/{expense.id}",
-                data={"estimated_amount": "500.00"},
+                data={"estimated_amount": "500.00", "estimated_amount_as_rendered": "50.00"},
             )
 
             assert resp.status_code == 200
@@ -411,7 +411,7 @@ class TestRegularTransactionUnaffected:
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "75.00"},
+                data={"estimated_amount": "75.00", "estimated_amount_as_rendered": "50.00"},
             )
 
             assert resp.status_code == 200
@@ -635,6 +635,7 @@ class TestLoanAccountTransactionGuard:
         return {
             "name": "Typed On Loan",
             "estimated_amount": "300.00",
+            "estimated_amount_as_rendered": "50.00",
             "account_id": account_id,
             "category_id": category.id,
             "pay_period_id": seed_periods_today[0].id,

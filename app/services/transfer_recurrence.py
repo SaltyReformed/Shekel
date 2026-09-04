@@ -288,8 +288,14 @@ def propagate_to_unruled_template(template, transfers) -> "list[int]":
             if getattr(xfer, field) != value
         }
         if changed:
+            # The DEFINITION is speaking, not a human (ruling **R-JR**, plan
+            # step X-au-h).  Stated rather than defaulted: the service refuses
+            # an amount with no authorship, because the two directions are not
+            # interchangeable -- an unauthored figure re-declares both legs
+            # derived, and a caller that meant the opposite would silently
+            # discard the owner's figure instead of failing.
             transfer_service.update_transfer(
-                xfer.id, template.user_id, **changed,
+                xfer.id, template.user_id, amount_authored=False, **changed,
             )
     return retained
 
@@ -679,7 +685,11 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
         }
         if not changed:
             continue
-        transfer_service.update_transfer(xfer.id, template.user_id, **changed)
+        # The DEFINITION is speaking (ruling **R-JR**); see the maintain pass
+        # above for why this is stated rather than defaulted.
+        transfer_service.update_transfer(
+            xfer.id, template.user_id, amount_authored=False, **changed,
+        )
         updated.append(xfer)
 
     created = [
@@ -785,7 +795,12 @@ def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
             # Build the update kwargs: clear override flag and apply
             # the new amount if provided.  update_transfer propagates
             # these to both shadow transactions atomically.
-            svc_kwargs = {"is_override": False}
+            # ``amount_authored=False``: this is the owner handing the pair
+            # BACK to its definition (ruling **R-JR**), so any figure riding
+            # with it is the definition's price and not a human's retype.
+            # Stated even when no amount rides, because the resolver's two
+            # shapes should not read differently at the call site.
+            svc_kwargs = {"is_override": False, "amount_authored": False}
             if new_amount is not None:
                 svc_kwargs["amount"] = new_amount
 

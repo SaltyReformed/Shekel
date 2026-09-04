@@ -106,6 +106,18 @@ def _full_edit_save(auth_client, txn, status_id, **overrides):
     }
     if not txn.status.is_immutable:
         payload["estimated_amount"] = str(txn.estimated_amount)
+        # **The amount box's companion, carrying what the form RENDERED into
+        # it** (ruling R-JR, plan step balance:X-au-h).  The popover posts both,
+        # and equal values are what a browser sends when the user did not touch
+        # the box -- which is the case every test using this helper models,
+        # since each one is editing something else.
+        #
+        # Omitting it would not fail: a figure with no companion is treated as
+        # AUTHORED, so every save through this helper would take ownership of
+        # the row's amount and the suite would go on passing while modelling a
+        # browser that does not exist.  That is the trap this docstring's other
+        # two paragraphs already describe, on a third field.
+        payload["estimated_amount_as_rendered"] = str(txn.estimated_amount)
         payload["pay_period_id"] = str(txn.pay_period_id)
         if txn.template_id is None:
             payload["due_date"] = (
