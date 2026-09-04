@@ -54,7 +54,19 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = 'e7c3a1f9b482'
-down_revision = 'c8f3a5d2e714'
+# **RE-PARENTED at the origin/dev merge, not at authoring time** (2026-09-04).
+# Authored against ``c8f3a5d2e714``, which was ``dev``'s single head then;
+# ``salary``'s ``e7c4b9a2f350`` (R14-a, PR #219) declared the SAME parent, so
+# the two were siblings and a tree holding both had TWO alembic heads -- while
+# git merged them CLEAN, because no gate in this project reads alembic.
+#
+# **WHOEVER MERGES SECOND RE-PARENTS, as the last edit before their PR.**  A
+# ``down_revision`` may only name a revision present in the SAME tree, so
+# pointing here any earlier would have broken this branch's own
+# ``flask db upgrade``, its template build and its CI, while the other branch
+# stayed green -- the failure landing on the lane that did the right thing
+# early.  #219 merged first, so this is the second and this is the edit.
+down_revision = 'e7c4b9a2f350'
 branch_labels = None
 depends_on = None
 
