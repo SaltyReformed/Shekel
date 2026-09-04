@@ -157,11 +157,14 @@ def _render_entry_list(
     # C4-a-3).  The producer read ``txn.pay_period`` for its span until then,
     # which is the stored ``end_date`` plan step C4-c dropped.
     #
-    # The calendar belongs to the row's OWNER, spelled ``txn.pay_period.user_id``
-    # rather than ``current_user.id``, because this fragment also serves the
+    # The calendar belongs to the row's OWNER, spelled ``txn.user_id`` rather
+    # than ``current_user.id``, because this fragment also serves the
     # COMPANION -- ``get_entries_for_transaction`` above validated the caller
     # against exactly that owner, so the two agree by construction and a
-    # companion is not handed their own (empty) schedule.
+    # companion is not handed their own (empty) schedule.  It was
+    # ``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``: the
+    # owner is a COLUMN on the row now, so asking the paycheck for it is a
+    # second walk to one value.
     #
     # ``require_period`` and not ``period_by_id``: the id comes off a stored
     # row whose foreign key is NOT NULL and ``ON DELETE CASCADE``, so "this
@@ -190,7 +193,7 @@ def _render_entry_list(
     # because the row arrives from ``get_accessible_transaction``, the
     # canonical route-boundary door, and reordering that door is not this
     # leaf's to do.
-    period = calendar_for(txn.pay_period.user_id).require_period(
+    period = calendar_for(txn.user_id).require_period(
         FiledRow.for_row(txn),
     )
     view = entry_service.entry_list_view(entries, budgets[txn.id], period)
@@ -283,7 +286,7 @@ def _entry_mutation_response(txn: Transaction, host: str) -> ResponseReturnValue
         Flask response tuple ``(html, 200, headers)``.
     """
     response = _render_entry_list(txn, host=host)
-    is_owner = txn.pay_period.user_id == current_user.id
+    is_owner = txn.user_id == current_user.id
     if host == "" and is_owner:
         response += render_transaction_cell(txn, wrap_div=True, wrap_oob=True)
     return response, 200, {"HX-Trigger": "balanceChanged"}

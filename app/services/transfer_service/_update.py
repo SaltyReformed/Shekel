@@ -579,9 +579,14 @@ def _reject_unowned_references(
     session, but it made this module's own rule -- every refusal before the
     first write -- untrue of two of its refusals (neutral review, 2026-08-18).
 
-    Ownership is re-checked at the route boundary too (commit C-27 / F-043);
-    this is the service tier's own, so a caller that skips the route cannot
-    write across an ownership line.
+    ``category_id`` is re-checked at the route boundary too (commit C-27 /
+    F-043); this is the service tier's own, so a caller that skips the route
+    cannot write across an ownership line.  **``pay_period_id`` no longer is**
+    -- plan step ``pay_calendar:C13-b`` deleted that route probe as one of the
+    four duplicates of :func:`~._ownership._get_owned_period`, so this call and
+    :func:`~._loan_posting._reject_installment_move_before_loan`'s are the two
+    that remain.  That pair is a SECOND walk and the cost of it is measured in
+    the latter's docstring.
 
     Args:
         user_id: The owner every referenced row must belong to.

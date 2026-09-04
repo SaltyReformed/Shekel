@@ -248,16 +248,31 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
     click swaps in -- the rule :class:`RenderAmounts` above states for the
     three amount maps, applied to the fourth thing a cell draws.
 
-    **The payday it needs costs nothing here.**  Every caller of this helper
-    has already proved ownership through ``txn.pay_period.user_id``
+    **The payday it needs is now this function's OWN load, and the count did
+    not change** (plan step ``pay_calendar:C13-b``).  This paragraph used to
+    say the read cost nothing here because every caller had already proved
+    ownership through ``txn.pay_period.user_id``
     (``transactions/_helpers._get_owned_transaction`` and its siblings), so
-    the relationship is loaded before this runs and reading ``start_date`` off
-    it adds no statement.  Measured 2026-08-27: ``GET /transactions/<id>/cell``
-    issues **12 statements either side of this change**.  Deriving the owner's
-    calendar here instead was built and rejected on that measurement -- it
-    ADDED two statements on top of the load the ownership check had already
-    paid for, and bought only a re-check of an ownership fact the route had
-    just established.  ``start_date`` is the one column
+    the relationship was loaded before this ran.  Those doors read
+    ``txn.user_id`` now and hydrate nothing, so the reason is gone -- and the
+    load is not: it MOVED here, as a lazy load, and that is the honest
+    statement rather than either "still free" or "one statement worse".
+
+    **Re-measured 2026-09-03 on ``GET /transactions/<id>/cell``, both
+    spellings of the ownership door, same request:** 12 statements and 1
+    ``PayPeriod`` hydration EITHER SIDE.  The only difference is WHERE the
+    ``budget.pay_periods`` SELECT sits in the sequence -- fifth (the ownership
+    walk) before, sixth (this due caption) after.  The 2026-08-27 measurement
+    this paragraph quoted said 12 as well, so the number is unchanged and its
+    reason is not.
+
+    Deriving the owner's calendar here instead was built and rejected on the
+    2026-08-27 measurement -- it ADDED two statements on top of the load the
+    ownership check had already paid for, and bought only a re-check of an
+    ownership fact the route had just established.  **The arithmetic behind
+    that rejection has shifted and the conclusion has not**: it is now one
+    lazy load against a two-query derivation, so the derivation is still the
+    more expensive of the two.  ``start_date`` is the one column
     ``budget.pay_periods`` actually stores, carried through
     :func:`~app.services.pay_calendar.derive_periods` untouched, so it is the
     same date the grid's derived window publishes.

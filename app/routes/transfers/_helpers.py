@@ -49,10 +49,20 @@ def _user_owns(model, pk):
     onto a single shape and lose the existing UX parity with
     surrounding code.
 
-    All consulted models in commit C-27 (``Account``, ``PayPeriod``,
-    ``Scenario``, ``Category``) carry a direct ``user_id`` column, so
-    the check is a single ``db.session.get`` followed by an equality
-    compare.  Following the project security response rule, callers
+    All consulted models carry a direct ``user_id`` column, so the check is a
+    single ``db.session.get`` followed by an equality compare.  **``PayPeriod``
+    left that list at plan step ``pay_calendar:C13-b``**: a submitted paycheck
+    is resolved against the owner's derived CALENDAR now, at
+    ``transfer_service._ownership._get_owned_period``.  What is left here is
+    ``Account``, ``Scenario`` and ``Category``, whose tables no derivation
+    owns.
+
+    *A first version of this paragraph said the calendar is asked "once per
+    request", which is FALSE in two directions and an adversarial review
+    measured both*: a non-repeating template create asks at the route AND at
+    the service, and a recurring one asks once per GENERATED ROW.  That
+    function's own docstring carries the measurement.  Following the project
+    security response rule, callers
     surface ownership failures as 404 -- identical to the missing-PK
     case -- so the response leaks no information about whether the
     row exists for someone else.
@@ -132,9 +142,13 @@ def _resolve_shadow_context(xfer):
         )
         return None
 
-    # Ownership check via the shadow's pay period (same pattern as
-    # _get_owned_transaction in transactions.py).
-    if shadow.pay_period.user_id != current_user.id:
+    # Ownership check on the shadow's own owner column (same pattern as
+    # _get_owned_transaction in transactions.py).  It walked
+    # ``shadow.pay_period.user_id`` until plan step ``pay_calendar:C13-b``; a
+    # shadow states its parent transfer's owner directly since ``C13-a``
+    # (``transfer_service._create._build_shadow``), so the walk asked the
+    # paycheck for a value the row carries.
+    if shadow.user_id != current_user.id:
         logger.warning(
             "source_txn_id=%d belongs to another user; "
             "falling back to transfer cell response.",

@@ -74,9 +74,10 @@ def resolve_conflicts(transaction_ids, action, user_id):
     """Resolve override/delete conflicts after a regeneration.
 
     Called by the route layer after the user responds to the conflict prompt.
-    Each transaction is ownership-checked via its pay_period.user_id before
-    any modification -- transactions not owned by ``user_id`` are silently
-    skipped (defense-in-depth against IDOR).
+    Each transaction is ownership-checked against its own ``user_id`` column
+    before any modification -- transactions not owned by ``user_id`` are
+    silently skipped (defense-in-depth against IDOR).  It walked
+    ``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``.
 
     **It took a ``new_amount`` until plan step X-au-e** (ruling **R-JD**), and
     the parameter is gone rather than defaulted: "use" hands the row back to
@@ -117,8 +118,10 @@ def resolve_conflicts(transaction_ids, action, user_id):
                 skipped_count += 1
                 continue
 
-            # Ownership check: Transaction -> PayPeriod -> user_id.
-            if txn.pay_period.user_id != user_id:
+            # Ownership check: the row's own ``user_id`` column.  It read
+            # ``txn.pay_period.user_id`` -- Transaction -> PayPeriod ->
+            # user_id -- until plan step ``pay_calendar:C13-b``.
+            if txn.user_id != user_id:
                 # Cross-user request: emit the IDOR-detection event so
                 # SOC tooling sees the probe.  ACCESS-category is the
                 # right home for this -- the requester does not own
@@ -128,7 +131,7 @@ def resolve_conflicts(transaction_ids, action, user_id):
                     user_id=user_id,
                     model="Transaction",
                     pk=txn_id,
-                    owner_id=txn.pay_period.user_id,
+                    owner_id=txn.user_id,
                 )
                 skipped_count += 1
                 continue
