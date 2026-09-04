@@ -44,7 +44,7 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 65 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 66 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 
@@ -61,7 +61,7 @@ the coordinator could cite it.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**262 steps, 158 open.** The dependency graph holds 107 edges over 83 rows.
+**263 steps, 158 open.** The dependency graph holds 104 edges over 83 rows.
 
 ## The order
 
@@ -104,7 +104,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | recurrence | R8-d | -- | Add the business-day shift to the cash date alone, consuming the shared business-day module and computed federal holiday set `pay_calendar:C14` builds, which needs `occurs_on` to exist because today's generated row is dated from its pay period and never from the occurrence. | #35 | -- | after #31 / recurrence:R5 / pay_calendar:C14 (the shared business-day module) |
 | balance | X-k | -- | Reconcile `RecurrenceRule.end_date` against what was actually generated, and give the write door a consistent batch contract. Closes **N-18**, **N-19**, **N-23**, **N-24**. | #36 | -- | after #31 / recurrence:R5 (R5 deletes `compute_due_date` and re-keys the generation index; rebasing this over that is the cheaper direction) |
 | balance | X-au-g-2c-3b-3 | -- | Stop the ENGINE FEED allocating at all: `prepare_payments_for_engine` passes the CASH and `project_forward` charges the month's escrow, which DELETES the floor -- a SECOND allocation rule that reports a short payment as exactly on schedule -- and orphans `LoanContext.contractual_pi` and `compute_contractual_pi` with it. **MOVES MONEY, OWN PR.** Closes **N-409**. | #37 | -- | NOW / balance:X-au-g-2c-3b-2 (shipped) |
-| balance | X-au-h | -- | Split the FOUR facts `is_override` carries, of which two were found by adversarial review: re-priced, moved, survives the regeneration sweep, and exempt from the partial unique index. Closes **N-238**. Carries **F-11**. | #38 | -- | after #37 / balance:X-au-d / balance:X-au-e / balance:X-au-f / balance:X-au-g |
+| balance | X-bq | -- | Make the flag's WRITE SET match its MEANING. `is_override` says *this row is the OWNER's, not the rule's* (**R-JR**), but `due_date`, `name` and `category_id` are DERIVED fields a popover edits without raising it, and the column still records a re-price and a move indistinguishably -- which **N-238** needs represented before the flag can go. Carries **N-238**, **F-11**, **N-245**, **N-246**. | #38 | -- | NOW / balance:X-au-h (shipped) |
 | pay_calendar | C8 | -- | Give the forward forecast cadence its own control, separating it from the payday forms it is currently welded onto. Closes **P30**, **P47** (**R-PC50**). | #39 | -- | NOW / pay_calendar:C4 (shipped) |
 | pay_calendar | C9 | -- | Project the modelled fold's CONTRIBUTION tier past the pay-period horizon on the same axis the accrual tier already runs on, superseding balance ruling **R-AG**, which let the half model stand before a total calendar existed. **MOVES MONEY.** Closes **P7** and **N-394**, the CASH tier joining the same projection; carries **P42**, **P44** and **P50**. | #40 | -- | NOW |
 | pay_calendar | C6 | -- | Let a payday be inserted mid-schedule, refusing only where `classify_period_lock` says the split period is locked. Starts with the two rulings section 3 names. Closes **P10**, **P46** (**R-PC49**). | #41 | -- | NOW / pay_calendar:C4 (shipped) / recurrence:R7c (shipped) |
@@ -197,6 +197,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-be | -- | Resolve the THREE `app/` modules sitting at exactly pylint's 1000-line ceiling -- `calendar_service`, `balance_at/_asset_fold` and `anchor_service` -- by deciding per module whether it SPLITS or whether the ceiling is the wrong number, because in this corpus what the cap binds is what gets written down. Closes **N-365**. | #128 | -- | NOW |
 | balance | X-bf | -- | Make a stale or FORKED test template self-reporting: record the ordered revision list the builder actually applied and refuse a bootstrap whose repo chain no longer produces it, because `alembic_version` records which revision is head and never which ones ran. Closes **N-385**. Carries **P79**. | #129 | -- | NOW |
 | balance | X-bg | -- | Tell *this occurrence did not happen* apart from *archive this row*, which the transfer delete door conflates into one `is_deleted` flag read off the template link, so a settled instance the owner removes stays restorable by the recurrence conflict chooser with no control between it and the books. Closes **N-386**. | #130 | -- | NOW |
+| balance | X-au-h | -- | Made `is_override` say ONE thing -- *this row is the OWNER's, not the rule's* -- and moved authorship onto the PAYLOAD (**R-JR**): a form posts the figure it RENDERED and a figure without one is REFUSED. Dropped the flag from the occurrence-keyed unique index. Closed **N-248**, **N-436**, **N-448**; opened **N-451**, **N-452**. **N-238** stays open and narrowed. | SHIPPED | `825fd791` | -- |
 | balance | X-bj | -- | The DECOMPOSED parent of the level relation (**R-IS**, **R-JN**), split 2026-09-03 so the relation lands before the flip and the never-moves-a-balance clause lands with it, because building the clause early would run two balance semantics live on one account; **N-314** was answered by its ruling. | container | -- | ticks with #26 |
 | pay_calendar | C7 | -- | Rule and then fix `journal_entries.pay_period_id`, a NOT NULL FK stored beside the `entry_date` it derives from, which is P1's defect on the ledger's header table. Closes **P18**. | SHIPPED | `a9e04106` | NOW / pay_calendar:C4 (shipped) |
 | salary | R14-a | -- | Give an employer contribution the salary profile that FUNDS it (**R-SAL5**) and make the calendar-wide paycheck projection SINGLE (**N-443**), with the deduction write doors no longer accepting another owner's account. Moves no figure. Closes **N-443**, **N-533**, **N-534**. | SHIPPED | `9e81d9e7` | NOW |

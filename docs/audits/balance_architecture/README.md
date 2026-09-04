@@ -667,20 +667,17 @@ in SILENCE where a refused DELETE is loud.
 2026-09-03 (**R-SAL1**); their specifications are `../../plans/implementation_plan_salary.md`,
 section 4, under their unchanged ids.*
 
-* [ ] **X-au-h** `refactor(transactions): is_override says one thing` -- closes **N-238**. The flag
-  also decides **F-11** (re-keyed here 2026-09-03, **R-R54**): the grid's inline amount editor
-  pre-fills from the STORED figure and sets the flag on save, so an unchanged amount must not set
-  it. The flag
-  carries FOUR facts, not the two the first draft named, and an adversarial review found the other
-  two. (1) the user RE-PRICED the row and (2) the user MOVED it to another period -- both written at
-  `routes/transactions/mutations.py:295`; (3) this row SURVIVES the regeneration sweep
-  (`_recurrence_common.py:375`, and `pay_period_admin.py:821` escalates it to "deleting this period
-  loses data"); and (4) this row is EXEMPT from the partial unique index, whose predicate is literally
-  `is_override = FALSE` (`models/transaction.py:199-203`, `models/transfer.py:64`) --
-  `carry_forward_service/_execute.py:352` sets the flag purely to stay index-safe. **So the naive
-  absorption is unsafe and measured so**: a moved-but-not-repriced row would carry a NULL amount, fall
-  back INSIDE `idx_transactions_template_period_scenario`, and collide with the target period's
-  canonical generated row. Meanings 3 and 4 need representation before the flag can go.
+* [ ] **X-bq** `refactor(transactions): the flag's write set matches its meaning` -- the follow-up
+  `X-au-h` created by shipping. That step made `is_override` MEAN one thing (*this row is the
+  owner's, not the rule's*, **R-JR**) without making its WRITE SET match: `due_date`, `name` and
+  `category_id` are `DerivedRowFields` members a popover can edit, and none of them raises the
+  flag, so a row the owner has detached from its rule does not say so. The other half is
+  **N-238**'s untouched remedy -- the column still records a re-price and a period move
+  indistinguishably, and the move needs its own representation before the flag can be deleted.
+  Carries **N-238**, **F-11**, **N-245**, **N-246**, and **N-448**'s closed record.
+* [x] **X-au-h** `825fd791` -- **`is_override` says ONE thing** (*this row is the OWNER's, not the rule's*) and authorship is a fact the PAYLOAD carries (**R-JR**); migration `e7c3a1f9b482` dropped the flag from the OCCURRENCE-keyed unique index, keeping it on the undated one. Closed **N-248**, **N-436**, **N-448**; opened **N-451**, **N-452**.
+  **What a LATER step must still obey**: **N-238** stays OPEN and NARROWED -- the flag still records a re-price and a period move indistinguishably, and deleting it still needs the move represented first; **F-11**, **N-245** and **N-246** stay open here, N-246 SHARPENED because `due_date`, `name` and `category_id` are derived fields a popover edits without raising the flag.
+  The four-fact specification this entry replaced over-counted, and its safety argument named `idx_transactions_template_period_scenario`, which R17 DROPPED -- true of production (35 revisions behind) and false at HEAD, with the collision surviving for UNDATED rows only.
 * [x] **X-aw** `078077db` -- a paycheck's gross is a RATE (**R-HW**), so **N-239** died by construction. Closed its horizon half; opened **N-390** and **N-391**. Record in `archive/four_shipped_steps_2026-08-30.md`.
 * [x] **X-bh-1** `b955d0c8` -- the paycheck engine reads the owner's CALENDAR, so **D25**'s narrow context is unrepresentable rather than forbidden in prose. Opened **N-394**, **N-395**, **N-396**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
 * [x] **X-bh-2** `49fdfb91` -- the rhythm runs BACKWARD too (**R-IA**), bounded by a stored registration; **`NULL` means NOT STATED** (**R-IF**). Closed **N-390** and **N-396**; opened **N-398**, **N-399**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
