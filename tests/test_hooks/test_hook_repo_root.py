@@ -40,21 +40,17 @@ tree (``hook_toolchain_root() { hook_repo_root; ... }``) fails those same three
 and only those three, 3 failed / 7 passed.  Both directions were run; neither
 was inferred.
 
-Two earlier drafts of this paragraph were wrong in different ways -- the first
-claimed every case failed pre-fix, and the second quoted a three-of-five count
-that expanding the suite invalidated.  Both were caught rather than shipped, and
-the second is why this one names its measurement date.
-
 **The toolchain cases grade the review's H-1**, which is a regression this fix
 introduced before review caught it: ``hook_repo_root`` had FIVE consumers, and
 one of them -- the ``_hook_venv_bin`` PATH prefix -- was asking "where does the
 pinned toolchain live", not "which tree is being edited".  For that question the
 PRIMARY checkout is the right answer, because worktrees carry no ``.venv`` of
 their own.  Re-pointing it at the session's worktree left the venv path naming
-a directory that does not exist, so ``pylint`` became unresolvable and every
-gate hard-blocked on "command not found" while blaming a financial-correctness
-rule.  :class:`TestTheToolchainRootStaysWithThePrimaryCheckout` is what stops
-that being re-introduced.
+a directory that does not exist, so ``pylint`` became unresolvable and the two
+gates that invoke it (the Python per-edit gate and the Stop floor) hard-blocked
+on "command not found" while blaming a financial-correctness rule.
+:class:`TestTheToolchainRootStaysWithThePrimaryCheckout` is what stops that
+being re-introduced.
 """
 
 import json
@@ -181,10 +177,13 @@ class TestTheRootResolvesToTheSessionsCheckout:
 
         **Asserts the VALUE, not just the absence of a slash** (adversarial
         review, 2026-09-04).  ``assert not root.endswith("/")`` admits ``""``,
-        which is the catastrophic answer -- ``cd ""`` is a bash no-op, so an
-        empty root would silently lint whatever tree the hook happened to stand
-        in.  Comparing against *primary* also proves the FALLBACK arm was the
-        one taken: this case only reaches it because ``tmp_path`` sits outside
+        which is the catastrophic answer: not because ``cd ""`` succeeds (it
+        fails with "null directory" and trips the callers' ``||`` block) but
+        because ``hook_target_relpath`` realpaths the root, and
+        ``os.path.realpath("")`` is the CWD, so an empty root would silently
+        normalize every edited file against whatever tree the hook stood in.
+        Comparing against *primary* also proves the FALLBACK arm was the one
+        taken: this case only reaches it because ``tmp_path`` sits outside
         any repository, and if ``TMPDIR`` were ever pointed inside a checkout
         ``git rev-parse`` would succeed, git output never carries a trailing
         slash, and the strip would go ungraded while the test still passed.
@@ -251,8 +250,9 @@ class TestTheToolchainRootStaysWithThePrimaryCheckout:
     eight on this machine: a real one in the primary, a symlink in one
     worktree, nothing in the other six, and no ``pylint`` anywhere else on the
     box.  So this must keep answering with the primary even from a worktree, or
-    the PATH prefix silently vanishes and every gate hard-blocks on
-    "command not found" while blaming a financial-correctness rule.
+    the PATH prefix silently vanishes and the two gates that invoke ``pylint``
+    (the Python per-edit gate and the Stop floor) hard-block on "command not
+    found" while blaming a financial-correctness rule.
     """
 
     def test_the_toolchain_root_ignores_the_sessions_worktree(

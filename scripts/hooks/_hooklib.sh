@@ -37,11 +37,12 @@
 #     ABSOLUTE path and every caller's ``case`` pattern missed -- silently
 #     SKIPPING the gate. The comment below still calls that outcome "correct",
 #     which it is for a file genuinely outside the project and is not for a
-#     worktree file. FIVE files source this helper, not four:
+#     worktree file. Five files source this helper --
 #     ``post-edit-python.sh``, ``post-edit-template.sh``, ``post-edit-deps.sh``,
-#     ``stop-check.sh`` -- and ``guard-migrations.sh``, whose developer-approval
+#     ``stop-check.sh`` and ``guard-migrations.sh``, whose developer-approval
 #     prompt on a hand-edited ``migrations/versions/*.py`` was therefore also
-#     inoperative in every worktree.
+#     inoperative in every worktree -- and the ``_hook_venv_bin`` prefix below
+#     was a sixth call site inside this file, asking a different question.
 #   * ``stop-check.sh`` cd'd to the primary checkout and linted a tree the
 #     session was not editing -- reporting another lane's uncommitted work as
 #     this lane's failure, and passing this lane's real one.
@@ -81,10 +82,13 @@ hook_repo_root() {
 # So this stays anchored to CLAUDE_PROJECT_DIR. Pointing it at the session's
 # own worktree leaves _hook_venv_bin naming a directory that does not exist,
 # the guard below skips the PATH prefix, and `pylint` becomes unresolvable --
-# at which point every gate captures "command not found" into its output
-# variable, finds it non-empty, and hard-blocks the edit while blaming a
-# financial-correctness rule. That is exactly the infrastructure-error failure
-# the paragraph below records happening once already.
+# at which point the two gates that invoke it, the Python per-edit gate
+# (post-edit-python.sh) and the Stop floor (stop-check.sh), capture "command
+# not found" into their output variable, find it non-empty, and hard-block
+# while blaming a financial-correctness rule (the template, deps and
+# migration hooks never touch the venv). That is exactly the
+# infrastructure-error failure the paragraph below records happening once
+# already.
 hook_toolchain_root() {
     local root="${CLAUDE_PROJECT_DIR:-$PWD}"
     printf '%s\n' "${root%/}"
