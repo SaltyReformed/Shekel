@@ -605,13 +605,19 @@ def outcome_counts(outcome) -> dict:
         "envelopes_created": outcome.envelopes_created,
         "deposited_count": outcome.deposited_count,
         # Added at plan step ``bank_import:X-gj-4b`` with the fourth act
-        # class, for this function's own stated reason.  **It is the one
-        # count here that reports no MONEY**, and it is emitted anyway: a
-        # trail whose fields depend on which door wrote the row cannot be
-        # queried across them, and *how many lines this pass stopped asking
-        # about* is exactly the question a skip answers.  **They are the TWO
-        # counts here that report no money**, not one: the repeat beside it
-        # reports a press that wrote nothing at all.
+        # class, for this function's own stated reason.  **They are the two
+        # counts here of acts that LANDED and moved no money** -- the scope
+        # matters, because ``refused_count`` above reports no money either and
+        # ``here`` is the whole dict.  Emitted anyway: a trail whose fields
+        # depend on which door wrote the row cannot be queried across them,
+        # and *how many lines this pass stopped asking about* is exactly the
+        # question a skip answers.
+        #
+        # *This sentence has been miscounted twice.*  It said ONE count while
+        # introducing two, a correction was appended BESIDE the false claim
+        # rather than replacing it so both stood, and the number was right for
+        # a set the words did not name.  A count claim whose scope is left to
+        # the reader is how "one" survived three passes.
         "skipped_count": outcome.skipped_count,
         "already_skipped_count": outcome.already_skipped_count,
     }

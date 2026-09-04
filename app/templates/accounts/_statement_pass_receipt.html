@@ -126,10 +126,11 @@
       {% endif %}
       {# A REPEAT wrote nothing, and says so rather than being folded into
          the count above -- that count answers how many decisions were
-         RECORDED. Reachable from a stale or duplicated tab and from two
-         submits of one page, though never from a single press; without this line such a pass rendered "Nothing
-         moved. Everything that was applied confirmed a day you already had"
-         over an act that confirmed no day. #}
+         RECORDED. Reachable from a stale or duplicated tab and from
+         two submits of one page, though never from a single press.
+         Without this line such a pass rendered "Nothing moved. Everything
+         that was applied confirmed a day you already had" over an act that
+         confirmed no day. #}
       {% if outcome.already_skipped_count %}
       <li>{{ outcome.already_skipped_count }} bank line(s) were already recorded as explained by nothing, so nothing was written for them.</li>
       {% endif %}

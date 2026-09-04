@@ -379,7 +379,6 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     merchant credit a rule files as a NEGATIVE purchase reported through
     ``recorded_count``, whose caption says *as a purchase your records did not
     have, dated the day your bank took it* -- which the bank did not do.
-  
     ``deposited_count`` (ruling **bank_import:R-GW**) is here for
     ``repriced_count``'s reason: without
     it a pass that recorded a deposit reports through ``recorded_count``,
@@ -406,6 +405,8 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             has still done everything it could.
         settled_count: How many rows the pass marked as having happened.
         corrected_count: How many settled rows had a day moved onto the bank's.
+        redated_count: How many purchases had their PURCHASE day corrected
+            (ruling **R-FW**).
         repriced_count: How many rows had their FIGURE moved onto the bank's
             (:attr:`~._accept.AcceptedMatch.repriced_count`).  **Without it
             :attr:`moved_nothing` was FALSE rather than merely quiet**: a
@@ -413,8 +414,6 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             ``unchanged`` on every day count, so a pass that rewrote what a
             payment cost rendered *"Nothing moved."*  Found by adversarial
             design review 2026-08-22.
-        redated_count: How many purchases had their PURCHASE day corrected
-            (ruling **R-FW**).
         recorded_count: How many bank lines became a CHARGE the app did not
             have -- a purchase the bank took money for.  **Charges only since
             plan step ``bank_import:X-gj-2b-3``**; see :attr:`refunded_count`.
