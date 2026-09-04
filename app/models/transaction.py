@@ -74,16 +74,16 @@ class Transaction(
     the same column name for the other fact:
     :attr:`app.models.transaction_entry.TransactionEntry.user_id` is *the user
     who created the entry (owner or companion)*.  A companion acting on this
-    row does not become its owner, so once a door asks
-    ``txn.user_id == current_user.id`` it gets *is this the owner* -- which is
-    the question ``routes/entries.py`` asks today as
-    ``txn.pay_period.user_id == current_user.id``.
+    row does not become its owner, so when a door asks
+    ``txn.user_id == current_user.id`` it gets *is this the owner*, which is
+    what ``routes/entries.py`` asks.
 
-    **No door reads this column yet, and that is the leaf boundary rather than
-    an oversight.**  ``C13-a`` installs the key and changes no reader; the only
-    ``app/`` code touching ``user_id`` is the nine writers that state it, two
-    of which copy it forward off a source row.  Moving the nineteen readers
-    finding **P75** counts is ``C13-b``, so this step is revertible on its own.
+    **The doors read this column since plan step ``pay_calendar:C13-b``**,
+    which retired the NINETEEN hand-written ownership comparisons finding
+    **P75** counted: ELEVEN walked ``X.pay_period.user_id`` and became one
+    equality here, and the EIGHT that refetched a SUBMITTED period id went to
+    the owner's derived calendar instead -- this key answers what may be
+    STORED, and a submitted id is a question about INPUT (developer 2026-09-03).
 
     **A transaction carries TWO clocks, and the second one is not decoration.**
     ``pay_period_id`` (with ``due_date``) is the BUDGET clock -- which column
@@ -547,9 +547,12 @@ class Transaction(
     # serves ``fk_transactions_owner_period``.  What is left is this key's own
     # check on a user delete, which is refused rather than performed.
     # ``budget.transaction_entries`` and ``budget.statement_matches`` carry the
-    # same column with no index of its own.  *The QUERY half is argued rather
-    # than measured*: the reads that might want an index are ``C13-b``'s and
-    # are not written yet, so that step re-decides it with them in hand.
+    # same column with no index of its own.  *The QUERY half was left for
+    # ``C13-b`` to re-decide with its reads in hand; it did, and the answer is
+    # STILL NO INDEX* (2026-09-03) -- all nineteen reads it moved are ATTRIBUTE
+    # reads on a row already loaded by primary key, and it added no
+    # ``WHERE transactions.user_id = ...`` anywhere for an index to serve.  The
+    # predicate for the next reader: a query in ``app/`` whose WHERE names it.
     user_id = db.Column(
         db.Integer,
         db.ForeignKey(

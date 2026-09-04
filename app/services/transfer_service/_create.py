@@ -301,15 +301,22 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         spec.to_account_id, spec.user_id, label="Destination account"
     )
     _reject_transfer_out_of_loan(from_account)
-    _get_owned_period(spec.pay_period_id, spec.user_id)
     # R-C: a loan cannot receive a payment before it originates -- the fold
     # would erase it while the cash side still debits the funding account.
-    # Deliberately AFTER ``_get_owned_period``: this guard reads that period's
-    # ``start_date`` (the installment fallback), so running it first would read
-    # an unowned row and answer a cross-user id with a 400 carrying a date from
-    # it, where the ownership rule requires an indistinguishable 404.
+    #
+    # The ownership answer and the installment's fallback basis are ONE
+    # resolution (plan step ``pay_calendar:C13-b``).  This was a bare
+    # ``_get_owned_period`` on the line above followed by a comment explaining
+    # that the guard ran second DELIBERATELY -- because it read the period's
+    # ``start_date``, so running it first would answer a cross-user id with a
+    # 400 carrying a date off that row where the rule requires an
+    # indistinguishable 404.  Passing the resolved period makes that ordering
+    # a data dependency instead of a paragraph, and deletes the guard's own
+    # second read of the same row.
     _reject_payment_before_origination(
-        to_account, spec.pay_period_id, spec.due_date,
+        to_account,
+        _get_owned_period(spec.pay_period_id, spec.user_id),
+        spec.due_date,
     )
     _get_owned_scenario(spec.scenario_id, spec.user_id)
     _get_owned_category(spec.category_id, spec.user_id)

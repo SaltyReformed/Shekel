@@ -34,6 +34,7 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     all_periods,
+    pay_periods_hydrated,
     an_asserted_day,
     an_entered_day,
     an_observed_day,
@@ -3251,9 +3252,11 @@ class TestOneTimeTransfer:
         so a submission naming no pattern skipped the probe entirely -- which
         was harmless while no-pattern meant "generate nothing", and is not
         once no-pattern is what materialises a Transfer into exactly the
-        submitted period.  ``_materialize_one_time_transfer`` re-checks as
-        defence in depth ("Invalid pay period for one-time transfer."); this
-        asserts the FIRST guard fires, before any row is written.
+        submitted period.  ``_materialize_one_time_transfer`` re-checked as
+        defence in depth ("Invalid pay period for one-time transfer.") until
+        plan step ``pay_calendar:C13-b``, which deleted that second resolution
+        and threads the route's own down instead; the FIRST guard is the only
+        one now, and this asserts it fires before any row is written.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -5130,3 +5133,135 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
             ), "a refused request reverted the transfer anyway"
             for leg in self._legs(xfer.id):
                 assert leg.settled_amount == Decimal("214.37")
+
+
+class TestTransferDoorsResolveOwnershipStructurally:
+    """The transfer write doors prove a paycheck's owner without loading it.
+
+    Plan step **pay_calendar:C13-b**, the transfer half of ledger row
+    **P75**'s EIGHT primary-key refetches.  Five of them lived here: two
+    ``_user_owns(PayPeriod, ...)`` calls in ``transfers/mutations``, one in
+    ``transfers/templates``, a bare ``db.session.get`` + compare in
+    ``transfers/_instances``, and the service tier's own
+    ``transfer_service._ownership._get_owned_period``.  Four were duplicates
+    of the fifth -- every create and update path reaches the service one
+    unconditionally -- and the developer ruled them collapsed into it
+    (2026-09-03), with the service call answering the owner's derived CALENDAR
+    instead of comparing a fetched row.  ``transfers/templates`` keeps ONE
+    resolution because it needs the period's ``start_date`` as a ``due_date``,
+    and it threads that value down rather than letting the materializer
+    re-fetch it.
+
+    **Why a hydration count.**  The 404s themselves are graded above and pass
+    either way; what tells a calendar lookup apart from a primary-key compare
+    is that the calendar loads COLUMN TUPLES and never an entity.  An empty
+    hydration list cannot hold while the old guard exists, so this fires.
+
+    ``expunge_all`` FIRST, for the reason
+    :func:`tests._test_helpers.pay_periods_hydrated` gives: a ``session.get``
+    served from the identity map fires no load event, so without it the probe
+    reads zero on the very code it exists to refuse.
+    """
+
+    @staticmethod
+    def _foreign_period(other):
+        """Return one pay period belonging to *other*."""
+        from app.models.pay_period import PayPeriod
+        return (
+            db.session.query(PayPeriod)
+            .filter_by(user_id=other["user"].id)
+            .first()
+        )
+
+    def test_ad_hoc_create_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /transfers/ad-hoc refuses a foreign period, loading none."""
+        with app.app_context():
+            other = _create_other_user_with_template()
+            savings = _create_savings_account(seed_user)
+            payload = {
+                "pay_period_id": self._foreign_period(other).id,
+                "from_account_id": seed_user["account"].id,
+                "to_account_id": savings.id,
+                "amount": "50.00",
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.post("/transfers/ad-hoc", data=payload)
+            assert resp.status_code == 404
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )
+
+    def test_instance_update_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """PATCH /transfers/instance/<id> refuses a foreign period, loading none.
+
+        The transfer is the REQUESTER'S own, so the refusal can only come from
+        the submitted ``pay_period_id``.
+        """
+        with app.app_context():
+            other = _create_other_user_with_template()
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+            xfer = _create_transfer(
+                seed_user, seed_periods_today, savings, template=template,
+            )
+            xfer_id = xfer.id
+            foreign_period_id = self._foreign_period(other).id
+            version = xfer.version_id
+
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.patch(
+                    f"/transfers/instance/{xfer_id}",
+                    data={
+                        "pay_period_id": str(foreign_period_id),
+                        "version_id": str(version),
+                    },
+                )
+            assert resp.status_code == 404
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )
+
+    def test_template_create_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /transfers refuses a foreign start period, loading none.
+
+        The refusal itself -- and that it fires for a RECURRING cadence, where
+        the id is never used -- is
+        :meth:`TestOneTimeTransfer.test_recurring_transfer_idor_period`'s; this
+        asserts the ONE structural property that says the check is the calendar
+        rather than a fetched row.
+        """
+        with app.app_context():
+            other = _create_other_user_with_template()
+            savings = _create_savings_account(seed_user)
+            payload = {
+                "name": "IDOR Attempt",
+                "default_amount": "100.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "recurrence_unit": "",
+                "start_period_id": str(self._foreign_period(other).id),
+            }
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.post(
+                    "/transfers", data=payload, follow_redirects=True,
+                )
+            assert resp.status_code == 200
+            assert b"Invalid start period" in resp.data
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )

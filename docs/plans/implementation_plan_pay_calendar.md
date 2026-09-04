@@ -164,12 +164,12 @@ Row **P10** carries the two halves that must be specified first: what happens to
 orphan), and whether the split-off payday is repopulated (a monthly billed twice) or left empty
 (income understated for the whole horizon).
 
-### How a transaction's owner is proved -- RULED, and the question is closed
+### How a transaction's owner is proved -- RULED, BUILT, and closed
 
-Finding **P75**. **`budget.transactions` HAS a `user_id` since `C13-a`**, held equal to both its
-account's owner and its paycheck's by a composite key each. *This section opened with the sentence
-"`budget.transactions` carries no `user_id`" until 2026-09-02 -- which is the same decay `C13-a`
-corrected in P75's own ledger cell, in the document that cell points at.*
+Finding **P75**, CLOSED at `C13-b`. **`budget.transactions` HAS a `user_id` since `C13-a`**, held
+equal to both its account's owner and its paycheck's by a composite key each, and every door reads
+it since `C13-b`. *This section opened with the sentence "`budget.transactions` carries no
+`user_id`" until 2026-09-02 -- the same decay `C13-a` corrected in P75's own ledger cell.*
 
 **What the ruling was.** `C2-f3e` left the question open and offered two answers: the owner's
 CALENDAR (it holds one owner's schedule, so a foreign id is ABSENT) against a `user_id`-filtered
@@ -181,29 +181,26 @@ unconstructible. *The JOIN arm cited a live spelling, `Transaction.pay_period.ha
 in `statement_match/_candidates.py`; that call no longer exists anywhere in `app/`, which is a
 second reason the fork as recorded could not have been decided from this text.*
 
-**What is left is C13-b's, and it is a PREDICATE rather than a list.** The nineteen sites were
-counted twice in 2026-08-20, after that step's first count of three was refuted by two adversarial
-reviews, and their line numbers have since drifted (`get_accessible_transaction` moved :347 to :303,
-`routes/entries.py` :241 to :286, and all four in `entry_service/_doors.py`). A list of line numbers
-in a planning document cannot survive the code, so what survives here is the two greps that
-REGENERATE it, which is the same rule the C4 reader census states one section down:
+**All nineteen are RETIRED at `C13-b` (`e2c325dc`), and the PREDICATES are what say so.** A list of
+line numbers in a planning document cannot survive the code -- these had already drifted twice -- so
+what this section keeps is the two greps that REGENERATE the census, run last on 2026-09-03 and
+returning prose only:
 
-- **The RELATIONSHIP walk** -- `grep -rn "\.pay_period\.user_id" app/`, keeping only the reads that
-  REFUSE. Eleven after `C2-f3e`: ten are the comparison itself and the eleventh binds the owner one
-  line above the two comparisons that use it. `utils/auth_helpers.get_accessible_transaction` is the
-  canonical route-boundary door and is reached from eight route sites.
+- **The RELATIONSHIP walk** -- `grep -rn "\.pay_period\.user_id" app/`, keeping the reads that
+  REFUSE. Eleven after `C2-f3e`; ZERO live sites now, each one equality on `X.user_id`.
 - **The PRIMARY-KEY refetch**, P51's literal wording -- a `PayPeriod` fetched by id and compared.
-  Eight after `C2-f3e`, two of them direct and the rest through `_user_owns(PayPeriod, ...)` or
-  `_resolve_owned_fks` with a `PayPeriod` spec.
+  Eight after `C2-f3e`; ZERO now. They went to the owner's CALENDAR rather than to the composite
+  key, per ruling **R-PC46**: the key answers what may be STORED and a submitted id is a question
+  about INPUT, which it does not answer.
 
-**NOT this finding**: reads that derive an owner to SCOPE or STAMP rather than to refuse
-(`posting_service`, `loan_posting_service/_payments`, `transaction_service/_settle`,
-`routes/transactions/_helpers`). Counting one of those as a check is how the first census reached
-three. Those sites are still worth moving -- each is a `PayPeriod` hydration `txn.user_id` makes
-unnecessary -- but they are a performance question and not P75's.
+**The SCOPES were weighed and REFUSED** -- `statement_match._candidates`' two period-set clauses and
+`reconcile_service._rows`', which two comments had predicted this step would move. Each is also what
+makes its span lookup TOTAL, so `Transaction.user_id` cannot replace it.
 
-**`C13-a` left eight comments in `app/` naming this and re-pointed all eight at `C13-b`.** They are
-the site list a reader can trust, because they live beside the code they describe.
+**The STAMP reads moved anyway** (`posting_service`, `loan_posting_service/_payments`,
+`transaction_service/_settle`, `routes/transactions/_helpers`, `routes/entries`). They were never
+P75's -- counting one as a check is how the first census reached three -- but a row's owner has ONE
+home, and leaving them would have kept a hydration for a value the row carries.
 
 ## 4. Step sequence
 
@@ -245,39 +242,20 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `loan_recurrence_sync` is a WRITER and takes its own by design, so the rule carves it out or
       takes it from its caller. Collapses the +1 `C2-f3a` left on `/analytics/taxes`. Closes
       **P56**, **P69**.
-- [ ] **C13 -- a transaction's owner is a COLUMN**, per ruling **R-PC32**. The DECOMPOSED parent,
-      **split in two 2026-09-02**: this entry always said "P75's nineteen comparisons go in a SECOND
-      leaf" while `steps.md` carried ONE row, which is a rule-12 disagreement between the index and
-      the specification. The split is that correction and not new scope. It ticks with `C13-b`.
-- [ ] **C13-a -- the KEY.** Expand / backfill / contract in ONE revision: `user_id` NULLABLE;
-      backfilled from `pay_periods.user_id`; `SET NOT NULL`; `UNIQUE (id, user_id)` on
-      `budget.pay_periods` (the superkey the second FK needs -- `uq_accounts_id_user` already
-      exists); both composite FKs, `(account_id, user_id)` `ON DELETE RESTRICT` and
-      `(pay_period_id, user_id)` `ON DELETE CASCADE`, each matching the single-column key it sits
-      beside so a parent delete's outcome cannot depend on which PostgreSQL evaluated. It changes no
-      reader: the nineteen comparisons still stand and still return the same answers, which is what
-      makes this leaf revertible on its own.
-      **The `auth.users` key is `ON DELETE RESTRICT` and NOT `UserScopedMixin`'s CASCADE**
-      (developer, 2026-09-02). Driven on a clone at the pre-C13 head, the mixin's CASCADE was the
-      only candidate shape that CHANGED what a user delete does, turning a refused statement into
-      one returning `DELETE 1` and leaving 1,057 transactions, 9 accounts, 63 pay periods, 1,342
-      journal entries, 184 purchase entries, 82 balance assertions and 175 transfers at zero.
-      Whether a user should be deletable is a product question with no door; this leaf declines to
-      answer it by side effect. **Own review pass**: the busiest table in the schema, and a
-      downgrade cannot re-add a constraint a cross-owner write invalidated while it was off.
-- [ ] **C13-b -- the READERS.** Retire the nineteen comparisons row **P75** counts, per site rather
-      than per rule: ELEVEN walk `X.pay_period.user_id` -- including
-      `utils/auth_helpers.get_accessible_transaction`, the canonical route-boundary door reached
-      from eight route sites -- and EIGHT refetch the row by primary key and compare. Each is either
-      one equality on `transactions.user_id` (a saved `PayPeriod` hydration where it walked a
-      relationship) or DELETED, and which it is has to be decided per site: a check whose refused
-      state can no longer be stored is a fence, and a check that answers "is this the OWNER rather
-      than a companion" is not. **Three cases lost their only isolating input at `C13-a`** and say
-      so in their own docstrings: `test_reconcile_service`'s owner-clause case,
-      `test_statement_match/test_candidates`' and `test_create`'s. Those three name the clauses this
-      leaf weighs first. Closes **P75**; carries **N-373**, whose predicate --
-      `transaction_service.delete_transaction` reconciling its `owner_id` against the row -- becomes
-      one comparison here.
+- [x] **C13 -- a transaction's owner is a COLUMN.** `e2c325dc`. The DECOMPOSED parent, ruling
+      **R-PC32**, split in two 2026-09-02 and ticked with `C13-b`. Closes **P75**.
+- [x] **C13-a -- the KEY.** `8e707c4c`. Migration `d4a92f6b13c8`: `user_id` backfilled from
+      `pay_periods.user_id`, then both composite FKs. The `auth.users` key is `ON DELETE RESTRICT`
+      and NOT `UserScopedMixin`'s CASCADE (developer, 2026-09-02) -- the only candidate shape that
+      changed what a user delete does. **What a later reader must obey**: the backfill reads the PAY
+      PERIOD, so `fk_transactions_owner_ACCOUNT` is the key that grades it and the period key grades
+      nothing; the migration's own docstring is the record.
+- [x] **C13-b -- the READERS.** `e2c325dc`. The nineteen retired per site, ruling **R-PC46**: the
+      ELEVEN that walk a row that EXISTS became `X.user_id`, the EIGHT that refetch a SUBMITTED id
+      went to the owner's CALENDAR, and the four route copies of `_get_owned_period` are gone.
+      Closed **P75**, **N-373**. **What a later step must obey**: the period-set SCOPES in
+      `statement_match._candidates` and `reconcile_service._rows` were weighed and REFUSED -- each
+      is also what makes its span lookup TOTAL. As-built: `historical/c13b_as_built_2026-09-03.md`.
 - [ ] **C12 -- one current-paycheck producer.** The THREE implementations become one, which needs a
       RULING first because it changes what `/savings` and `/retirement` publish. The merged producer
       gives `income_service`'s amount basis a threaded calendar, so `balance:X-i1` and this step

@@ -7,8 +7,22 @@ transaction delete sequence WHOLE" -- and a third caller would have made three.
 Each step of it is a money rule with an ORDER that is load-bearing, so two
 copies is two places for that order to drift.
 
-**The order, and why each step is where it is:**
+**The order, and why each step is where it is.**  ``0`` is OWNERSHIP and it
+is numbered from zero because it is not part of the sequence -- it is the
+door's own precondition, asked before the sequence starts.
 
+0. **Reconcile the ``owner_id`` the caller states against the row it hands in**
+   (finding **N-373**, landed at plan step ``pay_calendar:C13-b``).  This door
+   took an owner for its EVENTS and checked it against the row nowhere, while
+   its sibling ``entry_service.delete_entry`` re-validated -- so of the two
+   doors ``statement_match._release._remove`` calls, one asked and one
+   trusted, and it was that asymmetry that let the by-id refetch look safe.
+   It is one comparison because the owner is a COLUMN since plan step
+   ``pay_calendar:C13-a``; before that it was a join walk through the paycheck
+   and the finding was SEQUENCED behind the key for exactly that reason.
+   FIRST, ahead of ``deletion_refusal``, so a caller naming the wrong owner is
+   told nothing about the row -- the ordering ``entry_service._doors`` states
+   for the same pair of guards.
 1. **Withdraw the matches this delete would leave naming no app row at all**
    (:mod:`app.services.match_withdrawal`, developer ruling 2026-08-25) -- for
    the row, its purchases AND its live CC-payback chain, because all of them
@@ -47,7 +61,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.exceptions import ValidationError
+from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import credit_workflow, match_withdrawal, posting_service
@@ -154,19 +168,38 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
         txn: The row to delete.  Must still be flushed (``txn.id`` set) so the
             reversal entries can link by it and the match members can be read
             back.
-        owner_id: The user the caller proved owns it, recorded on the events.
+        owner_id: The user the caller proved owns it, recorded on the events
+            AND reconciled against the row (step 0 of the module docstring's
+            order, finding **N-373**).
 
     Returns:
         What the delete did, as :class:`RowDeletion` -- the same shape
         :func:`preview_deletion` returned for the same row.
 
     Raises:
+        NotFoundError: When *owner_id* is not *txn*'s owner.  Both callers
+            prove ownership before reaching here -- the route through its own
+            helper, ``_release`` through a ``StatementMatch`` filtered on
+            ``user_id`` AND ``account_id`` -- so this is defence in depth and
+            not a live defect (finding **N-373** measured ``$0.00``).  What it
+            stops being is a PERMISSION a third caller inherits.  The message
+            is the row's id and nothing else, per the security response rule:
+            "not yours" and "not found" read alike.
+            **NEITHER caller catches it, deliberately** (CLAUDE.md rule 13): the
+            route's own helper reads the SAME attribute off the SAME instance
+            one line earlier with no write between, so an arm here would be
+            handling a state that cannot occur.  A third caller that has not
+            proved ownership gets a loud 500, which is the right answer to a
+            bug in a door that deletes budget rows.
         ValidationError: When :func:`~._row_rules.deletion_refusal` names a
             reason this row may not be deleted on its own -- a transfer shadow
             or a CC payback.  It fires BEFORE anything is written, so a refused
             delete leaves the database exactly as it was.
         PostingError: From the ledger reconcile, on a broken invariant.
     """
+    if txn.user_id != owner_id:
+        raise NotFoundError(f"Transaction {txn.id} not found.")
+
     refusal = deletion_refusal(txn)
     if refusal is not None:
         raise ValidationError(refusal)

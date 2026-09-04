@@ -708,8 +708,13 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
     **N-371**, plan step ``bank_import:X-gf-3a``).  The transaction arm did
     ``db.session.get(Transaction, row.row_id)``, so the ownership of a row this
     function DESTROYS rested on where its id had come from -- and
-    ``transaction_service.delete_transaction`` re-checks ``user_id`` nowhere,
-    its own signature saying *the user the caller proved owns it*.  The id is
+    ``transaction_service.delete_transaction`` re-checked ``user_id`` nowhere,
+    its own signature saying *the user the caller proved owns it*.  **That door
+    reconciles its ``owner_id`` against the row since plan step
+    ``pay_calendar:C13-b``** (finding **N-373**), so the argument below is no
+    longer the only thing holding this path -- but it is still the reason this
+    function passes an INSTANCE, because a door that refuses is not a door that
+    should be reached.  The id is
     gone from that path now: :attr:`PlannedRemoval.subject` is the instance
     :func:`planned_removals` already walked to off a
     :class:`~app.models.statement_match.StatementMatch` filtered on ``user_id``
@@ -721,6 +726,15 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
         owner_id: The user the route proved owns the account.
 
     Raises:
+        NotFoundError: From either verb's ownership reconcile -- the purchase
+            door's, and the transaction door's since plan step
+            ``pay_calendar:C13-b`` (finding **N-373**).  Unreachable: *owner_id*
+            is the user the route proved owns the ACCOUNT, and
+            :attr:`PlannedRemoval.subject` was walked to off a
+            ``StatementMatch`` filtered on that same ``user_id``.  Declared
+            rather than omitted because ``run_statement_door`` catches only
+            ``ValidationError`` and ``SQLAlchemyError``, so were the invariant
+            ever to break this door would 500 rather than refuse.
         PostingError: From a ledger reconcile, on a broken invariant.
         ValidationError: From the purchase door, which this step's own rule
             has already been asked (:func:`planned_removals` reads the same

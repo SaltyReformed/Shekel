@@ -176,10 +176,12 @@ def get_or_create_category_ledger_account(
 
     Args:
         user_id: The owning user's id.  Sourced by the caller from
-            ``txn.pay_period.user_id``; ``txn.user_id`` is the same value and
-            one hydration cheaper since plan step ``pay_calendar:C13-a``.  A
-            read that STAMPS rather than refuses, so NOT one of finding
-            **P75**'s nineteen -- that census excludes it by name.
+            ``txn.user_id``; it was ``txn.pay_period.user_id`` until plan step
+            ``pay_calendar:C13-b`` moved it, one hydration cheaper for the
+            same value.  A read that STAMPS rather than refuses, so it was
+            never one of finding **P75**'s nineteen -- that census excludes it
+            by name -- and what moved it is the rule that a row's owner has
+            ONE home.
         category_id: The budget category's id, or None to resolve the
             per-(owner, class) Uncategorized fallback.
         ledger_class: The accounting class, a

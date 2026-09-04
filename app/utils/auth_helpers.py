@@ -8,8 +8,11 @@ Pattern A (direct user_id): Use get_or_404() for models with a
 user_id column (Account, TransactionTemplate, SavingsGoal, etc.).
 
 Pattern B (indirect via parent): Use get_owned_via_parent() for
-models scoped through a FK parent (Transaction via PayPeriod,
-SalaryRaise via SalaryProfile, etc.).
+models scoped through a FK parent (SalaryRaise via SalaryProfile,
+PaycheckDeduction via SalaryProfile).  It named Transaction via
+PayPeriod as its first example until plan step ``pay_calendar:C13-b``;
+``budget.transactions`` carries its own ``user_id`` now, so that row is
+Pattern A and the example was pointing new code at the wrong one.
 
 Pattern C (role-based): Use @require_owner on routes restricted
 to the owner role. Companions receive 404 to avoid revealing
@@ -220,9 +223,14 @@ def get_owned_via_parent(model, pk, parent_attr,
     """Load a record by PK and verify ownership through its parent.
 
     For models that lack a direct ``user_id`` column but are scoped
-    through a FK parent (e.g. Transaction -> PayPeriod, SalaryRaise
-    -> SalaryProfile), this function lazy-loads the parent and checks
-    the parent's user_id.
+    through a FK parent (SalaryRaise -> SalaryProfile), this function
+    lazy-loads the parent and checks the parent's user_id.
+
+    **Transaction is NOT one of them any more** (plan step
+    ``pay_calendar:C13-b``).  It was this docstring's leading example, and
+    ``budget.transactions`` has carried a ``user_id`` since ``C13-a`` -- so a
+    door reaching for this helper with a ``Transaction`` would pay a
+    relationship load to read a column.  Every live caller is a salary row.
 
     Mirrors :func:`get_or_404`'s logging contract: the missing-PK
     branch emits ``resource_not_found`` at INFO, the cross-user
@@ -247,11 +255,11 @@ def get_owned_via_parent(model, pk, parent_attr,
 
     Examples::
 
-        # Transaction -> PayPeriod.user_id
-        get_owned_via_parent(Transaction, txn_id, "pay_period")
-
         # SalaryRaise -> SalaryProfile.user_id
         get_owned_via_parent(SalaryRaise, raise_id, "salary_profile")
+
+        # PaycheckDeduction -> SalaryProfile.user_id
+        get_owned_via_parent(PaycheckDeduction, ded_id, "salary_profile")
     """
     record = db.session.get(model, pk)
     if record is None:
@@ -306,11 +314,19 @@ def get_accessible_transaction(txn_id):
     The shared companion-aware access check behind the entry-CRUD
     (:mod:`app.routes.entries`) and status-change
     (:mod:`app.routes.transactions`) transaction routes.  Owners reach
-    transactions in their own pay periods; companions reach their linked
-    owner's transactions restricted to companion-visible rows (a template
-    flagged ``companion_visible``, or an ad-hoc row whose own
-    ``companion_visible`` flag is set -- resolved by
-    ``Transaction.visible_to_companion``).
+    transactions they OWN; companions reach their linked owner's
+    transactions restricted to companion-visible rows (a template flagged
+    ``companion_visible``, or an ad-hoc row whose own ``companion_visible``
+    flag is set -- resolved by ``Transaction.visible_to_companion``).
+
+    **The owner is read off the ROW, and this door is where plan step
+    ``pay_calendar:C13-b`` started.**  It was ``txn.pay_period.user_id`` -- a
+    relationship walk issued to learn a fact the row itself did not carry --
+    and it is the canonical route-boundary door, reached from eight route
+    sites, so it was the largest single consumer of finding **P75**'s census.
+    ``budget.transactions.user_id`` carries the same value since ``C13-a``,
+    held equal to the paycheck's by ``fk_transactions_owner_period``, so the
+    two cannot disagree and the walk bought a query rather than an answer.
 
     Follows the project security response rule: returns ``None`` for both
     "not found" and "not accessible" so the caller returns 404 in either
@@ -344,7 +360,7 @@ def get_accessible_transaction(txn_id):
         )
         return None
     requester_id = _safe_user_id()
-    owner_id = txn.pay_period.user_id
+    owner_id = txn.user_id
     companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
     if getattr(current_user, "role_id", None) == companion_role_id:
         # Companion path: linked owner's data + companion-visible

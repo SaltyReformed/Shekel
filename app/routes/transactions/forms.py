@@ -23,7 +23,7 @@ from app.services import pay_period_service, transaction_service
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import allowed_transitions
-from app.utils.auth_helpers import log_refused_lookup, require_owner
+from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 from app.routes._period_options import period_move_options
 from app.routes._render_helpers import (
@@ -35,6 +35,7 @@ from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
     _get_owned_transaction,
     _resolve_owned_fks,
+    _resolve_owned_period,
 )
 
 
@@ -181,17 +182,17 @@ def get_full_edit(txn_id):
     #     that splits its own transaction: no ``write_transaction`` block runs
     #     on this path, which is what makes the GET argument sound where it is
     #     unsound on ``/grid``.
-    #   * **A row filed in ANOTHER owner's pay period.**  Closed by
-    #     ``_get_owned_transaction``, which scopes on ``txn.pay_period.user_id``
-    #     -- so the calendar built from ``current_user.id`` below and the owner
-    #     of the period the row names are the same by construction, and the
-    #     offer set the ``<select>`` renders is the requesting owner's.
-    #     **``pay_calendar:C13`` reopens this leg**: it makes a transaction's
-    #     owner a COLUMN, and a door re-scoped onto ``Transaction.user_id``
-    #     stops proving anything about the row's PERIOD's owner.  That step
-    #     also makes the mismatch unconstructible with a composite foreign key,
-    #     so the leg is replaced rather than lost -- but it is replaced there,
-    #     not here.
+    #   * **A row filed in ANOTHER owner's pay period -- and the leg that
+    #     closes it MOVED, exactly as this comment predicted it would.**
+    #     ``_get_owned_transaction`` scoped on ``txn.pay_period.user_id``, so
+    #     the calendar built from ``current_user.id`` below and the owner of
+    #     the period the row names were the same BY CONSTRUCTION.  That door
+    #     reads ``txn.user_id`` since plan step ``pay_calendar:C13-b`` and no
+    #     longer proves anything about the row's PERIOD's owner -- and it does
+    #     not have to: ``fk_transactions_owner_period`` (plan step ``C13-a``)
+    #     makes a row whose paycheck belongs to someone else UNSTORABLE, so
+    #     the equality this leg used to establish by asking is now a fact the
+    #     schema will not let be false.  The leg is replaced, not lost.
     calendar = calendar_for(current_user.id)
     periods = period_move_options(calendar, txn.pay_period_id)
     amounts = fragment_amounts(txn)
@@ -336,15 +337,19 @@ def _resolve_grid_cell():
     step C2-f2b put on ``grid.partials.mobile_this_period_summary`` and plan
     step C2-f3c put on ``_resolve_carry_forward_context`` one module over.
 
-    **It does NOT take the last ORM ``PayPeriod`` out of this blueprint, and a
+    **It did NOT take the last ORM ``PayPeriod`` out of this blueprint, and a
     first draft of this paragraph claimed it did.**  Measured with
-    ``tests._test_helpers.pay_periods_hydrated``: after this step
+    ``tests._test_helpers.pay_periods_hydrated``: after C2-f3e
     ``/transactions/<id>/cell``, ``/quick-edit`` and ``/full-edit`` each still
-    hydrate exactly one, because :func:`._helpers._get_owned_transaction`
-    walks ``txn.pay_period.user_id``.  It is one of ELEVEN such comparisons in
-    ``app/`` and one of EIGHT more that fetch the row by primary key instead --
-    ledger row **P75** carries the census and the remedy to rule.  What this
-    closes is the three cell fragments.
+    hydrated exactly one, because :func:`._helpers._get_owned_transaction`
+    walked ``txn.pay_period.user_id`` -- one of the ELEVEN such comparisons
+    ledger row **P75** counted, beside EIGHT more that fetched the row by
+    primary key.  **Plan step ``pay_calendar:C13-b`` retired all nineteen**,
+    and what it did to THESE three is documented where the hydration now
+    happens: :func:`app.routes._render_helpers.render_transaction_cell`, which
+    reads ``pay_period.start_date`` for the due caption and used to get it
+    free off the ownership walk.  The count did not fall; the load MOVED, and
+    that docstring carries the re-measurement.
 
     **What it costs, stated rather than glossed**, because the honest
     comparison is not free: a primary-key ``session.get`` becomes
@@ -391,17 +396,18 @@ def _resolve_grid_cell():
     if err is not None:
         return None, err
 
-    period = calendar_for(current_user.id).period_by_id(period_id)
-    if period is None:
-        # The forensic half the calendar cannot supply on its own, and the
-        # rule :func:`~app.utils.auth_helpers.log_refused_lookup` was written
-        # for: an owner-scoped lookup cannot tell "no such row" from "not
-        # yours", which is the stronger security property and exactly why it
-        # must not also mean no trail.  The two probes ABOVE are silent and
-        # stay so here: they run through ``_resolve_owned_fks``, which the
-        # write routes share, so what that door logs is its own question.
-        log_refused_lookup("PayPeriod", period_id)
-        return None, ("Not found", 404)
+    # The lookup and its forensic half are ``_resolve_owned_period``'s since
+    # plan step ``pay_calendar:C13-b``, which gave this shape a name so the
+    # three WRITE doors could take it too.  They were silent -- they ran
+    # through ``_resolve_owned_fks`` -- and now share this one's
+    # ``log_refused_lookup`` call, which is that helper's own stated rule: an
+    # owner-scoped lookup cannot tell "no such row" from "not yours", which is
+    # the stronger security property and exactly why it must not also mean no
+    # trail.  The body stays this blueprint's uniform ``"Not found"`` so a
+    # fragment's 404 still says nothing about WHICH of its four ids was wrong.
+    period, err = _resolve_owned_period(period_id, "Not found")
+    if err is not None:
+        return None, err
 
     return _GridCell(
         category=objs[Category],

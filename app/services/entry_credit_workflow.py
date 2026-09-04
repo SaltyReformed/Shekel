@@ -23,7 +23,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import match_withdrawal, posting_service
 from app.services.amount_ownership import state_own_amount
 from app.services.row_valuation import settled_figure
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.credit_workflow import (
     create_cc_payback_transaction,
     get_active_payback,
@@ -366,8 +366,23 @@ def _create_payback(
     Raises:
         ValidationError: If no next pay period exists.
     """
-    next_period = calendar_for(owner_id).period_starting_after(
-        txn.pay_period.start_date,
+    # **The payday this counts FROM comes out of the same calendar** since
+    # plan step ``pay_calendar:C13-b`` -- the transaction-level twin
+    # (``credit_workflow.mark_as_credit``) carries the same argument.
+    # It was ``txn.pay_period.start_date``, read off a relationship the entry
+    # doors hydrated while walking it for their ownership check; those doors
+    # read ``entry.transaction.user_id`` now, so the walk would have become a
+    # lazy load for a span this derivation already holds.
+    #
+    # **The READ ORDER, stated because ``require_period`` requires every caller
+    # to state its own**: the ROW is read first, the paydays second, so a
+    # concurrent DESTRUCTIVE pay-period door -- reset, regenerate or truncate
+    # -- committing between them raises rather than answering off a stale
+    # picture.  That is balance finding **N-358**, whose remedy is
+    # `balance:X-i5`.
+    calendar = calendar_for(owner_id)
+    next_period = calendar.period_starting_after(
+        calendar.require_period(FiledRow.for_row(txn)).start_date,
     )
     if next_period is None:
         raise ValidationError(
