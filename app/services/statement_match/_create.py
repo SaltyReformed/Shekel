@@ -573,7 +573,7 @@ def create_purchase_from_line(
         # the bank's sign convention, so the receipt reads a fact this door
         # established rather than re-deriving a direction from the purchase's
         # own sign -- the rule ``_panel.AddAct`` states for the card and
-        # ``_cards._creatable_card`` already follows.
+        # ``_cards.creatable_card`` already follows.
         records_a_refund=is_inflow(line.amount),
     )
     log_event(

@@ -291,7 +291,12 @@ from ._directory import (
     merchant_directory,
 )
 from ._scope import ReviewScope
-from ._skipping import SkippedLine, skip_line, unskip_line
+from ._skipping import (
+    SkippedLine,
+    SkipRequest,
+    skip_line,
+    unskip_line,
+)
 from ._undisposed import awaiting_review_count
 from ._panel import AddAct, AddTab, MatchCandidates, VerbPanel
 from ._verbs import Verb, VerbOffer
@@ -415,6 +420,7 @@ __all__ = [
     "removals_by_match",
     "register_set",
     "review_set",
+    "SkipRequest",
     "skip_line",
     "unskip_line",
     "rule_filed_acts",

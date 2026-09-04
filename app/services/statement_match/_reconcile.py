@@ -51,19 +51,24 @@ pass's barred lines the owner had answered *never a purchase* for, on the
 argument that the standing answer WAS the disposition; ruling
 **bank_import:R-JH** refuted that -- *not a purchase* is not *explained by
 nothing* -- and ``X-gj-4c-1`` returned those lines to the inbox, which left
-the tab holding a hard-coded empty tuple.  It reads the store now.  **The
-count is still 0 on every account until ``X-gj-4b`` lights the verb**, because
-no door in the app calls :func:`~._skipping.skip_line` yet -- but that is now
-a fact about the DATA rather than about this module, and the difference is the
-whole point: whatever a door records, this tab renders it.
+the tab holding a hard-coded empty tuple.  It reads the store now, and **plan step
+``bank_import:X-gj-4b`` gave that store its first writer**:
+:func:`~._batch._apply_skips` calls :func:`~._skipping.skip_line`, so the
+count is whatever the owner has skipped rather than 0 on every account.
+*This said the count was still 0 until that step lit the verb, and the step
+has shipped.*  The point it was making survives unchanged: what the tab shows
+is a fact about the DATA rather than about this module, and whatever a door
+records, this tab renders.
 
 **A line with no available act never enters To explain** (**R-HQ**).  That is
 what makes the inbox reach zero: measured 2026-08-29 on the developer's own
 account, 9 of the 27 unexplained lines are card payments no screen in the app
 can resolve, and a queue that cannot empty is not a queue.  **A line the owner
-answered *never a purchase* for HAS one** -- it keeps MATCH and gains SKIP at
-``X-gj-4b`` -- which is why **R-JH** puts it back in the inbox without
-breaching this.
+answered *never a purchase* for HAS one** -- it keeps MATCH, and since plan
+step ``bank_import:X-gj-4b`` it HAS SKIP, which ruling **bank_import:R-JI**
+shuts only for a merchant a source files as paying an account the owner holds
+and so never for this class -- which is why **R-JH** puts it back in the inbox
+without breaching this.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
 frozen dataclasses out, no Flask import, no clock read.  Every read it
@@ -79,15 +84,12 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from ._accepted_view import REGISTER_LIMIT, accepted_counts, accepted_register
-from ._cards import (
-    CardKind,
-    CardSection,
-    LineCard,
+from ._card_sections import (
     act_sections,
-    parked_card,
     skip_sections,
     to_explain_sections,
 )
+from ._cards import CardKind, CardSection, LineCard, parked_card
 from ._last_import import last_import
 from ._reads import review_set
 from ._skipping import skipped_acts, skipped_count

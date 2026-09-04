@@ -63,6 +63,7 @@ from app.services.statement_match import (
     PurchaseCreation,
     ReviewedBatch,
     ReviewScope,
+    SkipRequest,
 )
 
 
@@ -435,9 +436,10 @@ def submitted_item_count(submitted) -> int:
     """Return how many ACTS one loaded pass carries.
 
     **Every kind, counted once** (ruling **bank_import:R-GW**).  A count that
-    named two of the three would make the audit trail disagree with
-    ``applied_count`` for any pass holding a deposit, and it was written that
-    way once.  Stated here because both surfaces that apply a pass log it, and
+    named three of the four would make the audit trail disagree with
+    ``applied_count`` for any pass holding a skip, and it was written a kind
+    short once already -- for the deposit, which is why the sentence names the
+    failure rather than the arm.  Stated here because both surfaces that apply a pass log it, and
     pylint's cross-file ``duplicate-code`` reported the second copy the moment
     the Reconcile page became one.
 
@@ -453,6 +455,7 @@ def submitted_item_count(submitted) -> int:
         len(submitted["matches"])
         + len(submitted["creations"])
         + len(submitted["incomes"])
+        + len(submitted["skips"])
     )
 
 
@@ -547,11 +550,15 @@ def submitted_batch(submitted) -> ReviewedBatch:
             IncomeCreation(line_id=item["line_id"])
             for item in submitted["incomes"]
         ),
+        skips=tuple(
+            SkipRequest(line_id=item["line_id"])
+            for item in submitted["skips"]
+        ),
     )
 
 
 def outcome_counts(outcome) -> dict:
-    """Return one applied pass's money effects, as ``log_event`` keywords.
+    """Return what one applied pass DID, as ``log_event`` keywords.
 
     Stated ONCE for both doors that apply a
     :class:`~app.services.statement_match.BatchOutcome` -- the reviewed pass
@@ -596,6 +603,14 @@ def outcome_counts(outcome) -> dict:
         "refunded_count": outcome.refunded_count,
         "envelopes_created": outcome.envelopes_created,
         "deposited_count": outcome.deposited_count,
+        # Added at plan step ``bank_import:X-gj-4b`` with the fourth act
+        # class, for this function's own stated reason.  **It is the one
+        # count here that reports no MONEY**, and it is emitted anyway: a
+        # trail whose fields depend on which door wrote the row cannot be
+        # queried across them, and *how many lines this pass stopped asking
+        # about* is exactly the question a skip answers.
+        "skipped_count": outcome.skipped_count,
+        "already_skipped_count": outcome.already_skipped_count,
     }
 
 

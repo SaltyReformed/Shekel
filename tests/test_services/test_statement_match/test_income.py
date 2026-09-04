@@ -585,6 +585,7 @@ class TestThePassReportsIt:
 
         outcome = apply_reviewed(
             ReviewedBatch(
+                skips=(),
                 consent=Consent.TICKED, matches=(), creations=(),
                 incomes=(IncomeCreation(line_id=line.id),),
             ),
@@ -600,6 +601,7 @@ class TestThePassReportsIt:
 
         outcome = apply_reviewed(
             ReviewedBatch(
+                skips=(),
                 consent=Consent.TICKED, matches=(), creations=(),
                 incomes=(IncomeCreation(line_id=line.id),),
             ),
@@ -626,6 +628,7 @@ class TestThePassReportsIt:
 
         outcome = apply_reviewed(
             ReviewedBatch(
+                skips=(),
                 consent=Consent.TICKED, matches=(), creations=(),
                 incomes=(IncomeCreation(line_id=line.id),),
             ),
@@ -643,6 +646,7 @@ class TestThePassReportsIt:
 
         outcome = apply_reviewed(
             ReviewedBatch(
+                skips=(),
                 consent=Consent.TICKED, matches=(), creations=(),
                 incomes=(IncomeCreation(line_id=line.id),),
             ),
@@ -665,6 +669,7 @@ class TestThePassReportsIt:
 
         outcome = apply_reviewed(
             ReviewedBatch(
+                skips=(),
                 consent=Consent.TICKED, matches=(), creations=(),
                 incomes=(IncomeCreation(line_id=line.id),),
             ),
@@ -682,6 +687,7 @@ class TestThePassReportsIt:
 
         outcome = apply_reviewed(
             ReviewedBatch(
+                skips=(),
                 consent=Consent.TICKED, matches=(), creations=(),
                 incomes=(
                     IncomeCreation(line_id=bad.id),
@@ -715,6 +721,7 @@ class TestWhichConsentReachesThisDoor:
         batch is constructible where it used to raise.
         """
         batch = ReviewedBatch(
+            skips=(),
             consent=Consent.STANDING_RULE, matches=(), creations=(),
             incomes=(IncomeCreation(line_id=1),),
         )
@@ -734,6 +741,7 @@ class TestWhichConsentReachesThisDoor:
         """
         with pytest.raises(ValueError, match="cannot carry a match"):
             ReviewedBatch(
+                skips=(),
                 consent=Consent.STANDING_RULE,
                 # The submission's CONTENT is irrelevant here: the refusal is
                 # about the act CLASS a rule may consent to, and it fires in
@@ -1092,6 +1100,7 @@ class TestTheCARDsOKFilesUnderTheSameAnswerTheCARDSTATES:
 
         outcome = apply_reviewed(
             ReviewedBatch(
+                skips=(),
                 consent=Consent.TICKED, matches=(), creations=(),
                 incomes=(IncomeCreation(line_id=line.id),),
             ),
@@ -1122,6 +1131,7 @@ class TestTheCARDsOKFilesUnderTheSameAnswerTheCARDSTATES:
 
         outcome = apply_reviewed(
             ReviewedBatch(
+                skips=(),
                 consent=Consent.TICKED, matches=(), creations=(),
                 incomes=(IncomeCreation(line_id=line.id),),
             ),

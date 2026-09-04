@@ -82,6 +82,7 @@ from app.utils.log_events import (
 from ._accepted_view import REGISTER_LIMIT
 from ._reads import as_bank_line
 from ._undisposed import answered_by_a_match
+from ._verbs import SKIP_SHUT_PAYS_AN_ACCOUNT
 from ._vocabulary import account_payment_merchants
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
@@ -115,28 +116,37 @@ _NO_SUCH_SKIP = (
     "That skip is no longer there.  Reload the page; nothing was changed."
 )
 
-#: What the owner is told when their bank files this line as paying an account
-#: they hold.  Ruling **bank_import:R-JI** (developer, 2026-09-02).
-#:
-#: **It is a DOOR and not a shut tab**, which is ruling **R-GJ**'s whole
-#: lesson one verb over: that ruling cost `$7,412.94` to learn that a warning
-#: paragraph over a working control is not a refusal.  ``X-gj-4b`` will render
-#: SKIP shut for these lines; a screen-level shut over an open door is the
-#: exact shape R-GJ closed, so the refusal lives here.
-#:
-#: **And it is not only a doctrine point.**  Such a line is a
-#: :class:`~._bars.BarredLine` the Reconcile page counts on its *waiting for
-#: the account they paid* chip, whose label carries a COUNT and a MAGNITUDE
-#: (:func:`~._reconcile._chips`).  Skipping one drops it out of the pass, so
-#: that money figure falls -- a skip moving a rendered amount, which is the
-#: one thing this act is supposed never to do.  Named by adversarial review
-#: 2026-09-02.
-_PAYS_AN_ACCOUNT = (
-    "Your bank files that line as a payment to another account you hold, so "
-    "it is not explained by nothing -- the money moved between two of your "
-    "own accounts.  It waits on the Transfers tab until the app can pair the "
-    "two sides."
-)
+
+@dataclass(frozen=True)
+class SkipRequest:
+    """One bank line a reviewed pass asks to record as explained by nothing.
+
+    Plan step ``bank_import:X-gj-4b``.  **What the owner SUBMITTED**, where
+    :class:`SkippedLine` is what the door DID -- the same seam
+    :class:`~._creations.IncomeCreation` and
+    :class:`~._creations.RecordedIncome` draw for the act beside it.
+
+    **One field, and the emptiness is the design.**  A skip names no container,
+    no row and no figure: ruling **bank_import:R-JG** stores no reason and
+    there is none to store, because the decision IS *explained by nothing*.
+    Its sibling :class:`~._creations.PurchaseCreation` carries a destination
+    because a purchase is filed against something the owner chooses between,
+    and this is what that argument looks like when the verb takes no argument
+    at all.
+
+    **It lives HERE and not in :mod:`._creations`**, which is the module for
+    *what the owner may ask this import to CREATE*.  A skip creates nothing;
+    what it produces is a decision, and this module owns the act.
+
+    Attributes:
+        line_id: The bank line to dispose of.  Graded before it arrives, by
+            :class:`~app.schemas.validation.statements.StatementSkipSchema`,
+            through the same ``RowId`` every other id on a reviewed pass is
+            graded by -- so a forged or unparseable id is refused at the
+            schema and never reaches :func:`skip_line`.
+    """
+
+    line_id: int
 
 
 @dataclass(frozen=True)
@@ -145,12 +155,22 @@ class SkippedLine:
 
     Attributes:
         skip_id: The act, so a later screen can offer to undo it.
-        line_id: The bank line it disposes of.  **Carried even though the
-            caller supplied it**, for the reason
-            :attr:`~._batch.AppliedItem.line_ids` is: a batch reports per-item
-            outcomes and pairs each with what was submitted, and an outcome
-            that could not say which line it was about would have to be paired
-            by position.
+        line: The bank's own record of the movement
+            (:class:`~._offers.BankLine`) -- the merchant, the posted day and
+            the amount.  **Carried even though the caller supplied its id**,
+            for the reason :attr:`~._batch.AppliedItem.line_ids` is: a batch
+            reports per-item outcomes and pairs each with what was submitted,
+            and an outcome that could not say which line it was about would
+            have to be paired by position.
+            **It was the bare ``line_id`` until plan step
+            ``bank_import:X-gj-4b``**, which put this door in a BATCH: that
+            pass writes one receipt sentence per act, every other sentence in
+            :mod:`._batch` names its act's figure and its day, and ruling
+            **R-GD(a)**'s rule is that a consent naming a count and no figure
+            is a consent to an amount nobody stated.  The door is holding the
+            row already, so carrying it costs no read; deriving the figure in
+            :mod:`._batch` instead would be a second query for a fact this
+            function had in hand.
         was_already_skipped: Whether this act found the decision already
             recorded and wrote nothing.  **Reported rather than hidden**: a
             door that absorbs a repeat and says nothing is indistinguishable
@@ -161,8 +181,22 @@ class SkippedLine:
     """
 
     skip_id: int
-    line_id: int
+    line: "BankLine"
     was_already_skipped: bool
+
+    @property
+    def line_id(self) -> int:
+        """Return the bank line this act disposes of.
+
+        **A property over :attr:`line` rather than a field beside it**, which
+        is ``CLAUDE.md`` rule 14 at its smallest grain: the id is ON the line,
+        and a second copy would be a second thing to keep in step for the sake
+        of callers that want only the id.
+
+        Returns:
+            The ``budget.bank_statement_lines`` row id.
+        """
+        return self.line.line_id
 
 
 def _line_on(
@@ -289,7 +323,8 @@ def skip_line(line_id: int, owner_id: int, account_id: int) -> SkippedLine:
         # refusal.**  Reported as such rather than absorbed silently: see
         # :attr:`SkippedLine.was_already_skipped`.
         return SkippedLine(
-            skip_id=standing.id, line_id=line_id, was_already_skipped=True,
+            skip_id=standing.id, line=as_bank_line(line),
+            was_already_skipped=True,
         )
 
     # **The pass's own predicate, asked of ONE line**
@@ -313,7 +348,7 @@ def skip_line(line_id: int, owner_id: int, account_id: int) -> SkippedLine:
         line.merchant_id is not None
         and line.merchant_id in account_payment_merchants(account_id)
     ):
-        raise ValidationError(_PAYS_AN_ACCOUNT)
+        raise ValidationError(SKIP_SHUT_PAYS_AN_ACCOUNT)
 
     skip = StatementLineSkip(
         bank_statement_line_id=line_id,
@@ -333,7 +368,7 @@ def skip_line(line_id: int, owner_id: int, account_id: int) -> SkippedLine:
         skip_id=skip.id,
     )
     return SkippedLine(
-        skip_id=skip.id, line_id=line_id, was_already_skipped=False,
+        skip_id=skip.id, line=as_bank_line(line), was_already_skipped=False,
     )
 
 

@@ -370,6 +370,12 @@ def apply_hand_match(account_id):
                 matches=(submitted_match(submitted),),
                 creations=(),
                 incomes=(),
+                # **This surface builds ONE match and nothing else**, which is
+                # what the three empty tuples say: the hand-build form has no
+                # create control, no income control and no skip control, and
+                # a door that defaulted them would let a fourth act class
+                # reach it the day one was added without anyone deciding.
+                skips=(),
             ),
             scope,
         ),

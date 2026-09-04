@@ -46,11 +46,16 @@ from typing import TYPE_CHECKING
 
 from ._panel import AddAct, AddTab, VerbPanel
 from ._rules import is_inflow
-from ._sentence import NAMED_ROW_LIMIT, Span, choose, for_accepted
+from ._sentence import NAMED_ROW_LIMIT, Span, choose
 from ._sentence import for_income_placement
 from ._sentence import for_parked_transfer, for_placement, for_proposal
-from ._sentence import for_skip
-from ._verbs import ADD_SHUT_BY_A_PROPOSAL, Verb, VerbOffer, offers_for
+from ._verbs import (
+    ADD_SHUT_BY_A_PROPOSAL,
+    SKIP_SHUT_PAYS_AN_ACCOUNT,
+    Verb,
+    VerbOffer,
+    offers_for,
+)
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._accepted_view import AcceptedGroup
@@ -294,9 +299,17 @@ class LineCard:
 
         Returns:
             Whether any verb's door would accept this line
-            (:attr:`~._panel.VerbPanel.open_verbs`).  **That is exactly the
-            set whose panes render a submitting control**: TRANSFER and SKIP
-            have no door in this build so they are never open, an open MATCH
+            (:attr:`~._panel.VerbPanel.open_verbs`).  **It is the set of
+            verbs this card may be consented TO**, which is what decides
+            whether the ``ok`` checkbox is in the document.  TRANSFER has no
+            door in this build so it is never open; SKIP is open on most cards
+            since plan step ``bank_import:X-gj-4b``, and on a card with no
+            other act it is what puts the checkbox there at all.  *This read
+            "TRANSFER and SKIP have no door so they are never open", and
+            called this "exactly the set whose panes render a submitting
+            control" -- that step falsified both*: an open SKIP pane renders
+            no control of its own, because the verb takes no argument, and
+            the footer's verb-named button is what submits it.  An open MATCH
             always offers the row list, and an open ADD always carries an
             :class:`~._panel.AddTab` -- a card whose ADD has no act states its
             refusal through ``add_waits`` instead, which shuts the verb.
@@ -507,19 +520,30 @@ class CardSection:
 
 
 def _offers(
-    review: "ReviewSet", add_waits: "str | None",
+    review: "ReviewSet", line: "BankLine", add_waits: "str | None",
     proposal: "MatchProposal | None",
 ) -> "tuple[VerbOffer, ...]":
     """Return all four verb offers for one line.
 
-    **The one place the pass-level MATCH fact is applied.**  A proposal names
-    its own rows, and those rows are exactly the ones ``unmatched_rows``
-    withholds (:func:`~._reads._rows_the_bank_never_showed`) -- so a pass whose
-    every row a proposal claims would report an empty pool and shut MATCH on
-    the very lines it had just matched.
+    **The one place the pass-level MATCH and SKIP facts are applied.**  A
+    proposal names its own rows, and those rows are exactly the ones
+    ``unmatched_rows`` withholds
+    (:func:`~._reads._rows_the_bank_never_showed`) -- so a pass whose every row
+    a proposal claims would report an empty pool and shut MATCH on the very
+    lines it had just matched.
+
+    **SKIP is shut HERE and for every builder**, which is the only placement
+    that is total (plan step ``bank_import:X-gj-4b``, ruling
+    **bank_import:R-JI**): the screen shuts the verb on exactly the set
+    :func:`~._skipping.skip_line` refuses.  Why the narrower per-list spelling
+    cannot do it, and why a line naming no merchant is never shut, are stated
+    once on :attr:`~._reads.ReviewSet.account_payments`, which is where the
+    fact is published.
 
     Args:
-        review: The pass, which owns the pool of unexplained app rows.
+        review: The pass, which owns the pool of unexplained app rows and the
+            merchants a source files as account payments.
+        line: The bank line this card is about, for its merchant.
         add_waits: Why ADD is shut for this line, or ``None``.
         proposal: The match a tier offers for this line, or ``None``.
 
@@ -529,10 +553,14 @@ def _offers(
     return offers_for(
         add_waits=add_waits,
         has_rows_to_match=proposal is not None or bool(review.unmatched_rows),
+        skip_waits=(
+            SKIP_SHUT_PAYS_AN_ACCOUNT
+            if line.merchant_id in review.account_payments else None
+        ),
     )
 
 
-def _proposal_card(
+def proposal_card(
     review: "ReviewSet", proposal: "MatchProposal",
 ) -> LineCard:
     """Return the card for a match a TIER proposes.
@@ -553,7 +581,10 @@ def _proposal_card(
         arrivals_already_held=None,
         risk_class=proposal.review_class,
         panel=VerbPanel(
-            offers=_offers(review, ADD_SHUT_BY_A_PROPOSAL, proposal),
+            offers=_offers(
+                review, proposal.lines[0], ADD_SHUT_BY_A_PROPOSAL,
+                proposal,
+            ),
             # **A proposal is a CONCLUSION**, so this pass has no unfinished
             # search to report about its line: the gap sentence answers *why
             # can the app not say nothing explains this*, which a proposal
@@ -570,7 +601,7 @@ def _proposal_card(
     )
 
 
-def _creatable_card(
+def creatable_card(
     review: "ReviewSet", creatable: "CreatableLine",
 ) -> LineCard:
     """Return the card for an outflow the create door would accept.
@@ -600,7 +631,7 @@ def _creatable_card(
         arrivals_already_held=None,
         risk_class=placement.sweep_class if names_a_home else None,
         panel=VerbPanel(
-            offers=_offers(review, creatable.withheld, None),
+            offers=_offers(review, creatable.line, creatable.withheld, None),
             # **The gap is not asked for**: :func:`~._verdict.ruled` has
             # already folded it into ``warning``, which is the wider sentence
             # -- a rule this pass withheld, OR a search it did not finish --
@@ -623,7 +654,7 @@ def _creatable_card(
     )
 
 
-def _inflow_card(
+def inflow_card(
     review: "ReviewSet", inflow: "RecordableInflow",
 ) -> LineCard:
     """Return the card for money coming IN that no row explains.
@@ -678,7 +709,7 @@ def _inflow_card(
         arrivals_already_held=review.arrivals_already_held_in(inflow.line),
         risk_class=None,
         panel=VerbPanel(
-            offers=_offers(review, inflow.withheld, None),
+            offers=_offers(review, inflow.line, inflow.withheld, None),
             notes=tuple(
                 said for said in (inflow.withheld, withheld_by_rule, gap)
                 if said is not None
@@ -730,7 +761,7 @@ def _barred_panel(review: "ReviewSet", barred: "BarredLine") -> VerbPanel:
     """
     gap = review.search_gap_for(barred.line)
     return VerbPanel(
-        offers=_offers(review, barred.reason, None),
+        offers=_offers(review, barred.line, barred.reason, None),
         notes=tuple(
             said for said in (barred.reason, gap) if said is not None
         ),
@@ -808,16 +839,20 @@ def answered_never_card(
     OFFERS A ROW, which is what keeps ruling R-HQ from being breached by
     putting it in the inbox** -- and the bound in that sentence is real rather
     than defensive.  MATCH is shut for EVERY line when the pass offers no
-    unexplained row at all (:data:`~._verbs.MATCH_SHUT_NO_ROWS`), and SKIP is
-    shut until plan step ``bank_import:X-gj-4b`` lights it, so on such a pass
-    this card is in the inbox with NO open verb and
-    :attr:`~._reconcile.ReconcilePage.is_done` cannot reach ``True``.  That is
-    not new and not this class's: a :class:`~._leftovers.CreatableLine` whose
-    pay period no calendar covers is already in the inbox on the same terms
-    (:func:`~._leftovers._one_creatable` gives it no destinations, no placement
-    and a ``withheld`` refusal).  ``X-gj-4b`` closes it for this class by
-    opening SKIP, which is the verb these lines are for, and the three steps
-    reach production as one batch.  *An earlier draft of this paragraph opened
+    unexplained row at all (:data:`~._verbs.MATCH_SHUT_NO_ROWS`).  **Plan
+    step ``bank_import:X-gj-4b`` CLOSED the hole this paragraph described**:
+    SKIP was shut on every line until that step, so a pass offering no row
+    left this card in the inbox with NO open verb and
+    :attr:`~._reconcile.ReconcilePage.is_done` unable to reach ``True``.  SKIP
+    is open for these lines now -- ruling **bank_import:R-JI** shuts it only
+    for a merchant a source files as paying an account the owner holds, which
+    is never true of a line barred by the owner's own answer alone -- so the
+    card always has an act.  *This was written in the FUTURE tense about the
+    step that has now shipped.*  The same state is still reachable elsewhere
+    and is not this class's: a :class:`~._leftovers.CreatableLine` whose pay
+    period no calendar covers is in the inbox on the same terms
+    (:func:`~._leftovers._one_creatable` gives it no destinations, no
+    placement and a ``withheld`` refusal).  *An earlier draft of this paragraph opened
     "always has an available act" and then stated the bound that contradicts
     it; adversarial review 2026-09-03 named the contradiction.*
 
@@ -846,147 +881,4 @@ def answered_never_card(
         arrivals_already_held=None,
         risk_class=None,
         panel=_barred_panel(review, barred),
-    )
-
-
-def to_explain_sections(
-    review: "ReviewSet",
-) -> "tuple[CardSection, ...]":
-    """Return the inbox, grouped by what suggested each card's verb.
-
-    Ruling **bank_import:R-HP**.  **The four source lists are DISJOINT and
-    that is what lets them be concatenated**: ``creatable``,
-    ``recordable_inflows`` and ``answered_never`` are all subsets of
-    ``unmatched``, which :func:`~._reads._unexplained` has already taken every
-    proposal's line out of, and :func:`~._leftovers._creatable_lines` puts each
-    barred line in exactly one of its two lists -- so no line can appear on two
-    cards.  *It said THREE until plan step ``bank_import:X-gj-4c``.*
-
-    **``parked`` is absent** (**R-HQ**): a line a source files as paying an
-    account the owner holds is a holding state on its own tab, never inbox
-    work.  **``answered_never`` is PRESENT** (**R-JH**), and the two used to be
-    one list: a standing *never a purchase* answer shuts the ADD door and
-    claims nothing about what the line is, so such a line is still work and
-    still has MATCH.
-
-    Args:
-        review: The pass.
-
-    Returns:
-        One :class:`CardSection` per :class:`Section` that has a card, in the
-        enum's order.  An empty section is ABSENT rather than rendered empty.
-    """
-    cards = (
-        [_proposal_card(review, one) for one in review.proposals]
-        + [_creatable_card(review, one) for one in review.creatable]
-        + [
-            _inflow_card(review, one)
-            for one in review.recordable_inflows
-        ]
-        + [
-            answered_never_card(review, one)
-            for one in review.answered_never
-        ]
-    )
-    sections = []
-    for section in Section:
-        mine = _newest_first(
-            card for card in cards if card.section is section
-        )
-        if mine:
-            sections.append(
-                CardSection(section=section, cards=mine, withheld=0),
-            )
-    return tuple(sections)
-
-
-def _newest_first(cards) -> "tuple[LineCard, ...]":
-    """Return *cards* with the most recent bank day first.
-
-    The locked direction's own rule for a section (``docs/design
-    /bank_import_audit.md``, *Within a section, newest first*), and it was not
-    kept until plan step ``bank_import:X-gj-1b``: the pass hands its lines
-    over ASCENDING by day (:attr:`~._reads.ReviewSet.unmatched`), so every
-    section rendered oldest first -- the owner's most recent swipes, which are
-    the ones they can still remember, at the bottom of a 27-card list.
-
-    **Sorted HERE rather than in Jinja**, because the order a screen presents
-    work in is a decision and a template restating it is a second place for it
-    to be wrong -- the rule this package keeps for every count and every
-    partition.
-
-    Args:
-        cards: The section's cards, in the pass's own order.
-
-    Returns:
-        Them, descending by the bank's POSTED day.  **A STABLE sort**, so two
-        lines the bank posted on one day keep the pass's own order rather than
-        an arbitrary one that could differ between two renders of the same
-        page -- which is what a reader comparing a screenshot would see.
-    """
-    return tuple(
-        sorted(cards, key=lambda card: card.line.posted_on, reverse=True)
-    )
-
-
-def skip_sections(register) -> "tuple[CardSection, ...]":
-    """Return the recorded skips, as one unnamed section of cards.
-
-    Plan step ``bank_import:X-gj-4c-2``.  :func:`act_sections`' twin one act
-    over, and a separate builder rather than a parameter on that one, because
-    the two build DIFFERENT card types from different values -- which is the
-    whole reason :class:`SkipCard` is not an :class:`ActCard`.
-
-    Args:
-        register: The :class:`~._skipping.SkippedRegister` -- the acts to
-            render, in the reader's own order (newest bank day first), and how
-            many the bound left out.
-
-    Returns:
-        One :class:`CardSection`, or ``()`` where the account has no skip --
-        because an empty section is ABSENT rather than rendered empty, which
-        is this module's rule for every other list.  **The bound travels with
-        the cards**, exactly as :func:`act_sections` carries the settled one,
-        so the tab can say how many it did not render (ruling
-        **bank_import:R-GX**).
-    """
-    if not register.shown:
-        return ()
-    return (
-        CardSection(
-            section=None,
-            cards=tuple(
-                SkipCard(skip=act, sentence=for_skip())
-                for act in register.shown
-            ),
-            withheld=register.withheld_count,
-        ),
-    )
-
-
-def act_sections(register) -> "tuple[CardSection, ...]":
-    """Return acts already applied, as one unnamed section of cards.
-
-    Args:
-        register: The :class:`~._accepted_view.AcceptedRegister` for ONE half
-            of the accepted set -- narrowed before its bound, so its
-            ``withheld_count`` is this tab's own truncation and not the whole
-            account's.
-
-    Returns:
-        One :class:`CardSection`, or nothing at all when there are no acts.
-        **The bound travels with the cards**, so the tab can say how many it
-        did not render.
-    """
-    if not register.shown:
-        return ()
-    return (
-        CardSection(
-            section=None,
-            cards=tuple(
-                ActCard(act=act, sentence=for_accepted(act))
-                for act in register.shown
-            ),
-            withheld=register.withheld_count,
-        ),
     )
