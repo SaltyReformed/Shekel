@@ -60,7 +60,7 @@ the coordinator could cite it.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**245 steps, 145 open.** The dependency graph holds 96 edges over 75 rows.
+**245 steps, 144 open.** The dependency graph holds 96 edges over 75 rows.
 
 ## The order
 
@@ -249,7 +249,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | bank_import | X-gd | -- | Promote a stated merchant answer from a suggestion to a standing RULE (**R-GI**), which the developer decomposed on 2026-08-25 into the merchant's own identity and the store that keys on it. | SHIPPED | `d1910c95` | -- |
 | balance | X-f | -- | The DECOMPOSED parent of the whole "the app records when money moved" cluster, carrying **N-42**. | container | -- | ticks with #22 |
 | balance | X-au | -- | The DECOMPOSED parent of the amount model (**R-FI**): a row's amount is either its OWN or DERIVED, and a derived amount is not stored at all. Supersedes **X-ar**; **X-au-i is WITHDRAWN** because the card arc's locked rulings delete the CC payback it would have cut over (`CC3b`, `CC3c`). Carries **N-224**, **N-228**, **N-238**. | container | -- | ticks with #83 |
-| balance | X-au-c | -- | The DECOMPOSED parent of the amount model's SEAM, split into three leaves 2026-08-12: the schema and the declaration, the readers, then the freeze and its inverse. | container | -- | ticks with #6 |
+| balance | X-au-c | -- | The DECOMPOSED parent of the amount model's SEAM, split into three leaves 2026-08-12: the schema and the declaration, the readers, then the freeze and its inverse; it ticked with its last leaf. | SHIPPED | `3d1379d1` | -- |
 | balance | X-ai | -- | The DECOMPOSED parent of the posted-ledger restructure: one verb and one trigger on both ledgers (**R-DU**, **R-DV**). Carries **N-144**, **N-153**, **N-155**, **N-157**, **N-158**, **N-160**, **N-164**. | container | -- | ticks with #51 |
 | balance | X-aj | -- | The DECOMPOSED parent of the one-status-seam work; its merge half shipped as X-aj1. Carries **N-145**. | container | -- | ticks with #45 |
 | balance | X-x | -- | The DECOMPOSED parent of the one-pay-calendar-precondition work. Closes **N-116**, **N-125**, **N-126**, **N-129**. | container | -- | ticks with #43 |
