@@ -298,6 +298,14 @@ class TestTheSettleFreezeIsTheSERVICEs:
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
                 amount=Decimal("1325.00"),
+                # The caller states that a HUMAN typed this figure (ruling
+                # R-JR, plan step X-au-h).  The route says it by comparing the
+                # submitted amount against the one it rendered; a service
+                # caller says it here.  ``is_override`` no longer carries the
+                # fact -- it means only "this row is the owner's, not the
+                # rule's" -- so the retype this case is named for has to be
+                # stated rather than inferred from the flag.
+                amount_authored=True,
                 is_override=True,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
             )
@@ -436,8 +444,16 @@ class TestEveryDoorReachesTheSameFigure:
         ``is_override`` on the mere PRESENCE of the field, which tells the
         settle "the operator owns this amount" and suppresses the derivation.
         Measured before the fix: `$1.00` of cash booked against a `$1,000.00`
-        interest + `$300.00` escrow split.  The route now tests whether the
-        amount actually MOVED, which is what its own comment always claimed.
+        interest + `$300.00` escrow split.
+
+        **Since plan step X-au-h the route asks whether a HUMAN AUTHORED the
+        figure, not whether it MOVED** (ruling R-JR): the form posts the figure
+        it rendered, and an echo is one that comes back equal to it.  The
+        payload below carries that companion, which is what makes this an echo
+        rather than a retype -- and the door drops an unauthored figure rather
+        than forwarding it, so the service never sees one.  The paragraph that
+        described the old moved-against-the-stored-column test is gone with the
+        comparison it named.
         """
         with app.app_context():
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
@@ -453,6 +469,13 @@ class TestEveryDoorReachesTheSameFigure:
             f"/transfers/instance/{xfer_id}",
             data={
                 "amount": rendered_amount,
+                # What the box was RENDERED with (ruling R-JR, plan step
+                # X-au-h).  Equal to the figure above, which is what makes this
+                # an ECHO rather than a retype -- and the echo is the whole
+                # subject of this case.  Omitting it would land the save on the
+                # fail-closed arm, raise the flag, suppress the freeze, and
+                # reproduce the very defect the case exists to prevent.
+                "amount_as_rendered": rendered_amount,
                 "pay_period_id": period_id,
                 "due_date": due.isoformat() if due else "",
                 "status_id": ref_cache.status_id(StatusEnum.DONE),

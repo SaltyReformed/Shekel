@@ -269,7 +269,7 @@ class TestTransferServiceLogging:
             with _LogCapture("app.services.transfer_service") as cap:
                 transfer_service.update_transfer(
                     xfer.id, td["user"].id,
-                    amount=Decimal("123.45"),
+                    amount=Decimal("123.45"), amount_authored=True,
                     notes="updated notes",
                 )
 

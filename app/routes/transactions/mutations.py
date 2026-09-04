@@ -47,6 +47,8 @@ from app.routes.transactions._gates import (
     _reject_typed_payback_figure,
     _resolve_status_change,
 )
+from app.routes._authored_figure import figure_was_authored
+from app.utils.rendered_figure import as_rendered_field
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
@@ -146,7 +148,7 @@ _SEAM_OWNED_FIELDS = frozenset(
 )
 
 
-def _apply_field_updates(txn, data):
+def _apply_field_updates(txn, data, *, amount_authored, period_changed):
     """Write the submitted fields onto *txn*, refusing what may not be written.
 
     The FIELD half of :func:`_apply_regular_update`, extracted so the handler
@@ -218,7 +220,15 @@ def _apply_field_updates(txn, data):
 
     Args:
         txn: The Transaction being edited.
-        data: The schema-loaded PATCH payload.
+        data: The schema-loaded PATCH payload, with the rendered-figure
+            companion already removed by the caller.
+        amount_authored: Whether a HUMAN typed the ``estimated_amount`` this
+            payload carries (ruling **R-JR**).  Decides both whether the row
+            takes ownership of the figure and whether it stops being the rule's.
+        period_changed: Whether this payload MOVES the row to another period.
+            Passed in because the caller computes it before the loop below
+            rewrites ``pay_period_id``, at which point it can no longer be
+            asked.
 
     Returns:
         A designed 400 response tuple, or ``None`` when every field was
@@ -229,7 +239,7 @@ def _apply_field_updates(txn, data):
             continue
         setattr(txn, field, value)
 
-    if "estimated_amount" in data:
+    if amount_authored:
         # A typed figure makes the row's amount its OWN, and storing it IS
         # releasing the relation that priced it (plan step X-au-k) -- the amount
         # model's own dispatch asserts exactly that: "a row a human RE-PRICED
@@ -237,9 +247,24 @@ def _apply_field_updates(txn, data):
         # is never ``None`` here: ``estimated_amount`` is not ``allow_none`` on
         # any of the three transaction schemas, so ``_normalize_empty_inputs``
         # DROPS an empty box rather than loading it as an explicit nothing.
+        #
+        # **Gated on AUTHORSHIP rather than on the field's PRESENCE since plan
+        # step X-au-h** (ruling **R-JR**).  The popover renders this box on
+        # every correctable row and an HTML form posts every input it renders,
+        # so presence was true of a notes-only save -- which took ownership of
+        # a figure nobody chose and left the row no longer tracking its
+        # definition.  Finding **N-248**.
         state_own_amount(txn, data["estimated_amount"])
 
-    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
+    # **The flag says ONE thing since plan step X-au-h: this row is the OWNER's,
+    # not the rule's.**  Both acts that make it so are stated here, and BOTH
+    # were presence tests before -- the amount's is finding **N-248** above, and
+    # the period's had the identical shape, because the popover renders a
+    # period dropdown on every row and posts it whether or not it was touched.
+    # ``period_changed`` is computed by the caller BEFORE the loop above
+    # rewrites ``pay_period_id``, which is why it is passed in rather than
+    # asked here.
+    if txn.template_id and (amount_authored or period_changed):
         txn.is_override = True
 
     if (
@@ -327,6 +352,21 @@ def _apply_regular_update(txn, txn_id, data):
         "pay_period_id" in data and data["pay_period_id"] != txn.pay_period_id
     )
 
+    # Did a HUMAN type the figure in the Estimated box (ruling **R-JR**, plan
+    # step X-au-h)?  It sits beside the period's question because they are the
+    # two acts that make a row the owner's -- but only ``period_changed`` MUST
+    # precede the setattr loop; this one reads the payload alone.
+    #
+    # **The door used to ask whether the field was PRESENT**, true of every
+    # save that renders an amount box -- so a notes-only edit took ownership of
+    # a figure nobody chose and the row stopped tracking its definition.  That
+    # is finding **N-248**.
+    #
+    # The companion is popped because it is not a column, and
+    # ``_apply_field_updates`` ``setattr``s every key it does not recognise.
+    amount_authored = figure_was_authored(data, "estimated_amount")
+    data.pop(as_rendered_field("estimated_amount"), None)
+
     # Detect a Credit reversion before the setattr loop rewrites
     # status_id.  A Credit row leaving Credit status (the state machine
     # only admits Credit -> Projected besides identity) must delete its
@@ -405,7 +445,10 @@ def _apply_regular_update(txn, txn_id, data):
         # as an uncaught ``IntegrityError``.  Found by adversarial review; the comment below
         # claimed the three excepts covered the whole tail, and they covered the
         # tail while the first flush had moved above it.
-        field_error = _apply_field_updates(txn, data)
+        field_error = _apply_field_updates(
+            txn, data,
+            amount_authored=amount_authored, period_changed=period_changed,
+        )
         if field_error is not None:
             return field_error
         # ``recorded`` is what makes the reading ECHO-AWARE (plan step X-az):
