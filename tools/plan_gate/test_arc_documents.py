@@ -1,4 +1,4 @@
-"""The gate over the four ARC documents -- what stays after the registries left.
+"""The gate over the ARC documents -- what stays after the registries left.
 
 An arc document now holds argument only: root cause, evidence, target model,
 rulings, alternatives rejected, and its own step SPECIFICATIONS.  Its findings
@@ -65,7 +65,15 @@ CAPS = {
     # per open step when the developer set it, so 55 x 3.4 = 187 of room, and
     # 971 + 187 + 20 headroom = 1178, rounded to 1180.  It stays under the
     # 1,200 this document carried before the registries left.
-    "balance": 1180,
+    # **RAISED 1180 -> 1200 by the developer, 2026-09-03**, on rule 4's terms:
+    # the decision sweep minted EIGHT balance steps (X-bl..X-bp, X-bj-1/2,
+    # X-f3c-2b-2d) whose specifications landed the README at exactly 1180,
+    # rule 5's escape was spent first (every shipped entry already a pointer
+    # of six lines or fewer, no completed span left), and the file's own
+    # calibration would allow 8 x 3.4 = 27 more; 1200 is the minimum that
+    # clears the 20-line headroom and does not exceed what the document
+    # carried before the registries left.
+    "balance": 1200,
     # **RAISED 850 -> 900 by the developer, 2026-09-03**, on rule 4's terms and
     # by the same calibration that raised the balance README.  The cap BOUND
     # while minting `recurrence:R7d-h`: the document sat at 843 with 23 open
@@ -99,12 +107,18 @@ CAPS = {
     # second-lowest cap; 260 restores about the room that family needs and
     # leaves the forcing function well below the balance README's.
     "bank_import": 260,
+    # **SET at 260 by the developer, 2026-09-03**, when the arc was minted: the
+    # bank_import number, eight open steps owing a few lines each plus the
+    # argument, and the forcing function biting well before the balance
+    # README's scale.  Raised only when it binds and he is asked (rule 4).
+    "salary": 260,
 }
 
 #: The signpost's cap, per document.  The balance README's reached 1,019 lines
 #: as an append-only log before it was capped at all.
 SIGNPOST_CAPS = {
     "balance": 30, "recurrence": 20, "pay_calendar": 20, "bank_import": 30,
+    "salary": 20,
 }
 
 #: A SHIPPED step's entry cap (rule 7).
@@ -132,6 +146,7 @@ TICKED_CAPS = {
     "recurrence": 6,
     "pay_calendar": 6,
     "credit_card": 6,
+    "salary": 6,
 }
 
 SPECS = {
@@ -179,12 +194,20 @@ SPECS = {
         arc_state_cap=40,
         ticked_entry_cap=TICKED_CAPS["credit_card"],
     ),
+    "salary": PlanSpec(
+        path=registry.ARC_DOCS["salary"],
+        steps_heading="## 4.", steps_label="section 4",
+        line_cap=CAPS["salary"],
+        arc_state_heading="## Where this stands",
+        arc_state_cap=SIGNPOST_CAPS["salary"],
+        ticked_entry_cap=TICKED_CAPS["salary"],
+    ),
 }
 
-#: Every arc document, for the rules that apply to all four.
+#: Every arc document, for the rules that apply to all of them.
 ARCS = sorted(SPECS)
 
-#: Only the three that carry an orientation section (rule 6).
+#: Only those that carry an orientation section (rule 6).
 SIGNPOST_ARCS = sorted(SIGNPOST_CAPS)
 
 

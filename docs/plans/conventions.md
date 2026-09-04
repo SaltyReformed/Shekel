@@ -27,6 +27,7 @@ failure being guarded against.
 | `implementation_plan_pay_calendar.md` | the pay-calendar arc's | argument |
 | `implementation_plan_credit_card.md` | the credit-card arc's | argument |
 | `implementation_plan_bank_import.md` | the statement importer's, split out 2026-08-13 | argument |
+| `implementation_plan_salary.md` | the paycheck engine's, minted 2026-09-03 | argument |
 
 **Merge what shares KEYS; split what shares only a READER.** Findings, steps and RULINGS are one
 table each -- the third sat in THREE grammars across five documents no gate parsed, which is how

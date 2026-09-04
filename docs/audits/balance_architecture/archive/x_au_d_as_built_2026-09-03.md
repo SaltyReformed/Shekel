@@ -41,9 +41,11 @@ points, and **zero added lines** in the diff
 (`tests/manual/verify_balance_baseline.py`, both sides folding their own tree).
 
 `tests/manual/verify_amount_resolver.py` over all 1,028 rows of the
-post-migration clone: 0 refusals, 0 mismatches, **409 derived rows invariant**
-under a `$1,000` nudge to the column they replace, **619 OWN rows moving by
-exactly the nudge**. Rule census: 619 own, 59 salary, 350 transfer.
+post-migration clone: 0 refusals, 0 mismatches, **409 derived rows unchanged**
+under a `$1,000` nudge to the column they replace -- which is STRUCTURAL, not
+measured: that column is NULL on every derived row, so the nudge touched none
+of them (finding **N-445**, corrected 2026-09-03) -- and **619 OWN rows moving
+by exactly the nudge**, which is real. Rule census: 619 own, 59 salary, 350 transfer.
 
 What DOES change is what a screen calls the estimate on the 8 settled rows: the
 grid cell's `(est: ...)` caption goes from 4 rows to 11, `+$68.67`. Measured

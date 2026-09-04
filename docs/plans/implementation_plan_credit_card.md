@@ -170,7 +170,9 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
       target card (single; multiple -> lowest sort_order; zero -> CREATE the card inline per ruling
       **R-CC6**), set provenance, retarget, status Paid + documented `paid_at` derivation, emit balanced
       settled postings in-migration (loan-backfill precedent), delete payback; frozen settled pairs
-      untouched; downgrade restores via provenance. Rework `test_credit_workflow.py` +
+      untouched; downgrade restores via provenance. **With `CC3c` it owns `credit_card:N-351`** (re-filed from
+      `balance:N-243` 2026-09-03): a payback's amount is a stored derivation at both levels and
+      carries neither pricing link, and both die with the payback shape. Rework `test_credit_workflow.py` +
       `test_c19_credit_payback_unique.py` (port lock/concurrency shapes). Reports move (settled
       spending now sees real categories at charge time) -- explained in-commit.
 - [ ] **CC3c** `feat(cards)!: envelope split tender + renames` -- rewrite `entry_credit_workflow.py`
@@ -205,7 +207,10 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
       CC2a's minimum; fixed mode is a template amount the card owns. The card row stores no amount,
       so nothing can hold a figure the derivation contradicts. Oracles: derived amount renders
       identically on grid/card/checking; redemption after close reduces, before close does not (both
-      controls); floor-0.
+      controls); floor-0. **It owns `N-311`** (re-filed from `balance` 2026-09-03): the CC payback
+      rows do not reconcile to what was actually paid to the card -- one ACH per real payment
+      against one payback per purchase, `$280.21` unexplained -- and the payment as a CARD rule is
+      the remedy.
 - [ ] **CC4c** `feat(cards): underpayment warns and projects its finance charge` -- C7-style warning
       (payment < minimum due) + one-click "pay statement balance" (flips mode);
       `card_recurrence_sync` maintains ONE projected finance-charge expense

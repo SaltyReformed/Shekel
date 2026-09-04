@@ -278,7 +278,7 @@ hardening, and prod-override-sync conventions auto-load via `.claude/rules/deplo
 
 ## Development Status
 
-**All live work is five ARCS, and `docs/plans/steps.md` is the single source of truth for what to do
+**All live work is six ARCS, and `docs/plans/steps.md` is the single source of truth for what to do
 next.** Start there and nowhere else: it holds every step in every arc IN EXECUTION ORDER, one
 sentence each. **The next step is the first row of its order table.** A row whose `starts` column
 reads `NOW` can be picked up today whatever its rank, which is how two steps run in parallel.
@@ -289,9 +289,10 @@ the arc a COLUMN; `conventions.md` is the 16 rules all of it is held to; `verifi
 "done" means for a step in any arc; `lessons.md` is what this project has already paid to learn.
 Each arc's argument and step specifications stay in its own document:
 `docs/audits/balance_architecture/README.md` (balance), and `implementation_plan_*.md` for
-recurrence, pay_calendar, credit_card and bank_import. `steps.md` names which document and section
-holds a given step's detail. **Every arc's rulings are in `rulings.md`, keyed `(arc, id)`, since
-`balance:X-ao-2a`; no arc document states one, and each carries a `The rulings` pointer instead.**
+recurrence, pay_calendar, credit_card, bank_import and salary. `steps.md` names which document and
+section holds a given step's detail. **Every arc's rulings are in `rulings.md`, keyed `(arc, id)`,
+since `balance:X-ao-2a`; no arc document states one, and each carries a `The rulings` pointer
+instead.**
 
 **Anything under an `archive/` or `historical/` directory is a HISTORICAL RECORD and governs
 nothing** -- every such file says so on its first line. Cite one for how a decision came to be,
