@@ -363,29 +363,28 @@ Not required by the normalization and deliberately last. **It also takes P46** (
 `classify_period_lock`, which this step already consults, is the one thing that refuses a move.
 Closes **P10**, **P46**.
 
-- [ ] **C7 -- the ledger entry derives its paycheck.**
+- [x] **C7 -- the ledger entry KEEPS its paycheck.** `a9e04106`, `f7cf292e`, `c725b814`. Ruling
+      **R-PC53** holds the argument and every measurement.
+      **P18's premise fits NEITHER half of the column**; NULLABLE refused.
+      **What a later step must obey**: the argument lives in `rulings.md`, NOT in docstrings -- two
+      adversarial reviews measured this step's own first prose false in eleven places, which is why
+      `c725b814` stripped it. Closed **P18**, **N-490**; opened **N-491**, owned by **C16**.
 
-**Starts with a ruling.** `journal_entries.pay_period_id` is a NOT NULL FK stored beside the
-`entry_date` it derives from, which is row **P1**'s defect on the ledger's header table -- and
-ruling **R-EA** already made the WRITE side derive it. The NOT NULL is also what forces
-`filing_period` to be TOTAL -- to CLAMP rather than answer `None` -- so it is the reason the filing
-question survives as a second question at all rather than collapsing into containment. *It forced
-`resolve_anchor_pay_period` before C2-d, which deleted that chain; the obligation moved, it did not
-go.* Three options, and the trace decides: DROP and derive, make it NULLABLE, or KEEP it as a
-deliberate materialization with the second definition's cost stated. Sequenced after C4 (developer,
-2026-08-09), because a derived paycheck should be derived from the calendar this arc normalizes
-rather than from the one it is replacing. Closes **P18**.
+- [ ] **C16 -- the ledger's two filing rules stop being one column to its reader.**
 
-**"DERIVABLE FROM `entry_date`" IS FALSE, measured 2026-08-10 against `shekel-prod-db` while ruling
-C2's first fork. Do not carry the assumption into this step.** 14 days carry TWO different
-`pay_period_id` values for ONE `entry_date` (a single owner), so the date does not determine the
-paycheck; 35 of 327 entries (10.7%) are dated outside their own paycheck BY DESIGN; and 4
-loan-opening entries predate the first payday by up to seven years, so the clamp is live rather than
-hypothetical. **The column has 11 references in 7 `app/` modules**, 2 of them docstrings:
-`_posting_reconcile.py:186`, `posting_service.py:145,153`, `pay_period_admin.py:876-879`,
-`ledger_report_service/_income_statement.py:165`, `account_posting_service/_walk.py:322`,
-`loan_posting_service/_payments.py:163`. The income statement GROUPS by it, so it is a real query
-key and not dead weight.
+**Starts with a ruling**, as C7 did. R-PC53 established that the column has two halves; this step
+decides what to do about one READER being unable to tell them apart.
+`ledger_report_service/_income_statement._pay_period_statement_nets` filters the single column and
+adds both populations: measured 2026-09-04, **`$61,633.27`** of Income+Expense on the budget clock
+against **`$10,653.91`** of Income+Unrealized on the cash-date clock. Three remedies and the trace
+decides: SPLIT the column so the two rules are separately addressable; DISAMBIGUATE at the reader,
+which may mean partitioning by source kind or stating the basis; or ACCEPT and document, on the
+argument that a pay-period income statement legitimately mixes them.
+**The statement's own structure already segregates part of it** -- an `account_trueup`'s counter leg
+books to a per-account Change in Value row, which `net_income` cannot count and
+`comprehensive_income` states -- so the exposure is narrower than the raw `$10,653.91`, and
+**this step owes a measurement of the Income-only slice before the fork is put**.
+**MOVES NO MONEY**: it changes what a report SAYS, not any balance. Closes **N-491**.
 
 - [ ] **C8 -- the forecast cadence gets ONE control.**
 
