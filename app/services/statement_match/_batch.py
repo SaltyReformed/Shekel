@@ -579,8 +579,14 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             # rather than left to whoever adds the next count.
             or self.deposited_count
             # **A skip changes a RECORD, which is what this predicate asks**
-            # -- and it is the one arm here that is not about money (plan step
-            # ``bank_import:X-gj-4b``).  ``budget.statement_line_skips`` holds
+            # -- and it is one of the TWO arms here that are not about money,
+            # the other being the repeat below it (plan step
+            # ``bank_import:X-gj-4b``).  *This said "the one arm", in the same
+            # commit that added the second* -- the identical
+            # said-ONE-while-introducing-TWO shape that took four adversarial
+            # passes to kill in ``outcome_counts``, live in the other home of
+            # the same fact.  Found by pass five 2026-09-04, outside its own
+            # scope.  ``budget.statement_line_skips`` holds
             # no figure and a skip closes no difference between the books and
             # the bank, so nothing MOVED; what changed is that four cards left
             # the inbox and the Skipped tab now holds them.  Without this arm
