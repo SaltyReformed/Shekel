@@ -625,6 +625,7 @@ class TestTransactionStaleFormPrevention:
                 f"/transactions/{txn_id}",
                 data={
                     "estimated_amount": "75.00",
+                    "estimated_amount_as_rendered": "50.00",
                     "version_id": str(v0),
                 },
             )
@@ -662,6 +663,7 @@ class TestTransactionStaleFormPrevention:
                 f"/transactions/{txn_id}",
                 data={
                     "estimated_amount": "999.99",
+                    "estimated_amount_as_rendered": "50.00",
                     "version_id": str(stale),
                 },
             )
@@ -712,7 +714,7 @@ class TestTransactionStaleFormPrevention:
             try:
                 response = auth_client.patch(
                     f"/transactions/{txn_id}",
-                    data={"estimated_amount": "555.55"},
+                    data={"estimated_amount": "555.55", "estimated_amount_as_rendered": "50.00"},
                 )
             finally:
                 event.remove(Transaction, "before_update", make_stale)
@@ -821,6 +823,7 @@ class TestTransferStaleFormPrevention:
                 f"/transfers/instance/{xfer_id}",
                 data={
                     "amount": "300.00",
+                    "amount_as_rendered": "250.00",
                     "version_id": str(v0),
                 },
             )
@@ -848,6 +851,7 @@ class TestTransferStaleFormPrevention:
                 f"/transfers/instance/{xfer_id}",
                 data={
                     "amount": "999.99",
+                    "amount_as_rendered": "250.00",
                     "version_id": str(stale),
                 },
             )
@@ -1173,6 +1177,7 @@ class TestPaycheckDeductionStaleFormPrevention:
                     "deduction_timing_id": str(timing_id),
                     "calc_method_id": str(method_id),
                     "amount": "999.99",
+                    "amount_as_rendered": "250.00",
                     "deductions_per_year": "26",
                     "version_id": str(stale),
                 },
@@ -1211,6 +1216,7 @@ class TestTransactionEntryStaleFormPrevention:
                 f"/transactions/{txn.id}/entries/{entry_id}",
                 data={
                     "amount": "30.00",
+                    "amount_as_rendered": "250.00",
                     # The edit form emits the direction beside the amount
                     # since plan step ``bank_import:X-gj-2b-3``, and the
                     # route refuses one without the other rather than
@@ -1255,6 +1261,7 @@ class TestTransactionEntryStaleFormPrevention:
                 f"/transactions/{txn.id}/entries/{entry_id}",
                 data={
                     "amount": "9999.99",
+                    "amount_as_rendered": "250.00",
                     "description": "Should Not Apply",
                     "purchased_on": entry.purchased_on.isoformat(),
                     "version_id": str(stale),

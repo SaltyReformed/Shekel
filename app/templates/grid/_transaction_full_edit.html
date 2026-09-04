@@ -165,6 +165,30 @@
                class="form-control form-control-sm"
                placeholder="Estimated amount"
                {{ 'disabled' if locked else '' }}>
+        {# WHAT WE SHOWED, posted back beside whatever comes out of the box
+           above (ruling R-JR, plan step X-au-h).  The door compares the two to
+           decide whether a HUMAN authored this figure, instead of asking
+           whether the field is merely PRESENT -- which is true of every save
+           that renders an amount box, including a notes-only one, and is
+           finding N-248.
+
+           It renders from ``budgets[txn.id]``, the SAME expression as the
+           visible input, and that is the whole of its correctness: a companion
+           computed a second way is a second spelling of the figure, and the
+           door would then read a difference nobody typed.  The two must move
+           together or not at all.
+
+           NOT disabled when the row is locked, unlike the input above, and the
+           asymmetry is deliberate.  A disabled control is omitted from the
+           POST, so a locked row posts the companion and NOT the figure -- which
+           is harmless, because a payload stating no figure states no
+           authorship and the schema rule only fires when a figure is present.
+           The reverse pairing is the one that must not happen: a figure
+           arriving without its companion is now a 400, so if this input ever
+           carried the ``disabled`` and the amount box stopped carrying it,
+           every locked-row save would be refused. #}
+        <input type="hidden" name="estimated_amount_as_rendered"
+               value="{{ budgets[txn.id] }}">
         {% else %}
         <div class="form-control form-control-sm bg-body-secondary">{{ money(budgets[txn.id]) }}</div>
         {# The repair DIFFERS by payback kind and naming the wrong one is a

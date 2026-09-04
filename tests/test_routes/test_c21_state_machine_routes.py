@@ -237,7 +237,7 @@ class TestPatchRejectsFinalisedFieldEdit:
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "999.99"},
+                data={"estimated_amount": "999.99", "estimated_amount_as_rendered": "123.45"},
             )
             assert response.status_code == 400
             body = response.data.decode()
@@ -312,7 +312,7 @@ class TestPatchRejectsFinalisedFieldEdit:
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"status_id": str(done_id), "estimated_amount": "5.00"},
+                data={"status_id": str(done_id), "estimated_amount": "5.00", "estimated_amount_as_rendered": "123.45"},
             )
             assert response.status_code == 400
             db.session.refresh(txn)
@@ -335,7 +335,7 @@ class TestPatchAllowsEditableField:
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "200.00"},
+                data={"estimated_amount": "200.00", "estimated_amount_as_rendered": "123.45"},
             )
             assert response.status_code == 200
             db.session.refresh(txn)
@@ -375,6 +375,7 @@ class TestPatchAllowsEditableField:
                 data={
                     "status_id": str(projected_id),
                     "estimated_amount": "200.00",
+                    "estimated_amount_as_rendered": "123.45",
                 },
             )
             assert response.status_code == 200

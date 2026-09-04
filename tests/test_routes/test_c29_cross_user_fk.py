@@ -322,6 +322,7 @@ class TestUpdateTransactionAtomicityWithCrossUserFk:
                 data={
                     "pay_period_id": str(seed_second_periods[0].id),
                     "estimated_amount": "999.99",
+                    "estimated_amount_as_rendered": "123.45",
                 },
             )
             assert resp.status_code == 404
@@ -357,6 +358,7 @@ class TestUpdateTransactionAtomicityWithCrossUserFk:
                 data={
                     "category_id": str(seed_second_user["categories"]["Rent"].id),
                     "estimated_amount": "888.88",
+                    "estimated_amount_as_rendered": "123.45",
                 },
             )
             assert resp.status_code == 404
@@ -419,6 +421,7 @@ class TestUpdateTransactionTransferShadowFkOwnership:
                 data={
                     "pay_period_id": str(seed_second_periods[0].id),
                     "estimated_amount": "200.00",
+                    "estimated_amount_as_rendered": "123.45",
                 },
             )
             assert resp.status_code == 404

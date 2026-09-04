@@ -9,6 +9,8 @@ import re
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import (
     AcctTypeEnum, SettlementBasisEnum, StatusEnum, TxnTypeEnum,
@@ -759,7 +761,7 @@ class TestTemplateUpdate:
             # Hand-edit the future transfer, shadow-safe via the service.
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("350.00"), is_override=True,
+                amount=Decimal("350.00"), amount_authored=True, is_override=True,
             )
             db.session.commit()
             tid = template.id
@@ -807,7 +809,7 @@ class TestTemplateUpdate:
             )
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("350.00"), is_override=True,
+                amount=Decimal("350.00"), amount_authored=True, is_override=True,
             )
             db.session.commit()
             tid, xfer_id = template.id, xfer.id
@@ -1064,7 +1066,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "250.00"},
+                data={"amount": "250.00", "amount_as_rendered": str(xfer.amount)},
             )
 
             assert response.status_code == 200
@@ -1254,7 +1256,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "300.00", "due_date": ""},
+                data={"amount": "300.00", "amount_as_rendered": str(xfer.amount), "due_date": ""},
             )
 
             assert response.status_code == 200
@@ -1314,13 +1316,95 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "999.99"},
+                data={"amount": "999.99", "amount_as_rendered": str(xfer.amount)},
             )
             assert response.status_code == 400
             body = response.data.decode()
             assert "finalised" in body
             assert "transfer" in body
 
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("200.00")
+
+    @pytest.mark.parametrize("fragment", [
+        "/transfers/quick-edit/{id}",
+        "/transfers/{id}/full-edit",
+    ])
+    def test_every_transfer_form_posts_the_figure_it_rendered(
+        self, app, auth_client, seed_user, seed_periods_today, fragment,
+    ):
+        """Both transfer forms emit the companion, with the SAME value (**R-JR**).
+
+        **The templates were the ungraded half of this ruling.**  Every other
+        case hand-assembles ``amount_as_rendered`` into its payload, so the
+        suite would stay green for a template that stopped emitting it -- and
+        the two transfer templates are exactly the ones plan step X-au-f must
+        rewrite, because they render from the raw ``xfer.amount`` column that
+        step empties.
+
+        Asserting the two values are EQUAL is the load-bearing half.  A
+        companion rendered from a different expression than the box is a
+        difference nobody typed, which the door would read as an authorship and
+        act on -- so "both present" is not enough.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+
+            resp = auth_client.get(fragment.format(id=xfer.id))
+            assert resp.status_code == 200
+            body = resp.data.decode()
+
+            shown = re.search(r'name="amount"[^>]*value="([^"]*)"', body)
+            companion = re.search(
+                r'name="amount_as_rendered"[^>]*value="([^"]*)"', body,
+            )
+            assert shown is not None, "the form renders an amount box"
+            assert companion is not None, (
+                "a form that posts a figure must post what it rendered; "
+                "without it the schema refuses every save this form makes"
+            )
+            assert companion.group(1) == shown.group(1), (
+                "the box and its companion must render from ONE expression"
+            )
+
+    def test_finalised_lock_still_speaks_for_an_ECHOED_amount(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The lock grades what was SUBMITTED, not what survived authorship.
+
+        Plan step balance:X-au-h drops an ``amount`` no human authored before
+        handing the payload to the service, and WHERE that drop happens is a
+        decision this case pins. Dropped before the gates, a crafted request
+        naming a finalised transfer's amount would stop being refused and start
+        being quietly ignored -- the row is unharmed either way, so no other
+        assertion in this suite would notice, and a lock that silently stops
+        speaking is how the next reader concludes it is not needed.
+
+        The sibling above sends a CHANGED figure, which is authored and so
+        survives to the lock however the ordering is written. Only an ECHO
+        distinguishes the two orderings, which is why this case exists.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+            db.session.refresh(xfer)
+            assert xfer.status.is_immutable
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "amount": "200.00",
+                    "amount_as_rendered": "200.00",
+                },
+            )
+
+            assert response.status_code == 400, (
+                "an echoed amount on a finalised transfer is still a locked "
+                "field edit, and the lock must say so rather than ignore it"
+            )
+            assert "finalised" in response.data.decode()
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("200.00")
 
@@ -1339,7 +1423,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"status_id": str(projected_id), "amount": "250.00"},
+                data={"status_id": str(projected_id), "amount": "250.00", "amount_as_rendered": str(xfer.amount)},
             )
             assert response.status_code == 200
             db.session.refresh(xfer)
@@ -1364,7 +1448,12 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transactions/{shadow.id}",
-                data={"estimated_amount": "999.99"},
+                # Well-formed, so the refusal under test is the FINALISED lock
+                # and not the schema declining an unaccompanied figure.
+                data={
+                    "estimated_amount": "999.99",
+                    "estimated_amount_as_rendered": "200.00",
+                },
             )
             assert response.status_code == 400
             assert "finalised" in response.data.decode()
@@ -1528,7 +1617,7 @@ class TestTransferInstance:
 
             auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "999.00"},
+                data={"amount": "999.00", "amount_as_rendered": str(xfer.amount)},
             )
 
             db.session.refresh(xfer)
@@ -1560,7 +1649,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{target.id}",
-                data={"amount": "9999.00"},
+                data={"amount": "9999.00", "amount_as_rendered": str(orig_amount)},
             )
 
             assert response.status_code == 404
@@ -2538,7 +2627,9 @@ class TestTransferNegativePaths:
         with app.app_context():
             resp = auth_client.patch(
                 "/transfers/instance/999999",
-                data={"amount": "100.00"},
+                # A well-formed payload, so the 404 is about the missing row
+                # rather than the schema refusing an unaccompanied figure.
+                data={"amount": "100.00", "amount_as_rendered": "100.00"},
             )
 
             assert resp.status_code == 404
@@ -2771,7 +2862,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "300.00", "source_txn_id": str(shadow.id)},
+                data={"amount": "300.00", "amount_as_rendered": str(xfer.amount), "source_txn_id": str(shadow.id)},
             )
 
             assert resp.status_code == 200
@@ -2873,7 +2964,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "350.00"},
+                data={"amount": "350.00", "amount_as_rendered": str(xfer.amount)},
             )
 
             assert resp.status_code == 200
@@ -2902,7 +2993,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "400.00", "source_txn_id": "999999"},
+                data={"amount": "400.00", "amount_as_rendered": str(xfer.amount), "source_txn_id": "999999"},
             )
 
             assert resp.status_code == 200
@@ -2945,7 +3036,11 @@ class TestShadowContextResponse:
             # Send it with transfer A's update.
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer_a.id}",
-                data={"amount": "450.00", "source_txn_id": str(shadow_b.id)},
+                data={
+                    "amount": "450.00",
+                    "amount_as_rendered": str(xfer_a.amount),
+                    "source_txn_id": str(shadow_b.id),
+                },
             )
 
             assert resp.status_code == 200
@@ -3639,7 +3734,7 @@ class TestOneTimeTransfer:
                 transfer_template_id=tmpl.id).one()
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("123.45"), is_override=True,
+                amount=Decimal("123.45"), amount_authored=True, is_override=True,
             )
             db.session.commit()
             xfer_id = xfer.id
@@ -4486,7 +4581,7 @@ class TestTransferPeriodMove:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "250.00", "version_id": xfer.version_id},
+                data={"amount": "250.00", "amount_as_rendered": str(xfer.amount), "version_id": xfer.version_id},
             )
             assert resp.status_code == 200
             assert resp.headers.get("HX-Trigger") == "balanceChanged"

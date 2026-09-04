@@ -604,7 +604,7 @@ class TestSyncReversal:
 
             # Edit the amount while Projected, then re-settle and re-post.
             transfer_service.update_transfer(
-                transfer.id, user_id, amount=Decimal("150.00"),
+                transfer.id, user_id, amount=Decimal("150.00"), amount_authored=True,
             )
             transfer_service.update_transfer(
                 transfer.id, user_id,

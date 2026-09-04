@@ -36,6 +36,13 @@
          class="form-control form-control-sm txn-quick-input flex-1-min-0"
          aria-label="Edit amount for {{ txn.name }}"
          {% if locked %}disabled{% else %}autofocus{% endif %}>
+  {# WHAT WE SHOWED (ruling R-JR, plan step X-au-h) -- the full-edit popover's
+     twin of this carries the same companion and states the argument in full.
+     This door offers ONLY an amount, so submitting it unchanged is the
+     ordinary way to dismiss it; without the companion that save would claim a
+     human re-priced the row and detach it from its definition. #}
+  <input type="hidden" name="estimated_amount_as_rendered"
+         value="{{ budgets[txn.id] }}">
   {% else %}
   <span class="form-control form-control-sm bg-body-secondary flex-1-min-0"
         aria-label="Amount for {{ txn.name }}, set by the card spend it repays"

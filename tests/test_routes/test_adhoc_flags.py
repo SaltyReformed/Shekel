@@ -407,6 +407,9 @@ class TestAdhocFlagPersistence:
             )
             resp = auth_client.patch(f"/transactions/{txn.id}", data={
                 "estimated_amount": "150.00",
+                # What the quick-edit box was rendered with (R-JR); differing
+                # from the submitted figure is what makes this a real retype.
+                "estimated_amount_as_rendered": str(txn.estimated_amount),
                 "version_id": txn.version_id,
             })
             assert resp.status_code == 200
