@@ -244,22 +244,72 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `loan_recurrence_sync` is a WRITER and takes its own by design, so the rule carves it out or
       takes it from its caller. Collapses the +1 `C2-f3a` left on `/analytics/taxes`. Closes
       **P56**, **P69**.
-- [ ] **C14 -- the pay schedule carries its shift convention** (ruling **R-PC47**; closes **F-4** =
-      **N-398**, **P78**, **P80**). **MOVES MONEY.** A payday is a RECORDED FACT that may fall off
-      the cadence, and the shift is the employer's stated convention rather than noise: 1 January
-      2026 fell on a holiday and was paid 31 December 2025, so 2025 was a 27-paycheck tax year and
-      2026 has 26, one `$3,526.00` gross paycheck across a year boundary that a forecast counting
-      nominal dates gets wrong in both years. `budget.pay_schedule` gains a convention (none,
-      preceding business day, following business day); ONE business-day module holds the weekend
-      rule and the computed US federal holiday set, called by the pay calendar's projection here and
-      by `recurrence:R8-d` for recurring cash dates, so that step SHRINKS to consuming it; the
-      rhythm applies the convention, so it reproduces the shift from the rule alone and **N-398**'s
-      stored correction per shifted payday is never needed. A recorded payday that differs from the
-      prediction is an exception the integrity sweep WARNS on, never a refusal (**P80**); the
-      tolerance is this step's own ruling. The eight fixtures built on a calendar-monthly payday set
-      no door can write (**P78**) re-point at a schedule a door CAN write; calendar-monthly is
-      `R13`'s cadence kind, not a shift. Which paycheck a monthly-cadence deduction skips moves with
-      the shifted month, which is why the step is a money step.
+- [ ] **C14 -- the pay schedule carries its shift convention** (rulings **R-PC47**,
+      **R-PC54**-**R-PC57**; closes **F-4** = **N-398**, and **P80**). The DECOMPOSED parent, split
+      into six leaves 2026-09-04 (**R-PC57**); it ticks with `C14-f`. A payday is a RECORDED FACT
+      that may fall off the cadence, and the shift is the employer's stated convention rather than
+      noise: 1 January 2026 fell on a holiday and was paid 31 December 2025, so 2025 was a
+      27-paycheck tax year and 2026 has 26, one gross paycheck across a year boundary that a
+      forecast counting nominal dates gets wrong in both years. `budget.pay_schedule` gains a
+      convention (none, preceding business day, following business day); ONE business-day module
+      holds the weekend rule and the computed US federal holiday set, called by the pay calendar's
+      projection here and by `recurrence:R8-d` for recurring cash dates, so that step SHRINKS to
+      consuming it. Which paycheck a monthly-cadence deduction skips moves with the shifted month,
+      which is why the step is a money step.
+      **The shift is applied AT THE PRODUCER, and that is what decides the leaf set** (**R-PC54**):
+      `_rhythm._paydays_between` takes its forward paydays by reading `.start_date` off the
+      `DerivedPeriod` values `_views.projected_paychecks` yields, so the payday a COUNT uses and the
+      payday a PERIOD opens on are ONE value with ONE producer already, and displacing only the
+      count would split it in two, which is rule 14's tell. Applying it at the producer instead
+      exposes three things in the derivation that are wrong once a payday can move, and each is a
+      `$0.00` REPAIR rather than a cost of the shift: the projected end
+      `start_date + cadence_days - 1` leaves **2026-01-14 in no period at all** under this step's
+      own worked example, which `PeriodWindow.__post_init__` refuses; `shift` is not injective, so
+      at cadence 1-3 it produces duplicate paydays `derive_periods` refuses outright; and two writer
+      paths feed a CASH date back into the rhythm, which would reintroduce the very drift the
+      convention exists to remove. `C14-c` and `C14-d` land those repairs BEFORE `C14-e` switches
+      the shift on. **No phase is stored here, and `P78` is not this step's** (**R-PC54**,
+      **R-PC58**): a first form of R-PC54 added a nominal anchor column beside the cadence, and an
+      adversarial review measured that one (anchor, cadence) pair cannot describe a schedule whose
+      cadence CHANGED, which `record_paydays` deliberately permits, so a phase lands at `C17` with
+      the eras -- which is also the door `P78`'s eight fixtures need, so they move there too. Until
+      then the rhythm keeps its phase from the recorded paydays, whose one bounded gap is an owner
+      whose FIRST recorded payday was itself shifted.
+- [ ] **C14-a -- the shared business-day module.** `app/utils/business_days.py`: the weekend rule,
+      the computed federal holiday set of `5 U.S.C. 6103(a)` under the observance rules of `6103(b)`
+      and E.O. 11582, and ONE `shift_to_business_day` displacement. Pure, and it reuses the EXISTING
+      `BusinessDayShiftEnum` and `ref.business_day_shifts` seeded at `recurrence:R2` rather than
+      minting a vocabulary. It satisfies `recurrence:R8-d`'s pay-calendar-side dependency, so that
+      step names this leaf rather than a money-moving parent -- it does NOT start R8-d earlier,
+      whose binding blocker is `recurrence:R5`.
+- [ ] **C14-b -- the convention column.** Keyed to `ref.business_day_shifts`, defaulting to `none`
+      and asked on all four templates that already ask for a cadence (**R-PC56**), under a CHECK
+      that a non-`none` convention requires a cadence longer than the longest run of closed days.
+      Behaviour stays off and no figure moves.
+- [ ] **C14-c -- the boundary arithmetic.** A projected period ends the day before the NEXT payday,
+      deleting the `start + cadence - 1` special case; `project_period_after` probes the
+      neighbouring nominal index so a moved boundary cannot escape its O(1) jump. `$0.00`.
+- [ ] **C14-d -- the writer paths.** `_reject_backward_payday`'s floor stops refusing the payday a
+      backward convention produces at a year boundary, and `extend_pay_periods` stops handing
+      `record_paydays` a day read off a shifted calendar. `$0.00`.
+- [ ] **C14-e -- the shift goes live.** Every projected and backdated payday becomes the nominal day
+      displaced onto a business day. **MOVES MONEY**, so it takes its own adversarial review pass
+      and its own PR. Closes **N-398**.
+- [ ] **C14-f -- the two-clause check.** The sweep warns when a recorded payday is off its predicted
+      day AND when consecutive recorded paydays are not one cadence apart (**R-PC55**); the second
+      clause is the one that sees a MISSING payday, which is what **P80**'s own worked example turns
+      out to be. Closes **P80**.
+- [ ] **C17 -- a pay schedule is a SEQUENCE OF ERAS** (ruling **R-PC58**; closes **P78**,
+      **N-492**). One row per *how I have been paid since* -- effective from, cadence, its KIND, the
+      phase anchor and the convention -- replacing the single cadence `budget.pay_schedule` holds
+      today. It exists because that single value is already wrong: `record_paydays` permits
+      *correct my cadence going forward*, so an owner can hold paydays 14 and 35 days apart under
+      one stored cadence of 7, and no producer can ask what cadence a PAST payday ran at
+      (**N-492**). An era carries a KIND as easily as a length, so this is also the calendar-monthly
+      schedule `recurrence:R13` needs and the door **P78**'s eight fixtures have never had -- one
+      relation serving three open rows rather than three migrations over one column. It is
+      deliberately NOT part of `C14`: it changes what a stored cadence MEANS and it touches the
+      pay-period writer.
 - [ ] **C15 -- the retire-later solve runs only when an assumption moved** (ruling **R-PC52**;
       closes **P60**). The readiness card re-solves the retire-later binary search -- about nine
       projection walks of pure compute no query cost covers -- on every refresh, so a slider-only
