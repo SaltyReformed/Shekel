@@ -39,9 +39,9 @@ case "$FILE" in
     *) exit 0 ;;
 esac
 
-# shellcheck disable=SC2312 # hook_repo_root is just local+printf (cannot fail); the cd itself is guarded by the || block that exits 2.
+# shellcheck disable=SC2312 # hook_repo_root forks git but its exit status is printf's, and its own || absorbs a git failure, so it cannot fail; the cd itself is guarded by the || block that exits 2.
 cd "$(hook_repo_root)" || {
-    # shellcheck disable=SC2312 # hook_repo_root is just local+printf (cannot fail); value is used only to build this stderr diagnostic.
+    # shellcheck disable=SC2312 # hook_repo_root forks git but its exit status is printf's, and its own || absorbs a git failure, so it cannot fail; value is used only to build this stderr diagnostic.
     echo "post-edit-python: cannot cd to project root '$(hook_repo_root)' -- failing closed." >&2
     exit 2
 }
