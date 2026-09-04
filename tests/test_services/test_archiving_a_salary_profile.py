@@ -395,7 +395,7 @@ class TestTheFreezeResolvesOneBasisPerScenario:
         """Six rows in one scenario, one read of the owner's pay schedule.
 
         Graded on the QUERY the projection makes rather than on elapsed time:
-        ``SalaryPricing._net_by_period`` derives the owner's calendar, which
+        ``SalaryPricing._breakdown_by_period`` derives the owner's calendar, which
         reads ``budget.pay_schedule`` exactly once per instance.  A basis per
         row makes an instance per row and this count becomes six.  The control
         was shown to fire by building the basis inside the loop, which is the

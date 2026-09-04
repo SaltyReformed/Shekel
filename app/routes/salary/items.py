@@ -27,6 +27,7 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.account import Account
 from app import ref_cache
 from app.enums import CalcMethodEnum
 from app.utils.db_errors import is_unique_violation
@@ -54,6 +55,49 @@ from app.routes.salary._helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _require_owned_target_account(data):
+    """Abort 404 if the payload targets an account the user does not own.
+
+    Ledger row **N-534**, closed at plan step **salary:R14-a** on a developer
+    ruling of 2026-09-04.  A deduction's ``target_account_id`` is what makes it
+    a CONTRIBUTION FEED into an investment account, and the deduction form's
+    dropdown lists only the current user's own accounts -- so a foreign or
+    non-existent id in the submission is a forged FK (IDOR).  Until this guard
+    the schema checked only that the value was a positive integer
+    (``schemas/validation/salary.py``: ``target_account_id = RowId``) and the
+    database FK checked only that the account EXISTED, so one owner could
+    point a payroll deduction at another owner's account.
+
+    **This is the same guard ``routes/retirement._require_owned_salary_profile``
+    already applies to the mirror-image FK**, whose own docstring names the
+    class; the two doors now agree rather than one of them being the exception
+    nobody noticed.
+
+    Why it is closed HERE, in a leaf that otherwise moves no money: plan step
+    **salary:R14-b** is what makes this feed price real modelled contributions
+    per pay period, and it also has to READ the link.  The migration that
+    lands beside this guard had to defend against the same forged FK in SQL --
+    without an owner-scoping join its backfill wrote one user's
+    ``salary_profile_id`` onto another user's ``investment_params`` row,
+    measured -- so shipping the column while the door stayed open would have
+    left the fence in the migration doing a write door's job.
+
+    ``get_or_404`` verifies ownership and emits the cross-user denial audit
+    event; its ``None`` result maps to a 404 per the security response rule
+    (404 for both "not found" and "not yours").  An absent or ``None`` id
+    means "this deduction funds no account" and is left to the normal
+    create/update path -- which is every live deduction today.
+
+    Args:
+        data: The schema-loaded form payload.
+    """
+    target_account_id = data.get("target_account_id")
+    if target_account_id is None:
+        return
+    if get_or_404(Account, target_account_id) is None:
+        abort(404)
 
 
 # ── Raises ─────────────────────────────────────────────────────────
@@ -324,6 +368,8 @@ def add_deduction(profile_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     data = _deduction_schema.load(request.form)
+    # N-534: the target account must be the requester's own.
+    _require_owned_target_account(data)
     data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
@@ -487,6 +533,8 @@ def update_deduction(ded_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
     data = _deduction_update_schema.load(request.form)
+    # N-534: a re-point must land on the requester's own account too.
+    _require_owned_target_account(data)
     data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
 
     # Stale-form check (commit C-18 / F-010).

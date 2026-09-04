@@ -6290,7 +6290,7 @@ def derived_calendar(
 
     The calendar-shaped sibling of :func:`derived_window`, for a producer that
     takes the whole calendar rather than a slice of it -- which
-    :meth:`app.services.income_service.SalaryPricing._net_by_period` does,
+    :meth:`app.services.income_service.SalaryPricing._breakdown_by_period` does,
     because the paycheck engine needs the owner's paycheck COUNT as well as
     their periods and both must come off one derivation (plan step **R-F16**).
 
