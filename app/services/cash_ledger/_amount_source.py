@@ -661,11 +661,17 @@ def _salary_answer(txn, basis: AmountBasis) -> Decimal:
 
     *That is the narrow claim and it is the true one.*  An adversarial review
     of X-au-d refuted the wider one this paragraph used to make -- that it is
-    the only producer of the FIGURE.  ``routes/salary/views`` and
-    ``routes/salary/cockpit`` each build the same ``project_salary`` call over
-    the same calendar to render their own breakdowns, so the derivation is
-    written three times and this step deleted one of them.  Finding
-    **N-443**.
+    the only producer of the FIGURE -- because ``routes/salary/views`` and
+    ``routes/salary/cockpit`` each built the same ``project_salary`` call over
+    the same calendar to render their own breakdowns, so the derivation was
+    written three times.  **That was finding N-443 and plan step salary:R14-a
+    closed it**: all three now call
+    :func:`app.services.income_service.project_profile`.  The wider claim
+    is still NOT true and a second adversarial review caught this sentence
+    making it: ``tax_withholding_service`` and ``tax_report_service``
+    derive breakdowns of their own over a single tax YEAR.  What R14-a
+    made single is the CALENDAR-WIDE projection; what this function owns
+    is still only the narrow claim -- what a ROW's amount is.
 
     **The refusal narrowed at that step and is stated as it now is.**  It
     fired where the app held two answers: the read-time producer scoped its
