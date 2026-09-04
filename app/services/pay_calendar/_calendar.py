@@ -57,8 +57,9 @@ which SAVED paycheck covers this day  :meth:`PayCalendar.period_containing`
 which span covers this day, saved or  :meth:`PayCalendar.span_containing`
 projected                             -- TOTAL from the first payday on
 which SAVED paycheck does a record    :meth:`PayCalendar.filing_period`
-FILE under                            -- never ``None``; a foreign key
-                                      points at the answer
+FILE under                            -- never ``None``; the ledger must
+                                      file every recorded event
+                                      somewhere (ruling **R-PC53**)
 ===================================== ==================================
 
 **Beside them sit FOUR ORDERING searches, which are a 2x2 rather than a list**,
@@ -95,18 +96,40 @@ search rather than being a fourth scan, and the search itself is the missing
 mirror of :meth:`PayCalendar.period_starting_on_or_after`, which the recurrence
 arc's calendar already carried.
 
-**Why the filing rule cannot simply be deleted, measured rather than argued.**
-The competing option was to drop ``journal_entries.pay_period_id`` and derive a
-ledger entry's paycheck from its ``entry_date``.  On ``shekel-prod-db``:
-**14 days carry TWO different paychecks for ONE entry date**, so the date does
-not determine the paycheck; **35 of 327 entries (10.7%)** are dated outside
-their own paycheck across five of the seven source kinds, which is the budget
-clock and the cash clock legitimately disagreeing; and **4 ``loan_opening``
-entries** -- a mortgage dated 2018-12-01, a van loan 2023-02-14 -- precede the
-owner's first payday (2026-03-26) by years and rely on the clamp to name any
-paycheck at all.  Ledger row **P18** carries the full measurement; whether the
-column stays is plan step ``C7``'s, and this method is what ``C7`` would delete
-if it rules the column away.
+**Why the filing rule cannot simply be deleted, and plan step ``C7`` has RULED
+that it stays** (ruling **R-PC53**, which holds the argument; what follows is
+the part a caller here needs).  The competing option was to drop
+``journal_entries.pay_period_id`` and derive a ledger entry's paycheck from its
+``entry_date``.  **Measured 2026-09-03** on ``shekel-prod-db`` at 550 entries,
+the first census having been taken at 327: **18 entry dates carry TWO OR MORE
+different paychecks**, so the date does not determine the paycheck; **105 of
+550 (19.1%)** are dated outside their own paycheck because the budget clock and
+the cash clock legitimately disagree; **4** are ``loan_opening`` entries
+preceding the owner's first payday by years, relying on the clamp to name any
+paycheck at all; and **2** are finding **N-161**'s reversed residue rather than
+a disagreement about anything.  Deriving the column would re-attribute **107 of
+the 550**, moving **$9,700.48 NET** across period boundaries -- quote that
+figure and not the ``$20,743.82`` gross debit-side one, ``$5,708.72`` of which
+is a single self-cancelling N-161 pair.
+
+**The column STAYS, and the argument has TWO halves because the column does.**
+A first draft here said "it is not a derivation at all", which is FALSE for 218
+of the 550 rows and contradicts ruling **balance:R-EA**.  The **332
+SOURCE-LINKED** entries COPY the source row's own ``pay_period_id`` at posting
+time -- a budgeting decision, not a fact about the settle date -- and **105
+disagree** with what this method would answer, so deriving them destroys a fact
+nothing else holds.  The **218 ANCHOR corrections ARE** this derivation stored,
+**216** equal to it exactly; what keeps that copy is that the derivation is not
+STABLE over time, and R2 needs the period the postings actually LANDED in
+(**N-161**, ``$2,854.36`` filed into the wrong period).  So row **P18**'s
+premise is OVER-GENERALISED from the anchor writers to the whole column rather
+than simply true, and no NEW reconciler is owed because
+:func:`app.services._posting_reconcile.emit_correction_deltas` is already one:
+it expresses a moved answer as a reversing PAIR, never an edit.  How hard the
+stored value is to rewrite is a MODEL fact, stated once on the column itself in
+:mod:`app.models.journal_entry`.  Eight of its nine reads in ``app/`` group or
+filter by it; the ninth (``account_posting_service._walk``'s residue loader)
+resolves the grouped id to its period's ``start_date`` and sorts on that.
 
 **A WINDOW is a VIEW, and the type is what makes that structural** (ledger row
 **P14**).  A period's end is its successor's payday, so deriving a calendar from
@@ -486,11 +509,23 @@ class PayCalendar:
         """Return the SAVED period a record dated *day* files under.
 
         **A different question from containment, ruled so 2026-08-10**, because
-        it may never answer ``None``: ``journal_entries.pay_period_id`` is a
-        ``NOT NULL`` foreign key, so a ledger entry needs a paycheck a key can
-        point at even when its own date lies outside every paycheck.  Four
-        entries on production do -- a mortgage dated 2018-12-01 and a van loan
-        2023-02-14, both years before the owner's first payday.
+        it may never answer ``None``: a double-entry ledger must post every
+        recorded event into some paycheck, so a record dated outside every
+        paycheck still needs one to file under.
+        ``journal_entries.pay_period_id`` being ``NOT NULL`` EXPRESSES that
+        obligation rather than causing it, and stating the causation the other
+        way round -- which this docstring did until plan step ``C7`` -- is what
+        let ledger row **P18** read the totality as a storage artifact (ruling
+        **R-PC53**).  **Both callers today write that column, so a reader who
+        greps finds only the FK needing totality** -- but the obligation
+        outlives it, because under DROP the PER-PERIOD readers each need a
+        total answer: the C-2 income statement
+        (:mod:`app.services.ledger_report_service._income_statement`) and the
+        period-lock ledger gate (:mod:`app.services.pay_period_locks`).  A
+        partial answer drops the four pre-calendar entries, **$234,402.45**
+        net, out of every per-period figure instead of filing them somewhere.
+        Those four are a mortgage dated 2018-12-01 and a van loan 2023-02-14,
+        both years before the owner's first payday.
 
         The rule is ONE clamp: **the latest period starting on or before *day*,
         else the earliest**.  It replaced the three-branch chain
