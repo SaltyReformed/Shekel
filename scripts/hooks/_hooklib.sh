@@ -22,8 +22,41 @@
 # repo-root resolution across every hook (finding HOOK/SH-12: this was
 # previously spelled three different ways across three scripts, and a
 # trailing slash in CLAUDE_PROJECT_DIR silently defeated the relpath strip).
+#
+# **$PWD FIRST, and CLAUDE_PROJECT_DIR only as a fallback.** That order is the
+# reverse of what stood here, and the reversal is MEASURED rather than tidy.
+# ``CLAUDE_PROJECT_DIR`` resolves to the PRIMARY checkout whatever worktree the
+# session is actually in -- ``session-start.sh`` has said exactly that in its
+# own header since it was written, and reads ``$PWD`` for this reason. That one
+# hook was fixed and this shared helper was not, so every OTHER hook inherited
+# the bug:
+#
+#   * ``hook_target_relpath`` normalized each edited file against the primary
+#     root. A worktree file is not under it, so the function returned an
+#     ABSOLUTE path and every caller's ``case`` pattern missed -- silently
+#     SKIPPING the gate. The comment below still calls that outcome "correct",
+#     which it is for a file genuinely outside the project and is not for a
+#     worktree file.
+#   * ``stop-check.sh`` cd'd to the primary checkout and linted a tree the
+#     session was not editing -- reporting another lane's uncommitted work as
+#     this lane's failure, and passing this lane's real one.
+#
+# Measured 2026-09-04 in ``~/projects/shekel-xauf``: ``Decimal(0.1)`` written
+# into ``app/`` through BOTH Write and Edit was not blocked, though pylint
+# reports W9901 (``shekel-decimal-from-float``) and exits 4 on that file. On the
+# same night a Stop hook in that worktree reported E1120s and unused imports
+# that existed only in a peer's checkout. So all four per-edit gates and the
+# Stop floor were inoperative for every session working in a worktree, which
+# under this project's Multi-session doctrine is every session. CI and
+# pre-commit were unaffected throughout, which is why nothing reached ``main``.
+#
+# ``git rev-parse`` rather than a string strip: it answers for the WORKTREE the
+# session is in, which is the question, and it fails cleanly to the old
+# behaviour outside a checkout.
 hook_repo_root() {
-    local root="${CLAUDE_PROJECT_DIR:-$PWD}"
+    local root
+    root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" \
+        || root="${CLAUDE_PROJECT_DIR:-$PWD}"
     printf '%s\n' "${root%/}"
 }
 
