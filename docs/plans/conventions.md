@@ -27,6 +27,7 @@ failure being guarded against.
 | `implementation_plan_pay_calendar.md` | the pay-calendar arc's | argument |
 | `implementation_plan_credit_card.md` | the credit-card arc's | argument |
 | `implementation_plan_bank_import.md` | the statement importer's, split out 2026-08-13 | argument |
+| `implementation_plan_salary.md` | the paycheck engine's, minted 2026-09-03 | argument |
 
 **Merge what shares KEYS; split what shares only a READER.** Findings, steps and RULINGS are one
 table each -- the third sat in THREE grammars across five documents no gate parsed, which is how
@@ -185,14 +186,16 @@ end.
     sequence EXECUTABLE rather than merely written down. A container blocker resolves to the rank
     its last leaf holds. **A CONTAINER is not a position.** A decomposed parent is a name for a
     group, never a thing a reader picks up, so it leaves the order entirely and says which rank it
-    ticks at instead. The previous index listed `X-f`, `X-aj`, `X-i` and `X-x` as though they were
-    pickable work. **The TABLE is SORTED**: ranked rows ascend and are its LEADING block (ungraded
-    to 2026-08-20). **The `starts` cell is DERIVED and this rule is its reconciler**: `NOW` exactly
-    when nothing unshipped blocks it, `after #N` naming the LATEST unshipped blocker's rank. Storing
-    it at all is a deliberate exception to the rule against derived copies, and it is only legal
-    because the gate recomputes it on every commit that touches the file -- an unreconciled copy is
-    the root cause three of these arcs exist to remove. A stale `NOW` sends a reader at work they
-    cannot start; a stale `after` hides work they can.
+    ticks at instead. **A container whose leaves have all SHIPPED is SHIPPED**, carrying a commit
+    hash (its last leaf's, by convention) with `starts` reading `--` (finding N-472, 2026-09-03).
+    The previous index listed `X-f`, `X-aj`, `X-i` and `X-x` as though they were pickable work.
+    **The TABLE is SORTED**: ranked rows ascend and are its LEADING block (ungraded to 2026-08-20).
+    **The `starts` cell is DERIVED and this rule is its reconciler**: `NOW` exactly when nothing
+    unshipped blocks it, `after #N` naming the LATEST unshipped blocker's rank. Storing it at all is
+    a deliberate exception to the rule against derived copies, and it is only legal because the gate
+    recomputes it on every commit that touches the file -- an unreconciled copy is the root cause
+    three of these arcs exist to remove. A stale `NOW` sends a reader at work they cannot start; a
+    stale `after` hides work they can.
     **Every step's description is ONE COMPLETE SENTENCE within a cap.** Terminal punctuation is the
     predicate because truncation cannot fake it -- a cell cut at a character boundary ends in a
     letter, a comma or a backtick, never a full stop.

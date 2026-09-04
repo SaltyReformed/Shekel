@@ -354,6 +354,53 @@ def for_parked_transfer(parked: "BarredLine") -> "tuple[Span, ...]":
     )
 
 
+def for_skip() -> "tuple[Span, ...]":
+    """Return the past-tense sentence for a line the owner has SKIPPED.
+
+    Plan step ``bank_import:X-gj-4c-2``, rulings **bank_import:R-JG** and
+    **R-JH**.  The Skipped tab is the same card one tense over, exactly as the
+    two settled tabs are -- and the locked direction gives it in three words
+    (``docs/design/bank_import_audit.md``: *the same card with Undo*).
+
+    **It takes no argument, and that is the subject rather than a shortcut.**
+    Every other composer here states what the verb ACTED ON -- a row, an
+    envelope, an account -- because that is the fact a reader is scanning for.
+    A skip acts on nothing: ruling **R-JG** stores no reason and there is none
+    to store, since the decision IS *explained by nothing*.  So one sentence
+    is true of every skipped line, and :func:`choose` is the precedent for a
+    composer that is a constant: a sentence about what the app does not know
+    varies with nothing either.
+
+    **What a skip does NOT do is said once under the list and never on the
+    card** (ruling **R-HR**): a skip closes no difference between the books
+    and the bank, and printing that beside every card is the paragraph-per-row
+    R-HR removed from this screen.
+
+    **It names no MERCHANT**, where :func:`for_parked_transfer` does.  That
+    sentence names one because the merchant IS what the money went to; here
+    the card's own facts column already prints it above, and a sentence
+    repeating it would be the same fact twice on one line.
+
+    Returns:
+        The spans.  They read *Skipped as explained by nothing*, which is
+        :attr:`~._verbs.Verb.past` followed by the page legend's own gloss on
+        the verb (``_statement_reconcile_body.html``: *Skip -- explained by
+        nothing*), so the tab and the legend teach one phrase.  *An earlier
+        draft of this paragraph claimed the panel's SKIP pane uses it too, and
+        adversarial review measured that FALSE*: :data:`~._verbs.SKIP_WAITS`
+        reads *explains nothing you budget for*, which is a near-miss rather
+        than the same words.  Reconciling the two is ``bank_import:X-gj-4b``'s,
+        which rewrites that sentence when it lights the verb; claiming it here
+        would be this docstring asserting a consistency the screen does not
+        have.
+    """
+    return (
+        Span.words(Verb.SKIP.past, Ink.VERB),
+        Span.words("as", Ink.PLAIN),
+        Span.words("explained by nothing", Ink.STRONG),
+    )
+
+
 def for_accepted(group: "AcceptedGroup") -> "tuple[Span, ...]":
     """Return the past-tense sentence for an act that has already landed.
 

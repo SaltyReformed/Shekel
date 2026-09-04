@@ -148,7 +148,7 @@ def _derive_row_fields(template, rule, period):
     the owner's whole schedule -- four of the engine's judgements read it, and
     narrowing it to a write window is what stored one salary row ``$502.45``
     low (migration ``a3f8b1c40d92``) -- so the requirement did not go away; it
-    MOVED, to :meth:`app.services.income_service.SalaryPricing._net_by_period`,
+    MOVED, to :meth:`app.services.income_service.SalaryPricing._breakdown_by_period`,
     which derives the calendar it projects over and is the amount model's one
     walk to a paycheck.  Nothing left here reads a period beyond the one it is
     dating a row in.

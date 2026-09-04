@@ -16,10 +16,8 @@ from flask_login import current_user, login_required
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.models.salary_profile import SalaryProfile
-from app.services import paycheck_calculator, salary_cockpit_service
-from app.services.payroll_basis import PayrollBasis
+from app.services import income_service, salary_cockpit_service
 from app.services.pay_calendar import calendar_for
-from app.services.tax_config_service import load_tax_configs_for_periods
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import _get_owned_profile_and_period
 
@@ -82,18 +80,13 @@ def projection(profile_id):
 
     calendar = calendar_for(current_user.id)
     periods = calendar.saved()
-    # Resolve tax configs PER period year (DH-#30): the ~2-year horizon
-    # spans multiple tax years, so each period uses its own year's
-    # brackets/FICA -- substituting the latest CONFIGURED year at or before
-    # it -- matching the recurrence engine that generates the stored grid
-    # amounts.
-    configs_by_year = load_tax_configs_for_periods(
-        current_user.id, profile, periods,
-    )
-    breakdowns = paycheck_calculator.project_salary(
-        PayrollBasis(profile, calendar), periods,
-        configs_by_year=configs_by_year, calibration=profile.calibration,
-    )
+    # ONE spelling of the projection, shared with the cockpit and with the
+    # amount model's own derivation (plan step salary:R14-a, ledger row
+    # N-443).  This site wrote the ``load_tax_configs_for_periods`` +
+    # ``project_salary`` pair out longhand, as did the other two, over the
+    # same calendar; the per-period-year tax resolution (DH-#30) and the
+    # calibration argument live in that one producer now.
+    breakdowns = income_service.project_profile(profile, calendar)
 
     # Pair periods with breakdowns
     projection_data = list(zip(periods, breakdowns))

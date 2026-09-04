@@ -3066,7 +3066,7 @@ class TestMovingATransferBetweenAccounts:
             )
             db.session.flush()
             add_anchor_history(
-                db.session, savings, td["periods"][0], Decimal("900.00"),
+                db.session, savings, Decimal("900.00"),
             )
             account_posting_service.sync_account_anchor_postings(
                 savings.id, td["scenario"].id,

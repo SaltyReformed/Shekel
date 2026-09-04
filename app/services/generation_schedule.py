@@ -75,7 +75,7 @@ class GenerationSchedule:
       cumulative all read 1-3 periods instead of 61.  One salary row was STORED
       $502.45 below its true net pay (plan ledger row **D25**); the read-time
       recompute kept that off every surface, which is measured rather than
-      assumed in ``income_service.SalaryPricing._net_by_period``;
+      assumed in ``income_service.SalaryPricing._breakdown_by_period``;
     * a rule's chosen start period could not be found in the window, so the
       opening bound it states was dropped entirely (plan ledger row **D2**).
 
@@ -169,7 +169,7 @@ class GenerationSchedule:
         periods a rule fires in (the occurrence walk reads it) and what each of
         those periods IS (its payday, its last covered day, its id).  It is the
         OWNER's, never the window's; see
-        ``income_service.SalaryPricing._net_by_period`` for the $502.45 that
+        ``income_service.SalaryPricing._breakdown_by_period`` for the $502.45 that
         distinction was worth.
 
         **A property over :attr:`ctx` rather than a field, since plan step

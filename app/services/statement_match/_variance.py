@@ -33,7 +33,7 @@ door -- which is the mechanism that shrinks the bucket.  It is emphatically NOT
 a plug to ``anchor_equity``: that is what R-FN replaced, and plan step
 ``balance:X-f4`` deletes the machinery it would have used.
 
-**The measured population is finding balance:N-391, the bank-side half of the
+**The measured population is finding salary:N-391, the bank-side half of the
 retired N-239.**  On a
 production clone carrying the developer's own 376 recorded lines, SEVEN payroll
 deposits are 2-3 app rows summing ``$0.04``-``$0.06`` under what the employer
@@ -57,7 +57,7 @@ calculator's residue-apportionment and the bank-side gap ONE mechanism, and
 move, because the residue rule's whole range was `{$3,525.96, $3,525.97}`.
 What `N-391` says instead is that ``salary_profiles.annual_salary`` divides to
 a per-paycheck gross four cents under the stub the employer issues, and its
-owner is ``balance:X-av``.  A cause sentence nobody re-checks is exactly the
+owner is ``salary:X-av``.  A cause sentence nobody re-checks is exactly the
 shape that decays.
 
 **Nothing PROPOSES a residual and nothing may.**  R-GD's own measurement is
@@ -642,12 +642,12 @@ class DifferenceLanding:
     rule can justify the destination*, and *being the ONLY act is not what
     R-HS means by justified*.  The app is not without a CANDIDATE here:
     ``salary_profiles.template_id`` names the member whose figure is computed
-    (:meth:`~app.services.income_service.SalaryPricing._net_by_period`
+    (:meth:`~app.services.income_service.SalaryPricing._breakdown_by_period`
     returns the paycheck's ``net_pay`` for it and ``template.default_amount``
     for every other) so *which member rounds* is a stored fact.  What it lacks
-    is a JUSTIFICATION: `balance:N-391` reads *NOT yet attributed*, and none is
+    is a JUSTIFICATION: `salary:N-391` reads *NOT yet attributed*, and none is
     coming -- ``bank_import:X-gj-3b`` was WITHDRAWN (**R-JJ**) and
-    ``recurrence:R18`` dissolves the question: one deposit will name ONE row.
+    ``salary:R18`` dissolves the question: one deposit will name ONE row.
 
     **It is a GENERALISATION of ``bank_cash_for`` rather than a second arm
     beside it, and the algebra is why that matters.**  That function answered
@@ -677,7 +677,7 @@ class DifferenceLanding:
     :func:`~._accept.record_match` used to get from ``bank_cash_for`` and which
     a first version of that step lost by gating the mint on consent alone.
 
-    **The measured population is finding balance:N-391.**  On a production
+    **The measured population is finding salary:N-391.**  On a production
     clone carrying the developer's own 376 recorded lines, seven payroll
     deposits are 2-3 app rows summing ``$0.04``-``$0.06`` under what the
     employer paid, ``+$0.35`` across the span.  Before this step the only thing
@@ -697,7 +697,7 @@ class DifferenceLanding:
     about the derivation and not a per-member attribution: the bank shows ONE
     deposit, so no per-member bank figure exists to compare an allowance
     against, and *the allowances match exactly* is ``bank less allowances =
-    salary`` restated.  The gross half is ``balance:X-av``'s, which
+    salary`` restated.  The gross half is ``salary:X-av``'s, which
     `N-391` already names.
 
     Attributes:

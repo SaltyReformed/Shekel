@@ -1960,7 +1960,7 @@ class TestAGroupLandsNOWHEREUntilTheOwnerNamesAMember:
 class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
     """Plan step **bank_import:X-gj-3a**, through the real door.
 
-    **The staged shape is finding balance:N-391's, measured 2026-09-01.**  The
+    **The staged shape is finding salary:N-391's, measured 2026-09-01.**  The
     owner's `TOWN OF CLAYTON PAYROLL` deposit is two or three app rows summing
     `$0.04`-`$0.06` under it, seven times over the span -- and re-running his
     own paycheck through ``paycheck_calculator`` for each of the seven showed

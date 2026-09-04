@@ -325,7 +325,7 @@ class TestTheMatchTabOffersThePeriodAndTheSearchReachesFurther:
     def test_the_lines_own_period_holds_the_rows_that_explain_it(
         self, app, db, seed_user,
     ):
-        """Finding **balance:N-391**'s own case, reachable in one click.
+        """Finding **salary:N-391**'s own case, reachable in one click.
 
         Measured 2026-08-30 on the developer's own account: the 2026-03-26
         deposit of `$2,573.42` finds ``Health Insurance Allowance`` `$100.00`

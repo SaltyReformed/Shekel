@@ -80,8 +80,9 @@ def rank_map() -> dict[str, int]:
     until it stops changing rather than assuming one level.
 
     A container whose leaves have all shipped maps to nothing: it should have
-    ticked, which is :func:`_registry.decomposition_violations`' arm, not this
-    module's.
+    ticked, which :func:`_container_starts_problem` grades since 2026-09-03
+    (finding N-472); :func:`_registry.decomposition_violations` grades the
+    converse, a SHIPPED parent with an open leaf.
     """
     rows = registry.step_rows()
     ranks = {row.key: row.rank for row in rows if row.rank is not None}
@@ -226,9 +227,29 @@ def _container_starts_problem(
             f"{row.key} is a container and its `starts` reads {head!r}.  A "
             f"container does not START, it TICKS with its last leaf ({_RULE})"
         )
-    leaf_ranks = [
-        ranks[key] for key in _leaf_keys(row, rows) if key in ranks
-    ]
+    leaf_keys = _leaf_keys(row, rows)
+    by_key = {other.key: other for other in rows}
+    open_leaves = [key for key in leaf_keys if not by_key[key].shipped]
+    if leaf_keys and not open_leaves:
+        # A container whose leaves have ALL shipped has no ranked leaf to
+        # derive from, so a stale ``ticks with #N`` here survived every rank
+        # pass untouched and named a rank that had come to mean another
+        # step (finding N-472: `balance:X-au-c` read `ticks with #7` when
+        # measured on e9cd7693 and `#6` on dev by 2026-09-03 -- drifting with
+        # each renumber and graded by nothing; staging `#999` returned 0
+        # violations).  It ticked with its last leaf, so it is SHIPPED -- the
+        # converse of rule 13's sixth arm.  An OPEN nested container counts
+        # as an open leaf, or this arm and that one would contradict each
+        # other over the same parent.  A parent whose leaves have LEFT the
+        # index (rule 5) has an empty ``leaf_keys`` and stays silent, as rule
+        # 13 requires.
+        return (
+            f"{row.key} is a container whose {len(leaf_keys)} leaves have all "
+            f"SHIPPED and it still reads `container` / {head!r}.  It ticked "
+            f"with its last leaf: mark it SHIPPED, name that leaf's commit, "
+            f"and set `starts` to `--` ({_RULE})"
+        )
+    leaf_ranks = [ranks[key] for key in leaf_keys if key in ranks]
     if leaf_ranks and int(stated) != max(leaf_ranks):
         return (
             f"{row.key} says it ticks with #{stated} and its last open leaf is "

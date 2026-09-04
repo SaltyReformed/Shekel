@@ -17,6 +17,7 @@ import pytest
 import _archive as archive
 import _order as order
 import _registry as registry
+from _classes import decomposition_leaf_keys
 from _staging import row_of, stage_a_live_container, with_cell
 
 
@@ -230,6 +231,63 @@ class TestTheStartsCellIsDerivedAndReconciled:
         ticks = order.rank_map()["balance:X-i"]
         problems = order.starts_violations()
         assert any("balance:X-i" in p and f"#{ticks}" in p for p in problems), problems
+
+    def test_the_control_fires_on_a_container_whose_leaves_have_all_shipped(self, stage):
+        """A container ticks with its last leaf, and when that leaf ships so does it.
+
+        **This arm was BLIND until 2026-09-03** (finding N-472): a container whose
+        leaves have all shipped has no ranked leaf to derive a tick rank from, so
+        its ``ticks with #N`` was graded against nothing -- `balance:X-au-c` read
+        ``ticks with #7`` when measured and ``#6`` on dev a day later, with its
+        only leaf shipped, and staging ``#999`` there returned 0 violations.
+        The subject is DERIVED: a SHIPPED declared parent
+        whose leaves are all still in the index and all shipped is staged back to
+        ``container``, which is exactly the stale state, so the control does not
+        depend on the corpus holding one.
+        """
+        rows = registry.step_rows()
+        by_key = {row.key: row for row in rows}
+        leaves = {row.key: decomposition_leaf_keys(row, rows) for row in rows}
+        subject = next(
+            row for row in rows
+            if row.shipped and not row.is_container
+            and leaves[row.key]
+            and all(
+                by_key[key].shipped for key in leaves[row.key] if key in by_key
+            )
+        )
+        line = row_of("steps", f"| {subject.arc} | {subject.ident} |")
+        staged = with_cell(with_cell(with_cell(line, 4, "container"), 5, "--"), 6, "ticks with #1")
+        stage("steps", line, staged)
+        problems = order.starts_violations()
+        assert any(
+            subject.key in p and "have all SHIPPED" in p for p in problems
+        ), problems
+
+    def test_the_arm_stays_silent_for_a_parent_whose_leaves_left_the_index(self, stage):
+        """Rule 13: a parent holding no leaves is silence, not a failure.
+
+        Rule 5 archives completed spans, so a shipped parent may have NO leaf
+        left in the index, and the arm cannot tell that row from a plain leaf
+        that never had any -- both derive an EMPTY leaf set, and the guard on
+        that set is what is under test.  The subject is therefore any shipped
+        row with no leaf in the index, staged back to ``container``; it keeps a
+        stated rank so the ``stated is None`` arm, which grades a container
+        reading ``--``, stays out of the measurement.
+        """
+        rows = registry.step_rows()
+        subject = next(
+            row for row in rows
+            if row.shipped and not row.is_container
+            and not decomposition_leaf_keys(row, rows)
+        )
+        line = row_of("steps", f"| {subject.arc} | {subject.ident} |")
+        staged = with_cell(with_cell(with_cell(line, 4, "container"), 5, "--"), 6, "ticks with #1")
+        stage("steps", line, staged)
+        problems = order.starts_violations()
+        assert not any(
+            subject.key in p and "have all SHIPPED" in p for p in problems
+        ), problems
 
     def test_the_control_fires_on_a_container_whose_leaves_are_a_siblings(self, stage):
         """A container's leaves may be filed under an identity SIBLING's name.

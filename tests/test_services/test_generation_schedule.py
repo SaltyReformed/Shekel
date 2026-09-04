@@ -554,7 +554,7 @@ class TestThePaycheckSeesTheWholeSchedule:
     WITH IT.**  They asserted the figure GENERATION stored; generation prices
     nothing now -- a salary row DECLARES its definition and stores no figure at
     all -- so the whole-schedule requirement lives where the derivation does,
-    in :meth:`~app.services.income_service.SalaryPricing._net_by_period`, which
+    in :meth:`~app.services.income_service.SalaryPricing._breakdown_by_period`, which
     derives its own calendar.  Each case therefore asserts what the AMOUNT
     MODEL answers for the generated row rather than what the row holds, and
     D25's defect is graded exactly as before: a producer counting one January

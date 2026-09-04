@@ -154,7 +154,16 @@ def skipped_among(
     :func:`~._skipping.skip_line` refuses a line a live match answers, and
     without this the same line could be matched AFTER it was skipped and end
     up carrying both answers -- a card on the Explained tab and a card on the
-    Skipped tab, for one line, with nothing raising.
+    Skipped tab, for one line, with nothing raising.  *That last clause was
+    written at ``X-gj-4a`` and was FALSE until plan step
+    ``bank_import:X-gj-4c-2`` gave the Skipped tab the store to read*; it is
+    measured now by
+    ``test_reconcile.TestADoublyAnsweredLineIsTHECOSTTwoRefusalsBUY``, which
+    files the match through its real door and then inserts the skip row
+    directly -- one door bypassed, not two, and the resulting state one that
+    neither would admit.  The refusal itself never depended on it
+    -- ruling **R-HP** is the reason -- but a consequence nobody could observe
+    is not a reason a reader can check.
 
     **Read per ACT and never cached on the pass**, which is
     :class:`~._candidates.MatchedSubjects`' own rule for the same reason: a
