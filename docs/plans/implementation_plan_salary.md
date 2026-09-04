@@ -75,7 +75,7 @@ Every figure is dated and rests on the developer's own data; re-measure before c
 
 | what was measured | result | when |
 |---|---|---|
-| a 5% employer match priced from `annual_salary / 26` against the raise-aware gross | `$137.51` a year understated (`$3,525.96` against `$3,631.74`) | 2026-08-19, **D45** |
+| the whole raise-blind feed against the engine, over all 63 saved paydays | `$1,646.84` understated (`$898.18` employee + `$748.66` employer); `$562.12` a full year. *Superseded `$137.51`, which was the employer half at ONE raise and did not compound* | 2026-09-03 clone, **D45** |
 | one owner-level gross on a two-job owner, R-F16's reverted fix | a 39% swing that flips between renders with no data change | 2026-08-19, **D45** |
 | the 2026-08-28 calibration applied to the seven RECEIVED March-June paychecks | `$2,454.10 -> $2,483.19`, `+$29.09` each, `+$203.63` over seven | 2026-09-02 clone, **N-441** |
 | the same seven re-derived with the calibration removed, against their generated figure | `$2,473.38 -> $2,454.10`, `-$19.28`, unaccounted for by any audit row | 2026-09-02, **N-442** |
@@ -137,19 +137,31 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       it. The row's "derived effective rates" that nothing recomputes (**N-530**) are decided here:
       the rates derive from the stub's stated figures at read, or the stub's figures are the stored
       fact and the rates go (**balance:R-IY**). A migration; own review pass.
-- [ ] **R14 -- what a payroll deduction's gross is priced from** (**R-SAL2**; finding **D45**).
-      `investment_projection._compute_deduction_per_period` divides a profile's stored
-      `annual_salary` by the paycheck count, where every sibling surface routes through the engine;
-      it sets both the employee contribution and the employer-match basis, `$137.51` a year
-      understated on the developer's own 5% match.
-      **R-F16 fixed this and reverted it, and the revert is the specification**: one owner-level
-      current gross priced every deduction off ONE profile chosen by an unordered `.first()` and off
-      a figure that is ZERO whenever no period covers today. The ruling answers the three questions
-      together: the deduction's OWN profile; THAT period's gross from the one engine's per-period
-      breakdown, raises applied as-of the period; and the period as the clock, never `date.today()`.
-      The contribution tier therefore CONSUMES the breakdown map, which is the first surface moved
-      onto the shared leaf C12 later collapses the rest onto. **MOVES MONEY** and needs its own
-      review pass.
+- [ ] **R14 -- what a payroll deduction's gross is priced from** -- the DECOMPOSED parent, split
+      2026-09-03 (**R-SAL6**) into the EXPAND and the MONEY, because an additive migration is graded
+      by its backfill's branches and a money cutover by what it moves against a named input set.
+      Carries **D45**.
+  - [x] **R14-a** `9e81d9e7` -- an employer contribution NAMES its funding profile (**R-SAL5**) and
+        the calendar-wide projection became SINGLE (**N-443**), closing **N-533** / **N-534** with
+        it. **A later step must obey**: `investment_params.salary_profile_id` is nullable and
+        UNREAD; `R14-b` is its reader and owns what a NULL means at the door.
+  - [ ] **R14-b -- what a deduction's gross is priced from** (**R-SAL2**; **D45**, **N-532**).
+        `investment_projection._compute_deduction_per_period` divides a profile's stored
+        `annual_salary` by the paycheck count, where every sibling surface routes through the
+        engine; it sets both the employee contribution and the employer-match basis.
+        **R-SAL2 answers the three questions together** (D45 carries what R-F16's revert measured):
+        the deduction's OWN profile; THAT period's gross from the engine's per-period breakdown,
+        raises applied as-of the period; the period as the clock, never `date.today()`. The tier
+        CONSUMES the breakdown map -- the first surface moved onto the shared leaf C12 later
+        collapses the rest onto. **Consuming the breakdown deletes more than the gross**:
+        `DeductionLine` already carries `target_account_id`, and the engine already applies the
+        calendar-year cap per line, so `_annual_cap_averaged` and `_period_capped_total` are a third
+        and fourth spelling beside the raise-blind gross (**D45**) and the ignored inflation
+        escalation (**N-532**). The two cap semantics differ (even spread against front-loaded):
+        state which survives and grade it. **It runs after `S2`** (developer, 2026-09-04) -- that
+        `-$19.28` is in the engine this step makes the feed's single source, and the feed is dormant
+        today, so shipping first leaves no baseline that could show the difference. **MOVES MONEY**;
+        own review pass, own harness.
 - [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (**R-SAL3**; findings **F-21**,
       **N-395**). `salary.paycheck_deductions.deductions_per_year` server-defaults to 26 and the
       form offers 26 / 24 / 12; it is never multiplied or divided, only compared, so it is a
