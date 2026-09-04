@@ -25,6 +25,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.ref import EmployerContributionType
+from app.models.salary_profile import SalaryProfile
 from app.routes._redirect_target import RedirectTarget
 from app.routes._transfer_creation_helpers import (
     build_recurring_transfer_template,
@@ -40,7 +41,11 @@ from app.schemas.validation import (
 from app.services import investment_dashboard_service, template_amount_service
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import RecurrenceSpec, author_rule
-from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.auth_helpers import (
+    get_or_404,
+    require_owned_fk,
+    require_owner,
+)
 from app.utils.dates import display_today
 from app.utils.money import round_money
 
@@ -363,11 +368,15 @@ def update_params(account_id):
             flash("Please correct the highlighted errors and try again.", "danger")
             return redirect(url_for("investment.dashboard", account_id=account_id))
         data = _update_schema.load(request.form)
+        # R-SAL5: the funding profile must be the requester's own -- a
+        # forged id would price this account's employer contribution off a
+        # stranger's salary once salary:R14-b reads the column.
+        require_owned_fk(SalaryProfile, data, "salary_profile_id")
         param_fields = {
             "assumed_annual_return", "annual_contribution_limit",
             "contribution_limit_year", "employer_contribution_type_id",
             "employer_flat_percentage", "employer_match_percentage",
-            "employer_match_cap_percentage",
+            "employer_match_cap_percentage", "salary_profile_id",
         }
         for field_name, value in data.items():
             if field_name in param_fields:
@@ -379,6 +388,10 @@ def update_params(account_id):
             flash("Please correct the highlighted errors and try again.", "danger")
             return redirect(url_for("investment.dashboard", account_id=account_id))
         data = _create_schema.load(request.form)
+        # R-SAL5: the funding profile must be the requester's own -- a
+        # forged id would price this account's employer contribution off a
+        # stranger's salary once salary:R14-b reads the column.
+        require_owned_fk(SalaryProfile, data, "salary_profile_id")
         params = InvestmentParams(account_id=account_id, **data)
         db.session.add(params)
         flash("Investment parameters created.", "success")

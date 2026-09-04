@@ -125,15 +125,16 @@ def gross_per_paycheck(
 ) -> Decimal:
     """Return what ONE paycheck pays, for a salary paid *periods_per_year* a year.
 
-    **The one place the per-paycheck division is spelled, for FOUR callers**:
+    **The one place the per-paycheck division is spelled, for its callers**:
     ``paycheck_calculator.calculate_paycheck`` (and the two cumulatives that
-    replay prior periods for it), ``investment_projection``'s percentage
-    deductions, ``retirement_projection``'s employer-match salary basis and
-    ``retirement_dashboard_service``'s retirement-gap take-home basis.  Stated
-    as MEMBERSHIP rather than a count, for the reason
-    :mod:`app.services.pay_calendar` states it that way: a count of a census
-    goes stale silently, and this one was wrong twice before it was written
-    down.
+    replay prior periods for it), ``retirement_projection``'s long-horizon
+    employer-match salary basis and ``retirement_dashboard_service``'s
+    retirement-gap take-home basis.  Stated as MEMBERSHIP rather than a count,
+    for the reason :mod:`app.services.pay_calendar` states it that way: a count
+    of a census goes stale silently, and this one was wrong twice before it was
+    written down -- *and a fourth member left at plan step salary:R14-b, which
+    deleted ``investment_projection``'s percentage-deduction spelling
+    outright.*
 
     **One site is deliberately NOT here and saying so is the point.**
     ``routes.salary.profiles`` sets a template's ``default_amount`` from
@@ -152,16 +153,15 @@ def gross_per_paycheck(
     residue.  ``docs/audits/pylint-cleanup/deep-quality-hunt.md:721`` had
     recorded that divergence as an open design fork; this is its answer.
 
-    **It does NOT make the two sides agree on a paycheck, and an adversarial
-    review corrected a first draft that claimed it did.**  They now share the
-    rounding rule and still differ in what they FEED it: the engine passes
-    ``apply_raises(...)`` for the period, while
-    ``investment_projection.adapt_deductions`` stamps the profile's RAW
-    ``annual_salary``.  For an owner with an applicable raise those differ by
-    the raise and not by a cent -- that is finding **D45**, measured at
-    ``$137.51`` a year of understated employer contribution, and it is owned
-    elsewhere.  What this function makes structural is that neither side can
-    round differently from the other.
+    **There WAS a second side, and plan step salary:R14-b deleted it rather
+    than reconciling it.**  This paragraph read "it does NOT make the two
+    sides agree on a paycheck": they shared the rounding rule and still
+    differed in what they FED it, the engine passing ``apply_raises(...)`` for
+    the period while ``investment_projection.adapt_deductions`` stamped the
+    profile's RAW ``annual_salary`` -- a divergence of the whole raise, which
+    is finding **D45**.  The contribution feed reads the engine's own
+    breakdown now, so there is one side, and the agreement this function used
+    to make partial is total by construction.
 
     **The gross is a RATE, not a share of a year** (ruling **balance:R-HW**).
     Every paycheck in one salary segment pays the same figure, and the figure is
@@ -187,12 +187,13 @@ def gross_per_paycheck(
     :class:`~app.services.pay_calendar.PayCadence`, which would let it delegate
     to :meth:`~app.services.pay_calendar.PayCadence.annual_to_per_paycheck` and
     leave ONE division in the codebase.  The count is what
-    ``investment_projection.AdaptedDeduction`` carries -- stamped from the one
-    cadence its adapter is handed -- and widening that namedtuple to hold the
-    cadence would reach four services and their fakes to spare one expression.
-    The two divisions answer different questions at different precisions
-    besides: that one converts a rate and is deliberately NOT quantized (its
-    module forbids quantizing at all), where this one is a money boundary.
+    :attr:`PayrollBasis.periods_per_year` carries, and the two divisions
+    answer different questions at different precisions besides: that one
+    converts a rate and is deliberately NOT quantized (its module forbids
+    quantizing at all), where this one is a money boundary.  *A second reason
+    stood here until plan step salary:R14-b -- that widening
+    ``investment_projection.AdaptedDeduction`` to hold a cadence would reach
+    four services and their fakes -- and that namedtuple no longer exists.*
 
     **The stored input is the ANNUAL salary, and plan step salary:X-av flips
     it.** Under ruling R-HW the FACT is what one paycheck pays and the annual
@@ -203,9 +204,10 @@ def gross_per_paycheck(
 
     Args:
         annual_salary: The salary in effect for the paycheck, post-raise, as
-            :func:`~app.services.salary_raises.apply_raises` returns it -- or,
-            from ``investment_projection``, the profile's raw annual (D45,
-            above).  A ``Decimal`` at full precision, NOT coerced here: a
+            :func:`~app.services.salary_raises.apply_raises` returns it.
+            **Always post-raise since plan step salary:R14-b**, which retired
+            the one caller that passed a profile's raw annual (D45, above).
+            A ``Decimal`` at full precision, NOT coerced here: a
             ``float`` is refused by the division below with a ``TypeError``
             before :func:`~app.utils.money.round_money` is reached at all, and
             coercing through ``str()`` here would launder exactly the

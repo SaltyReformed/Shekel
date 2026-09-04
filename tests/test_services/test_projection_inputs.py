@@ -30,16 +30,20 @@ from app.extensions import db
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.services.investment_projection import (
+    AccountPayrollFeed,
     InvestmentInputs,
     PricedContribution,
     build_contribution_timeline,
     calculate_investment_inputs,
 )
+from app.services.income_service import project_profile
+from app.services.pay_calendar import calendar_for
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_account,
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
+    load_payroll_feeds,
     load_shadow_income_contributions_for_account,
 )
 from tests._test_helpers import (
@@ -55,20 +59,26 @@ def _flat_id():
     return ref_cache.calc_method_id(CalcMethodEnum.FLAT)
 
 
-@dataclass
-class _FakeDeduction:
-    """An adapted deduction, as ``adapt_deductions`` produces one since R-F16.
+def _feed(paydays, *, employee=None, gross=None):
+    """Build the :class:`AccountPayrollFeed` a caller hands the wrapper.
 
-    ``periods_per_year`` is the OWNER's cadence, stamped once per
-    ``adapt_deductions`` call; it replaced a ``pay_periods_per_year`` read off
-    the parent profile, which was a second stored answer to "how often am I
-    paid" (finding **F-16**).  The salary stays per row.
+    **The input since plan step salary:R14-b** (ruling **R-SAL2**), in place
+    of the ``_FakeDeduction`` this file built: the paycheck engine prices a
+    deduction when it prices the paycheck, and
+    :func:`load_payroll_feeds` folds its per-payday answer into this value.
+    ``TestLoadPayrollFeeds`` below grades that fold against real rows; the
+    cases here only need a feed that answers.
     """
-
-    amount: Decimal
-    calc_method_id: int
-    annual_salary: Decimal = Decimal("100000")
-    periods_per_year: Decimal = Decimal("26")
+    return AccountPayrollFeed(
+        employee_by_payday=(
+            {} if employee is None
+            else {day: Decimal(str(employee)) for day in paydays}
+        ),
+        gross_by_payday=(
+            {} if gross is None
+            else {day: Decimal(str(gross)) for day in paydays}
+        ),
+    )
 
 
 @dataclass
@@ -124,16 +134,14 @@ class TestBuildInvestmentProjectionInputsEquivalence:
             ),
             employer_flat_percentage=Decimal("0.05"),
         )
-        deductions = [
-            _FakeDeduction(
-                amount=Decimal("500.00"),
-                calc_method_id=_flat_id(),
-            ),
-        ]
         periods = [
             _FakePeriod(start_date=date(2026, 1, 2)),
             _FakePeriod(start_date=date(2026, 1, 16)),
         ]
+        feed = _feed(
+            [period.start_date for period in periods],
+            employee="500.00", gross="3846.15",
+        )
         contributions = [
             PricedContribution(
                 account_id=1, payday=periods[0].start_date,
@@ -144,7 +152,7 @@ class TestBuildInvestmentProjectionInputsEquivalence:
                 amount=Decimal("200"), is_confirmed=True,
             ),
         ]
-        return params, deductions, contributions, periods
+        return params, feed, contributions, periods
 
     def test_helper_matches_inline_kwargs_splat(self):
         """build_investment_projection_inputs == calculate_investment_inputs kwargs splat.
@@ -153,22 +161,20 @@ class TestBuildInvestmentProjectionInputsEquivalence:
         post-Commit-18 helper invocation must produce identical
         :class:`InvestmentInputs` for the same input objects.
         """
-        params, deductions, contributions, periods = self._fixture_inputs()
-        gross_biweekly = Decimal("3846.15")  # 100000/26 quantised; matches deduction gross
+        params, feed, contributions, periods = self._fixture_inputs()
 
         # The pre-Commit-18 inline kwargs splat that lived in each
         # dashboard service.  Reproduced here exactly so a future
         # divergence between the wrapper and the engine surfaces.
         inline_result = calculate_investment_inputs(
             investment_params=params,
-            deductions=deductions,
+            feed=feed,
             all_contributions=contributions,
             current_period=periods[1],
-            salary_gross_biweekly=gross_biweekly,
         )
 
         helper_result = build_investment_projection_inputs(
-            params, deductions, contributions, periods[1], gross_biweekly,
+            params, feed, contributions, periods[1],
         )
 
         assert isinstance(helper_result, InvestmentInputs)
@@ -179,34 +185,34 @@ class TestBuildInvestmentProjectionInputsEquivalence:
             == inline_result.annual_contribution_limit
         )
         assert helper_result.ytd_contributions == inline_result.ytd_contributions
-        assert helper_result.gross_biweekly == inline_result.gross_biweekly
+        assert (
+            helper_result.ytd_contributions_seed
+            == inline_result.ytd_contributions_seed
+        )
 
     def test_helper_returns_expected_decimal_values(self):
         """Hand-computed Decimal arithmetic locks the fixture's expected values.
 
-        - periodic_contribution = 500.00 (deduction) + (200+200)/2 (avg)
-          = 500.00 + 200.00 = 700.00
+        - periodic_contribution = 500.00 (the CURRENT payday's payroll figure,
+          since plan step salary:R14-b) + (200+200)/2 (avg) = 700.00
         - ytd_contributions = 200 + 200 = 400 (both contributions in
           2026 up to current_period=periods[1])
         - annual_contribution_limit = 23500
         - employer_params.flat_percentage = Decimal("0.05")
-        - employer_params.gross_biweekly = 3846.15
+        - the employer GROSS is no longer in the dict: it is a fact about a
+          payday, so the feed answers it per period (salary:R14-b).
         """
-        params, deductions, contributions, periods = self._fixture_inputs()
-        gross_biweekly = Decimal("3846.15")
+        params, feed, contributions, periods = self._fixture_inputs()
         result = build_investment_projection_inputs(
-            params, deductions, contributions, periods[1], gross_biweekly,
+            params, feed, contributions, periods[1],
         )
         assert result.periodic_contribution == Decimal("700.00")
         assert result.ytd_contributions == Decimal("400")
         assert result.annual_contribution_limit == Decimal("23500")
         assert result.employer_params is not None
         assert result.employer_params["flat_percentage"] == Decimal("0.05")
-        # gross_biweekly here is the deduction-derived gross (100000/26)
-        # which the engine populates from the deduction record itself,
-        # not the salary_gross_biweekly kwarg (that is only the fallback
-        # when no deductions are provided).
-        assert result.employer_params["gross_biweekly"] == Decimal("3846.15")
+        assert "gross_biweekly" not in result.employer_params
+        assert feed.gross_at(periods[1].start_date) == Decimal("3846.15")
 
 
 def _seed_deductions_fixture(app, db, seed_user, seed_second_user):
@@ -230,7 +236,6 @@ def _seed_deductions_fixture(app, db, seed_user, seed_second_user):
     other_user_id = seed_second_user["user"].id
     scenario_id = seed_user["scenario"].id
     other_scenario_id = seed_second_user["scenario"].id
-    bootstrap_period_id = seed_user["bootstrap_period"].id
 
     retire_type_id = ref_cache.acct_type_id(AcctTypeEnum.K401)
     flat_id = ref_cache.calc_method_id(CalcMethodEnum.FLAT)
@@ -313,7 +318,6 @@ def _seed_deductions_fixture(app, db, seed_user, seed_second_user):
         "acct_a_id": acct_a.id,
         "acct_b_id": acct_b.id,
         "other_acct_id": other_acct.id,
-        "bootstrap_period_id": bootstrap_period_id,
     }
 
 
@@ -417,6 +421,303 @@ class TestLoadActiveDeductionsHelpers:
             )
             assert ctx["acct_a_id"] in result
             assert bare_acct.id not in result
+
+
+class TestLoadPayrollFeeds:
+    """The producer plan step **salary:R14-b** puts in place of the feed's own
+    arithmetic (ruling **R-SAL2**), graded against REAL rows.
+
+    Two questions, and the point of the step is that neither is answered here:
+    what a deduction takes from a paycheck, and what gross funds an employer
+    contribution, are both established by
+    :func:`~app.services.income_service.project_profile` when it prices the
+    paycheck.  What this loader owns is the FOLD -- which lines belong to which
+    account, and which profile may answer at all -- so that is what these cases
+    grade.
+
+    They reuse :func:`_seed_deductions_fixture`, whose five deductions were
+    built for the loader beneath this one: an active $500 flat on Acct A, an
+    active $250 on Acct B, an INACTIVE deduction worth $999 on Acct A, one
+    worth $888 on an ARCHIVED profile, and another owner's worth $777.  Three
+    of the five must contribute nothing, and each does so for its own reason.
+    """
+
+    @staticmethod
+    def _params_for(account_id, salary_profile_id=None):
+        """Attach an :class:`InvestmentParams` row and return the map entry."""
+        from app.models.investment_params import InvestmentParams
+        params = InvestmentParams(
+            account_id=account_id,
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type_id=(
+                ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.FLAT_PERCENTAGE,
+                )
+            ),
+            employer_flat_percentage=Decimal("0.05"),
+            salary_profile_id=salary_profile_id,
+        )
+        db.session.add(params)
+        db.session.flush()
+        return params
+
+    def test_the_fold_keys_each_line_by_its_target_account(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """Each account receives the deduction lines that NAME it, and no others.
+
+        Acct A's $500 and Acct B's $250 come off the engine's own
+        ``DeductionLine.target_account_id``, which is the hook ruling R-SAL2
+        says this consumption finishes rather than adds: the column was
+        populated so the two surfaces would agree and nothing ever read it.
+        """
+        with app.app_context():
+            ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
+            db.session.commit()
+            calendar = calendar_for(ids["user_id"])
+            feeds = load_payroll_feeds(
+                ids["user_id"], calendar,
+                [ids["acct_a_id"], ids["acct_b_id"]], {},
+            )
+            paydays = [period.start_date for period in calendar.saved()]
+            assert set(feeds) == {ids["acct_a_id"], ids["acct_b_id"]}
+            for payday in paydays:
+                assert feeds[ids["acct_a_id"]].employee_at(payday) == Decimal("500")
+                assert feeds[ids["acct_b_id"]].employee_at(payday) == Decimal("250")
+
+    def test_two_deductions_on_ONE_profile_are_summed_ONCE(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """An account funded twice by one job reads the SUM, not the double.
+
+        The fold reads each funding PROFILE's breakdown, and one breakdown
+        already holds every line that profile takes -- so an account named by
+        two of one profile's deductions must read that profile once.  Reading
+        it per DEDUCTION instead counts every line as many times as the
+        account has deductions, which is $1,500 here against a true $750, and
+        no other case in this class can tell the two apart: every one of them
+        has a single active line per account.
+
+        Acct A already carries the fixture's active $500; this adds a $250
+        second line on the same profile, so the account's payday is $750.
+        """
+        with app.app_context():
+            ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=ids["user_id"], name="Active")
+                .one()
+            )
+            db.session.add(PaycheckDeduction(
+                salary_profile_id=profile.id,
+                target_account_id=ids["acct_a_id"],
+                name="A-second", amount=Decimal("250"),
+                calc_method_id=_flat_id(),
+                deduction_timing_id=ref_cache.deduction_timing_id(
+                    DeductionTimingEnum.PRE_TAX,
+                ),
+                is_active=True,
+            ))
+            db.session.commit()
+
+            calendar = calendar_for(ids["user_id"])
+            feed = load_payroll_feeds(
+                ids["user_id"], calendar, [ids["acct_a_id"]], {},
+            )[ids["acct_a_id"]]
+            payday = calendar.saved()[0].start_date
+            assert feed.employee_at(payday) == Decimal("750")
+
+    def test_the_map_is_TOTAL_over_the_calendars_paydays(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """Every payday the calendar reaches has an entry, so a skip is a zero.
+
+        The totality is load bearing rather than tidy: a payday that is merely
+        ABSENT is indistinguishable from one PAST the calendar, and
+        :meth:`AccountPayrollFeed.employee_at` holds the previous amount over
+        the second.  A 24-per-year deduction skips its month's third payday --
+        11 of the developer's 12 live deductions carry that cadence -- so the
+        difference is between a skipped paycheck contributing nothing and it
+        contributing the previous one's figure.
+        """
+        with app.app_context():
+            ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
+            db.session.commit()
+            calendar = calendar_for(ids["user_id"])
+            feed = load_payroll_feeds(
+                ids["user_id"], calendar, [ids["acct_a_id"]], {},
+            )[ids["acct_a_id"]]
+            assert set(feed.employee_by_payday) == {
+                period.start_date for period in calendar.saved()
+            }
+
+    def test_an_inactive_or_ARCHIVED_line_contributes_nothing(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """Acct A reads $500, not $500 + $999 + $888.
+
+        Three deductions name Acct A: the active one, an INACTIVE one worth
+        $999, and one worth $888 on a profile the owner has ARCHIVED.  The
+        second is refused by the deduction loader's own filter and the third
+        by :func:`_load_funding_profiles` -- which matters because archiving a
+        profile does NOT deactivate its deductions
+        (``routes/salary/profiles.delete_profile`` sets ``is_active`` on the
+        profile and its template and touches the deductions not at all), so
+        the deduction's own flag cannot answer this.  That was a measured
+        defect in ``salary:R14-a``'s backfill before its review caught it.
+        """
+        with app.app_context():
+            ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
+            db.session.commit()
+            calendar = calendar_for(ids["user_id"])
+            feed = load_payroll_feeds(
+                ids["user_id"], calendar, [ids["acct_a_id"]], {},
+            )[ids["acct_a_id"]]
+            payday = calendar.saved()[0].start_date
+            assert feed.employee_at(payday) == Decimal("500")
+
+    def test_a_gross_is_priced_only_where_a_funding_profile_is_NAMED(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """``salary_profile_id`` set -> a gross per payday; unset -> none at all.
+
+        Ruling **R-SAL5** and the developer's 2026-09-04 ruling together: the
+        employer contribution's basis is the NAMED profile's own paycheck, and
+        an account that names none models no employer money rather than
+        borrowing whichever profile a reader resolved.  The gross asserted is
+        the engine's own for that payday, read back through
+        :func:`~app.services.income_service.project_profile` -- so this grades
+        the FOLD and cannot pass by re-deriving the arithmetic it is checking.
+        """
+        with app.app_context():
+            ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=ids["user_id"], name="Active")
+                .one()
+            )
+            named = self._params_for(ids["acct_a_id"], profile.id)
+            unnamed = self._params_for(ids["acct_b_id"], None)
+            db.session.commit()
+
+            calendar = calendar_for(ids["user_id"])
+            feeds = load_payroll_feeds(
+                ids["user_id"], calendar,
+                [ids["acct_a_id"], ids["acct_b_id"]],
+                {ids["acct_a_id"]: named, ids["acct_b_id"]: unnamed},
+            )
+            payday = calendar.saved()[0].start_date
+            # Keyed on the BREAKDOWN's own period ID and looked up through
+            # the calendar, never paired by position: an equality whose two
+            # sides share one producer measures nothing, and a ``zip`` here
+            # would have shared the exact expression the loader used.
+            payday_by_id = {
+                period.period_id: period.start_date
+                for period in calendar.saved()
+            }
+            expected = {
+                payday_by_id[breakdown.period.period_id]:
+                    breakdown.earnings.gross_biweekly
+                for breakdown in project_profile(profile, calendar)
+            }[payday]
+            # And the figure itself, hand-computed, so the case still grades
+            # something if BOTH sides were to move together: $100,000 over 26
+            # paychecks is $3,846.15, and this fixture's profile carries no
+            # raise, so every payday in the window prices the same.
+            assert expected == Decimal("3846.15")
+
+            assert feeds[ids["acct_a_id"]].funds_employer is True
+            assert feeds[ids["acct_a_id"]].gross_at(payday) == expected
+            assert feeds[ids["acct_b_id"]].funds_employer is False
+            assert feeds[ids["acct_b_id"]].gross_at(payday) is None
+
+    def test_an_ARCHIVED_funding_profile_models_no_employer_money(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """A job the owner has left does not fund an employer contribution.
+
+        ``ondelete="RESTRICT"`` keeps the row, and a profile is archived
+        rather than deleted here, so the column can outlive the job it names.
+        The read refuses it, which is the same answer a ``NULL`` gets.
+        """
+        with app.app_context():
+            ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
+            archived = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=ids["user_id"], name="Inactive")
+                .one()
+            )
+            params = self._params_for(ids["acct_a_id"], archived.id)
+            db.session.commit()
+
+            calendar = calendar_for(ids["user_id"])
+            feed = load_payroll_feeds(
+                ids["user_id"], calendar, [ids["acct_a_id"]],
+                {ids["acct_a_id"]: params},
+            )[ids["acct_a_id"]]
+            assert feed.funds_employer is False
+
+    def test_ANOTHER_OWNERS_profile_prices_nothing(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """The read scopes by owner, not only the write door.
+
+        ``salary:R14-a`` closed the forged FK at the deduction door and its
+        migration had to defend against the same shape in SQL -- measured
+        writing a STRANGER's ``salary_profile_id`` onto this owner's row
+        before its review caught it.  A read that trusts the column's
+        ownership is a read that can be made to price a stranger's salary, so
+        it is scoped here too.  The row is written directly, bypassing the
+        route guard, precisely because the point is what the READ does with a
+        value the door would have refused.
+        """
+        with app.app_context():
+            ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
+            stranger = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=ids["other_user_id"], name="Other")
+                .one()
+            )
+            params = self._params_for(ids["acct_a_id"], stranger.id)
+            db.session.commit()
+
+            calendar = calendar_for(ids["user_id"])
+            feed = load_payroll_feeds(
+                ids["user_id"], calendar, [ids["acct_a_id"]],
+                {ids["acct_a_id"]: params},
+            )[ids["acct_a_id"]]
+            assert feed.funds_employer is False
+
+    def test_the_result_is_total_over_the_accounts_asked_for(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """An account no payroll funds maps to the EMPTY feed, not to nothing.
+
+        A caller indexes rather than defaulting, so a missing key is a defect
+        instead of a silently unfunded account -- the contract
+        ``ContributionInputs.absent`` keeps one tier up.
+        """
+        with app.app_context():
+            ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
+            db.session.commit()
+            calendar = calendar_for(ids["user_id"])
+            feeds = load_payroll_feeds(
+                ids["user_id"], calendar,
+                [ids["acct_a_id"], ids["other_acct_id"]], {},
+            )
+            assert set(feeds) == {ids["acct_a_id"], ids["other_acct_id"]}
+            unfunded = feeds[ids["other_acct_id"]]
+            assert unfunded.models_employee is False
+            assert unfunded.funds_employer is False
+
+    def test_no_accounts_issues_no_query(self, app, db, seed_user):
+        """An empty account list answers the empty map without a query."""
+        with app.app_context():
+            assert load_payroll_feeds(
+                seed_user["user"].id, calendar_for(seed_user["user"].id),
+                [], {},
+            ) == {}
 
 
 class TestLoadInvestmentParamsForAccounts:
@@ -690,7 +991,7 @@ class TestShadowContributionBoundary:
                 account.id, [period.id],
             ).records
             result = calculate_investment_inputs(
-                investment_params=self._params(), deductions=[],
+                investment_params=self._params(), feed=AccountPayrollFeed.absent(),
                 all_contributions=records, current_period=period,
             )
 
@@ -721,7 +1022,7 @@ class TestShadowContributionBoundary:
             ).records
             result = calculate_investment_inputs(
                 investment_params=self._params(limit=Decimal("23500")),
-                deductions=[], all_contributions=records,
+                feed=AccountPayrollFeed.absent(), all_contributions=records,
                 current_period=period,
             )
 
@@ -757,7 +1058,7 @@ class TestShadowContributionBoundary:
 
             result = calculate_investment_inputs(
                 investment_params=self._params(limit=Decimal("23500")),
-                deductions=[], all_contributions=records,
+                feed=AccountPayrollFeed.absent(), all_contributions=records,
                 current_period=periods[2],
             )
 
@@ -789,11 +1090,11 @@ class TestShadowContributionBoundary:
                 account.id, [period.id],
             ).records
             inputs = calculate_investment_inputs(
-                investment_params=self._params(), deductions=[],
+                investment_params=self._params(), feed=AccountPayrollFeed.absent(),
                 all_contributions=records, current_period=period,
             )
             timeline = build_contribution_timeline(
-                deductions=[], contribution_transactions=records,
+                feed=AccountPayrollFeed.absent(), contribution_transactions=records,
                 periods=[period], as_of=period.start_date,
             )
 
@@ -839,7 +1140,7 @@ class TestShadowContributionBoundary:
             assert records[0].payday == seed_periods[0].start_date
 
             result = calculate_investment_inputs(
-                investment_params=self._params(), deductions=[],
+                investment_params=self._params(), feed=AccountPayrollFeed.absent(),
                 all_contributions=records, current_period=seed_periods[1],
             )
             # ONE period contributed, so the average is the full $400.  A

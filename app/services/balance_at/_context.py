@@ -223,6 +223,35 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             sibling's.
         _amount_bases: The pass's amount-model memo, keyed by ``scenario_id``
             and filled by :meth:`amounts`.  Private for the same reason.
+        payroll_breakdowns: The pass's paycheck-PROJECTION memo, keyed by
+            ``salary_profiles.id`` and filled by
+            :func:`~app.services.projection_inputs.load_payroll_feeds` (plan
+            step **salary:R14-b**).  **PUBLIC**, beside ``loans`` / ``plans``
+            / ``payoffs`` and not beside ``_cash_folds``, and the paragraph
+            above is the test it was put to: exposing it hands out no balance
+            the fence must guard.  A
+            :class:`~app.services.paycheck_calculator.PaycheckBreakdown` does
+            carry ``net_pay`` -- but the SAME projection for the same owner is
+            already reachable through :meth:`amounts`, whose
+            :class:`~app.services.income_service.SalaryPricing` memoizes it
+            and publishes the net through the amount model by design.  A
+            private field here would guard a figure the pass beside it
+            already answers, which is a fence rather than a boundary.  *An
+            earlier build of this step made it private on the ``_cash_folds``
+            argument without checking that second half; two of its four
+            callers then had to reach past the underscore, and an adversarial
+            review measured them bypassing the memo entirely.*
+            **It exists because a projection is expensive and the seam asks
+            for one per ACCOUNT.**  ``_contribution_inputs_for_account`` is
+            the batch loader over a one-element set, so four seam entries
+            calling it once per account re-ran the engine over the owner's
+            WHOLE saved window each time: measured at 61
+            ``calculate_paycheck`` calls on a 3-account, 10-period fixture
+            against ~7 before that step, the multiplier being exactly the
+            saved-period count.  The calendar memo two fields up exists for
+            the same shape one tier cheaper, and its own docstring reasons
+            about avoiding a repeated derivation -- which is how a far more
+            expensive one came to be added in the same edit that cited it.
     """
 
     user_id: int
@@ -247,6 +276,9 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         default_factory=dict, repr=False, compare=False,
     )
     _amount_bases: "dict[int, AmountBasis]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    payroll_breakdowns: "dict[int, dict]" = field(
         default_factory=dict, repr=False, compare=False,
     )
 

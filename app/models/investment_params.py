@@ -146,11 +146,18 @@ class InvestmentParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
     # account there was no link to any profile at all -- the basis fell to
     # ``income_service.get_current_gross_biweekly``'s unordered ``.first()``
     # across the owner's active profiles, which R-F16's adversarial review
-    # measured at a 39% swing on a two-job owner.  NULL means the account
+    # measured at a 39% swing on a two-job owner.  *That producer was DELETED
+    # at plan step salary:R14-b, having no caller left once this column got
+    # its reader; the shape is recorded here because it is why the column
+    # exists.*  NULL means the account
     # models no payroll feed, or that the profile is genuinely ambiguous and
-    # the owner has not yet said; plan step salary:R14-b is the reader and
-    # owns what a NULL does at the door.  RESTRICT because a profile is
-    # archived rather than deleted here (``salary_profile_service.
+    # the owner has not yet said.  **Plan step salary:R14-b is the reader and
+    # a NULL models NO EMPLOYER MONEY** (developer, 2026-09-04): there is no
+    # gross to take a percentage of, so the surface says the funding job is
+    # not set rather than quoting a figure priced off an arbitrary profile.
+    # An ARCHIVED profile reads the same way -- an employer contribution from
+    # a job the owner has left is not money they receive.  RESTRICT because a
+    # profile is archived rather than deleted here (``salary_profile_service.
     # archive_profile``), so it constrains nothing today and refuses to let a
     # future hard delete take a priced basis to NULL.
     salary_profile_id = db.Column(

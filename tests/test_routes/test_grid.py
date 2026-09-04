@@ -9024,6 +9024,11 @@ class TestTheTwoRemainderRows:
             .filter_by(account_id=retirement.id).one()
         )
         params.employer_flat_percentage = Decimal("0.0500")
+        # The job that FUNDS the employer contribution (ruling R-SAL5, applied
+        # at plan step salary:R14-b): no deduction names this account, so
+        # without the link no employer money is modelled at all and the
+        # precondition below -- a window that contributes -- cannot hold.
+        params.salary_profile_id = salary.id
         db.session.commit()
         with app.app_context():
             user_id = seed_user["user"].id

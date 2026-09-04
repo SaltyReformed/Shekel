@@ -540,7 +540,14 @@ class TestDashboard:
             )
             db.session.add(params)
 
-            # Create salary profile (no deduction targeting the 401k).
+            # Create salary profile (no deduction targeting the 401k), and
+            # NAME it as the account's funding job -- ruling R-SAL5, applied
+            # at plan step salary:R14-b.  This is precisely the shape that
+            # column exists for: an employer contribution with no deduction
+            # naming the account had no link to any profile at all, so the
+            # basis fell to an owner-level unordered lookup.  Without the
+            # link the ruling of 2026-09-04 models no employer money, and the
+            # projection this case asserts would collapse to growth-only.
             filing_status = db.session.query(FilingStatus).first()
             profile = SalaryProfile(
                 user_id=seed_user["user"].id,
@@ -551,6 +558,8 @@ class TestDashboard:
                 state_code="NC",
             )
             db.session.add(profile)
+            db.session.flush()
+            params.salary_profile_id = profile.id
             db.session.commit()
 
             resp = auth_client.get("/savings")

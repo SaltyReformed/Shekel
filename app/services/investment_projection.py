@@ -34,20 +34,44 @@ shape collision this module could not have absorbed otherwise: it is shared by
 ``/retirement``, which holds ORM rows spelling that key ``id``, and by
 ``/investment``, which since C2-f2c holds
 :class:`~app.services.pay_calendar.DerivedPeriod`\\ s spelling it ``period_id``.
+
+**And the DEDUCTION half arrives priced and dated since plan step
+salary:R14-b**, which is the same move a third time and the one that finishes
+it (ruling **R-SAL2**).  This module used to be handed the deduction ROWS,
+flattened by an ``adapt_deductions`` adapter into ``(amount, calc_method_id,
+annual_salary, periods_per_year, annual_cap)``, and work out what each took
+from a paycheck itself -- dividing the profile's STORED annual salary by the
+paycheck count.  That was one question answered twice, and the second answer
+was worse on three independent axes at once: it was blind to every raise
+(finding **D45**; ``$1,646.84`` is that row's own figure for a hypothetically
+LINKED deduction over the developer's 63 saved paydays, where what this step
+moves on his data AS IT STANDS is ``+$452.42`` of employer money through
+``balance_at.grid_balance_view`` -- two windows and two feeds, so neither
+figure substitutes for the other), blind to a deduction's inflation escalation
+(**N-532**, which
+``AdaptedDeduction`` could not even carry), and it spelled the calendar-year
+cap twice more beside the engine's -- ``_annual_cap_averaged`` evenly and
+``_period_capped_total`` front-loaded.  All four spellings are deleted here.
+The engine's :class:`~app.services.paycheck_calculator.DeductionLine` already
+carries ``target_account_id``, so what one account's payroll puts in on one
+payday is a fold of the breakdown the engine already computed, and the
+:class:`AccountPayrollFeed` the loader hands over is that fold.
+
+The root cause behind all three divergences was ONE shape: an adapter that
+flattens away everything varying PER PERIOD cannot answer a per-period
+question, however many of its answers are patched.  That is why the remedy is
+a deletion rather than a fourth fix.
 """
 
-from collections import namedtuple
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import Optional
 
 from app import ref_cache
-from app.enums import CalcMethodEnum, EmployerContributionTypeEnum
+from app.enums import EmployerContributionTypeEnum
 from app.services.growth_engine import ContributionRecord
-from app.services.pay_calendar import PayCadence
-from app.services.payroll_basis import gross_per_paycheck
-from app.utils.deduction_cap import cap_period_amount
 from app.utils.money import ZERO, round_money
 
 
@@ -165,214 +189,363 @@ class InvestmentInputs:
       contribution against the limit.  Seeding the through-current value
       instead would charge the current period against the annual limit
       twice.  The two views converge at the engine's current-period row.
+
+    ``periodic_contribution`` is the CURRENT period's employee amount rather
+    than a figure held for all time (plan step **salary:R14-b**).  It was
+    ``annual_salary / <paycheck count>`` -- one number for every period the
+    projection reached, which is finding **D45** -- and the forward walk now
+    reads a dated record per period (:func:`build_contribution_timeline`), so
+    what is left for this field to answer is the per-period CARD the
+    investment and retirement dashboards render.  ``gross_biweekly`` left with
+    the same cutover: a gross is a fact about a PAYDAY, so it lives on the
+    :class:`AccountPayrollFeed` keyed by one, and no consumer read this copy.
     """
     periodic_contribution: Decimal
     employer_params: Optional[dict]
     annual_contribution_limit: Optional[Decimal]
     ytd_contributions: Decimal
     ytd_contributions_seed: Decimal
-    gross_biweekly: Decimal
 
 
-AdaptedDeduction = namedtuple(
-    "AdaptedDeduction",
-    ["amount", "calc_method_id", "annual_salary", "periods_per_year",
-     "annual_cap"],
-)
+@dataclass(frozen=True)
+class AccountPayrollFeed:
+    """What ONE account's payroll puts in, priced per PAYDAY by the engine.
 
+    The boundary record this module consumes in place of the deduction rows
+    and the ``AdaptedDeduction`` adapter that flattened them (plan step
+    **salary:R14-b**, ruling **R-SAL2**).  Both series are folds of the
+    :class:`~app.services.paycheck_calculator.PaycheckBreakdown`\\ s
+    :func:`~app.services.income_service.project_profile` already produces, so
+    what a deduction takes from a paycheck is answered ONCE, by the engine
+    that computes the paycheck.
 
-def adapt_deductions(
-    raw_deductions: list, cadence: PayCadence,
-) -> list[AdaptedDeduction]:
-    """Adapt PaycheckDeduction ORM objects for calculate_investment_inputs().
+    **Both maps are TOTAL over the paydays the calendar reaches**, and that is
+    load bearing rather than tidy.  A 24-per-year deduction is not taken on
+    its month's third payday, so that payday's entry is an explicit ``$0.00``;
+    were it merely absent, :meth:`employee_at` could not tell it from a payday
+    beyond the calendar and would hold the previous amount over a skip.  It is
+    the same rule :class:`~app.services.growth_engine.ContributionRecord`
+    states for its own zero entries.
 
-    Extracts the fields needed from each deduction and its parent salary
-    profile into lightweight namedtuples with no ORM dependency.  This
-    decouples the projection logic from the database layer and consolidates
-    the adaptation pattern previously duplicated across
-    year_end_summary_service, savings_dashboard_service, and
-    retirement_dashboard_service.
+    **Past the last payday the calendar reaches, both series HOLD** -- the
+    interim rule the developer ruled on 2026-09-04, shipped with its successor
+    already named.  The engine can only price a paycheck against a salary
+    path, and the app has TWO that disagree past the owner's schedule:
+    ``salary_raises.apply_raises`` compounds every recurring raise forever,
+    while ``pension_calculator.project_salaries_by_year`` stops merit and
+    custom raises at ``auth.user_settings.merit_raise_horizon_years`` and
+    keeps only recurring COLA.  Unifying them is its own step and its own
+    ruling; until it lands, a projection past the schedule states the last
+    real paycheck rather than picking one of the two models inside a step that
+    was ruled about something else.  The hold is a CLAIM the consumer surfaces
+    make, not an arithmetic accident, and it is why the two hold sources
+    differ: see the attributes.
 
-    **The COUNT is the owner's cadence since plan step R-F16, and the SALARY
-    is still the deduction's own profile.**  The row used to carry
-    ``pay_periods_per_year`` off ``salary_profiles``, a second stored answer to
-    "how often am I paid" that nothing held to ``budget.pay_schedule`` --
-    finding **F-16**.  It is stamped from the ONE cadence this call is given,
-    so every row carries the same number by construction: a copy of one fact,
-    not a second source of it.
-
-    ``annual_salary`` stays PER ROW, and that is deliberate rather than
-    residue.  A deduction belongs to one salary profile, an owner may hold
-    several active ones (``tax_report_service`` iterates them as one filer with
-    several jobs), and each prices its own percentage off its own salary.
-    Collapsing them to a single owner-level gross was measured at R-F16's
-    adversarial review as a **39% swing** on a two-job owner -- and a
-    nondeterministic one, because the owner-level producer resolves its profile
-    with an unordered ``.first()``.  What that per-row salary costs is that the
-    gross derived from it is RAISE-BLIND, which is finding **D45**: real,
-    measured at ``$137.51`` a year of understated employer contribution, and
-    owned by a step that can rule what the right basis is (per profile, per
-    period, and against which clock) rather than decided inside a commit that
-    promised a paycheck count.
-
-    Args:
-        raw_deductions: List of PaycheckDeduction ORM objects.  Each must have
-            a loaded ``salary_profile`` relationship with an ``annual_salary``.
-        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`.
-            Required: how many paychecks a year a percentage is taken from,
-            and a calendar-year cap spread across, is a fact about the OWNER,
-            and defaulting it to biweekly would halve a weekly-paid owner's
-            per-paycheck figure.
-
-    Returns:
-        List of AdaptedDeduction namedtuples ready for
-        calculate_investment_inputs() or build_contribution_timeline().
+    Attributes:
+        employee_by_payday: payday -> what this account received from payroll
+            on it, the sum of every
+            :class:`~app.services.paycheck_calculator.DeductionLine` naming
+            this account across every profile that funds it, pre- and
+            post-tax alike.  Already raise-aware, inflation-escalated,
+            cadence-placed and clamped to each line's own calendar-year
+            ``annual_cap``, because the engine applied all four before this
+            fold saw the line.
+        gross_by_payday: payday -> the gross of the paycheck the account's
+            FUNDING profile was paid on it
+            (``budget.investment_params.salary_profile_id``, ruling
+            **R-SAL5**).  **EMPTY when no funding profile is known**, which is
+            the developer's 2026-09-04 ruling: an employer contribution whose
+            funding job is unrecorded models NO money and the surface says so,
+            rather than being priced off whichever profile a reader happened
+            to resolve.  An ARCHIVED profile is unknown for this purpose too
+            -- an employer contribution from a job the owner has left is not
+            money they receive -- which is the same test the deduction loader
+            already applies to its own side.
+        is_payroll_linked: Whether an active deduction on an active profile
+            NAMES this account, whatever it pays.  A PRESENCE fact, and it
+            has to travel beside the amounts because pricing destroys it: a
+            deduction of ``$0.00`` still means the owner has wired one up, so
+            ``/retirement``'s "nothing linked yet" prompt would tell them to
+            create what already exists.  It is the same pair, one tier over,
+            that :class:`ShadowContributions` keeps for the recorded feed --
+            and that pairing exists because an adversarial review caught
+            exactly this question being answered by a screened list.
     """
-    periods_per_year = cadence.periods_per_year
-    return [
-        AdaptedDeduction(
-            amount=ded.amount,
-            calc_method_id=ded.calc_method_id,
-            annual_salary=ded.salary_profile.annual_salary,
-            periods_per_year=periods_per_year,
-            annual_cap=ded.annual_cap,
+
+    employee_by_payday: "Mapping[date, Decimal]"
+    gross_by_payday: "Mapping[date, Decimal]"
+    is_payroll_linked: bool = False
+    #: The two HELD figures, derived at construction so the hold rule has one
+    #: producer and no caller can supply a figure inconsistent with the maps
+    #: (the shape ``PayCalendar.periods`` uses for the same reason).  Excluded
+    #: from equality: two feeds carrying the same paydays hold the same way.
+    #: The held figures, one per DIRECTION.  A payday outside the calendar is
+    #: either before its first or after its last, and the two are different
+    #: questions: holding the LATEST paycheck backward over a payday that
+    #: predates the owner's schedule would answer with a salary they had not
+    #: yet been raised to.  No consumer asks the backward question today --
+    #: every domain here opens at or after the calendar's first payday -- but
+    #: an answer that is wrong only because nobody asks it is one this file
+    #: has been burned by before, so the direction is in the value.
+    _held_employee: "tuple[Decimal, Decimal]" = field(
+        init=False, repr=False, compare=False,
+    )
+    _held_gross: "tuple[Decimal, Decimal] | None" = field(
+        init=False, repr=False, compare=False,
+    )
+    #: The calendar's FIRST payday, which is the boundary the direction is
+    #: decided against.  Derived once rather than re-scanned per lookup: the
+    #: 40-year chart asks about ~980 paydays past the calendar, and a ``min()``
+    #: over the map inside each of them is a scan the value already knows the
+    #: answer to.
+    _first_payday: "date | None" = field(
+        init=False, repr=False, compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Derive the ``(earliest, latest)`` held figure for each series."""
+        # The GROSS holds at the first and last paydays priced, full stop: a
+        # paycheck's gross is never skipped, so each end's own entry is the
+        # last real answer in that direction.
+        object.__setattr__(
+            self, "_held_gross",
+            (self.gross_by_payday[min(self.gross_by_payday)],
+             self.gross_by_payday[max(self.gross_by_payday)])
+            if self.gross_by_payday else None,
         )
-        for ded in raw_deductions
-    ]
+        # The EMPLOYEE amount holds at a whole priced YEAR's average per
+        # payday, NOT at any single payday's figure, and the reason is the
+        # ANNUAL CAP.
+        #
+        # **An adversarial review of this step's own fix found the single-day
+        # rule wrong by 10.4x.**  A capped deduction's priced year runs
+        # ``$600, $400, $0, $0 ... $0`` -- ``cap_period_amount`` clamps it the
+        # moment the calendar-year total reaches ``annual_cap`` and the engine
+        # resets it each January.  Holding "the last payday that PAID
+        # something" picks the ``$400`` and applies it to every projected
+        # period with no cap and no year reset: ``$10,400`` a year against a
+        # ``$1,000`` cap, compounded over the remaining ~38 years of a 40-year
+        # chart.  ``_annual_cap_averaged``, which plan step salary:R14-b
+        # deletes, existed for exactly this and its own docstring said so --
+        # *"a capped deduction must not contribute more than annual_cap per
+        # calendar year there either"*.
+        #
+        # A year's average reproduces that answer from the ENGINE's own priced
+        # amounts rather than from a second formula: the year's total is the
+        # cap (or the uncapped run rate), so the average is
+        # ``min(amount x ppy, cap) / ppy`` without this module dividing
+        # anything.  It also subsumes the cadence case the single-day rule was
+        # reaching for -- a 24-per-year deduction's skipped paydays are inside
+        # the year being averaged, so a schedule that happens to END on a skip
+        # no longer holds ``$0.00`` for the whole projection.
+        #
+        # The FULLEST year is the one averaged: the saved window's first and
+        # last calendar years are usually partial (the developer's runs
+        # 2026-03 to 2028-08), and a partial year's average overstates a
+        # capped deduction by the fraction of the year missing.
+        object.__setattr__(
+            self, "_held_employee", self._year_averages(),
+        )
+        # Either map's keys serve: both are built over the SAME payday set
+        # (the calendar's saved window), and each is empty only when its own
+        # half of the feed is absent entirely.
+        keys = self.gross_by_payday or self.employee_by_payday
+        object.__setattr__(
+            self, "_first_payday", min(keys) if keys else None,
+        )
+
+    def _year_averages(self) -> "tuple[Decimal, Decimal]":
+        """Return the ``(earliest, latest)`` fullest-year average per payday.
+
+        The extrapolation the employee series holds at, in each direction.
+        Grouping is by the payday's calendar YEAR because that is the span
+        ``annual_cap`` is defined over and the span the engine resets on;
+        averaging over the FULLEST year present avoids a partial year at
+        either end of the saved window overstating a capped deduction.
+
+        Returns:
+            ``(earliest, latest)`` -- the average per payday of the earliest
+            and latest fullest years, or ``(ZERO, ZERO)`` when nothing was
+            priced.  The two coincide for any account whose feed is flat,
+            which is every uncapped one.
+        """
+        if not self.employee_by_payday:
+            return (ZERO, ZERO)
+        by_year: "dict[int, list[Decimal]]" = {}
+        for payday, amount in self.employee_by_payday.items():
+            by_year.setdefault(payday.year, []).append(amount)
+        fullest = max(len(amounts) for amounts in by_year.values())
+        years = sorted(
+            year for year, amounts in by_year.items()
+            if len(amounts) == fullest
+        )
+        return (
+            round_money(sum(by_year[years[0]], ZERO) / fullest),
+            round_money(sum(by_year[years[-1]], ZERO) / fullest),
+        )
+
+    def _held(self, held, payday: date):
+        """Return the figure *held* over *payday*, in the right direction.
+
+        Args:
+            held: The ``(earliest, latest)`` pair for one series, or ``None``.
+            payday: A payday the calendar does not reach.
+
+        Returns:
+            The earliest figure for a payday before the calendar's first, the
+            latest for one after its last, and ``None`` when the series is
+            empty.
+        """
+        if held is None:
+            return None
+        if self._first_payday is not None and payday < self._first_payday:
+            return held[0]
+        return held[1]
+
+    @classmethod
+    def absent(cls) -> "AccountPayrollFeed":
+        """Return the feed of an account no payroll funds.
+
+        The explicit token for "this account has no payroll feed", so a caller
+        that means it says so and no reader has to decide whether two empty
+        maps were meant or forgotten.  It models no employee contribution and
+        no employer contribution, which are different facts that happen to
+        share this value.
+
+        Returns:
+            The empty :class:`AccountPayrollFeed`.
+        """
+        return cls({}, {})
+
+    @property
+    def models_employee(self) -> bool:
+        """Whether payroll pays this account anything on any priced payday.
+
+        The gate the contribution timeline and the balance seam's plan both
+        ask before modelling an employee feed at all, so an account whose
+        deductions all price at ``$0.00`` reads exactly as one with no
+        deduction: no dated record, and the engine's own
+        ``periodic_contribution`` fallback (the transfer average) left to
+        answer.  Derived from the held amount, which IS the last payday the
+        account received anything on, so the two cannot disagree.
+
+        Returns:
+            ``True`` when at least one priced payday paid this account.  Read
+            off the held averages, which are non-zero exactly when some priced
+            payday was.
+        """
+        return self._held_employee != (ZERO, ZERO)
+
+    @property
+    def funds_employer(self) -> bool:
+        """Whether a known funding profile can size an employer contribution.
+
+        ``False`` when ``budget.investment_params.salary_profile_id`` is unset
+        or names an archived profile -- the state in which the developer's
+        2026-09-04 ruling models no employer money and the surface says the
+        funding job is not set.  It is a PRESENCE test about the profile link
+        and never about the dollars: a profile paid ``$0.00`` still funds.
+
+        Returns:
+            ``True`` when a funding profile's paychecks were priced.
+        """
+        return bool(self.gross_by_payday)
+
+    def prices(self, payday: date) -> bool:
+        """Whether *payday* is one the owner's calendar actually reached.
+
+        The boundary between an answer and an extrapolation, asked rather
+        than inferred: :meth:`employee_at` and :meth:`gross_at` are TOTAL, so
+        a caller cannot tell a priced payday from a held one by their return
+        values, and one caller must (see
+        :func:`build_contribution_timeline`'s path 1).
+
+        Args:
+            payday: The pay period's ``start_date``.
+
+        Returns:
+            ``True`` when the engine priced this payday, ``False`` when the
+            answer for it is held.
+        """
+        return (
+            payday in self.employee_by_payday
+            or payday in self.gross_by_payday
+        )
+
+    def employee_at(self, payday: date) -> Decimal:
+        """Return what this account received from payroll on *payday*.
+
+        Args:
+            payday: The pay period's ``start_date``.
+
+        Returns:
+            The engine's own figure for a payday the calendar reaches --
+            ``$0.00`` included, where a cadence skipped the deduction -- and
+            the held amount past it (see the class docstring).
+        """
+        amount = self.employee_by_payday.get(payday)
+        return self._held(self._held_employee, payday) if amount is None else amount
+
+    def gross_at(self, payday: date) -> "Decimal | None":
+        """Return the funding profile's gross for the paycheck on *payday*.
+
+        Args:
+            payday: The pay period's ``start_date``.
+
+        Returns:
+            The engine's own gross for a payday the calendar reaches, the held
+            gross past it, and ``None`` when no funding profile is known --
+            the refusal :attr:`funds_employer` names, kept as ``None`` rather
+            than ``$0.00`` so a caller cannot spend it as a basis.
+        """
+        gross = self.gross_by_payday.get(payday)
+        return self._held(self._held_gross, payday) if gross is None else gross
+
+    def salary_basis(self, beyond=None):
+        """Return the ``period -> gross`` resolver the growth engine takes.
+
+        :func:`~app.services.growth_engine.project_balance`'s ``salary_basis``
+        hook, so the employer contribution is sized off each projected
+        period's OWN paycheck.  Built here rather than spelled as a lambda at
+        each call site, because three sites writing ``lambda p:
+        feed.gross_at(p.start_date)`` are three places for the key to move.
+
+        It reads ``start_date`` and nothing else, which is what lets both
+        period types serve -- an ORM
+        :class:`~app.models.pay_period.PayPeriod` and a
+        :class:`~app.services.pay_calendar.DerivedPeriod` -- the same
+        discipline :func:`build_contribution_timeline` keeps for its own
+        domain.
+
+        Args:
+            beyond: An optional ``period -> Decimal`` model for a payday the
+                owner's calendar does not reach, which REPLACES the hold rule
+                there.  ``/retirement`` supplies one -- the merit-horizon
+                salary path ``retirement_projection.build_employer_salary_basis``
+                already projected its employer base on -- so that page keeps
+                the long-horizon model it had rather than being flattened to
+                a held paycheck by a step ruled about something else.  It is
+                consulted ONLY where a funding profile is known: an unknown
+                one models no employer money at all (developer, 2026-09-04),
+                and an outer model must not resurrect what that ruling
+                withholds.
+
+        Returns:
+            A callable taking a period and returning its gross, or ``None``
+            where no funding profile is known.
+        """
+        def _resolver(period):
+            gross = self.gross_by_payday.get(period.start_date)
+            if gross is not None:
+                return gross
+            held = self._held(self._held_gross, period.start_date)
+            if held is None or beyond is None:
+                return held
+            return beyond(period)
+
+        return _resolver
 
 
-def _compute_deduction_per_period(deduction, pct_id):
-    """Compute the per-period contribution amount from a single deduction.
-
-    Handles flat-dollar and percentage-of-salary calculation methods.
-    Shared by calculate_investment_inputs() and build_contribution_timeline()
-    to keep the deduction amount logic in one place (DRY).
-
-    **The gross is rounded by the ONE producer the paycheck engine uses**
-    (:func:`~app.services.payroll_basis.gross_per_paycheck`), off THIS
-    deduction's own profile and over the owner's cadence (plan step R-F16
-    replaced a second stored count here with the derivation; it did not change
-    whose salary the percentage is taken of).  Until plan step **balance:X-aw**
-    this module spelled the division itself while the engine distributed a
-    rounding residue over the year, and the two RULES were measured answering
-    differently on 5 of the owner's 63 saved periods.  **The two sides still do
-    not agree on a paycheck**, because the SALARY below is raise-blind where
-    the engine's is not -- that is D45, named in the next paragraph -- so what
-    X-aw closed is the rounding half and not the input half.  Each active
-    salary profile prices its own deductions, which is what a two-job owner
-    needs and what a single owner-level gross cannot give.
-    The gross is RAISE-BLIND -- finding **D45** -- which is a real defect with
-    a real figure and an owner, not something to decide here.
-
-    Args:
-        deduction:  Object with .amount, .calc_method_id, .annual_salary and
-                    .periods_per_year.
-        pct_id:     The ref ID for the PERCENTAGE calculation method.
-
-    Returns:
-        Tuple of (contribution_amount: Decimal, gross_biweekly: Decimal).
-        contribution_amount is the per-period dollar amount.
-        gross_biweekly is the derived gross pay per period (used by
-        calculate_investment_inputs for employer params).
-    """
-    salary = Decimal(str(deduction.annual_salary))
-    gross = gross_per_paycheck(salary, deduction.periods_per_year)
-    amt = Decimal(str(deduction.amount))
-    if deduction.calc_method_id == pct_id:
-        amt = round_money(gross * amt)
-    return amt, gross
-
-
-def _annual_cap_averaged(per_period_amount, deduction):
-    """Per-period amount evenly throttled to the deduction's annual cap.
-
-    The periodic contribution is the growth engine's fallback for periods with
-    no dated ``ContributionRecord`` -- in practice the projected long-horizon
-    chart, whose generated dates never match a real period.  A capped deduction
-    must not contribute more than ``annual_cap`` per calendar year there either,
-    so the per-period amount is the cap spread evenly across the year:
-    ``min(amount * ppy, annual_cap) / ppy``.  This even-spread is the
-    long-horizon analogue of the front-loaded per-period timeline
-    (:func:`_deduction_contribution_records`): both hold the annual total at the
-    cap and differ only in WITHIN-year timing, which a multi-year projection
-    does not surface.  ``annual_cap`` is read via ``getattr`` so a minimal
-    deduction-like fake (no cap field) is treated as uncapped.
-
-    Args:
-        per_period_amount: Decimal uncapped per-period contribution.
-        deduction:         The deduction-like object (.periods_per_year,
-                           optionally .annual_cap).
-
-    Returns:
-        The capped per-period amount (Decimal); unchanged when uncapped.
-    """
-    annual_cap = getattr(deduction, "annual_cap", None)
-    if annual_cap is None:
-        return per_period_amount
-    pay_per_year = deduction.periods_per_year
-    annual_capped = min(per_period_amount * pay_per_year, Decimal(str(annual_cap)))
-    return round_money(annual_capped / pay_per_year)
-
-
-def deduction_contribution_per_period(deductions, salary_gross_biweekly):
-    """Sum the per-period contribution from paycheck deductions.
-
-    Each deduction's per-period amount is throttled to its calendar-year
-    ``annual_cap`` via :func:`_annual_cap_averaged` (deep-hunt #2) before
-    summing, so this fallback average respects the same cap the per-period
-    timeline enforces.
-
-    **The DEDUCTION half of a contribution feed, on its own.**  Public
-    because the balance seam's modelled asset fold
-    (``balance_at._asset_fold``) needs exactly this and NOT the transfer
-    half: plan ruling R-R partitions a contribution by SOURCE, so a
-    recorded transfer is an ACTUAL / PLANNED event in the fold (it has a
-    transaction row) while a payroll deduction is a modelled
-    CONTRIBUTION event (it never has one).  Mixing the two into one
-    scalar -- which is what :func:`calculate_investment_inputs` does by
-    adding :func:`_average_transfer_contribution` to this -- is precisely
-    what makes them indistinguishable, so the replay reads this half
-    directly rather than the sum.
-
-    Args:
-        deductions:            List of deduction-like objects with
-                               .amount, .calc_method_id, .annual_salary,
-                               .periods_per_year, and optionally .annual_cap.
-        salary_gross_biweekly: Engine gross per pay period (Decimal or
-                               None), used as the fallback gross when no
-                               deduction supplied one.
-
-    Returns:
-        Tuple of (periodic_contribution: Decimal, gross_biweekly: Decimal).
-        gross_biweekly is the deduction-derived gross, falling back to
-        ``salary_gross_biweekly`` and then ZERO.
-
-    **The deduction-derived gross is RAISE-BLIND and that is finding D45**,
-    not a property to like.  Plan step R-F16 replaced it with the caller's
-    raise-aware figure and its adversarial review measured what that cost:
-    ONE owner-level gross prices every deduction, so a two-job owner's
-    modelled contribution swung 39% and swung NONDETERMINISTICALLY (the
-    owner-level producer picks its profile with an unordered ``.first()``);
-    and that producer answers ZERO whenever no period covers today, which
-    silently deleted the whole contribution plan at onboarding and after a
-    horizon lapse.  R-F16 reverted to this form because its own promise was a
-    paycheck COUNT, and choosing the right basis -- per profile, per period,
-    and against which clock -- is a ruling D45 owns.
-    """
-    pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
-    periodic_contribution = ZERO
-    gross_biweekly = ZERO
-
-    for ded in deductions:
-        amt, gross = _compute_deduction_per_period(ded, pct_id)
-        gross_biweekly = gross
-        periodic_contribution += _annual_cap_averaged(amt, ded)
-
-    # Use salary profile gross as fallback when no deductions provided one.
-    if gross_biweekly == ZERO and salary_gross_biweekly is not None:
-        gross_biweekly = Decimal(str(salary_gross_biweekly))
-
-    return periodic_contribution, gross_biweekly
 
 
 def _average_transfer_contribution(all_contributions):
@@ -416,11 +589,10 @@ def _average_transfer_contribution(all_contributions):
     return ZERO
 
 
-def employer_contribution_params(investment_params, gross_biweekly):
+def employer_contribution_params(investment_params) -> "dict | None":
     """Build the employer-contribution params dict, or None.
 
-    Public alongside :func:`deduction_contribution_per_period` and for the
-    same reason: the balance seam's modelled asset fold
+    Public because the balance seam's modelled asset fold
     (``balance_at._asset_fold``) sizes the employer amount per pay period
     off the RESOLVED employee total for that period (plan ruling R-R
     consequence (a)), so it needs this dict without the transfer-averaged
@@ -430,12 +602,19 @@ def employer_contribution_params(investment_params, gross_biweekly):
     accepts, so building it anywhere else would be a second statement of
     the same mapping.
 
+    **It no longer embeds a gross, since plan step salary:R14-b.**  The dict
+    carried ``gross_biweekly`` -- ONE figure sizing every period's employer
+    contribution for the life of a projection, which on the developer's own
+    data froze a 5% match at today's `$3,631.74` while the engine's gross
+    walked `$3,525.96` -> `$4,047.97` across the same 63 paydays.  A gross is
+    a fact about a PAYDAY (**R-SAL2**), so it is
+    :meth:`AccountPayrollFeed.gross_at`'s to answer and every caller supplies
+    the period's own; there is no constant left for one to be resolved
+    against.
+
     Args:
         investment_params: Object with ``employer_contribution_type_id``
                            and the ``employer_*_percentage`` fields.
-        gross_biweekly:    Engine gross per pay period (Decimal), embedded
-                           so the growth engine can size a
-                           percentage-of-gross employer match.
 
     Returns:
         A dict describing the employer contribution, or None when the
@@ -457,7 +636,6 @@ def employer_contribution_params(investment_params, gross_biweekly):
             investment_params, "employer_match_percentage", None) or ZERO,
         "match_cap_percentage": getattr(
             investment_params, "employer_match_cap_percentage", None) or ZERO,
-        "gross_biweekly": gross_biweekly,
     }
 
 
@@ -521,10 +699,9 @@ def _ytd_contributions(all_contributions, current_period, *, inclusive):
 
 def calculate_investment_inputs(
     investment_params,
-    deductions,
+    feed: AccountPayrollFeed,
     all_contributions,
     current_period,
-    salary_gross_biweekly=None,
 ):
     """Compute projection inputs for an investment account.
 
@@ -535,12 +712,22 @@ def calculate_investment_inputs(
     argument fewer for a caller to get wrong.  That also retired this
     function's ``too-many-arguments`` disable rather than re-justifying it.
 
+    **``periodic_contribution`` is the CURRENT period's figure since plan step
+    salary:R14-b, and it is no longer the forward walk's input.**  It was one
+    raise-blind scalar the whole projection ran on (finding **D45**); the walk
+    reads a dated record per period now
+    (:func:`build_contribution_timeline`), so what this answers is the
+    per-period CARD both dashboards render -- *what does a paycheck put in*,
+    asked of the paycheck the owner is actually being paid.  The ``deductions``
+    and ``salary_gross_biweekly`` arguments left with it: the feed carries both
+    facts, keyed by the payday that makes each one true.
+
     Args:
         investment_params:     Object with employer fields and
                                ``annual_contribution_limit``.
-        deductions:            List of deduction-like objects with
-                               .amount, .calc_method_id, .annual_salary and
-                               .periods_per_year.
+        feed:                  The account's :class:`AccountPayrollFeed` --
+                               what its payroll puts in per payday, priced by
+                               the paycheck engine at the boundary.
         all_contributions:     List of :class:`PricedContribution` records
                                for this account -- shadow-income rows already
                                valued, screened and dated at the boundary.
@@ -548,23 +735,32 @@ def calculate_investment_inputs(
                                ``start_date``, which both
                                :class:`~app.models.pay_period.PayPeriod` and
                                :class:`~app.services.pay_calendar.DerivedPeriod`
-                               do -- or None.
-        salary_gross_biweekly: Engine gross per pay period used as the
-                               fallback gross when no deduction supplied
-                               one (Decimal or None).
+                               do -- or None.  It is the payday the per-period
+                               figures above are read at; ``None`` leaves them
+                               at ``$0.00``, the same state the two YTD windows
+                               already answer zero for.
 
     Returns:
         InvestmentInputs dataclass.
     """
-    periodic_contribution, gross_biweekly = deduction_contribution_per_period(
-        deductions, salary_gross_biweekly,
+    periodic_contribution = (
+        feed.employee_at(current_period.start_date)
+        if current_period is not None else ZERO
     )
     periodic_contribution += _average_transfer_contribution(all_contributions)
 
     return InvestmentInputs(
         periodic_contribution=periodic_contribution,
-        employer_params=employer_contribution_params(
-            investment_params, gross_biweekly,
+        # An employer contribution with no KNOWN funding profile models
+        # nothing (developer, 2026-09-04): there is no gross to take a
+        # percentage OF, so the params are withheld rather than paired with a
+        # basis of zero.  The two states stay distinguishable for the
+        # surfaces -- ``employer_params is None`` says no money, and
+        # ``feed.funds_employer`` says WHY -- which is the half of that ruling
+        # reading "and say so".
+        employer_params=(
+            employer_contribution_params(investment_params)
+            if feed.funds_employer else None
         ),
         annual_contribution_limit=getattr(
             investment_params, "annual_contribution_limit", None),
@@ -572,119 +768,26 @@ def calculate_investment_inputs(
             all_contributions, current_period, inclusive=True),
         ytd_contributions_seed=_ytd_contributions(
             all_contributions, current_period, inclusive=False),
-        gross_biweekly=gross_biweekly,
     )
 
 
-def _deduction_contribution_records(deductions, periods, pct_id, as_of):
-    """Per-period deduction ContributionRecords, each clamped to its annual cap.
-
-    Deductions contribute the same raw amount every period; each is clamped to
-    its own calendar-year ``annual_cap`` (deep-hunt #2) through the shared
-    ``cap_period_amount`` so this timeline agrees with the net-pay path.  Cap
-    state is tracked per deduction and resets at each year boundary, mirroring
-    the growth engine's own year reset.
-
-    A record is emitted for every covered period -- even a fully-capped $0 --
-    so the growth engine applies the capped amount rather than the
-    periodic-average fallback a missing record would trigger.  ``annual_cap`` is
-    read via ``getattr`` so a minimal deduction-like fake (no cap field) is
-    treated as uncapped.
-
-    Args:
-        deductions: Deduction-like objects (see build_contribution_timeline).
-        periods:    Period objects with .start_date.
-        pct_id:     The ref ID for the PERCENTAGE calculation method.
-        as_of:      The read pass's clock -- the day splitting confirmed (past)
-                    from projected periods.
-
-    Returns:
-        list[ContributionRecord] in period-start-date order; empty when no
-        deduction contributes a positive amount.
-    """
-    deduction_raws = [
-        (_compute_deduction_per_period(d, pct_id)[0],
-         getattr(d, "annual_cap", None))
-        for d in deductions
-    ]
-    if not any(raw > ZERO for raw, _ in deduction_raws):
-        return []
-
-    # (year, raw_cumulative) per deduction; None until its first period.
-    cap_state = [None] * len(deduction_raws)
-    records = []
-    for period in sorted(periods, key=lambda p: p.start_date):
-        period_total, cap_state = _period_capped_total(
-            deduction_raws, cap_state, period.start_date.year,
-        )
-        records.append(ContributionRecord(
-            contribution_date=period.start_date,
-            amount=period_total,
-            # Past periods are confirmed (the deduction was taken from the
-            # paycheck); future periods are projected.
-            is_confirmed=period.start_date < as_of,
-        ))
-    return records
-
-
-def _period_capped_total(deduction_raws, cap_state, period_year):
-    """Return ONE period's capped deduction total, and the advanced cap state.
-
-    The per-period half of :func:`_deduction_contribution_records`, split out
-    so each function answers one question: this one is "what does this period
-    contribute, and what does that leave the running cap at", the caller's is
-    "which periods get a record".  Each deduction's clamp is
-    ``cap_period_amount`` -- the same one the net-pay path applies -- against
-    its own calendar-year cumulative, which RESETS when the year changes
-    because a state stamped with a different year reads as no cumulative at
-    all.
-
-    Returns a NEW state list rather than mutating the caller's: the caller
-    rebinds it each period, so the running total is threaded rather than
-    hidden in a shared mutable the two functions would both have to remember
-    the rules for.
-
-    Args:
-        deduction_raws: ``(raw_amount, annual_cap)`` per deduction, in a fixed
-            order the state list is indexed by.
-        cap_state: ``(year, raw_cumulative)`` per deduction, or ``None`` for a
-            deduction that has not contributed yet.
-        period_year: The calendar year of the period being valued.
-
-    Returns:
-        ``(period_total, advanced_state)`` -- the capped sum across every
-        deduction, and the state to value the next period against.
-    """
-    total = ZERO
-    advanced = list(cap_state)
-    for i, (raw, annual_cap) in enumerate(deduction_raws):
-        if raw <= ZERO:
-            continue
-        prior = cap_state[i]
-        cumulative_before = (
-            prior[1] if prior is not None and prior[0] == period_year
-            else ZERO
-        )
-        total += cap_period_amount(raw, cumulative_before, annual_cap)
-        advanced[i] = (period_year, cumulative_before + raw)
-    return total, advanced
-
-
 def build_contribution_timeline(
-    deductions,
+    feed: AccountPayrollFeed,
     contribution_transactions,
     periods,
     as_of,
 ):
-    """Build ContributionRecords from deductions and shadow transactions.
+    """Build ContributionRecords from the payroll feed and shadow transfers.
 
     Combines two contribution paths into a unified per-period timeline
     for the growth engine:
 
-    Path 1 -- Paycheck deductions: The same raw amount every period, each
-    clamped to its own calendar-year ``annual_cap`` (deep-hunt #2) so this
-    timeline agrees with the net-pay path.  Confirmation is date-based (past
-    period = confirmed) because there is no per-period transaction record for
+    Path 1 -- Paycheck deductions: what the paycheck engine says this
+    account's deductions took from each payday
+    (:meth:`AccountPayrollFeed.employee_at`), already raise-aware,
+    inflation-escalated, cadence-placed and clamped to each line's own
+    calendar-year ``annual_cap``.  Confirmation is date-based (past period =
+    confirmed) because there is no per-period transaction record for
     deductions.
 
     Path 2 -- Transfer-based contributions: Per-record amounts from the priced
@@ -695,6 +798,27 @@ def build_contribution_timeline(
 
     The growth engine handles same-date aggregation (summing amounts,
     conservative is_confirmed rule) via its lookup dict.
+
+    **The path-1 gate is PRESENCE, not price** (an adversarial review of this
+    step moved it).  It read ``models_employee`` in a first build, which is
+    the priced half: a deduction fully consumed by its ``annual_cap`` across
+    the whole priced window, or a 12-per-year one whose window contains no
+    first-of-month payday, prices to ``$0.00`` on every payday while being
+    genuinely configured.  That fed the engine no records at all, so its
+    ``periodic_contribution`` fallback applied the TRANSFER AVERAGE to periods
+    that should contribute nothing.  ``is_payroll_linked`` is the question the
+    gate means -- *is a deduction wired to this account* -- and the class
+    docstring draws exactly that distinction one field over.
+
+    **Path 1 stopped computing anything at plan step salary:R14-b.**  It ran
+    each deduction's amount off the profile's stored annual salary and then
+    re-applied the calendar-year cap through a private year-state walk
+    (``_deduction_contribution_records`` / ``_period_capped_total``) -- a
+    second and third answer to a question the paycheck engine answers when it
+    prices the paycheck.  A record is still emitted for EVERY period, a fully
+    capped ``$0`` included, because a missing record is what makes the growth
+    engine fall back to ``periodic_contribution``: it is the difference
+    between *this paycheck contributed nothing* and *nobody said*.
 
     **It reads no clock and needs no period IDENTITY since plan step C2-f2c.**
     The confirmation split took ``date.today()``, so a render that straddled
@@ -709,33 +833,78 @@ def build_contribution_timeline(
     ``start_date`` and both types serve.
 
     Args:
-        deductions:                 List of deduction-like objects with
-                                    .amount, .calc_method_id,
-                                    .annual_salary, .periods_per_year, and
-                                    optionally .annual_cap (the calendar-year
-                                    ceiling; absent = uncapped).
+        feed:                       The account's :class:`AccountPayrollFeed`
+                                    -- what its payroll puts in per payday.
         contribution_transactions:  List of :class:`PricedContribution`
                                     records -- shadow-income rows already
                                     valued, screened and dated at the boundary.
         periods:                    The timeline's DOMAIN: period objects with
                                     a ``start_date``, one record emitted per
                                     period for the deduction path and any
-                                    contribution outside them dropped.
+                                    contribution outside them dropped.  It may
+                                    run PAST the owner's saved schedule -- the
+                                    40-year chart's axis does -- which is what
+                                    the feed's hold rule answers.
         as_of:                      The read pass's clock; a period opening
                                     strictly before it is confirmed.
 
     Returns:
         list[ContributionRecord] sorted by contribution_date.  Empty
-        list if no deductions and no qualifying contributions exist.
+        list when the account has no payroll feed and no qualifying
+        contribution.
     """
     records = []
-    pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
 
-    # Path 1: Paycheck deductions -- same raw amount every period, each
-    # clamped to its own calendar-year cap.
-    records.extend(
-        _deduction_contribution_records(deductions, periods, pct_id, as_of)
-    )
+    # Path 1: Paycheck deductions -- the engine's own figure for each payday,
+    # PLUS the transfer average on a payday the calendar does not reach.
+    #
+    # **That second term is a RESTORE, and leaving it out was a measured
+    # regression this step's own adversarial review caught.**  The growth
+    # engine's rule is that a dated record REPLACES the periodic fallback, and
+    # ``periodic_contribution`` is the only carrier of
+    # :func:`_average_transfer_contribution`.  Before plan step salary:R14-b
+    # this timeline's domain was the owner's SAVED window, so every period
+    # past it had no record and fell back to *deduction + average*; widening
+    # the domain to the projection axis without carrying the average would
+    # have dropped an account's whole recurring-transfer stream out of the
+    # forward walk, for the entire horizon, for every account funded by BOTH
+    # a deduction and transfers.  ``/retirement`` passed no dated records at
+    # all, so there it was every period.
+    #
+    # **The asymmetry is inherited, not chosen**: the average applies only
+    # PAST the saved window and not inside it, where a period without a
+    # recorded transfer contributes the deduction alone.  Nobody designed
+    # that -- it falls out of the fallback rule meeting the old domain -- and
+    # a step ruled about what a DEDUCTION is priced from may not quietly
+    # re-rule what a TRANSFER projects to.  It is filed as its own finding.
+    #
+    # **Reproduced EXACTLY for /investment, and NEWLY INTRODUCED for
+    # /retirement**, which an adversarial review of this fix separated and a
+    # first draft of this comment ran together.  ``/investment``'s old
+    # timeline domain was ``reported_periods()``, which IS
+    # ``calendar.saved()`` and so IS ``feed.prices()``'s domain: old and new
+    # coincide on both sides of the boundary.  ``/retirement`` passed NO
+    # dated records at all, so every period there -- in-window included --
+    # took the fallback, and in-window periods now get the deduction alone
+    # plus whatever dated transfers exist.  That is a real change to the
+    # readiness verdict, its levers and the /savings Horizon band, and it is
+    # NOT covered by this step's ``grid_balance_view`` measurement, which
+    # reads the balance seam only.
+    if feed.is_payroll_linked:
+        beyond = _average_transfer_contribution(contribution_transactions)
+        records.extend(
+            ContributionRecord(
+                contribution_date=period.start_date,
+                amount=(
+                    feed.employee_at(period.start_date)
+                    + (ZERO if feed.prices(period.start_date) else beyond)
+                ),
+                # Past periods are confirmed (the deduction was taken from the
+                # paycheck); future periods are projected.
+                is_confirmed=period.start_date < as_of,
+            )
+            for period in sorted(periods, key=lambda p: p.start_date)
+        )
 
     # Path 2: Transfer-based contributions -- per-transaction amounts.
     paydays = {p.start_date for p in periods}

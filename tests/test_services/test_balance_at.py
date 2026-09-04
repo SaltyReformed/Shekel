@@ -43,6 +43,8 @@ from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
     AmountSourceEnum,
+    CalcMethodEnum,
+    DeductionTimingEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -71,10 +73,10 @@ from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.balance_at._assertions import assertion_corrections
-from app.services.investment_projection import adapt_deductions
+from app.services.investment_projection import AccountPayrollFeed
 from app.services.projection_inputs import (
-    load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
+    load_payroll_feeds,
 )
 from app.services.savings_dashboard_service._data import _load_account_params
 from app.services.scenario_resolver import get_baseline_scenario
@@ -304,8 +306,16 @@ def _add_flat_deduction(db, profile, account, amount):
 
     The growth engine's contribution feed: a flat per-period employee
     contribution into an investment account, picked up by
-    :func:`load_active_deductions_for_accounts` (active profile + active
-    deduction + ``target_account_id``).  Flushed; the caller commits.
+    :func:`~app.services.projection_inputs.load_payroll_feeds` (active
+    profile + active deduction + ``target_account_id``) and PRICED by the
+    paycheck engine.  Flushed; the caller commits.
+
+    **It also records which job FUNDS the account** (plan step
+    **salary:R14-b**, ruling **R-SAL5**) -- what ``salary:R14-a``'s backfill
+    wrote for this exact shape, an account with a deduction naming it being
+    funded by that deduction's own profile.  Without the link no employer
+    money is modelled at all (developer, 2026-09-04), so an employer-match
+    case would assert against ``$0.00`` and pass for the wrong reason.
     """
     flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
     pre_tax_timing = (
@@ -321,6 +331,9 @@ def _add_flat_deduction(db, profile, account, amount):
         is_active=True,
     )
     db.session.add(ded)
+    params = load_investment_params_for_accounts([account]).get(account.id)
+    if params is not None:
+        params.salary_profile_id = profile.id
     db.session.flush()
     return ded
 
@@ -333,8 +346,8 @@ class TestBalanceMapCash:
     ):
         """A PLAIN checking map equals the kernel called with the same inputs.
 
-        The seam assembles no debt schedule, no investment params, and no
-        deductions for a checking account, and supplies the engine gross;
+        The seam assembles no debt schedule, no investment params and no
+        payroll feed for a checking account;
         the result must equal calling
         :func:`net_worth_kernel.build_account_balance_map` directly with
         exactly those inputs.  This proves the seam's internal assembly
@@ -346,14 +359,15 @@ class TestBalanceMapCash:
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
             account = seed_user["account"]
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-
             seam = balance_at.balance_map(account, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 account, bctx,
-                ContributionInputs(salary_gross_biweekly=gross),
+                # The EMPTY bundle since plan step salary:R14-b: an account
+                # with no investment params gets no payroll feed at all.  It
+                # carried a ``salary_gross_biweekly`` of the owner's current
+                # paycheck until then -- one set-wide figure handed to an
+                # account that could not consume one.
+                ContributionInputs(),
             )
 
             assert seam is not None
@@ -380,14 +394,10 @@ class TestBalanceMapCash:
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-
             seam = balance_at.balance_map(hysa, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 hysa, bctx,
-                ContributionInputs(salary_gross_biweekly=gross),
+                ContributionInputs(),
             )
 
             assert seam is not None
@@ -989,9 +999,18 @@ class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
     ):
         """The contract, asserted as the identity it is.
 
-        The 401(k) beside it is what makes the case non-vacuous: it forces the
-        gross fetch to happen, so the checking account's ``0`` is the
-        per-account arm's doing and not the set gate's.
+        The 401(k) beside it is what makes the case non-vacuous: it is the
+        account that HAS a feed, so the checking account's empty one is the
+        per-account arm's doing and not the whole set answering nothing.
+
+        **The leak this guards became unrepresentable at plan step
+        salary:R14-b**, and the case is kept as the pin on that rather than
+        deleted.  The bundle carried one ``salary_gross_biweekly`` fetched for
+        the SET, so handing it to every member would have made a checking
+        account's feed depend on which other accounts shared its read --
+        ``$0`` alone and the owner's real gross in a batch.  A feed is priced
+        per ACCOUNT now, off the deductions naming it and the profile its own
+        params name, so there is no set-wide figure left to leak.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1000,26 +1019,33 @@ class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
             roth = make_investment_account(
                 seed_user, db.session, periods[2], Decimal("10000.00"),
             )
-            # A real salary, or the gross is $0 for everyone and the case
-            # cannot tell the per-account arm from the set-level gate.  The
-            # non-vacuity assertion below is what caught its absence.
-            make_salary_profile(seed_user, db.session)
+            # A real salary AND a deduction naming the Roth, or NEITHER
+            # account has a feed and the case cannot tell the per-account arm
+            # from a set that answered nothing.  The non-vacuity assertion
+            # below is what caught its absence.
+            profile = make_salary_profile(seed_user, db.session)
+            db.session.flush()
+            db.session.add(PaycheckDeduction(
+                salary_profile_id=profile.id, target_account_id=roth.id,
+                name="Roth deferral", amount=Decimal("100.00"),
+                calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
+                deduction_timing_id=ref_cache.deduction_timing_id(
+                    DeductionTimingEnum.PRE_TAX,
+                ),
+                is_active=True,
+            ))
             db.session.commit()
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
 
             ctx = BalanceContext.build(user_id)
             alone = _contribution_inputs_for_account(checking, ctx)
             batched = _contribution_inputs_for_accounts([checking, roth], ctx)
 
-            # Non-vacuity: the batch really did fetch a gross to hand out.
-            assert gross > Decimal("0")
-            assert batched[roth.id].salary_gross_biweekly == gross
+            # Non-vacuity: the batch really did price a feed to hand out.
+            assert batched[roth.id].feed.models_employee is True
             # The arm: the account that cannot consume one carries none, in
             # BOTH shapes -- so the two reads are the same object's worth of
             # facts, which is the Returns clause stated as an assertion.
-            assert batched[checking.id].salary_gross_biweekly == Decimal("0")
+            assert batched[checking.id].feed.models_employee is False
             assert alone == batched[checking.id]
 
 
@@ -1031,8 +1057,8 @@ class TestBalanceMapInvestment:
     ):
         """An investment anchored at the current period equals the kernel.
 
-        The seam assembles the InvestmentParams, the (empty) deductions
-        scoped to the params map, and the engine gross, then delegates to
+        The seam assembles the InvestmentParams and the payroll feed the
+        paycheck engine prices for it, then delegates to
         the growth path; it must equal the kernel called with those same
         manually-assembled inputs.
         """
@@ -1046,25 +1072,20 @@ class TestBalanceMapInvestment:
             )
 
             params = load_investment_params_for_accounts([inv]).get(inv.id)
-            deductions = load_active_deductions_for_accounts(
-                user_id, [inv.id],
-            ).get(inv.id, [])
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
 
             seam = balance_at.balance_map(inv, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 inv, bctx,
                 ContributionInputs(
                     investment_params=params,
-                    # ADAPTED, as the seam's own loader does since plan
-                    # step R-F16: the kernel below the seam takes the
-                    # namedtuple, not the ORM row.
-                    deductions=adapt_deductions(
-                        deductions, calendar_for(user_id).cadence,
-                    ),
-                    salary_gross_biweekly=gross,
+                    # PRICED, as the seam's own loader does since plan step
+                    # salary:R14-b: the kernel below the seam takes the
+                    # paycheck engine's per-payday answer, not the ORM rows
+                    # and not a scalar gross.
+                    feed=load_payroll_feeds(
+                        user_id, calendar_for(user_id), [inv.id],
+                        {inv.id: params},
+                    )[inv.id],
                 ),
             )
 
@@ -1089,25 +1110,20 @@ class TestBalanceMapInvestment:
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             params = load_investment_params_for_accounts([inv]).get(inv.id)
-            deductions = load_active_deductions_for_accounts(
-                user_id, [inv.id],
-            ).get(inv.id, [])
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
 
             seam = balance_at.balance_map(inv, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 inv, bctx,
                 ContributionInputs(
                     investment_params=params,
-                    # ADAPTED, as the seam's own loader does since plan
-                    # step R-F16: the kernel below the seam takes the
-                    # namedtuple, not the ORM row.
-                    deductions=adapt_deductions(
-                        deductions, calendar_for(user_id).cadence,
-                    ),
-                    salary_gross_biweekly=gross,
+                    # PRICED, as the seam's own loader does since plan step
+                    # salary:R14-b: the kernel below the seam takes the
+                    # paycheck engine's per-payday answer, not the ORM rows
+                    # and not a scalar gross.
+                    feed=load_payroll_feeds(
+                        user_id, calendar_for(user_id), [inv.id],
+                        {inv.id: params},
+                    )[inv.id],
                 ),
             )
 
@@ -1303,14 +1319,10 @@ class TestBalanceMapProperty:
                 seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
             )
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-
             seam = balance_at.balance_map(prop, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 prop, bctx,
-                ContributionInputs(salary_gross_biweekly=gross),
+                ContributionInputs(),
             )
 
             assert seam is not None
@@ -1386,16 +1398,14 @@ class TestBuildMaps:
             loan_ids = {
                 a.id for a in accounts if a.id in params.loan_params_map
             }
-            # Deductions + engine gross are no longer on _AccountParams (the
-            # seam assembles them); source them from the same shared loaders
-            # the seam uses, with its investment-only deduction scoping.
+            # The payroll FEED is no longer on _AccountParams (the seam
+            # assembles it); source it from the same shared loader the seam
+            # uses, with its investment-only scoping.  It was a deduction map
+            # plus one engine gross until plan step salary:R14-b.
             inv_ids = list(params.investment_params_map.keys())
-            deductions_by_account = (
-                load_active_deductions_for_accounts(user_id, inv_ids)
-                if inv_ids else {}
-            )
-            salary_gross_biweekly = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
+            feeds = load_payroll_feeds(
+                user_id, calendar_for(user_id), inv_ids,
+                params.investment_params_map,
             )
             # Independent oracle for NON-loan accounts: the kernel dispatch the
             # savings net-worth producer ran inline pre-reroute, fed by the
@@ -1412,11 +1422,9 @@ class TestBuildMaps:
                         investment_params=params.investment_params_map.get(
                             account.id,
                         ),
-                        deductions=adapt_deductions(
-                            deductions_by_account.get(account.id, []),
-                            calendar_for(user_id).cadence,
+                        feed=feeds.get(
+                            account.id, AccountPayrollFeed.absent(),
                         ),
-                        salary_gross_biweekly=salary_gross_biweekly,
                     ),
                 )
                 if balances is not None:
@@ -1935,29 +1943,25 @@ class TestInvestmentContributions:
             # Post-anchor period reflects the consumed contribution.
             assert with_ded[periods[-1].id] > baseline[periods[-1].id]
 
-            # seam == kernel with the SAME manually-loaded deduction.
+            # seam == kernel with the SAME manually-loaded feed.
             params = load_investment_params_for_accounts([inv]).get(inv.id)
-            deductions = load_active_deductions_for_accounts(
-                user_id, [inv.id],
-            ).get(inv.id, [])
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
+            feeds_for_inv = load_payroll_feeds(
+                user_id, calendar_for(user_id), [inv.id], {inv.id: params},
+            )[inv.id]
             expected = net_worth_kernel.build_account_balance_map(
                 inv, after_ctx,
                 ContributionInputs(
                     investment_params=params,
-                    # ADAPTED, as the seam's own loader does since plan
-                    # step R-F16: the kernel below the seam takes the
-                    # namedtuple, not the ORM row.
-                    deductions=adapt_deductions(
-                        deductions, calendar_for(user_id).cadence,
-                    ),
-                    salary_gross_biweekly=gross,
+                    # PRICED, as the seam's own loader does since plan step
+                    # salary:R14-b: the kernel below the seam takes the
+                    # paycheck engine's per-payday answer, not the ORM rows
+                    # and not a scalar gross.
+                    feed=feeds_for_inv,
                 ),
             )
             assert with_ded == expected
-            assert len(deductions) == 1  # the deduction was actually loaded
+            # Non-vacuity: the feed really did price the deduction.
+            assert feeds_for_inv.models_employee is True
 
             # Scope: a non-investment account in the same batch is untouched.
             checking = seed_user["account"]
@@ -1999,10 +2003,6 @@ class TestInvestmentContributions:
             _add_flat_deduction(db, profile, inv_none, Decimal("200.0000"))
             db.session.commit()
 
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-            assert gross > Decimal("0.00")  # the match cap basis must be real
 
             match_map = balance_at.balance_map(inv_match, bctx)
             none_map = balance_at.balance_map(inv_none, bctx)
@@ -2012,20 +2012,18 @@ class TestInvestmentContributions:
             params = load_investment_params_for_accounts(
                 [inv_match],
             ).get(inv_match.id)
-            deductions = load_active_deductions_for_accounts(
-                user_id, [inv_match.id],
-            ).get(inv_match.id, [])
             expected = net_worth_kernel.build_account_balance_map(
                 inv_match, bctx,
                 ContributionInputs(
                     investment_params=params,
-                    # ADAPTED, as the seam's own loader does since plan
-                    # step R-F16: the kernel below the seam takes the
-                    # namedtuple, not the ORM row.
-                    deductions=adapt_deductions(
-                        deductions, calendar_for(user_id).cadence,
-                    ),
-                    salary_gross_biweekly=gross,
+                    # PRICED, as the seam's own loader does since plan step
+                    # salary:R14-b: the kernel below the seam takes the
+                    # paycheck engine's per-payday answer, not the ORM rows
+                    # and not a scalar gross.
+                    feed=load_payroll_feeds(
+                        user_id, calendar_for(user_id), [inv_match.id],
+                        {inv_match.id: params},
+                    )[inv_match.id],
                 ),
             )
             assert match_map == expected
@@ -2280,14 +2278,10 @@ class TestCashPreAnchorPeriodsAreAnswered:
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[2], Decimal("5000.00"))
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-
             seam = balance_at.balance_map(hysa, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 hysa, bctx,
-                ContributionInputs(salary_gross_biweekly=gross),
+                ContributionInputs(),
             )
             assert seam is not None
             assert seam[periods[0].id] == Decimal("5000.00")
@@ -2883,17 +2877,15 @@ class TestTheContributionRowOnARealFeed:
           matched   = min(employee 200.00, 240.00) * 1.00 = 200.00
           column    = employee 200.00 + employer 200.00 = 400.00
 
-        **That gross is the DEDUCTION-derived one**, ``round_money(annual /
-        periods_per_year)`` from
-        ``investment_projection._compute_deduction_per_period`` -- NOT the
-        raise-aware ``salary_gross_biweekly``, which
-        ``deduction_contribution_per_period`` uses only as the fallback when no
-        deduction supplies one, and this fixture has one.  Its denominator is
-        the OWNER's cadence since plan step **R-F16** (it was a second stored
-        column); its numerator is still the deduction's own profile, and being
-        raise-blind is finding **D45**.  The two agree on this fixture
-        ($104,000 / 26, no raises), which is why it picks that salary; stating
-        which one the arithmetic actually consumes keeps the pin on the rule.
+        **That gross is the PAYCHECK ENGINE's** since plan step
+        **salary:R14-b** -- the gross it put on this payday's paycheck for the
+        profile ``budget.investment_params.salary_profile_id`` names
+        (**R-SAL5**).  There was a SECOND spelling until then:
+        ``investment_projection._compute_deduction_per_period`` divided the
+        profile's stored annual salary by the paycheck count, raise-blind,
+        which is finding **D45**.  The two agree on this fixture ($104,000 /
+        26, no raises), which is why the figure below is unchanged -- and on a
+        raise-bearing profile they did not, by the whole raise.
 
         The employer half is what makes the row more than a restatement of the
         user's own deduction -- and on the developer's real Empower 401(k) it is

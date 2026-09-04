@@ -3,13 +3,14 @@ Tests for the investment projection helper.
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import CalcMethodEnum, EmployerContributionTypeEnum
+from app.enums import EmployerContributionTypeEnum
 from app.services.growth_engine import ContributionRecord
 from app.services.investment_projection import (
+    AccountPayrollFeed,
     build_contribution_timeline,
     calculate_investment_inputs,
     InvestmentInputs,
@@ -71,12 +72,54 @@ def _periods(*paydays, cadence=14):
     ).saved()
 
 
-def _flat_id():
-    return ref_cache.calc_method_id(CalcMethodEnum.FLAT)
+def _feed(periods=(), *, employee=None, gross=None, linked=None):
+    """Build an :class:`AccountPayrollFeed` over *periods*' paydays.
 
+    **The input type since plan step salary:R14-b** (ruling **R-SAL2**), in
+    place of the ``FakeDeduction`` this file built for every case.  That fake
+    carried ``(amount, calc_method_id, annual_salary, periods_per_year,
+    annual_cap)`` -- the five fields ``adapt_deductions`` flattened a real
+    deduction into -- and every case then asserted what THIS module derived
+    from them.  It derives nothing now: the paycheck engine prices a
+    deduction when it prices the paycheck, and the feed is the fold of its
+    per-payday answer.  So the fake and the arithmetic it fed both went, and
+    the cases that graded that arithmetic went with them (see the class
+    docstrings for where each rule is graded now).
 
-def _pct_id():
-    return ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
+    Args:
+        periods: The periods whose paydays the maps are keyed by.
+        employee: What payroll puts in per payday -- one figure for every
+            payday, or a ``{payday: amount}`` map.  ``None`` means the account
+            has no employee feed at all, which is the EMPTY map and not a map
+            of zeros; :attr:`AccountPayrollFeed.models_employee` tells them
+            apart and the two behave differently.
+        gross: The funding profile's gross per payday, same two forms.
+            ``None`` means no funding profile is known, which is what
+            :attr:`AccountPayrollFeed.funds_employer` reports ``False`` for.
+        linked: Whether a deduction NAMES this account, whatever it pays --
+            :attr:`AccountPayrollFeed.is_payroll_linked`, the PRESENCE fact
+            path 1 of the timeline gates on.  Defaults to "an employee series
+            was given", which is what every case here means; pass it
+            explicitly for the two states that come apart, a linked deduction
+            pricing ``$0.00`` and an unlinked account.
+
+    Returns:
+        The :class:`AccountPayrollFeed`.
+    """
+    paydays = [period.start_date for period in periods]
+
+    def _series(value):
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return {day: Decimal(str(amount)) for day, amount in value.items()}
+        return {day: Decimal(str(value)) for day in paydays}
+
+    return AccountPayrollFeed(
+        employee_by_payday=_series(employee),
+        gross_by_payday=_series(gross),
+        is_payroll_linked=(employee is not None) if linked is None else linked,
+    )
 
 
 def _emp_type_id(member):
@@ -84,31 +127,11 @@ def _emp_type_id(member):
     return ref_cache.employer_contribution_type_id(member)
 
 
-#: ``$100,000 / 26``: the per-period gross :class:`FakeDeduction`'s default
-#: salary derives at the default cadence, and the fallback the no-deduction
-#: cases hand :func:`calculate_investment_inputs`.
+#: The per-period gross the employer cases size a percentage off.  It was
+#: ``$100,000 / 26`` derived from a fake deduction's salary until plan step
+#: salary:R14-b; it is stated on the feed now, because a gross is a fact about
+#: a PAYDAY and no longer something this module divides for itself.
 _GROSS_BIWEEKLY = Decimal("3846.15")
-
-
-@dataclass
-class FakeDeduction:
-    """An adapted deduction, as ``adapt_deductions`` now produces one.
-
-    **The COUNT is the owner's cadence since plan step R-F16; the SALARY is
-    still this deduction's own profile.**  ``pay_periods_per_year`` was a
-    second stored answer to "how often am I paid" and is derived now.  The
-    salary stays per row because an owner may hold several active profiles and
-    each prices its own percentage: collapsing them to one owner-level gross
-    was measured at a 39% swing on a two-job owner, and a nondeterministic one.
-    The gross derived here is raise-BLIND -- finding **D45**.
-    """
-
-    amount: Decimal
-    calc_method_id: int
-    annual_salary: Decimal = Decimal("100000")
-    periods_per_year: Decimal = Decimal("26")
-    # Calendar-year ceiling (PaycheckDeduction.annual_cap); None = uncapped.
-    annual_cap: Decimal | None = None
 
 
 @dataclass
@@ -121,10 +144,244 @@ class FakeInvestmentParams:
     employer_match_cap_percentage: Decimal = Decimal("0")
 
 
-class TestCalculateInvestmentInputs:
+class TestAccountPayrollFeed:
+    """The feed's own rules -- what it answers for a payday, and past one.
 
-    def test_no_deductions_no_transfers(self):
-        """No deductions or transfers → zero contributions and zero YTD."""
+    Plan step **salary:R14-b**.  Everything here is about the SERIES: that a
+    payday's answer is its own, that a skipped payday is a zero rather than a
+    gap, and what the feed says about a payday the owner's calendar does not
+    reach.  What each figure IS -- the raise, the inflation escalation, the
+    cadence, the calendar-year cap -- is the paycheck engine's, graded in
+    ``test_paycheck_calculator.py``; the fold that produces these maps from its
+    breakdowns is graded in ``test_projection_inputs.py`` against real rows.
+    """
+
+    def test_each_payday_answers_with_its_OWN_figure(self):
+        """The feed is a SERIES, which is finding D45's whole remedy.
+
+        The feed it replaced was one scalar for every period, so an owner with
+        a raise had every projected paycheck priced at one paycheck's answer.
+        The figures here are the developer's own measured pair (ledger row
+        **D45**): a gross of ``$3,525.96`` before the 2026-07 raise and
+        ``$3,631.74`` after it.
+        """
+        periods = _periods(date(2026, 6, 4), date(2026, 7, 2))
+        feed = _feed(periods, gross={
+            periods[0].start_date: Decimal("3525.96"),
+            periods[1].start_date: Decimal("3631.74"),
+        })
+        assert feed.gross_at(periods[0].start_date) == Decimal("3525.96")
+        assert feed.gross_at(periods[1].start_date) == Decimal("3631.74")
+
+    def test_a_skipped_payday_is_an_explicit_zero_not_a_gap(self):
+        """A cadence skip reads ``$0.00``, not the previous payday's amount.
+
+        11 of the developer's 12 live deductions are 24-per-year, which the
+        engine does not take on its month's third payday.  The map is TOTAL
+        over the calendar's paydays for exactly this: were the skipped payday
+        merely ABSENT, :meth:`employee_at` could not tell it from a payday
+        past the calendar and would hold the previous amount over the skip.
+        """
+        periods = _periods(
+            date(2026, 1, 2), date(2026, 1, 16), date(2026, 1, 30),
+        )
+        feed = _feed(periods, employee={
+            periods[0].start_date: Decimal("211.56"),
+            periods[1].start_date: Decimal("211.56"),
+            periods[2].start_date: Decimal("0"),
+        })
+        assert feed.employee_at(periods[2].start_date) == Decimal("0")
+
+    def test_the_gross_HOLDS_past_the_owners_calendar(self):
+        """A payday the calendar does not reach reads the last real paycheck.
+
+        The interim rule the developer ruled on 2026-09-04: the app holds two
+        long-horizon salary models that disagree, so a projection past the
+        schedule states the last real paycheck until the step that unifies
+        them lands.
+        """
+        periods = _periods(date(2028, 7, 13), date(2028, 8, 10))
+        feed = _feed(periods, gross={
+            periods[0].start_date: Decimal("4047.97"),
+            periods[1].start_date: Decimal("4047.97"),
+        })
+        assert feed.gross_at(date(2040, 1, 1)) == Decimal("4047.97")
+
+    def test_the_hold_has_a_DIRECTION(self):
+        """A payday BEFORE the calendar holds the earliest, not the latest.
+
+        Holding the latest paycheck backward would answer a pre-schedule
+        payday with a salary the owner had not yet been raised to -- here
+        ``$3,631.74`` for a day before they were earning ``$3,525.96``.  No
+        consumer asks the backward question today (every domain opens at or
+        after the calendar's first payday), which is exactly why the
+        direction lives in the value rather than in a caller's discipline: an
+        answer that is wrong only because nobody asks it is the shape this
+        module has shipped before.
+        """
+        periods = _periods(date(2026, 6, 4), date(2026, 7, 2))
+        feed = _feed(periods, gross={
+            periods[0].start_date: Decimal("3525.96"),
+            periods[1].start_date: Decimal("3631.74"),
+        })
+        assert feed.gross_at(date(2020, 1, 1)) == Decimal("3525.96")
+        assert feed.gross_at(date(2040, 1, 1)) == Decimal("3631.74")
+
+    def test_the_EMPLOYEE_direction_is_per_YEAR_not_per_payday(self):
+        """The employee series holds a year's average, so its ends are years.
+
+        The gross holds at a PAYDAY in each direction; the employee amount
+        holds at a fullest calendar YEAR's average, because that is the span
+        ``annual_cap`` is defined over.  So the two directions of the employee
+        series come apart only across years, and a feed spanning one year
+        answers the same figure both ways -- which is correct and is why this
+        case builds two full years rather than two paydays.
+
+        2026 pays ``$200`` a payday and 2027 pays ``$220``; both years hold 26
+        paydays, so the averages are the figures themselves.
+        """
+        paydays = [date(2026, 1, 2) + timedelta(days=14 * i) for i in range(52)]
+        periods = _periods(*paydays)
+        priced = {
+            day: Decimal("200") if day.year == 2026 else Decimal("220")
+            for day in paydays
+        }
+        feed = _feed(periods, employee=priced)
+        assert feed.employee_at(date(2020, 1, 1)) == Decimal("200")
+        assert feed.employee_at(date(2040, 1, 1)) == Decimal("220")
+
+    def test_a_CAPPED_deductions_hold_respects_its_annual_cap(self):
+        """The hold is a YEAR's average, and the cap is why.
+
+        **An adversarial review of this step's own fix measured the
+        single-day rule wrong by 10.4x**, which is why this case exists.  A
+        deduction of ``$600`` a payday against a ``$1,000`` calendar-year cap
+        is priced by the engine as ``$600, $400, $0, $0 ...``: the clamp lands
+        the moment the year's total reaches the cap.  Holding "the last payday
+        that PAID something" picks the ``$400`` and applies it to every
+        projected period with no cap and no year reset -- ``$10,400`` a year
+        against a ``$1,000`` cap, compounded over the tail of a 40-year chart.
+
+        The year's average is ``$1,000 / 26 = $38.46``, which is exactly what
+        the deleted ``_annual_cap_averaged`` answered for this deduction, now
+        derived from the ENGINE's own priced figures instead of a second
+        formula.
+        """
+        paydays = [date(2026, 1, 2) + timedelta(days=14 * i) for i in range(26)]
+        periods = _periods(*paydays)
+        priced = dict.fromkeys(paydays, Decimal("0"))
+        priced[paydays[0]] = Decimal("600")
+        priced[paydays[1]] = Decimal("400")
+        feed = _feed(periods, employee=priced)
+        # $1,000 over the year's 26 paydays.
+        assert feed.employee_at(date(2040, 1, 1)) == Decimal("38.46")
+
+    def test_a_trailing_cadence_SKIP_does_not_delete_the_feed(self):
+        """A schedule ending on a skipped payday still holds the real rate.
+
+        A 24-per-year deduction is not taken on its month's third payday, so a
+        saved schedule that happens to END on one would hold ``$0.00`` for the
+        whole projection if the rule read the last payday alone -- a 1-in-13
+        chance of silently deleting the feed.  Averaging the year covers it:
+        the skips are inside the span being averaged, so the held figure is
+        the year's true per-payday rate rather than either extreme.
+
+        24 paydays of ``$211.56`` and 2 skipped, over a 26-payday year:
+        ``24 x 211.56 / 26 = $195.29``.
+        """
+        paydays = [date(2026, 1, 2) + timedelta(days=14 * i) for i in range(26)]
+        periods = _periods(*paydays)
+        priced = {day: Decimal("211.56") for day in paydays}
+        priced[paydays[24]] = Decimal("0")
+        priced[paydays[25]] = Decimal("0")
+        feed = _feed(periods, employee=priced)
+        assert feed.employee_at(date(2040, 1, 1)) == Decimal("195.29")
+
+    def test_an_account_that_never_received_anything_holds_zero(self):
+        """A feed of zeros holds ``$0.00`` -- the answer, not the artifact."""
+        periods = _periods(date(2026, 1, 2), date(2026, 1, 16))
+        feed = _feed(periods, employee=Decimal("0"))
+        assert feed.employee_at(date(2040, 1, 1)) == Decimal("0")
+        assert feed.models_employee is False
+
+    def test_no_funding_profile_refuses_a_gross_rather_than_answering_zero(self):
+        """An unknown funding job answers ``None``, so no caller can spend it.
+
+        The developer's 2026-09-04 ruling: an employer contribution whose
+        funding job is unrecorded models NO money.  ``None`` rather than
+        ``$0.00`` because a zero is a basis a percentage can be taken of, and
+        the point is that there is no basis.
+        """
+        periods = _periods(date(2026, 1, 2))
+        feed = _feed(periods, employee=Decimal("500"))
+        assert feed.funds_employer is False
+        assert feed.gross_at(periods[0].start_date) is None
+
+    def test_absent_models_neither_half(self):
+        """The explicit token for an account no payroll funds."""
+        feed = AccountPayrollFeed.absent()
+        assert feed.models_employee is False
+        assert feed.funds_employer is False
+        assert feed.employee_at(date(2026, 1, 2)) == Decimal("0")
+        assert feed.gross_at(date(2026, 1, 2)) is None
+
+    def test_salary_basis_resolves_in_window_then_holds(self):
+        """The growth engine's ``period -> gross`` hook, over both regimes."""
+        periods = _periods(date(2026, 1, 2), date(2026, 1, 16))
+        feed = _feed(periods, gross={
+            periods[0].start_date: Decimal("3525.96"),
+            periods[1].start_date: Decimal("3631.74"),
+        })
+        basis = feed.salary_basis()
+        assert basis(periods[0]) == Decimal("3525.96")
+        beyond = _periods(date(2040, 1, 6))[0]
+        assert basis(beyond) == Decimal("3631.74")
+
+    def test_an_outer_model_replaces_the_HOLD_and_never_the_window(self):
+        """``beyond`` answers only past the calendar, and only when funded.
+
+        ``/retirement`` supplies its merit-horizon salary path here so that
+        page keeps the long-horizon model it already had.  Inside the
+        calendar the engine's own paycheck wins -- an outer model must not
+        overwrite a real answer -- and where no funding profile is known the
+        refusal stands, because an outer model must not resurrect money the
+        2026-09-04 ruling withholds.
+        """
+        periods = _periods(date(2026, 1, 2))
+        beyond_period = _periods(date(2040, 1, 6))[0]
+        outer = lambda period: Decimal("9999.99")  # noqa: E731
+
+        funded = _feed(periods, gross=Decimal("3525.96"))
+        basis = funded.salary_basis(beyond=outer)
+        assert basis(periods[0]) == Decimal("3525.96")
+        assert basis(beyond_period) == Decimal("9999.99")
+
+        unfunded = _feed(periods, employee=Decimal("500"))
+        assert unfunded.salary_basis(beyond=outer)(beyond_period) is None
+
+
+class TestCalculateInvestmentInputs:
+    """What the two dashboards' per-period CARDS read.
+
+    **This is no longer the forward walk's input** (plan step
+    **salary:R14-b**): ``periodic_contribution`` was one raise-blind scalar the
+    whole projection ran on, and the walk reads a dated record per period now
+    (:func:`build_contribution_timeline`).  What survives here is the current
+    paycheck's figure, the two YTD windows and the employer-params shape.
+
+    **The cases that priced a deduction went with the arithmetic.**  Flat
+    versus percentage, the half-cent rounding, a two-job owner's per-profile
+    salary, a weekly owner's 52 paychecks, and the calendar-year cap's even
+    spread were all this module deriving what the paycheck engine derives --
+    graded in ``test_paycheck_calculator.py`` against a real profile, where
+    the raise and the inflation escalation this module could not see are
+    graded too.  The even spread has no successor anywhere and is not meant to
+    have one: it was the third of four spellings of one cap, and the engine's
+    front-loaded clamp is the one that survives (ruling **R-SAL2**).
+    """
+
+    def test_no_feed_no_transfers(self):
+        """No payroll feed or transfers -> zero contributions and zero YTD."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
@@ -132,7 +389,7 @@ class TestCalculateInvestmentInputs:
         )
         current_period = _periods(date(2026, 3, 5))[0]
         result = calculate_investment_inputs(
-            investment_params=params, deductions=[],
+            investment_params=params, feed=AccountPayrollFeed.absent(),
             all_contributions=[], current_period=current_period,
         )
         assert result.periodic_contribution == Decimal("0")
@@ -140,98 +397,34 @@ class TestCalculateInvestmentInputs:
         assert result.ytd_contributions == Decimal("0")
         assert result.annual_contribution_limit == Decimal("23500")
 
-    def test_flat_deduction(self):
-        """Flat deduction amount adds directly to periodic contribution."""
-        params = FakeInvestmentParams(
-            assumed_annual_return=Decimal("0.07"),
-            annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
-        )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id())]
-        current_period = _periods(date(2026, 3, 5))[0]
-        result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
-            all_contributions=[], current_period=current_period,
-        )
-        assert result.periodic_contribution == Decimal("500.00")
+    def test_the_card_reads_the_CURRENT_periods_figure(self):
+        """The per-period card is the paycheck the owner is being paid.
 
-    def test_capped_deduction_periodic_is_even_spread_annual_cap(self):
-        """A capped deduction's periodic average is the cap spread over the year.
-
-        The periodic contribution feeds the synthetic long-horizon chart's
-        fallback; a $600/period deduction ($15,600/yr) under a $1,000 cap
-        contributes the even-spread average $1,000 / 26 = $38.46 per period
-        (deep-hunt #2), not the uncapped $600.
+        It was one figure for all time, so a card rendered in July showed the
+        March paycheck's deduction.  The two paydays here differ by the
+        developer's own 2026-07 raise applied to a 6% deduction.
         """
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
-        deductions = [FakeDeduction(
-            amount=Decimal("600.00"), calc_method_id=_flat_id(),
-            annual_cap=Decimal("1000.00"),
-        )]
-        current_period = _periods(date(2026, 3, 5))[0]
-        result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
-            all_contributions=[], current_period=current_period,
+        periods = _periods(date(2026, 6, 4), date(2026, 7, 2))
+        # 6% of $3,525.96 and of $3,631.74, as the engine rounds each.
+        feed = _feed(periods, employee={
+            periods[0].start_date: Decimal("211.56"),
+            periods[1].start_date: Decimal("217.90"),
+        })
+        before = calculate_investment_inputs(
+            investment_params=params, feed=feed,
+            all_contributions=[], current_period=periods[0],
         )
-        # min(600 * 26, 1000) / 26 = 1000 / 26 = 38.4615... -> 38.46.
-        assert result.periodic_contribution == Decimal("38.46")
-
-    def test_percentage_deduction(self):
-        """Percentage deduction computed as gross_biweekly * rate."""
-        params = FakeInvestmentParams(
-            assumed_annual_return=Decimal("0.07"),
-            annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
+        after = calculate_investment_inputs(
+            investment_params=params, feed=feed,
+            all_contributions=[], current_period=periods[1],
         )
-        deductions = [FakeDeduction(amount=Decimal("0.07"), calc_method_id=_pct_id())]
-        current_period = _periods(date(2026, 3, 5))[0]
-        result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
-            all_contributions=[], current_period=current_period,
-        )
-        # 7% of ($100,000 / 26) = 7% of $3846.15 = $269.2305 -> $269.23.
-        # Hand-computed literal (not a re-quantize of the code's own
-        # expression) so the assertion is an independent oracle.
-        assert result.periodic_contribution == Decimal("269.23")
-
-    def test_percentage_deduction_half_cent_rounds_half_up(self):
-        """Per-period contribution rounds ROUND_HALF_UP at an exact half-cent.
-
-        Pins the money-rounding MODE (deep-quality-hunt #18/#19/#63 /
-        financial-audit HIGH-04 / E-26): the per-period contribution is
-        rounded through ``app.utils.money.round_money`` (ROUND_HALF_UP),
-        not a bare ``.quantize()`` (Python's default ROUND_HALF_EVEN).
-
-        ``$26,013 / 26 = $1,000.50`` exactly, so 5% of that gross is
-        ``$50.0250`` -- a value sitting EXACTLY on a half-cent boundary,
-        the only place the two modes diverge.  ROUND_HALF_UP gives
-        ``$50.03``; banker's rounding would give ``$50.02`` (round to the
-        even cent).  This assertion therefore fails if the site regresses
-        to a bare quantize -- the tautological re-quantize the other
-        contribution tests use could not catch that.
-        """
-        params = FakeInvestmentParams(
-            assumed_annual_return=Decimal("0.07"),
-            annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
-        )
-        deductions = [FakeDeduction(
-            amount=Decimal("0.05"), calc_method_id=_pct_id(),
-            annual_salary=Decimal("26013"),
-        )]
-        current_period = _periods(date(2026, 3, 5))[0]
-        result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
-            all_contributions=[], current_period=current_period,
-        )
-        # gross = round_money(26013 / 26) = round_money(1000.50) = 1000.50;
-        # 5% -> round_money(1000.50 * 0.05) = round_money(50.0250) = 50.03
-        # (HALF_UP).  Banker's rounding would yield 50.02.
-        assert result.periodic_contribution == Decimal("50.03")
+        assert before.periodic_contribution == Decimal("211.56")
+        assert after.periodic_contribution == Decimal("217.90")
 
     def test_transfer_contributions_averaged(self):
         """Transfer contributions averaged across distinct periods with transfers."""
@@ -248,14 +441,21 @@ class TestCalculateInvestmentInputs:
             _priced(Decimal("300"), periods[2].start_date),
         ]
         result = calculate_investment_inputs(
-            investment_params=params, deductions=[],
+            investment_params=params, feed=AccountPayrollFeed.absent(),
             all_contributions=contributions, current_period=periods[0],
         )
         # ($200 + $200 + $300) over THREE distinct paydays = $233.33.
         assert result.periodic_contribution == Decimal("233.33")
 
     def test_employer_flat_percentage(self):
-        """Employer flat_percentage populates employer_params with correct values."""
+        """Employer flat_percentage populates employer_params with correct values.
+
+        **The dict no longer carries a gross** (plan step salary:R14-b): one
+        figure sizing every period's employer contribution is what froze a 5%
+        match at today's paycheck for the life of a projection.  The period's
+        own comes off the feed, which
+        :class:`TestAccountPayrollFeed` grades.
+        """
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(
@@ -263,10 +463,10 @@ class TestCalculateInvestmentInputs:
             ),
             employer_flat_percentage=Decimal("0.05"),
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id())]
         current_period = _periods(date(2026, 3, 5))[0]
+        feed = _feed([current_period], gross=_GROSS_BIWEEKLY)
         result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
+            investment_params=params, feed=feed,
             all_contributions=[], current_period=current_period,
         )
         assert result.employer_params is not None
@@ -274,8 +474,7 @@ class TestCalculateInvestmentInputs:
             EmployerContributionTypeEnum.FLAT_PERCENTAGE,
         )
         assert result.employer_params["flat_percentage"] == Decimal("0.05")
-        # The caller's engine gross, unchanged by the deduction (R-F16).
-        assert result.employer_params["gross_biweekly"] == Decimal("3846.15")
+        assert "gross_biweekly" not in result.employer_params
 
     def test_employer_match(self):
         """Employer match type populates match_percentage and cap fields."""
@@ -287,10 +486,10 @@ class TestCalculateInvestmentInputs:
             employer_match_percentage=Decimal("1.0"),
             employer_match_cap_percentage=Decimal("0.06"),
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id())]
         current_period = _periods(date(2026, 3, 5))[0]
+        feed = _feed([current_period], gross=_GROSS_BIWEEKLY)
         result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
+            investment_params=params, feed=feed,
             all_contributions=[], current_period=current_period,
         )
         assert result.employer_params is not None
@@ -299,6 +498,38 @@ class TestCalculateInvestmentInputs:
         )
         assert result.employer_params["match_percentage"] == Decimal("1.0")
         assert result.employer_params["match_cap_percentage"] == Decimal("0.06")
+
+    def test_a_configured_employer_contribution_is_WITHHELD_when_unfunded(self):
+        """No known funding job models no employer money (developer, 2026-09-04).
+
+        The params are configured -- a 5% flat contribution -- and the feed
+        priced no gross because ``investment_params.salary_profile_id`` names
+        no active profile of this owner's.  The dict is withheld rather than
+        paired with a basis of zero, so the growth engine's employer arm
+        cannot run at all and the surface can say WHY (the two states stay
+        distinguishable: ``employer_params is None`` says no money,
+        ``feed.funds_employer`` says which reason).
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type_id=_emp_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE,
+            ),
+            employer_flat_percentage=Decimal("0.05"),
+        )
+        current_period = _periods(date(2026, 3, 5))[0]
+        feed = _feed([current_period], employee=Decimal("500"))
+        result = calculate_investment_inputs(
+            investment_params=params, feed=feed,
+            all_contributions=[], current_period=current_period,
+        )
+        assert feed.funds_employer is False
+        assert result.employer_params is None
+        # The EMPLOYEE half is untouched: the ruling is about the employer's
+        # money, and the owner's own deduction happened whatever the app knows
+        # about which job funds the match.
+        assert result.periodic_contribution == Decimal("500")
 
     def test_ytd_contributions_from_transfers(self):
         """YTD contributions sum only current-year contributions up to current period."""
@@ -314,7 +545,7 @@ class TestCalculateInvestmentInputs:
             _priced(Decimal("500"), period.start_date) for period in periods
         ]
         result = calculate_investment_inputs(
-            investment_params=params, deductions=[],
+            investment_params=params, feed=AccountPayrollFeed.absent(),
             all_contributions=contributions, current_period=periods[3],
         )
         # The 2025 payday is a different calendar year and 2026-02-13 is past
@@ -325,7 +556,7 @@ class TestCalculateInvestmentInputs:
         """deep-hunt #10: the engine seed YTD is STRICTLY BEFORE the current period.
 
         Same setup as ``test_ytd_contributions_from_transfers``: five $500
-        contributions, current = periods[3] (id=4, start 2026-01-30).
+        contributions, current = periods[3] (start 2026-01-30).
         Period 1 is in 2025 (different calendar year); periods 2-4 are in
         2026 up to and including the current period.
 
@@ -349,7 +580,7 @@ class TestCalculateInvestmentInputs:
             _priced(Decimal("500"), period.start_date) for period in periods
         ]
         result = calculate_investment_inputs(
-            investment_params=params, deductions=[],
+            investment_params=params, feed=AccountPayrollFeed.absent(),
             all_contributions=contributions, current_period=periods[3],
         )
         assert result.ytd_contributions == Decimal("1500")          # <= current (display)
@@ -363,31 +594,36 @@ class TestCalculateInvestmentInputs:
         )
         contributions = [_priced(Decimal("500"), date(2026, 1, 2))]
         result = calculate_investment_inputs(
-            investment_params=params, deductions=[],
+            investment_params=params, feed=AccountPayrollFeed.absent(),
             all_contributions=contributions, current_period=None,
         )
         assert result.ytd_contributions_seed == Decimal("0")
 
-    def test_combined_deductions_and_transfers(self):
-        """Deductions and contributions both add to periodic_contribution."""
+    def test_combined_payroll_and_transfers(self):
+        """The payroll feed and the transfer average both reach the card."""
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id())]
         periods = _periods(date(2026, 1, 2), date(2026, 1, 16))
+        feed = _feed(periods, employee=Decimal("500.00"))
         contributions = [
             _priced(Decimal("200"), periods[0].start_date),
             _priced(Decimal("200"), periods[1].start_date),
         ]
         result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
+            investment_params=params, feed=feed,
             all_contributions=contributions, current_period=periods[0],
         )
         assert result.periodic_contribution == Decimal("700.00")
 
-    def test_employer_flat_uses_salary_gross_when_no_deductions(self):
-        """Employer flat_percentage works even without deductions targeting the account."""
+    def test_employer_params_stand_without_an_employee_feed(self):
+        """An employer FLAT percentage models money with a zero employee feed.
+
+        The real Empower 401(k) shape: no deduction names the account, so the
+        employee half is absent, and the employer half is priced off the
+        funding profile's own paycheck all the same.
+        """
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
@@ -395,134 +631,14 @@ class TestCalculateInvestmentInputs:
             employer_flat_percentage=Decimal("0.05"),
         )
         current_period = _periods(date(2026, 3, 5))[0]
-
+        feed = _feed([current_period], gross=_GROSS_BIWEEKLY)
         result = calculate_investment_inputs(
-            investment_params=params,
-            deductions=[],
-            all_contributions=[],
-            current_period=current_period,
-            salary_gross_biweekly=Decimal("3846.15"),
+            investment_params=params, feed=feed,
+            all_contributions=[], current_period=current_period,
         )
-
         assert result.employer_params is not None
-        assert result.employer_params["gross_biweekly"] == Decimal("3846.15")
         assert result.periodic_contribution == Decimal("0")
-
-    def test_each_deduction_prices_from_its_OWN_profile(self):
-        """Two profiles, two salaries, two percentages -- summed separately.
-
-        Input: two 6% deductions into one account, one on a ``$91,675``
-        profile and one on a ``$40,000`` profile.
-        Expected: ``6% of 3,525.96 + 6% of 1,538.46 = 211.56 + 92.31 =
-        $303.87``.
-
-        **This is why the salary stays on the ROW.**  Plan step R-F16's first
-        draft collapsed the basis to ONE owner-level gross -- the raise-aware
-        engine figure -- which is more correct for a single-job owner and
-        wrong for this one: its adversarial review measured the same two
-        deductions at ``$423.12`` or ``$184.62`` depending on which profile
-        ``income_service.get_current_gross_biweekly``'s unordered ``.first()``
-        happened to return, a 39% swing that flips between renders with no
-        data change. Multiple active profiles are a supported shape --
-        ``tax_report_service`` iterates them as one filer with several jobs.
-        The raise-blindness of the per-row gross is real and is finding
-        **D45**; it is not fixed by deleting the per-profile basis.
-        """
-        params = FakeInvestmentParams(
-            assumed_annual_return=Decimal("0.07"),
-            annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type_id=_emp_type_id(
-                EmployerContributionTypeEnum.NONE,
-            ),
-        )
-        deductions = [
-            FakeDeduction(
-                amount=Decimal("0.06"), calc_method_id=_pct_id(),
-                annual_salary=Decimal("91675"),
-            ),
-            FakeDeduction(
-                amount=Decimal("0.06"), calc_method_id=_pct_id(),
-                annual_salary=Decimal("40000"),
-            ),
-        ]
-        current_period = _periods(date(2026, 3, 5))[0]
-
-        result = calculate_investment_inputs(
-            investment_params=params,
-            deductions=deductions,
-            all_contributions=[],
-            current_period=current_period,
-        )
-
-        # 91,675 / 26 = 3,525.96 -> 6% = 211.5576 -> 211.56
-        # 40,000 / 26 = 1,538.46 -> 6% =  92.3076 ->  92.31
-        assert result.periodic_contribution == Decimal("303.87")
-
-    def test_a_weekly_owners_deduction_prices_over_52_paychecks(self):
-        """THE CADENCE AXIS: the stamped count drives the per-period gross.
-
-        Input: one ``$91,675`` profile, 6%, adapted at a 7-day cadence.
-        Expected: ``6% of (91,675 / 52) = 6% of 1,762.98 = $105.78``, half
-        the biweekly figure.
-        Why: every other case in this module runs at 26, where the derived
-        count and the deleted ``pay_periods_per_year`` column agree, so none
-        of them can see a count that is not the owner's. This is the case that
-        fails if ``periods_per_year`` stops coming from the cadence.
-        """
-        params = FakeInvestmentParams(
-            assumed_annual_return=Decimal("0.07"),
-            annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type_id=_emp_type_id(
-                EmployerContributionTypeEnum.NONE,
-            ),
-        )
-        deductions = [FakeDeduction(
-            amount=Decimal("0.06"), calc_method_id=_pct_id(),
-            annual_salary=Decimal("91675"),
-            periods_per_year=Decimal("52"),
-        )]
-        current_period = _periods(date(2026, 3, 5))[0]
-
-        result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
-            all_contributions=[], current_period=current_period,
-        )
-
-        # 91,675 / 52 = 1,762.98 (half-up) -> 6% = 105.7788 -> 105.78
-        assert result.periodic_contribution == Decimal("105.78")
-
-    def test_a_capped_deduction_spreads_over_the_OWNERS_paychecks(self):
-        """A calendar-year cap is spread across 52, not 26, for a weekly owner.
-
-        Input: a ``$600``/period deduction under a ``$1,000`` annual cap, at a
-        7-day cadence.
-        Expected: ``min(600 x 52, 1000) / 52 = $19.23``.
-        Why: this is the F-16 shape one table over. The sibling test above
-        runs the same cap at 26 and gets ``$38.46``; with a hardcoded 26 a
-        weekly owner's cap spreads over half the paychecks they receive and
-        the modelled contribution is exactly DOUBLE -- compounded forward by
-        the growth engine for the whole projection horizon.
-        """
-        params = FakeInvestmentParams(
-            assumed_annual_return=Decimal("0.07"),
-            annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type_id=_emp_type_id(
-                EmployerContributionTypeEnum.NONE,
-            ),
-        )
-        deductions = [FakeDeduction(
-            amount=Decimal("600.00"), calc_method_id=_flat_id(),
-            periods_per_year=Decimal("52"),
-            annual_cap=Decimal("1000.00"),
-        )]
-        current_period = _periods(date(2026, 3, 5))[0]
-
-        result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
-            all_contributions=[], current_period=current_period,
-        )
-
-        assert result.periodic_contribution == Decimal("19.23")
+        assert feed.gross_at(current_period.start_date) == _GROSS_BIWEEKLY
 
     def test_no_employer_when_type_none(self):
         """Employer type 'none' produces employer_params=None."""
@@ -531,8 +647,9 @@ class TestCalculateInvestmentInputs:
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         current_period = _periods(date(2026, 3, 5))[0]
+        feed = _feed([current_period], gross=_GROSS_BIWEEKLY)
         result = calculate_investment_inputs(
-            investment_params=params, deductions=[],
+            investment_params=params, feed=feed,
             all_contributions=[], current_period=current_period,
         )
         assert result.employer_params is None
@@ -552,73 +669,13 @@ class TestCalculateInvestmentInputs:
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         result = calculate_investment_inputs(
-            investment_params=params, deductions=[],
+            investment_params=params, feed=AccountPayrollFeed.absent(),
             all_contributions=[], current_period=None,
         )
+        assert isinstance(result, InvestmentInputs)
         assert result.periodic_contribution == Decimal("0")
         assert result.ytd_contributions == Decimal("0")
         assert result.employer_params is None
-        assert result.gross_biweekly == Decimal("0")
-
-    def test_zero_contribution_rate(self):
-        """Percentage deduction at 0% produces zero contribution.
-
-        Scenario: employee sets 401k contribution to 0% temporarily.
-        Expected: periodic_contribution=0, no employer match triggered.
-        """
-        params = FakeInvestmentParams(
-            assumed_annual_return=Decimal("0.07"),
-            annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.MATCH),
-            employer_match_percentage=Decimal("1.0"),
-            employer_match_cap_percentage=Decimal("0.06"),
-        )
-        deductions = [FakeDeduction(
-            amount=Decimal("0"),
-            calc_method_id=_pct_id(),
-        )]
-        current_period = _periods(date(2026, 3, 5))[0]
-        result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
-            all_contributions=[], current_period=current_period,
-            salary_gross_biweekly=Decimal("3846.15"),
-        )
-        # gross * 0% = 0
-        assert result.periodic_contribution == Decimal("0")
-        # Employer params are still populated (the match params exist even if contribution is 0)
-        assert result.employer_params is not None
-        # The caller's gross, unchanged by the deduction (plan step R-F16).
-        assert result.gross_biweekly == Decimal("3846.15")
-
-    def test_negative_deduction_amount(self):
-        """Negative flat deduction amount passes through sign-agnostically.
-
-        Pins the service-layer contract: the service applies whatever
-        amount it is handed, so a negative flat deduction reduces the
-        periodic contribution arithmetically.  This is NOT a reachable
-        production state (plan.md P-3, triage-verified CLOSED
-        2026-06-09): the boundary rejects negative amounts twice --
-        ``DeductionCreateSchema.amount`` requires
-        ``Range(min=Decimal("0.0001"))`` (validation/salary.py) and the
-        DB enforces ``ck_paycheck_deductions_positive_amount``
-        (``amount > 0``).  Sign-guarding is the boundary's job; the
-        service stays a pure function of its inputs.
-        """
-        params = FakeInvestmentParams(
-            assumed_annual_return=Decimal("0.07"),
-            annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
-        )
-        deductions = [FakeDeduction(
-            amount=Decimal("-500.00"),
-            calc_method_id=_flat_id(),
-        )]
-        current_period = _periods(date(2026, 3, 5))[0]
-        result = calculate_investment_inputs(
-            investment_params=params, deductions=deductions,
-            all_contributions=[], current_period=current_period,
-        )
-        assert result.periodic_contribution == Decimal("-500.00")
 
     def test_pre_filtered_contributions_only(self):
         """Only non-deleted contributions for this account are passed in.
@@ -638,7 +695,7 @@ class TestCalculateInvestmentInputs:
             _priced(Decimal("200"), periods[0].start_date),
         ]
         result = calculate_investment_inputs(
-            investment_params=params, deductions=[],
+            investment_params=params, feed=AccountPayrollFeed.absent(),
             all_contributions=contributions, current_period=periods[0],
         )
         # 1 contribution across 1 period -- periodic = $200
@@ -664,7 +721,7 @@ class TestCalculateInvestmentInputs:
             _priced(Decimal("400"), periods[1].start_date),
         ]
         result = calculate_investment_inputs(
-            investment_params=params, deductions=[],
+            investment_params=params, feed=AccountPayrollFeed.absent(),
             all_contributions=contributions, current_period=None,
         )
         # (200 + 400) / 2 periods = 300
@@ -689,127 +746,173 @@ class TestCalculateInvestmentInputs:
 # one record, so two of them pricing a row differently is no longer expressible.
 
 
-# ── Fake Objects for build_contribution_timeline ──────────────
-
-
-# ── Tests: build_contribution_timeline ────────────────────────
-
-
 class TestBuildContributionTimeline:
     """Tests for build_contribution_timeline().
 
-    Verifies that the function correctly combines deduction-based and
+    Verifies that the function correctly combines the payroll feed and the
     transfer-based contributions into a unified ContributionRecord list,
     with correct amounts, is_confirmed semantics, and sorting.
+
+    **Path 1 computes nothing since plan step salary:R14-b**: it reads the
+    feed's per-payday figure, which the paycheck engine priced.  The cases
+    that graded its arithmetic -- a flat amount, a percentage of gross, two
+    deductions summed, and the whole ``TestBuildContributionTimelineAnnualCap``
+    class -- went with it.  The cap is the one to be explicit about: it was a
+    private year-state walk here (``_period_capped_total``) reproducing what
+    ``paycheck_calculator._calculate_deductions`` applies through the SAME
+    ``cap_period_amount``, and ``test_paycheck_calculator.py`` grades that one
+    against a real profile whose raise this one could not see.
     """
 
-    def test_deduction_only(self):
-        """Deductions with no transfers: one record per period from deduction amount.
-
-        Flat $500 deduction across 3 periods.
-        """
-        deductions = [FakeDeduction(
-            amount=Decimal("500.00"), calc_method_id=_flat_id()
-        )]
+    def test_payroll_only(self):
+        """A payroll feed with no transfers: one record per period."""
         periods = _periods(
             date(2020, 1, 2), date(2020, 1, 16), date(2020, 1, 30),
         )
         result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=[],
+            feed=_feed(periods, employee=Decimal("500.00")),
+            contribution_transactions=[], periods=periods, as_of=_AS_OF,
+        )
+        assert len(result) == 3
+        for record in result:
+            assert record.amount == Decimal("500.00")
+            assert isinstance(record, ContributionRecord)
+
+    def test_a_record_is_emitted_for_every_period_including_a_zero(self):
+        """A ``$0`` period is an explicit record, not a missing one.
+
+        The difference is load bearing: a MISSING record is what makes
+        ``growth_engine.project_balance`` fall back to
+        ``periodic_contribution``, so a cadence-skipped payday emitted as a
+        gap would be paid the current period's amount instead of nothing.
+        """
+        periods = _periods(
+            date(2020, 1, 2), date(2020, 1, 16), date(2020, 1, 30),
+        )
+        feed = _feed(periods, employee={
+            periods[0].start_date: Decimal("500"),
+            periods[1].start_date: Decimal("500"),
+            periods[2].start_date: Decimal("0"),
+        })
+        result = build_contribution_timeline(
+            feed=feed, contribution_transactions=[],
             periods=periods, as_of=_AS_OF,
         )
         assert len(result) == 3
-        for r in result:
-            assert r.amount == Decimal("500.00")
-            assert isinstance(r, ContributionRecord)
+        assert result[2].amount == Decimal("0")
+
+    def test_a_period_PAST_the_calendar_reads_the_held_figure(self):
+        """The timeline's domain may run past the owner's saved schedule.
+
+        The 40-year chart's axis does, which is why the timeline is assembled
+        where the axis is known (plan step salary:R14-b).  Every projected
+        period gets a record, so the raise-blind ``periodic_contribution``
+        fallback the step deleted has nothing left to answer.
+        """
+        priced = _periods(date(2020, 1, 2), date(2020, 1, 16))
+        feed = _feed(priced, employee=Decimal("500.00"))
+        axis = _periods(
+            date(2020, 1, 2), date(2020, 1, 16), date(2020, 1, 30),
+        )
+        result = build_contribution_timeline(
+            feed=feed, contribution_transactions=[],
+            periods=axis, as_of=_AS_OF,
+        )
+        assert len(result) == 3
+        assert result[2].contribution_date == date(2020, 1, 30)
+        assert result[2].amount == Decimal("500.00")
 
     def test_transfer_only(self):
-        """Shadow income transactions with no deductions: one record per transaction."""
+        """Shadow income transactions with no payroll: one record per transaction."""
         periods = _periods(date(2020, 1, 2), date(2020, 1, 16))
         txns = [
             _priced(Decimal("200"), periods[0].start_date, is_confirmed=True),
             _priced(Decimal("300"), periods[1].start_date, is_confirmed=True),
         ]
         result = build_contribution_timeline(
-            deductions=[], contribution_transactions=txns,
+            feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
         )
         assert len(result) == 2
         assert result[0].amount == Decimal("200")
         assert result[1].amount == Decimal("300")
 
+    def test_an_UNLINKED_account_emits_NO_path_one_records(self):
+        """No deduction wired up: the fallback stays the answer.
+
+        ``is_payroll_linked`` is the gate, and it reads ``False`` here, so the
+        transfer average answers a period with no transfer -- which is the
+        behaviour an account funded only by transfers relies on.
+        """
+        periods = _periods(date(2020, 1, 2), date(2020, 1, 16))
+        result = build_contribution_timeline(
+            feed=_feed(periods, employee=Decimal("0"), linked=False),
+            contribution_transactions=[], periods=periods, as_of=_AS_OF,
+        )
+        assert result == []
+
+    def test_a_LINKED_feed_pricing_zero_still_emits_its_zeros(self):
+        """A wired-up deduction that prices $0.00 suppresses the fallback.
+
+        The gate is PRESENCE and not price, which an adversarial review of
+        this step corrected.  A deduction fully consumed by its ``annual_cap``
+        across the whole priced window prices ``$0.00`` on every payday while
+        being genuinely configured; gating on the price emitted no records,
+        and the engine then applied the TRANSFER AVERAGE to periods that
+        should contribute nothing.  The explicit zeros are what stop it.
+        """
+        periods = _periods(date(2020, 1, 2), date(2020, 1, 16))
+        feed = AccountPayrollFeed(
+            employee_by_payday={p.start_date: Decimal("0") for p in periods},
+            gross_by_payday={},
+            is_payroll_linked=True,
+        )
+        result = build_contribution_timeline(
+            feed=feed,
+            contribution_transactions=[
+                _priced(Decimal("300"), periods[0].start_date),
+            ],
+            periods=periods, as_of=_AS_OF,
+        )
+        payroll = [r for r in result if r.amount == Decimal("0")]
+        assert len(payroll) == 2, (
+            "both priced paydays must carry an explicit $0 record"
+        )
+
     def test_both_paths_summed(self):
-        """Deduction and transfer on the same period produce separate records.
+        """Payroll and transfer on the same period produce separate records.
 
         The growth engine's lookup dict aggregates same-date records.
-        Flat $500 deduction + $200 transfer on period 1.
+        $500 payroll + $200 transfer on period 1.
         """
-        deductions = [FakeDeduction(
-            amount=Decimal("500.00"), calc_method_id=_flat_id()
-        )]
         periods = _periods(date(2020, 1, 2))
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=True)]
         result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=txns,
-            periods=periods, as_of=_AS_OF,
+            feed=_feed(periods, employee=Decimal("500.00")),
+            contribution_transactions=txns, periods=periods, as_of=_AS_OF,
         )
-        # One record from deduction, one from transfer, same date.
+        # One record from payroll, one from the transfer, same date.
         assert len(result) == 2
         total = sum(r.amount for r in result)
         assert total == Decimal("700.00")
 
-    def test_deduction_flat_amount(self):
-        """Flat-dollar deduction: amount matches deduction.amount exactly."""
-        deductions = [FakeDeduction(
-            amount=Decimal("269.23"), calc_method_id=_flat_id()
-        )]
-        periods = _periods(date(2020, 1, 2))
-        result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
-        )
-        assert result[0].amount == Decimal("269.23")
-
-    def test_deduction_percentage(self):
-        """Percentage deduction: amount = gross_biweekly * percentage.
-
-        7% of ($100,000 / 26) = 7% of $3846.15 = $269.23.
-        """
-        deductions = [FakeDeduction(
-            amount=Decimal("0.07"), calc_method_id=_pct_id()
-        )]
-        periods = _periods(date(2020, 1, 2))
-        result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
-        )
-        # 7% of ($100,000 / 26) = 7% of $3846.15 = $269.2305 -> $269.23
-        # (per the docstring); hand-computed literal, not a code mirror.
-        assert result[0].amount == Decimal("269.23")
-
-    def test_is_confirmed_deduction_past(self):
-        """Deduction for a past period: is_confirmed=True."""
-        deductions = [FakeDeduction(
-            amount=Decimal("500"), calc_method_id=_flat_id()
-        )]
+    def test_is_confirmed_payroll_past(self):
+        """Payroll for a past period: is_confirmed=True."""
         # Before the pass's clock, by a literal rather than by when this runs.
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            feed=_feed(periods, employee=Decimal("500")),
+            contribution_transactions=[], periods=periods, as_of=_AS_OF,
         )
         assert result[0].is_confirmed is True
 
-    def test_is_confirmed_deduction_future(self):
-        """Deduction for a future period: is_confirmed=False."""
-        deductions = [FakeDeduction(
-            amount=Decimal("500"), calc_method_id=_flat_id()
-        )]
+    def test_is_confirmed_payroll_future(self):
+        """Payroll for a future period: is_confirmed=False."""
         # After the pass's clock, by a literal rather than by when this runs.
         periods = _periods(date(2099, 1, 2))
         result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            feed=_feed(periods, employee=Decimal("500")),
+            contribution_transactions=[], periods=periods, as_of=_AS_OF,
         )
         assert result[0].is_confirmed is False
 
@@ -818,7 +921,7 @@ class TestBuildContributionTimeline:
         periods = _periods(date(2020, 1, 2))
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=True)]
         result = build_contribution_timeline(
-            deductions=[], contribution_transactions=txns,
+            feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
         )
         assert result[0].is_confirmed is True
@@ -828,38 +931,35 @@ class TestBuildContributionTimeline:
         periods = _periods(date(2020, 1, 2))
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=False)]
         result = build_contribution_timeline(
-            deductions=[], contribution_transactions=txns,
+            feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
         )
         assert result[0].is_confirmed is False
 
     def test_is_confirmed_mixed_same_date(self):
-        """Confirmed deduction + projected transfer on same date.
+        """Confirmed payroll + projected transfer on same date.
 
         Both produce records for the same date.  The growth engine's
         lookup dict applies the conservative rule (all must be confirmed).
         Here we verify both records are produced -- one True, one False.
         """
-        deductions = [FakeDeduction(
-            amount=Decimal("500"), calc_method_id=_flat_id()
-        )]
-        # Past date so the deduction is confirmed.
+        # Past date so the payroll record is confirmed.
         periods = _periods(date(2020, 1, 2))
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=False)]
         result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=txns,
-            periods=periods, as_of=_AS_OF,
+            feed=_feed(periods, employee=Decimal("500")),
+            contribution_transactions=txns, periods=periods, as_of=_AS_OF,
         )
         assert len(result) == 2
         confirmed_flags = {r.is_confirmed for r in result}
-        assert True in confirmed_flags   # Deduction (past).
+        assert True in confirmed_flags   # Payroll (past).
         assert False in confirmed_flags  # Transfer (projected).
 
     def test_empty_both(self):
-        """No deductions and no transactions: empty list returned."""
+        """No payroll feed and no transactions: empty list returned."""
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
-            deductions=[], contribution_transactions=[],
+            feed=AccountPayrollFeed.absent(), contribution_transactions=[],
             periods=periods, as_of=_AS_OF,
         )
         assert result == []
@@ -872,7 +972,7 @@ class TestBuildContributionTimeline:
             _priced(Decimal("100"), periods[0].start_date, is_confirmed=True),
         ]
         result = build_contribution_timeline(
-            deductions=[], contribution_transactions=txns,
+            feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
         )
         dates = [r.contribution_date for r in result]
@@ -884,39 +984,16 @@ class TestBuildContributionTimeline:
         Renamed at plan step X-au-c2: it graded ``effective_amount``, an
         accessor this module no longer touches.  What it can still pin is that
         the timeline does not round, scale or re-derive the figure the boundary
-        priced -- which is worth one case, because Path 1 beside it DOES
-        transform (the annual cap clamps a deduction).
+        priced -- and since plan step salary:R14-b that is true of BOTH paths,
+        because path 1 stopped transforming anything too.
         """
-        # effective_amount is a pre-computed value (property on real model).
         periods = _periods(date(2020, 1, 2))
         txns = [_priced(Decimal("999.99"), periods[0].start_date, is_confirmed=True)]
         result = build_contribution_timeline(
-            deductions=[], contribution_transactions=txns,
+            feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
         )
         assert result[0].amount == Decimal("999.99")
-
-    def test_multiple_deductions_summed(self):
-        """Two deductions targeting the same account: amounts summed per period.
-
-        $500 flat + 5% of $3846.15 = $500 + $192.31 = $692.31.
-        """
-        deductions = [
-            FakeDeduction(
-                amount=Decimal("500.00"), calc_method_id=_flat_id()
-            ),
-            FakeDeduction(
-                amount=Decimal("0.05"), calc_method_id=_pct_id()
-            ),
-        ]
-        periods = _periods(date(2020, 1, 2))
-        result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
-        )
-        # $500 flat + 5% of $3846.15 = $500.00 + $192.3075 -> $500.00 +
-        # $192.31 = $692.31 (per the docstring); hand-computed literal.
-        assert result[0].amount == Decimal("692.31")
 
     # The Cancelled / Credit skip that used to be pinned here moved with the
     # rule (plan step X-au-c2): this module no longer screens by status, the
@@ -937,93 +1014,7 @@ class TestBuildContributionTimeline:
         periods = _periods(date(2020, 1, 2))
         txns = [_priced(Decimal("200"), date(2020, 3, 5), is_confirmed=True)]
         result = build_contribution_timeline(
-            deductions=[], contribution_transactions=txns,
+            feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
         )
         assert result == []
-
-
-class TestBuildContributionTimelineAnnualCap:
-    """The deduction-funded timeline honors each deduction's ``annual_cap``
-    (deep-hunt #2), matching the net-pay path: once a deduction's calendar-year
-    total reaches the cap it contributes $0 for the rest of the year, then
-    resumes the next January.  A fully-capped period still emits a $0 record so
-    the growth engine uses 0, not the uncapped periodic-average fallback.
-    """
-
-    def test_capped_deduction_clamps_then_emits_zero(self):
-        """$600/period under a $1000 cap: 600, 400, 0, 0 (a record per period)."""
-        deductions = [FakeDeduction(
-            amount=Decimal("600.00"), calc_method_id=_flat_id(),
-            annual_cap=Decimal("1000.00"),
-        )]
-        periods = _periods(
-            date(2026, 1, 2), date(2026, 1, 16), date(2026, 1, 30),
-            date(2026, 2, 13),
-        )
-        result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
-        )
-        # A record for every period (the $0 ones override the periodic fallback).
-        assert [r.amount for r in result] == [
-            Decimal("600.00"), Decimal("400.00"), Decimal("0"), Decimal("0"),
-        ]
-        assert sum(r.amount for r in result) == Decimal("1000.00")
-
-    def test_cap_resets_next_calendar_year(self):
-        """The cap is calendar-year scoped: the new-year period starts fresh."""
-        deductions = [FakeDeduction(
-            amount=Decimal("600.00"), calc_method_id=_flat_id(),
-            annual_cap=Decimal("1000.00"),
-        )]
-        periods = _periods(
-            date(2026, 12, 4), date(2026, 12, 18), date(2027, 1, 1),
-        )
-        result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
-        )
-        # 2026 caps at 600+400; 2027 resets -> full 600 again.
-        assert [r.amount for r in result] == [
-            Decimal("600.00"), Decimal("400.00"), Decimal("600.00"),
-        ]
-
-    def test_uncapped_deduction_unchanged(self):
-        """A None cap is a passthrough: full amount every period, no $0 record."""
-        deductions = [FakeDeduction(
-            amount=Decimal("600.00"), calc_method_id=_flat_id(),
-            annual_cap=None,
-        )]
-        periods = _periods(date(2026, 1, 2), date(2026, 1, 16))
-        result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
-        )
-        assert [r.amount for r in result] == [
-            Decimal("600.00"), Decimal("600.00"),
-        ]
-
-    def test_one_capped_one_uncapped_summed_per_period(self):
-        """Per-period total sums each deduction's own capped amount."""
-        deductions = [
-            FakeDeduction(
-                amount=Decimal("600.00"), calc_method_id=_flat_id(),
-                annual_cap=Decimal("1000.00"),
-            ),
-            FakeDeduction(
-                amount=Decimal("100.00"), calc_method_id=_flat_id(),
-                annual_cap=None,
-            ),
-        ]
-        periods = _periods(
-            date(2026, 1, 2), date(2026, 1, 16), date(2026, 1, 30),
-        )
-        result = build_contribution_timeline(
-            deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
-        )
-        # Capped leg: 600, 400, 0.  Uncapped leg: 100 each.  Sum: 700, 500, 100.
-        assert [r.amount for r in result] == [
-            Decimal("700.00"), Decimal("500.00"), Decimal("100.00"),
-        ]

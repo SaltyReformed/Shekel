@@ -244,11 +244,13 @@ def _get_current_paycheck_breakdown(balance_ctx, current_period):
     stays at 10.00/10 with no ``duplicate-code`` message.  It survived every
     gate because ``useless-suppression`` cannot see a stale ``duplicate-code``
     disable, which is finding **N-154**; this is a measured instance of it.
-    **The sequence itself is still written THREE times** -- here,
-    ``retirement_dashboard_service._compute_current_pay`` and
-    ``income_service.get_current_gross_biweekly`` -- which is reported rather
-    than merged here (``CLAUDE.md`` rule 6: collapsing it changes what two
-    other pages produce).  Both consumers -- the savings-goal
+    **The sequence itself is still written TWICE** -- here and
+    ``retirement_dashboard_service._compute_current_pay`` -- which is reported
+    rather than merged here (``CLAUDE.md`` rule 6: collapsing it changes what
+    another page produces).  *A THIRD spelling,
+    ``income_service.get_current_gross_biweekly``, was deleted at plan step
+    salary:R14-b: its consumers read the paycheck engine's own per-period
+    breakdown now, so its scalar had no caller left.*  Both consumers -- the savings-goal
     trajectory's net biweekly pay and the DTI denominator's gross
     monthly income -- route through this helper so the page cannot
     silently disagree with the paycheck engine on the same period.

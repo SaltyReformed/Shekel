@@ -38,6 +38,7 @@ from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services.pay_calendar import calendar_for
+from app.services.projection_inputs import load_payroll_feeds
 from app.services import (
     balance_at,
     income_service,
@@ -501,210 +502,213 @@ class TestLiveIncomeThroughBalanceResolver:
             )
 
 
-class TestGetCurrentGrossBiweekly:
-    """Direct unit tests for ``income_service.get_current_gross_biweekly``."""
+class TestThePerPeriodGrossIsTheENGINES:
+    """What replaced ``income_service.get_current_gross_biweekly``.
 
-    def test_c17_1_raise_applied_yields_engine_per_period_gross(
+    That helper was the canonical raise-aware gross producer (C17 / F-20 /
+    MED-06 / F-032) and plan step **salary:R14-b** DELETED it, because its
+    shape was the defect: one figure, read at ONE moment, standing in for a
+    series every raise moves.  Its consumers read
+    :class:`~app.services.investment_projection.AccountPayrollFeed` now, priced
+    per payday by :func:`app.services.projection_inputs.load_payroll_feeds`.
+
+    **The property C17 was written to protect is graded here, and it is
+    STRONGER than it was.**  The old cases asked one question at one clock and
+    got one answer; these read the same feed at two paydays and see the raise
+    land between them, which is what the helper structurally could not show.
+    Two of the six old cases have no successor and say so below.
+    """
+
+    @staticmethod
+    def _feed_for(user_id, profile, account_id):
+        """Price *account_id*'s feed off *profile* as the funding job."""
+        from app.models.investment_params import InvestmentParams
+        params = db.session.query(InvestmentParams).filter_by(
+            account_id=account_id,
+        ).one()
+        params.salary_profile_id = profile.id
+        db.session.flush()
+        return load_payroll_feeds(
+            user_id, calendar_for(user_id), [account_id],
+            {account_id: params},
+        )[account_id]
+
+    def test_the_raise_lands_ON_ITS_PAYDAY_and_not_before(
         self, app, db, seed_user, seed_periods,
     ):
-        """C17-1: applicable raise -> raise-aware engine gross_biweekly.
+        """C17-1 and the effective-month case, in ONE feed.
 
-        Hand arithmetic: ``104000 * 1.03 / 26 = 4120.00``.  Pre-Commit-17
-        the off-engine sites returned ``104000 / 26 = 4000.00`` because
-        the raise was silently dropped.  The helper invokes the paycheck
-        engine for the as-of period, which folds the raise into the
-        post-raise annual salary before dividing.
+        Hand arithmetic: ``104000 / 26 = 4000.00`` before the March 2026
+        raise and ``104000 * 1.03 / 26 = 4120.00`` from it.  Pre-Commit-17
+        the off-engine sites returned $4,000.00 forever because the raise was
+        silently dropped; the helper C17 replaced them with fixed that at ONE
+        clock, and the feed fixes it at every payday -- the January and the
+        March paycheck are both in this one value, which is the whole of
+        finding **D45**'s remedy.
         """
         with app.app_context():
-            profile = _create_profile(
-                seed_user["user"].id, seed_user["scenario"].id,
-            )
+            user_id = seed_user["user"].id
+            profile = _create_profile(user_id, seed_user["scenario"].id)
             _add_one_time_raise(profile)
-            db.session.commit()
-
-            result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
-            )
-
-            assert result == _RAISE_APPLIED_GROSS
-
-    def test_c17_2_no_raise_yields_byte_identical_pre_fix_value(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """C17-2: no raises -> engine value equals the pre-fix value.
-
-        With zero raises, the post-raise annual salary equals the base
-        annual salary, so the engine's ``104000 / 26`` matches the
-        pre-fix ``104000 / 26 = 4000.00`` exactly.  Locks the "no
-        regression for non-raised users" property.
-        """
-        with app.app_context():
-            _create_profile(
-                seed_user["user"].id, seed_user["scenario"].id,
+            account = make_investment_account(
+                seed_user, db.session, seed_periods[0], Decimal("10000.00"),
             )
             db.session.commit()
 
-            result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
-            )
+            feed = self._feed_for(user_id, profile, account.id)
+            calendar = calendar_for(user_id)
+            before = calendar.period_containing(_AS_OF_BEFORE_RAISE)
+            after = calendar.period_containing(_AS_OF_AFTER_RAISE)
 
-            assert result == _NO_RAISE_GROSS
+            assert feed.gross_at(before.start_date) == _NO_RAISE_GROSS
+            assert feed.gross_at(after.start_date) == _RAISE_APPLIED_GROSS
 
-    def test_c17_3_no_active_profile_returns_zero(
+    def test_no_raise_yields_the_byte_identical_pre_fix_value(
         self, app, db, seed_user, seed_periods,
     ):
-        """C17-3: missing active profile -> ``Decimal("0")``.
+        """C17-2: no raises -> the engine value equals the pre-fix value.
 
-        Preserves the pre-fix fallback contract -- every off-engine
-        site defaulted ``salary_gross_biweekly = Decimal("0")`` when
-        the user had no active profile.  The helper matches.
+        With zero raises the post-raise annual salary equals the base, so the
+        engine's ``104000 / 26`` matches the pre-fix ``104000 / 26 = 4000.00``
+        exactly.  Locks the "no regression for non-raised users" property that
+        every C17 site was measured against.
         """
         with app.app_context():
-            # No SalaryProfile inserted -- seed_user does not create one.
-            result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
-            )
-
-            assert result == Decimal("0")
-
-    def test_raise_does_not_apply_before_effective_month(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A raise effective March must NOT apply to a January period.
-
-        Locks the engine's per-period semantic: the raise factor enters
-        the gross only for periods whose start_date is on or after the
-        effective month.  Without this, the helper would over-state
-        income for pre-raise periods.
-        """
-        with app.app_context():
-            profile = _create_profile(
-                seed_user["user"].id, seed_user["scenario"].id,
-            )
-            _add_one_time_raise(profile)
-            db.session.commit()
-
-            result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id), as_of=_AS_OF_BEFORE_RAISE,
-            )
-
-            assert result == _NO_RAISE_GROSS
-
-    def test_scenario_id_filter_scopes_lookup(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """``scenario_id`` keyword restricts the SalaryProfile lookup.
-
-        The year-end consumer passes ``scenario_id=scenario.id`` so the
-        per-scenario profile resolution stays consistent with how
-        year-end aggregates the rest of its inputs.  A profile in a
-        different scenario must NOT be returned.
-        """
-        with app.app_context():
-            # Insert profile in seed_user's baseline scenario.
-            _create_profile(
-                seed_user["user"].id, seed_user["scenario"].id,
+            user_id = seed_user["user"].id
+            profile = _create_profile(user_id, seed_user["scenario"].id)
+            account = make_investment_account(
+                seed_user, db.session, seed_periods[0], Decimal("10000.00"),
             )
             db.session.commit()
 
-            # Lookup with a different (non-existent) scenario_id returns
-            # zero -- no profile matches the filter.
-            result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id),
-                scenario_id=seed_user["scenario"].id + 9999,
-                as_of=_AS_OF_AFTER_RAISE,
-            )
-            assert result == Decimal("0")
+            feed = self._feed_for(user_id, profile, account.id)
+            calendar = calendar_for(user_id)
+            after = calendar.period_containing(_AS_OF_AFTER_RAISE)
+            assert feed.gross_at(after.start_date) == _NO_RAISE_GROSS
 
-            # Same call with the correct scenario_id resolves the profile.
-            result_match = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id),
-                scenario_id=seed_user["scenario"].id,
-                as_of=_AS_OF_AFTER_RAISE,
+    def test_no_funding_job_REFUSES_rather_than_answering_zero(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C17-3 INVERTED, and the inversion is the ruling.
+
+        The deleted helper answered ``Decimal("0")`` for an owner with no
+        active profile -- and, worse, for one whose calendar simply did not
+        cover the clock, which silently deleted a whole contribution plan at
+        onboarding and after a horizon lapse.  That zero is why
+        ``recurrence:R-F16`` had to REVERT a fix.
+
+        The feed refuses instead: no funding job means no gross, so no
+        employer money is modelled and the surface says which (developer,
+        2026-09-04).  ``None`` rather than ``$0.00`` because a zero is a basis
+        a percentage can be taken of.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = make_investment_account(
+                seed_user, db.session, seed_periods[0], Decimal("10000.00"),
             )
-            assert result_match == _NO_RAISE_GROSS
+            db.session.commit()
+
+            from app.models.investment_params import InvestmentParams
+            params = db.session.query(InvestmentParams).filter_by(
+                account_id=account.id,
+            ).one()
+            feed = load_payroll_feeds(
+                user_id, calendar_for(user_id), [account.id],
+                {account.id: params},
+            )[account.id]
+
+            assert feed.funds_employer is False
+            assert feed.gross_at(seed_periods[0].start_date) is None
+
+    # **``test_scenario_id_filter_scopes_lookup`` has no successor, and that
+    # is the point rather than a gap.**  It pinned the deleted helper's
+    # ``scenario_id`` keyword, which existed because the helper SEARCHED for a
+    # profile -- an unordered ``.first()`` across the owner's active ones,
+    # optionally narrowed to a scenario.  Nothing searches now: the employee
+    # half is priced inside the deduction's OWN profile and the employer half
+    # off the profile ``budget.investment_params.salary_profile_id`` NAMES
+    # (**R-SAL5**).  A filter that narrows a search cannot be tested when
+    # there is no search, and the 39% swing that filter was mitigating is not
+    # a state the model can reach.  ``TestLoadPayrollFeeds
+    # .test_ANOTHER_OWNERS_profile_prices_nothing`` grades what DID survive:
+    # that the read is owner-scoped.
 
 
 class TestConsumerIntegration:
     """C17-4: every downstream consumer reads the same engine value."""
 
-    def test_c17_4_savings_year_end_investment_agree_on_raised_gross(
+    def test_the_seam_and_the_engine_agree_on_a_raised_paycheck(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """C17-4: four consumers route through the engine-derived value.
+        """C17-4: the seam's feed IS the engine's own breakdown.
 
-        Sets up one raise-applicable scenario and calls each consumer's
-        private helper (or the producer that fans the value out).  All
-        four must report the same engine-derived per-period gross.  The
-        fixture uses ``seed_periods_today`` so ``date.today()`` falls
-        in a period whose ``period_month >= effective_month`` -- the
-        raise effective Jan 2026 applies to every 2026 period.
+        The original case called four consumers' private helpers and asserted
+        they agreed on one scalar.  Three of the four read that scalar through
+        ``income_service.get_current_gross_biweekly``, which plan step
+        **salary:R14-b** deleted, so what is left to grade is the one
+        agreement that can still fail: the gross the balance seam hands its
+        contribution tier is the gross the paycheck engine put on that
+        paycheck -- read back through :func:`income_service.project_profile`,
+        the ONE spelling of a profile's projection, rather than re-derived
+        here.
 
         Hand arithmetic: ``104000 * 1.03 / 26 = 4120.00``.
         """
         with app.app_context():
-            scenario = seed_user["scenario"]
-            bctx = BalanceContext.build(seed_user["user"].id)
             user_id = seed_user["user"].id
-            profile = _create_profile(user_id, scenario.id)
+            profile = _create_profile(user_id, seed_user["scenario"].id)
             _add_one_time_raise(
                 profile, effective_month=1, effective_year=2026,
             )
-            db.session.commit()
-
-            # Producer: the canonical helper itself.
-            canonical = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-            assert canonical == _RAISE_APPLIED_GROSS
-
-            # Savings consumer: after the Level-1 balance-seam reroute the
-            # savings package no longer loads the gross itself -- each
-            # investment tile delegates its projection to the ``balance_at``
-            # seam, which loads the engine gross in
-            # ``_contribution_inputs_for_account`` (fetched ONLY when the account has
-            # investment params, the seam's investment-only scoping).  So the
-            # savings consumer's gross now routes seam -> income_service; lock
-            # it at the seam's own loading point.  A real INVESTMENT account is
-            # required or the seam skips the gross fetch by design (returning
-            # ZERO), which is asserted below as the scoping control.
             inv = make_investment_account(
                 seed_user, db.session, seed_periods_today[0],
                 Decimal("10000.00"),
             )
-            seam_inputs = balance_at._contribution_inputs_for_account(
-                inv, BalanceContext.build(user_id),
-            )
-            assert seam_inputs.salary_gross_biweekly == canonical
+            db.session.commit()
+
+            from app.models.investment_params import InvestmentParams
+            params = db.session.query(InvestmentParams).filter_by(
+                account_id=inv.id,
+            ).one()
+            params.salary_profile_id = profile.id
+            db.session.commit()
+
+            bctx = BalanceContext.build(user_id)
+            seam_feed = balance_at._contribution_inputs_for_account(
+                inv, bctx,
+            ).feed
+            calendar = calendar_for(user_id)
+            # Keyed on the BREAKDOWN's own period ID rather than zipped
+            # against the calendar: the loader under test keys the same way,
+            # and an equality whose two sides share one SPELLING can agree
+            # while both are wrong.  The hand figure below is what keeps this
+            # honest even so.
+            payday_by_id = {
+                period.period_id: period.start_date
+                for period in calendar.saved()
+            }
+            engine = {
+                payday_by_id[breakdown.period.period_id]:
+                    breakdown.earnings.gross_biweekly
+                for breakdown in income_service.project_profile(
+                    profile, calendar,
+                )
+            }
+            payday = calendar.period_containing(bctx.as_of).start_date
+
+            assert engine[payday] == _RAISE_APPLIED_GROSS
+            assert seam_feed.gross_at(payday) == engine[payday]
 
             # The scoping control: a non-investment account in the same user's
-            # set gets NO gross, so the assertion above is pinning the
-            # investment-only fetch rather than a value every account carries.
+            # set gets NO feed, so the assertion above pins the
+            # investment-only pricing rather than a value every account
+            # carries.
             checking_inputs = balance_at._contribution_inputs_for_account(
                 seed_user["account"], BalanceContext.build(user_id),
             )
-            assert checking_inputs.salary_gross_biweekly == Decimal("0")
             assert checking_inputs.investment_params is None
-
-            # Investment consumer: Commit 17 introduced a thin
-            # ``_salary_gross_biweekly`` wrapper around
-            # ``income_service.get_current_gross_biweekly``; Commit 18
-            # (F-22) removed the wrapper and routed
-            # ``_projection_inputs_for_account`` through the canonical
-            # helper directly.  Asserting the producer alone still
-            # locks the producer/consumer agreement because the
-            # investment dashboard now has no intermediate site that
-            # could drift.
-            investment_val = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-            assert investment_val == canonical
+            assert checking_inputs.feed.funds_employer is False
 
 
 class TestLiveProjectedNetUsesPerYearTaxConfigs:

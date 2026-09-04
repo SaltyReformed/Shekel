@@ -72,19 +72,21 @@ def _investment_account_with_an_active_deduction(db, seed_user, name):
     **Written once because the two seam cases below must reach the calendar by
     the same route** -- and the route is NOT the one an earlier draft of this
     docstring named.  It said the deduction is what makes the refusal case
-    non-vacuous, because ``_contribution_inputs_for_accounts`` resolves
-    ``ctx.calendar()`` inside the comprehension over the deduction map.  An
-    adversarial review measured that FALSE: with the comprehension's cadence
-    read replaced by a hardcoded ``PayCadence(14)`` the refusal case stays
-    GREEN, and it fails only when ``_inputs.py``'s OTHER calendar read --
-    ``income_service.get_current_gross_biweekly(user_id, ctx.calendar())`` --
-    is mutated too.  That read fires on ``investment_params_map`` alone.
+    non-vacuous, because ``_contribution_inputs_for_accounts`` resolved
+    ``ctx.calendar()`` inside a comprehension over the deduction map.  An
+    adversarial review measured that FALSE: with that cadence read replaced by
+    a hardcoded ``PayCadence(14)`` the refusal case stayed GREEN, and it
+    failed only when ``_inputs.py``'s OTHER calendar read was mutated too --
+    and that one fired on ``investment_params_map`` alone.
 
-    So what actually reaches the calendar is the ``InvestmentParams``, and the
-    deduction earns its place here for the SERVED case rather than the refused
-    one: it is what makes ``inputs.deductions`` non-empty and therefore
-    assertable.  Both are built here so the pair differs in exactly one fact --
-    the schedule row -- and in nothing else.
+    **Since plan step salary:R14-b there is exactly ONE calendar read**, and
+    the ambiguity that review found goes with the second: the loader hands
+    ``ctx.calendar()`` to ``projection_inputs.load_payroll_feeds``, scoped to
+    the accounts that HAVE params, and nothing else here touches it.  So the
+    ``InvestmentParams`` is still what reaches the calendar, and the deduction
+    still earns its place for the SERVED case -- it is what gives that owner a
+    payroll feed to price at all.  Both are built here so the pair differs in
+    exactly one fact -- the schedule row -- and in nothing else.
 
     Args:
         db: The test database session holder.
@@ -416,14 +418,25 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
         correctly, it is the ORM boundary -- and the adapter needs the paycheck
         count, so a producer that could not answer it would 500 all three.
 
-        **The deductions come back ADAPTED rather than empty, and that is the
-        C4-d change** (ruling R-PC45).  The deleted guard was
+        **The loader ANSWERS rather than raising, and that is the C4-d change**
+        (ruling R-PC45).  The deleted guard was
         ``if ctx.calendar().cadence_days is not None else {}``, so this owner
-        got ``[]`` only because the old fixture stripped their schedule row too;
-        with the row in place the guard always passed and the adaptation always
-        ran.  It costs no FIGURE either way: with no payday there is no period
-        for a per-period contribution to be modelled over, so the fold reads
-        nothing from the list whatever it holds.
+        got an empty result only because the old fixture stripped their
+        schedule row too; with the row in place the guard always passed and
+        the loader always ran.
+
+        **What is asserted changed at plan step salary:R14-b, and the old
+        assertion has no successor.**  It read
+        ``inputs.deductions[0].periods_per_year == Decimal("26")`` -- an EXACT
+        number, because ``adapt_deductions`` stamped the owner's own paycheck
+        count on every row and ``!= []`` had been measured blind by an
+        adversarial review.  Nothing stamps a cadence now: the paycheck engine
+        reads the owner's calendar itself, so there is no adapted copy of the
+        count to check against.  What this case can still pin is the refusal
+        it was written for -- that this owner is SERVED -- plus the shape of
+        the answer: an owner with no payday has nothing to price, so the feed
+        is empty rather than absent or raised.  It costs no FIGURE: with no
+        payday there is no period for a contribution to be modelled over.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -436,15 +449,21 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
                 [account], BalanceContext.build(user_id),
             )[account.id]
 
-            # EXACT, and the number is the point: ``adapt_deductions`` stamps
-            # the OWNER's own paycheck count on every row, and 14 days is 26 a
-            # year (``round(365.2425 / 14)``).  ``!= []`` was the first form
-            # and an adversarial review measured it blind -- hardcoding
-            # ``PayCadence(14)`` inside ``_inputs.py`` left it green, so it
-            # graded that SOMETHING was adapted rather than that the owner's
-            # own cadence reached the adapter.
-            assert len(inputs.deductions) == 1
-            assert inputs.deductions[0].periods_per_year == Decimal("26")
+            # The owner is SERVED: a real bundle rather than a
+            # ``PayCalendarError``, which is the whole subject of this case.
+            #
+            # **The feed assertions are shape, not non-vacuity, and saying so
+            # is the point.**  A first draft claimed the params assertion
+            # proved "the calendar read really happened"; it does not --
+            # ``_inputs`` evaluates ``ctx.calendar()`` unconditionally as an
+            # argument since plan step salary:R14-b, so no assertion here can
+            # infer it, and ``employee_by_payday == {}`` is the ``!= []``
+            # class an adversarial review already rejected on this exact case.
+            # What grades the refusal is the SIBLING case below, over an owner
+            # with no schedule row at all.
+            assert inputs.investment_params is not None
+            assert inputs.feed.employee_by_payday == {}
+            assert inputs.feed.models_employee is False
 
     def test_the_balance_seam_REFUSES_an_owner_with_no_schedule_row(
         self, app, db, seed_user, seed_periods,

@@ -41,7 +41,7 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.investment_projection import (
-    deduction_contribution_per_period,
+    AccountPayrollFeed,
     employer_contribution_params,
 )
 from app.services.loan_loaders import query_shadow_income
@@ -78,21 +78,21 @@ class ContributionInputs:
             when it is not a parameterized investment account.  It also carries
             the assumed return the ACCRUAL tier reads, which is why the replay
             takes this bundle rather than the deduction feed alone.
-        deductions: The account's active paycheck deductions, already
-            :func:`~app.services.investment_projection.adapt_deductions`-adapted
-            by the loader (plan step R-F16): the adapter needs the owner's
-            pay cadence, which is a fact only a caller holding the read pass
-            can supply, so the ORM boundary and the adaptation are one step.
-        salary_gross_biweekly: The raise-aware engine gross per pay period --
-            the employer-match cap basis, and, since plan step R-F16, the
-            basis a PERCENTAGE deduction takes its percentage of.  It was
-            only a fallback for the no-deduction case until then, while an
-            account with a deduction re-derived a raise-BLIND gross.
+        feed: The account's
+            :class:`~app.services.investment_projection.AccountPayrollFeed` --
+            what its payroll puts in on each payday, and what gross funds its
+            employer contribution, both priced by the PAYCHECK ENGINE at the
+            loader (plan step **salary:R14-b**, ruling **R-SAL2**).  It
+            replaced two fields: the adapted deduction rows, which this tier
+            re-priced off the profile's stored annual salary and so read
+            RAISE-BLIND (finding **D45**), and one ``salary_gross_biweekly``
+            scalar that sized every period's employer contribution at today's
+            gross.  Both were one figure standing in for a series; a payday is
+            what makes either fact true, so both are keyed by one now.
     """
 
     investment_params: InvestmentParams | None = None
-    deductions: list = field(default_factory=list)
-    salary_gross_biweekly: Decimal = _ZERO
+    feed: AccountPayrollFeed = field(default_factory=AccountPayrollFeed.absent)
 
     @classmethod
     def absent(cls) -> "ContributionInputs":
@@ -120,25 +120,32 @@ class ContributionInputs:
 class _ContributionPlan:
     """What an INVESTMENT account's modelled contributions are made of.
 
-    A cohesive assembly record (:func:`_plan_for`): the modelled per-period
-    employee amount, the employer configuration, the annual limit, and the
-    RECORDED contributions per pay period -- which are read for the limit and the
+    A cohesive assembly record (:func:`_plan_for`): the modelled payroll feed,
+    the employer configuration, the annual limit, and the RECORDED
+    contributions per pay period -- which are read for the limit and the
     match base and never contributed again (ruling R-R).
 
     Attributes:
-        per_period: The employee contribution one pay period's paycheck
-            deductions produce, each already throttled to its own calendar-year
-            cap (:func:`~app.services.investment_projection.deduction_contribution_per_period`).
+        feed: The account's
+            :class:`~app.services.investment_projection.AccountPayrollFeed`,
+            asked per payday for the employee amount and for the gross the
+            employer contribution is a percentage of.  **It was one
+            ``per_period`` scalar until plan step salary:R14-b**, which is
+            finding **D45**: a deduction's amount and its paycheck's gross
+            both move with every raise, and one figure applied to all 63 of
+            the developer's saved paydays could only be right for the periods
+            that happened to share it.
         employer_params: The employer-contribution configuration
             (:func:`~app.services.investment_projection.employer_contribution_params`),
-            or ``None`` when the account has none.
+            or ``None`` when the account has none.  It no longer embeds a
+            gross; the period's own comes off :attr:`feed`.
         annual_limit: The account's annual employee-contribution ceiling, or
             ``None`` for an account with no IRS limit.
         recorded_by_period: pay_period_id -> the summed CONTRIBUTION of the
             transfer-linked rows actually recorded in that period.
     """
 
-    per_period: Decimal
+    feed: AccountPayrollFeed
     employer_params: dict | None
     annual_limit: Decimal | None
     recorded_by_period: dict[int, Decimal]
@@ -201,12 +208,24 @@ def _plan_for(
 ) -> "_ContributionPlan | None":
     """Assemble *account*'s modelled contribution plan, or ``None`` if it has none.
 
-    ``None`` when nothing is modelled at all -- no deduction produces a positive
-    amount AND no employer contribution is configured -- which is what keeps a
-    plain IRA from paying for a period-calendar load it has no use for.  Note
-    that an employer FLAT percentage models money with a zero employee feed (the
-    real Empower 401(k) shape: 5% of $3,631.74 = $181.59 a period), so the test
-    is on both halves, not on the employee amount alone.
+    ``None`` when nothing is modelled at all -- no deduction pays this account
+    on any payday AND no employer contribution can be sized -- which is what
+    keeps a plain IRA from paying for a period-calendar load it has no use
+    for.  Note that an employer FLAT percentage models money with a zero
+    employee feed (the real Empower 401(k) shape: 5% of a paycheck's own
+    gross, `$181.59` rising to `$202.40` across the paydays this walk actually
+    reaches -- the earlier `$176.30` paydays fall at or before the account's
+    assertion and ruling **R-Z** excludes them; see :func:`_dated_events`),
+    so the test is on both halves, not on the employee amount alone.
+
+    **The employer half's test gained a second conjunct at plan step
+    salary:R14-b**: a configured employer contribution models money only when
+    a funding profile is KNOWN (``budget.investment_params.salary_profile_id``
+    -- ruling **R-SAL5**, and the developer's 2026-09-04 ruling that an
+    unknown one models nothing rather than being priced off whichever profile
+    a reader resolved).  Without it this would build a plan whose every
+    employer figure is ``$0.00``, which is the same money and a worse
+    explanation of it.
 
     Args:
         account: The investment account.
@@ -219,17 +238,21 @@ def _plan_for(
     Returns:
         The :class:`_ContributionPlan`, or ``None``.
     """
-    per_period, gross_biweekly = deduction_contribution_per_period(
-        inputs.deductions, inputs.salary_gross_biweekly,
+    employer_params = employer_contribution_params(inputs.investment_params)
+    models_employer = (
+        employer_params is not None and inputs.feed.funds_employer
     )
-    employer_params = employer_contribution_params(
-        inputs.investment_params, gross_biweekly,
-    )
-    if per_period <= _ZERO and employer_params is None:
+    # PRICE here, where :func:`build_contribution_timeline`'s gate is
+    # PRESENCE, and the asymmetry is deliberate: that one decides whether to
+    # emit records that SUPPRESS the growth engine's fallback, so it must ask
+    # whether a deduction is wired up; this one decides whether there is
+    # anything to model AT ALL, and a linked deduction that prices $0.00 on
+    # every payday of the window models nothing.
+    if not inputs.feed.models_employee and not models_employer:
         return None
     return _ContributionPlan(
-        per_period=per_period,
-        employer_params=employer_params,
+        feed=inputs.feed,
+        employer_params=employer_params if models_employer else None,
         annual_limit=inputs.investment_params.annual_contribution_limit,
         recorded_by_period=_recorded_contributions(basis, account.id),
     )
@@ -355,6 +378,32 @@ def _dated_events(
     consequence (a)), and is not itself charged against the employee limit --
     the growth engine's own rule.
 
+    **Both figures are now the PERIOD's own** (plan step **salary:R14-b**,
+    ruling **R-SAL2**).  The employee amount was one scalar repeated across
+    every period and the employer gross was another, so this walk applied one
+    paycheck's answer to a schedule the paycheck engine prices individually --
+    finding **D45**.
+
+    **Measured on the developer's own data 2026-09-04, and the WINDOW is part
+    of the figure**: through ``balance_at.grid_balance_view`` -- the door the
+    grid itself reads -- the Empower 401(k)'s modelled contribution over the
+    63 saved paydays goes `$10,169.04` -> `$10,621.46`, **`+$452.42`**, and
+    its balance at the last period `$49,960.31` -> `$50,442.34`.  Per payday
+    that is a flat `$181.59` becoming `$181.59` / `$186.13` / `$191.71` /
+    `$196.50` / `$202.40` as each raise lands.
+
+    **56 of the 63 paydays pay, and the other 7 are why an earlier draft of
+    this paragraph said `+$415.39` with early periods at `$176.30`.**  That
+    figure summed the employer events over ALL 63 paydays with no
+    ``reconciled_through``, so it included the seven at or before the
+    account's balance assertion -- which ruling **R-Z**, three paragraphs up,
+    excludes from this walk entirely.  Those seven are the only ones where
+    R14-b models LESS than the old feed did (`$176.30` against `$181.59`), so
+    counting them netted a real understatement against periods the app never
+    reaches.  The window this walk covers is the owner's SAVED schedule minus
+    what the assertion already contains, and it is exactly the domain the feed
+    prices, so the feed's hold rule never engages here.
+
     Args:
         plan: The account's :class:`_ContributionPlan`.
         periods: The user's pay periods, CHRONOLOGICAL -- ordered by
@@ -395,10 +444,11 @@ def _dated_events(
             continue
 
         employee = growth_engine.cap_contribution_at_limit(
-            plan.per_period, plan.annual_limit, ytd,
+            plan.feed.employee_at(period.start_date), plan.annual_limit, ytd,
         )
         employer = growth_engine.calculate_employer_contribution(
             plan.employer_params, recorded + employee,
+            plan.feed.gross_at(period.start_date),
         )
         ytd += employee
         amount = employee + employer

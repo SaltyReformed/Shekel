@@ -73,14 +73,27 @@
           {%- else %}per period &middot; no funding linked{% endif -%}
         </div>
       </div>
-      {% if employer_params %}
+      {# The chip's CAPTION is the configuration and reads the params row; its
+         VALUE is the modelled dollar and reads the priced dict, which is
+         withheld when no funding job is known (salary:R14-b).  So an account
+         whose employer contribution cannot be priced still shows what it is
+         configured to pay, with ``--`` where the figure would be. #}
+      {% if params and params.employer_contribution_type_id != EMPLOYER_TYPE_NONE %}
       <div class="pulse-chip">
         <div class="pulse-chip__label">Employer</div>
-        <div class="pulse-chip__value font-mono">+{{ money(employer_contribution_per_period) }}</div>
+        <div class="pulse-chip__value font-mono">
+          {%- if employer_params %}+{{ money(employer_contribution_per_period) }}
+          {%- else %}--{% endif -%}
+        </div>
         <div class="invd-chip__cap">
-          {%- if employer_params.type_id == EMPLOYER_TYPE_FLAT_PERCENTAGE %}per period &middot; {{ "%.2f"|format(employer_params.flat_percentage|to_percent) }}% of gross
-          {%- elif employer_params.type_id == EMPLOYER_TYPE_MATCH %}per period &middot; {{ "%.0f"|format(employer_params.match_percentage|to_percent) }}% match to {{ "%.2f"|format(employer_params.match_cap_percentage|to_percent) }}%
+          {#- The configuration ALWAYS, and the reason APPENDED.  An earlier
+              draft replaced the caption with the reason, which lost the one
+              thing the chip is for: an owner who set a 50% match and sees
+              only "funding job not set" cannot tell the chip is theirs. -#}
+          {%- if params.employer_contribution_type_id == EMPLOYER_TYPE_FLAT_PERCENTAGE %}per period &middot; {{ "%.2f"|format(params.employer_flat_percentage|to_percent) }}% of gross
+          {%- elif params.employer_contribution_type_id == EMPLOYER_TYPE_MATCH %}per period &middot; {{ "%.0f"|format(params.employer_match_percentage|to_percent) }}% match to {{ "%.2f"|format(params.employer_match_cap_percentage|to_percent) }}%
           {%- endif -%}
+          {%- if employer_funding_unset %} &middot; funding job not set{% endif -%}
         </div>
       </div>
       {% endif %}
@@ -300,6 +313,28 @@
         </div>
       </div>
       <div class="row g-3 mt-0" id="employer-fields-container">
+        {# R-SAL5: an employer contribution is a percentage OF a gross, so it
+           names the salary profile that funds it.  Not set = no employer money
+           is modelled (developer, 2026-09-04) -- the notice below says so. #}
+        <div class="col-sm-12">
+          <label class="form-label" for="salary_profile_id">Funded by which job</label>
+        {#- The stored id may name an ARCHIVED profile, which is not in the
+            list: the account keeps the column (the FK is RESTRICT) while the
+            read refuses it.  Without the second disjunct below no option
+            would carry `selected`, the browser would pick the first, and the
+            next Save of an unrelated field would silently re-point the
+            account at a job it does not name.  A data mutation nobody asked
+            for is worse than an unselectable state, so the blank option is
+            what an archived id falls to. -#}
+          {% set profile_ids = salary_profiles | map(attribute='id') | list %}
+          <select name="salary_profile_id" id="salary_profile_id" class="form-select form-select-sm">
+            <option value="" {{ 'selected' if not (params and params.salary_profile_id in profile_ids) }}>-- Not set --</option>
+            {% for profile in salary_profiles %}
+            <option value="{{ profile.id }}" {{ 'selected' if params and params.salary_profile_id == profile.id }}>{{ profile.name }}</option>
+            {% endfor %}
+          </select>
+          <div class="form-text">The paycheck an employer percentage is taken of.</div>
+        </div>
         <div class="col-sm-4">
           <label class="form-label" for="employer_flat_percentage">Employer flat %</label>
           <input type="number" step="0.01" name="employer_flat_percentage" id="employer_flat_percentage"
@@ -319,12 +354,28 @@
                  value="{{ "%.2f"|format(params.employer_match_cap_percentage|to_percent) if params and params.employer_match_cap_percentage else '' }}">
         </div>
       </div>
-      {% if employer_params %}
+      {% if employer_funding_unset %}
+      {# The "and say so" half of the 2026-09-04 ruling: this account has an
+         employer contribution configured but no known funding job, so nothing
+         is modelled rather than a figure priced off an arbitrary profile. #}
+      <div class="alert alert-warning py-2 px-3 mt-2 mb-0 small" role="alert">
+        <i class="bi bi-exclamation-triangle"></i>
+        No employer money is modelled: this account's employer contribution is a
+        percentage of a paycheck, and no job is named above to take it from.
+      </div>
+      {% endif %}
+      {# The CONFIGURATION sentence reads the params ROW, never the priced
+         ``employer_params`` dict.  Since plan step salary:R14-b that dict is
+         WITHHELD when no funding job is known -- which is right for the
+         modelled dollar and wrong here: the owner set a 50% match, and the
+         app saying so is how they recognise the notice above as being about
+         their own configuration rather than a missing one. #}
+      {% if params %}
       <div class="form-text mt-2">
-        {%- if employer_params.type_id == EMPLOYER_TYPE_FLAT_PERCENTAGE %}
-        Employer contributes {{ "%.2f"|format(employer_params.flat_percentage|to_percent) }}% of gross salary each pay period, regardless of employee contribution.
-        {%- elif employer_params.type_id == EMPLOYER_TYPE_MATCH %}
-        Employer matches {{ "%.0f"|format(employer_params.match_percentage|to_percent) }}% of contributions up to {{ "%.2f"|format(employer_params.match_cap_percentage|to_percent) }}% of gross salary.
+        {%- if params.employer_contribution_type_id == EMPLOYER_TYPE_FLAT_PERCENTAGE %}
+        Employer contributes {{ "%.2f"|format(params.employer_flat_percentage|to_percent) }}% of gross salary each pay period, regardless of employee contribution.
+        {%- elif params.employer_contribution_type_id == EMPLOYER_TYPE_MATCH %}
+        Employer matches {{ "%.0f"|format(params.employer_match_percentage|to_percent) }}% of contributions up to {{ "%.2f"|format(params.employer_match_cap_percentage|to_percent) }}% of gross salary.
         {%- endif -%}
       </div>
       {% endif %}
