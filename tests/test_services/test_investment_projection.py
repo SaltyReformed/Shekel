@@ -119,6 +119,12 @@ def _feed(periods=(), *, employee=None, gross=None, linked=None):
         employee_by_payday=_series(employee),
         gross_by_payday=_series(gross),
         is_payroll_linked=(employee is not None) if linked is None else linked,
+        # The owner's cadence, which the employee hold divides a year's total
+        # by.  Required whenever the feed prices anything: the count of
+        # paydays IN the map is the window's, not the year's, and an
+        # adversarial review measured a 13-payday window holding a capped
+        # deduction at 2.00x its own cap when the two were conflated.
+        periods_per_year=Decimal("26"),
     )
 
 
@@ -801,6 +807,55 @@ class TestBuildContributionTimeline:
         assert len(result) == 3
         assert result[2].amount == Decimal("0")
 
+    def test_a_window_with_no_COMPLETE_year_holds_the_last_priced_payday(self):
+        """Under a year of schedule there is no annual total to divide.
+
+        **The axis three tail rules were each measured wrong on**, and the
+        reason is that a sub-year window has thrown the cap away: a
+        ``$500``-a-payday deduction and a ``$1,000``-capped one price
+        IDENTICALLY for their first two paydays, and their true tails are
+        ``$500`` and ``$38.46``.  With no complete calendar year there is no
+        annual figure to derive, so the hold falls back to the last PRICED
+        payday -- exact for an uncapped deduction, and for a capped one the
+        trailing clamped figure, which understates rather than over.
+
+        13 paydays of ``$500``, half a year: the tail holds ``$500``, the
+        rate every priced payday shows.
+        """
+        paydays = [date(2026, 1, 2) + timedelta(days=14 * i) for i in range(13)]
+        periods = _periods(*paydays)
+        feed = _feed(periods, employee=Decimal("500"))
+        assert feed.employee_at(paydays[0]) == Decimal("500")
+        assert feed.employee_at(date(2040, 1, 1)) == Decimal("500")
+
+    def test_a_COMPLETE_year_overrides_the_last_priced_payday(self):
+        """With a whole year present the annual total wins, cap and all.
+
+        The pair that makes the case above non-vacuous: the same
+        ``$1,000``-capped deduction, once over 13 paydays (no complete year,
+        so the tail reads the trailing clamped ``$0.00``) and once over 26
+        (a complete year, so the tail is ``$1,000 / 26``).  Without both, a
+        rule that ignored the complete-year branch entirely would pass.
+        """
+        short_days = [
+            date(2026, 1, 2) + timedelta(days=14 * i) for i in range(13)
+        ]
+        full_days = [
+            date(2026, 1, 2) + timedelta(days=14 * i) for i in range(26)
+        ]
+        capped = {d: Decimal("0") for d in full_days}
+        capped[full_days[0]] = Decimal("600")
+        capped[full_days[1]] = Decimal("400")
+
+        short = _feed(
+            _periods(*short_days),
+            employee={d: capped[d] for d in short_days},
+        )
+        full = _feed(_periods(*full_days), employee=capped)
+
+        assert short.employee_at(date(2040, 1, 1)) == Decimal("0")
+        assert full.employee_at(date(2040, 1, 1)) == Decimal("38.46")
+
     def test_a_period_PAST_the_calendar_reads_the_held_figure(self):
         """The timeline's domain may run past the owner's saved schedule.
 
@@ -809,18 +864,22 @@ class TestBuildContributionTimeline:
         period gets a record, so the raise-blind ``periodic_contribution``
         fallback the step deleted has nothing left to answer.
         """
-        priced = _periods(date(2020, 1, 2), date(2020, 1, 16))
+        # A COMPLETE calendar year priced, so the hold has a figure at all
+        # (see ``test_a_window_with_no_COMPLETE_year_holds_nothing``), then
+        # one axis period past it.
+        paydays = [date(2020, 1, 3) + timedelta(days=14 * i) for i in range(26)]
+        priced = _periods(*paydays)
         feed = _feed(priced, employee=Decimal("500.00"))
-        axis = _periods(
-            date(2020, 1, 2), date(2020, 1, 16), date(2020, 1, 30),
-        )
+        beyond = paydays[-1] + timedelta(days=14)
+        axis = _periods(*paydays, beyond)
         result = build_contribution_timeline(
             feed=feed, contribution_transactions=[],
             periods=axis, as_of=_AS_OF,
         )
-        assert len(result) == 3
-        assert result[2].contribution_date == date(2020, 1, 30)
-        assert result[2].amount == Decimal("500.00")
+        assert len(result) == 27
+        assert result[26].contribution_date == beyond
+        # 26 x $500.00 over the year's 26 paydays.
+        assert result[26].amount == Decimal("500.00")
 
     def test_transfer_only(self):
         """Shadow income transactions with no payroll: one record per transaction."""
@@ -866,6 +925,7 @@ class TestBuildContributionTimeline:
             employee_by_payday={p.start_date: Decimal("0") for p in periods},
             gross_by_payday={},
             is_payroll_linked=True,
+            periods_per_year=Decimal("26"),
         )
         result = build_contribution_timeline(
             feed=feed,

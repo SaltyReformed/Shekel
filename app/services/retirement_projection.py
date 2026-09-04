@@ -251,10 +251,12 @@ def build_employer_salary_basis(
     from the pass's as_of to retirement, exactly the projected span) clamp to
     the nearest projected year's gross.
 
-    Returns ``None`` when there is no salary profile or no horizon, so
-    ``growth_engine.project_balance`` falls back to the constant
-    ``employer_params["gross_biweekly"]`` -- the behavior every other
-    engine consumer keeps.
+    Returns ``None`` when there is no salary profile or no horizon.  **Since
+    plan step salary:R14-b that no longer means a constant base**: this is
+    ``AccountPayrollFeed.salary_basis``'s ``beyond=`` arm, not a callable
+    handed to the engine, so ``None`` means the tail holds the last real
+    paycheck; the ``employer_params["gross_biweekly"]`` it used to name is
+    emitted by no builder now (**N-538**).
 
     Args:
         salary_profiles: The user's active salary profiles (the first is
@@ -588,8 +590,7 @@ def load_projection_batch(
         # The PASS's projection memo -- shared with every balance-seam read
         # this render makes, so the engine runs once per profile rather than
         # once per reader.  The P2b retire-later probes reuse this batch
-        # across candidate horizons, so the memo is read many times per render
-        # here.
+        # across candidate horizons, so it is read many times per render.
         ctx.balance_ctx.payroll_breakdowns,
     )
 

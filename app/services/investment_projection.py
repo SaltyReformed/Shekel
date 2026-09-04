@@ -239,11 +239,13 @@ class AccountPayrollFeed:
     real paycheck rather than picking one of the two models inside a step that
     was ruled about something else.  The hold is a CLAIM the consumer surfaces
     make, not an arithmetic accident, and it is why the two hold sources
-    differ: see the attributes.
+    differ, and each attribute below states its own.
 
     Attributes:
         employee_by_payday: payday -> what this account received from payroll
-            on it, the sum of every
+            on it.  **Past the saved calendar it HOLDS, and the hold is an
+            extrapolation, not a price** -- :meth:`_year_averages` is its one
+            producer and states the rule.  In-window it is the sum of every
             :class:`~app.services.paycheck_calculator.DeductionLine` naming
             this account across every profile that funds it, pre- and
             post-tax alike.  Already raise-aware, inflation-escalated,
@@ -251,7 +253,10 @@ class AccountPayrollFeed:
             ``annual_cap``, because the engine applied all four before this
             fold saw the line.
         gross_by_payday: payday -> the gross of the paycheck the account's
-            FUNDING profile was paid on it
+            FUNDING profile was paid on it.  **HOLDS at the nearest priced
+            payday in each direction**: a gross is never skipped, so each
+            end's own entry is the last real answer that way.  In-window it is
+            the engine's own figure for
             (``budget.investment_params.salary_profile_id``, ruling
             **R-SAL5**).  **EMPTY when no funding profile is known**, which is
             the developer's 2026-09-04 ruling: an employer contribution whose
@@ -261,6 +266,20 @@ class AccountPayrollFeed:
             -- an employer contribution from a job the owner has left is not
             money they receive -- which is the same test the deduction loader
             already applies to its own side.
+        periods_per_year: How many paychecks the owner receives in a year,
+            off their :class:`~app.services.pay_calendar.PayCadence`.  Read by
+            the employee series' hold rule ALONE, and it is a field rather
+            than a count taken off the map because **the two are not the same
+            number**: the map holds the paydays inside the SAVED WINDOW, which
+            equals the year's real payday count only when the window contains
+            that whole year.  An adversarial review measured the difference --
+            dividing a ``$1,000``-capped deduction's year by an observed 13
+            held it at ``$76.92`` a payday, ``$1,999.92`` a year, **2.00x its
+            own cap**.  The deleted ``_annual_cap_averaged`` divided by this
+            same structural figure; replacing it with an empirical one is what
+            re-opened the defect it closed.  It is also what decides whether a
+            calendar year is COMPLETE, the test that picks the hold's branch.
+            ``None`` only for a feed that prices nothing.
         is_payroll_linked: Whether an active deduction on an active profile
             NAMES this account, whatever it pays.  A PRESENCE fact, and it
             has to travel beside the amounts because pricing destroys it: a
@@ -275,6 +294,7 @@ class AccountPayrollFeed:
     employee_by_payday: "Mapping[date, Decimal]"
     gross_by_payday: "Mapping[date, Decimal]"
     is_payroll_linked: bool = False
+    periods_per_year: "Decimal | None" = None
     #: The two HELD figures, derived at construction so the hold rule has one
     #: producer and no caller can supply a figure inconsistent with the maps
     #: (the shape ``PayCalendar.periods`` uses for the same reason).  Excluded
@@ -320,15 +340,11 @@ class AccountPayrollFeed:
         # **An adversarial review of this step's own fix found the single-day
         # rule wrong by 10.4x.**  A capped deduction's priced year runs
         # ``$600, $400, $0, $0 ... $0`` -- ``cap_period_amount`` clamps it the
-        # moment the calendar-year total reaches ``annual_cap`` and the engine
-        # resets it each January.  Holding "the last payday that PAID
-        # something" picks the ``$400`` and applies it to every projected
-        # period with no cap and no year reset: ``$10,400`` a year against a
-        # ``$1,000`` cap, compounded over the remaining ~38 years of a 40-year
-        # chart.  ``_annual_cap_averaged``, which plan step salary:R14-b
-        # deletes, existed for exactly this and its own docstring said so --
-        # *"a capped deduction must not contribute more than annual_cap per
-        # calendar year there either"*.
+        # moment the calendar-year total reaches ``annual_cap``, and the
+        # engine resets it each January -- so holding "the last payday that
+        # PAID something" picks the ``$400`` and applies it forever with no
+        # cap and no year reset.  ``_annual_cap_averaged``, which this step
+        # deletes, existed for exactly that and its docstring said so.
         #
         # A year's average reproduces that answer from the ENGINE's own priced
         # amounts rather than from a second formula: the year's total is the
@@ -339,10 +355,10 @@ class AccountPayrollFeed:
         # the year being averaged, so a schedule that happens to END on a skip
         # no longer holds ``$0.00`` for the whole projection.
         #
-        # The FULLEST year is the one averaged: the saved window's first and
-        # last calendar years are usually partial (the developer's runs
-        # 2026-03 to 2028-08), and a partial year's average overstates a
-        # capped deduction by the fraction of the year missing.
+        # Only a COMPLETE year is averaged: the saved window's first and last
+        # calendar years are usually partial (the developer's runs 2026-03 to
+        # 2028-08), and a partial year's average overstates a capped
+        # deduction by the fraction of the year missing.
         object.__setattr__(
             self, "_held_employee", self._year_averages(),
         )
@@ -355,33 +371,78 @@ class AccountPayrollFeed:
         )
 
     def _year_averages(self) -> "tuple[Decimal, Decimal]":
-        """Return the ``(earliest, latest)`` fullest-year average per payday.
+        """Return the ``(earliest, latest)`` figure the employee series holds at.
 
-        The extrapolation the employee series holds at, in each direction.
-        Grouping is by the payday's calendar YEAR because that is the span
-        ``annual_cap`` is defined over and the span the engine resets on;
-        averaging over the FULLEST year present avoids a partial year at
-        either end of the saved window overstating a capped deduction.
+        A COMPLETE calendar year's total over the owner's paydays-per-year,
+        and the last priced payday where the saved window contains no
+        complete year.
+
+        **The calendar year is the span because ``annual_cap`` is**, and the
+        engine resets the clamp on it.  A year's total divided by the year's
+        paydays IS ``min(amount x ppy, cap) / ppy`` -- what the deleted
+        ``_annual_cap_averaged`` returned -- derived from the engine's own
+        priced figures rather than from a second formula, and right for a
+        capped and an uncapped deduction alike.
+
+        **A year must be COMPLETE, and a window with none falls back to the
+        last PRICED payday.**  A sub-year window has thrown the cap away -- a
+        ``$500``-a-payday deduction and a ``$1,000``-capped one price
+        IDENTICALLY for their first two paydays -- so no rule can be right
+        for both from the fold alone, and three tried here were each measured
+        wrong on exactly that shape (``docs/plans/lessons.md``, the R14-b
+        entry, holds the three and their figures).  The last priced payday is
+        exact for an uncapped deduction, which is every live one on the
+        developer's data, and reads a capped one's trailing CLAMPED figure,
+        which understates; it over-reads only where the window is shorter
+        than the cap takes to bind, an owner days into their schedule.
+
+        The exposure is narrow either way: the app's default schedule is 52
+        periods, so every owner past their first year has a complete year and
+        the exact figure.  What would make it exact for everyone is the
+        ENGINE pricing the tail rather than this extrapolating it, which is
+        the deferred salary-path step and not this one's to decide.
 
         Returns:
-            ``(earliest, latest)`` -- the average per payday of the earliest
-            and latest fullest years, or ``(ZERO, ZERO)`` when nothing was
-            priced.  The two coincide for any account whose feed is flat,
-            which is every uncapped one.
+            ``(earliest, latest)`` -- the per-payday average of the earliest
+            and latest COMPLETE calendar years; the first and last priced
+            paydays where no year is complete; ``(ZERO, ZERO)`` when nothing
+            was priced.  The two coincide for
+            any account whose feed is flat, which is every uncapped one.
         """
         if not self.employee_by_payday:
             return (ZERO, ZERO)
+        if self.periods_per_year is None:
+            raise ValueError(
+                "an AccountPayrollFeed that prices paydays must carry the "
+                "owner's periods_per_year: the employee hold is a YEAR's "
+                "average and the divisor is the year's real payday count, "
+                "which the priced map cannot supply for a window that does "
+                "not contain a whole year"
+            )
         by_year: "dict[int, list[Decimal]]" = {}
         for payday, amount in self.employee_by_payday.items():
             by_year.setdefault(payday.year, []).append(amount)
-        fullest = max(len(amounts) for amounts in by_year.values())
-        years = sorted(
+        complete = sorted(
             year for year, amounts in by_year.items()
-            if len(amounts) == fullest
+            if len(amounts) >= self.periods_per_year
         )
+        if not complete:
+            # No complete year, so no annual total to divide.  The LAST
+            # PRICED payday is the fallback: exact for an uncapped deduction
+            # (its rate is the same every payday), and for a capped one it
+            # reads the trailing clamped figure, which understates rather
+            # than over -- except in a window so short the cap has not bound
+            # yet, where it reads the unclamped rate.  That residue is stated
+            # on the class and is what the deferred salary-path step removes
+            # by pricing the tail instead of extrapolating it.
+            last = self.employee_by_payday[max(self.employee_by_payday)]
+            first = self.employee_by_payday[min(self.employee_by_payday)]
+            return (first, last)
         return (
-            round_money(sum(by_year[years[0]], ZERO) / fullest),
-            round_money(sum(by_year[years[-1]], ZERO) / fullest),
+            round_money(
+                sum(by_year[complete[0]], ZERO) / self.periods_per_year),
+            round_money(
+                sum(by_year[complete[-1]], ZERO) / self.periods_per_year),
         )
 
     def _held(self, held, payday: date):
@@ -421,20 +482,31 @@ class AccountPayrollFeed:
     def models_employee(self) -> bool:
         """Whether payroll pays this account anything on any priced payday.
 
-        The gate the contribution timeline and the balance seam's plan both
-        ask before modelling an employee feed at all, so an account whose
-        deductions all price at ``$0.00`` reads exactly as one with no
-        deduction: no dated record, and the engine's own
-        ``periodic_contribution`` fallback (the transfer average) left to
-        answer.  Derived from the held amount, which IS the last payday the
-        account received anything on, so the two cannot disagree.
+        The gate the balance seam's plan asks before modelling an employee
+        feed at all (:func:`~app.services.balance_at._asset_contributions
+        ._plan_for`), so an account whose deductions all price at ``$0.00``
+        models nothing rather than a series of zeros.  The contribution
+        TIMELINE asks a different question and gates on
+        :attr:`is_payroll_linked`; see that field.
+
+        **It reads the priced MAP, not the held figures, and an adversarial
+        review measured why.**  It was ``self._held_employee != (ZERO, ZERO)``
+        back when the hold was "the last payday that paid something", for
+        which the two agreed closely enough to look equivalent.  The hold is a
+        fullest-CALENDAR-YEAR average now, and that is a different predicate:
+        a window whose fullest year happens to be all zeros holds ``$0.00`` in
+        both directions while an adjacent year paid.  Measured on a 26-payday
+        window split 14 / 12 across a year boundary with a ``$1,000``-capped
+        deduction paying entirely in the SHORTER year -- ``$1,000.00`` of real
+        in-window deductions, and this gate said the account modelled nothing,
+        which drops the whole figure out of every balance the seam produces.
 
         Returns:
-            ``True`` when at least one priced payday paid this account.  Read
-            off the held averages, which are non-zero exactly when some priced
-            payday was.
+            ``True`` when at least one priced payday paid this account.
         """
-        return self._held_employee != (ZERO, ZERO)
+        return any(
+            amount > ZERO for amount in self.employee_by_payday.values()
+        )
 
     @property
     def funds_employer(self) -> bool:
@@ -784,9 +856,13 @@ def build_contribution_timeline(
 
     Path 1 -- Paycheck deductions: what the paycheck engine says this
     account's deductions took from each payday
-    (:meth:`AccountPayrollFeed.employee_at`), already raise-aware,
+    (:meth:`AccountPayrollFeed.employee_at`) -- raise-aware,
     inflation-escalated, cadence-placed and clamped to each line's own
-    calendar-year ``annual_cap``.  Confirmation is date-based (past period =
+    calendar-year ``annual_cap`` for every payday the owner's calendar
+    REACHES.  Past it the figure is the feed's HOLD, a complete year's
+    average, which is none of those four things and is stated as such on
+    :attr:`AccountPayrollFeed.employee_by_payday`; on a 40-year chart that is
+    most of the periods.  Confirmation is date-based (past period =
     confirmed) because there is no per-period transaction record for
     deductions.
 
@@ -802,8 +878,7 @@ def build_contribution_timeline(
     **The path-1 gate is PRESENCE, not price** (an adversarial review of this
     step moved it).  It read ``models_employee`` in a first build, which is
     the priced half: a deduction fully consumed by its ``annual_cap`` across
-    the whole priced window, or a 12-per-year one whose window contains no
-    first-of-month payday, prices to ``$0.00`` on every payday while being
+    the whole priced window prices to ``$0.00`` on every payday while being
     genuinely configured.  That fed the engine no records at all, so its
     ``periodic_contribution`` fallback applied the TRANSFER AVERAGE to periods
     that should contribute nothing.  ``is_payroll_linked`` is the question the
@@ -861,8 +936,9 @@ def build_contribution_timeline(
     # **That second term is a RESTORE, and leaving it out was a measured
     # regression this step's own adversarial review caught.**  The growth
     # engine's rule is that a dated record REPLACES the periodic fallback, and
-    # ``periodic_contribution`` is the only carrier of
-    # :func:`_average_transfer_contribution`.  Before plan step salary:R14-b
+    # ``periodic_contribution`` WAS the only carrier of
+    # :func:`_average_transfer_contribution` before this step -- the line
+    # below is the second, which is the whole of the restore.  Before plan step salary:R14-b
     # this timeline's domain was the owner's SAVED window, so every period
     # past it had no record and fell back to *deduction + average*; widening
     # the domain to the projection axis without carrying the average would

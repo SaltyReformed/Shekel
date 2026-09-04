@@ -335,9 +335,11 @@ def _retirement_investment_bands(
 
     Reuses the retirement dashboard's own context builder and the
     ``project_accounts_with_batch`` probe seam over the horizon axis, so the
-    band is the engine's projection, never a parallel model -- it equals the
-    ret_probe oracle the P-AC1 ruling anchored on ($1,187,745.83 at
-    2049-12-31 on the developer's data).  Each account's per-period rows are
+    band is the engine's projection, never a parallel model.  *It EQUALLED
+    the ret_probe oracle the P-AC1 ruling anchored on -- $1,187,745.83 at
+    2049-12-31 -- and plan step salary:R14-b made that unreproducible through
+    this path; see the paragraph on the employer base below.*  Each account's
+    per-period rows are
     sampled annually and summed into its category band; the today point is
     the account's model-from-anchor displayed balance, so the band starts at
     the hero's retirement / investment subtotal.
@@ -353,8 +355,11 @@ def _retirement_investment_bands(
     surface, and only PAST that calendar does the ``None`` mean a held
     paycheck.  The P-AC1 oracle figure this paragraph quoted
     ($1,187,745.83 at 2049-12-31) was measured against the constant base and
-    is not reproducible through this path any more; it is removed rather than
-    restated at a number nobody has re-measured.
+    is not reproducible through this path any more.  It is stated as HISTORY
+    where it appears above rather than restated at a number nobody has
+    re-measured.  *An earlier draft of this sentence said the figure was
+    "removed" while it was still asserted as a live equality four paragraphs
+    up -- a fix describing itself, which is the class round three caught.*
 
     **The two bands no longer share a growth MODEL**
     (plan step X-g2b): the ``2 years`` band is the per-period balance map, which

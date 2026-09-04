@@ -175,6 +175,8 @@ def _flat_feed(periods, amount, gross=None):
             {} if gross is None
             else {period.start_date: Decimal(gross) for period in periods}
         ),
+        is_payroll_linked=True,
+        periods_per_year=Decimal("26"),
     )
 
 

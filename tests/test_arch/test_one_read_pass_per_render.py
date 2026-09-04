@@ -1286,6 +1286,32 @@ class TestOnePaycheckProjectionPerProfilePerRender:
             "route's one read pass must read that pass's projection memo"
         )
 
+    def test_retirement_projects_each_profile_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /retirement runs the paycheck engine once for the profile.
+
+        The third of the memo's call sites (``retirement_projection
+        .load_projection_batch``), which an adversarial review noted this
+        class did not cover even though the site is one of the three.
+        """
+        with app.app_context():
+            account = _seed_projecting_account(
+                db, seed_user, seed_periods_today,
+            )
+            self._fund_the_account(db, seed_user, account)
+
+        with counting_calls(_PROJECTION_DOOR) as counts:
+            resp = auth_client.get("/retirement")
+
+        assert resp.status_code == 200
+        assert counts["project_profile"] == 1, (
+            f"/retirement projected the owner's paycheck "
+            f"{counts['project_profile']} times; the page holds one read pass "
+            "and its batch load and its seam reads must share that pass's "
+            "projection memo"
+        )
+
     def test_investment_projects_each_profile_once(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):

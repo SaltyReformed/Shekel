@@ -1387,6 +1387,43 @@ class TestTheFundingJobIsNamedOrTheMoneyIsNotMODELLED:
         )
         assert params.salary_profile_id is None
 
+    def test_the_CREATE_branch_refuses_it_too(
+        self, auth_client, seed_user, second_user, db, seed_periods_today,
+    ):
+        """The other arm of the same door, which the case above cannot reach.
+
+        ``update_params`` has two branches and the guard is on both, but the
+        case above seeds an ``InvestmentParams`` row first and so only
+        exercises the UPDATE arm -- an adversarial review measured the CREATE
+        arm ungraded.  Here the account has no params row, so the POST takes
+        the create path, and the forged profile must be refused before any
+        row is written.
+        """
+        acct = _create_investment_account(seed_user, db.session)
+        stranger = _create_salary_profile(
+            db.session, second_user["user"].id, second_user["scenario"].id,
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/params",
+            data={
+                "assumed_annual_return": "7",
+                "employer_contribution_type_id": str(
+                    ref_cache.employer_contribution_type_id(
+                        EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+                ),
+                "employer_flat_percentage": "5",
+                "salary_profile_id": str(stranger.id),
+            },
+        )
+        assert resp.status_code == 404
+        # And nothing was created: the guard runs before the INSERT.
+        assert (
+            db.session.query(InvestmentParams)
+            .filter_by(account_id=acct.id).one_or_none()
+        ) is None
+
 class TestContributionAwareDashboard:
     """Tests for the contribution timeline integration (5.2-2).
 

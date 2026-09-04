@@ -569,6 +569,12 @@ def load_payroll_feeds(
             # ``/retirement``'s prompt asks that question rather than a
             # dollar one.
             is_payroll_linked=bool(deductions_by_account.get(account_id)),
+            # The owner's cadence, which the employee hold divides a year's
+            # total by.  Structural rather than counted off the priced map:
+            # the map holds the paydays inside the SAVED WINDOW, and a window
+            # with no whole calendar year in it would make that count half
+            # the real one.
+            periods_per_year=calendar.cadence.periods_per_year,
         )
         for account_id in account_ids
     }

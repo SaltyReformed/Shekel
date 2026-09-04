@@ -10,9 +10,11 @@ see :mod:`._liability`) runs first.
 Kept in one submodule so the view modules (:mod:`._kind_correct`,
 :mod:`._cash_flow`, :mod:`._grid`, :mod:`._liability`) depend only on these
 primitives and never on each other's internals.  The package's SOLID dependency
-direction is ``<view module> -> _inputs``.  ``_inputs`` in turn depends on two
-groups and nothing else: the outer LOADER it issues its queries through
-(:mod:`app.services.projection_inputs`), and
+direction is ``<view module> -> _inputs``.  ``_inputs`` in turn depends on the
+outer LOADER it issues its queries through
+(:mod:`app.services.projection_inputs`, plus
+:mod:`app.services.investment_projection` for the feed VALUE that loader
+returns), and
 the leaf PRODUCERS its dispatch fans out to -- the engine cluster
 (:mod:`app.services.balance_at._kernel`) and the loan producer
 (:func:`._positions.positions_period_map`, the one per-kind branch that lives in
