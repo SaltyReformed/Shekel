@@ -36,7 +36,7 @@ is the explanation.
 
 **Openness and its reason are ONE field**, so a value cannot say a verb is
 open and carry a sentence explaining why it is not.  That is
-:attr:`~._bars.ParkedLine.answer_door`'s own idiom, and the shape
+:attr:`~._bars.BarredLine.answer_door`'s own idiom, and the shape
 :class:`~._leftovers.RecordableInflow` refuses in as many words.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
@@ -218,7 +218,7 @@ def offers_for(
     is :class:`~._queue.QueueRow`'s own idiom and for its reason: the builder
     knows which of the pass's lists it drew this line from, so it reads the
     refusal that mechanism's value already carries -- a parked line's
-    :attr:`~._bars.ParkedLine.reason`, an inflow's or a creatable line's
+    :attr:`~._bars.BarredLine.reason`, an inflow's or a creatable line's
     :attr:`~._leftovers.CreatableLine.withheld`, or
     :data:`ADD_SHUT_BY_A_PROPOSAL`.  **Membership of ``creatable`` is NOT the
     create door's answer**, which an earlier draft of this said: a line no

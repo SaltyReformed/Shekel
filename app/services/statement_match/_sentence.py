@@ -19,7 +19,7 @@ and an ADD sentence do not have the same parts, so a fixed-field value would
 force the template to branch on the verb to lay them out -- a partition
 restated in Jinja, which is the shape this package refuses in
 :attr:`~._placement.Placement.sweep_class`,
-:attr:`~._bars.ParkedLine.reason` and
+:attr:`~._bars.BarredLine.reason` and
 :attr:`~._offers.MatchProposal.review_class`.  A template that loops spans
 branches on nothing.
 
@@ -39,7 +39,7 @@ from ._verbs import Verb
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._accepted_view import AcceptedGroup
-    from ._bars import ParkedLine
+    from ._bars import BarredLine
     from ._offers import MatchProposal
 
 
@@ -317,7 +317,7 @@ def for_income_placement(placement: InflowPlacement) -> "tuple[Span, ...]":
     )
 
 
-def for_parked_transfer(parked: "ParkedLine") -> "tuple[Span, ...]":
+def for_parked_transfer(parked: "BarredLine") -> "tuple[Span, ...]":
     """Return the sentence for a payment to an account the owner holds.
 
     Ruling **bank_import:R-GJ** parks such a line and **R-HQ** makes it a
@@ -326,7 +326,7 @@ def for_parked_transfer(parked: "ParkedLine") -> "tuple[Span, ...]":
     no door (see :data:`~._verbs.TRANSFER_WAITS`).
 
     Args:
-        parked: The :class:`~._bars.ParkedLine`, which must be one a source
+        parked: The :class:`~._bars.BarredLine`, which must be one a source
             files as paying an account the owner holds.
 
     Returns:
@@ -340,7 +340,7 @@ def for_parked_transfer(parked: "ParkedLine") -> "tuple[Span, ...]":
     )
 
 
-def for_parked_never(parked: "ParkedLine") -> "tuple[Span, ...]":
+def for_parked_never(parked: "BarredLine") -> "tuple[Span, ...]":
     """Return the sentence for a merchant the owner said is never a purchase.
 
     **This line is already SKIPPED, and by a standing decision rather than a
@@ -361,7 +361,7 @@ def for_parked_never(parked: "ParkedLine") -> "tuple[Span, ...]":
     built because the predicate is real and the data is one account's.
 
     Args:
-        parked: The :class:`~._bars.ParkedLine`, barred by the owner's own
+        parked: The :class:`~._bars.BarredLine`, barred by the owner's own
             answer and NOT also filed as paying an account they hold.
 
     Returns:

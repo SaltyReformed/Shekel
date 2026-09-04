@@ -18,7 +18,7 @@ review:
   negative purchase back into that container (ruling **R-HT(a)**, plan step
   ``bank_import:X-gj-2b-2``);
 * a line whose merchant is barred becomes nothing, and is PARKED with the
-  reason (:class:`~._bars.ParkedLine`, ruling **R-GJ**).  **In BOTH
+  reason (:class:`~._bars.BarredLine`, ruling **R-GJ**).  **In BOTH
   directions**, and this paragraph said *an inflow is never barred: both arms
   of the bar are claims about money leaving* until plan step
   ``bank_import:X-gj-2b-3``.  That is true of *never a purchase* and FALSE of
@@ -78,7 +78,7 @@ from typing import TYPE_CHECKING
 
 from app.services.status_seam import day_is_in_the_future
 
-from ._bars import CreationBars, MerchantAnswers, ParkedLine
+from ._bars import CreationBars, MerchantAnswers, BarredLine
 from ._creations import PurchaseDestination, envelope_answer_key
 from ._offers import BankLine
 from ._placement import (
@@ -156,7 +156,7 @@ class CreatableLine:
             partition *why is this line still here* -- a rule the pass
             withheld, or a search it did not finish -- and a template picking
             between those two with ``{% if %}``/``{% elif %}`` is the second
-            place for it to be wrong that :attr:`~._bars.ParkedLine.reason`
+            place for it to be wrong that :attr:`~._bars.BarredLine.reason`
             and :attr:`RecordableInflow.withheld` both exist to refuse.
             **A WIDER set than** :attr:`verdict`: a line no rule reaches can
             still be one the pass never finished looking at.
@@ -181,7 +181,7 @@ class RecordableInflow:
     between, and an income row is filed against nothing -- so there is no
     offer set here and a field holding an empty one would be a destination
     select one Jinja condition away from rendering beside a deposit.  That is
-    the argument :class:`~._bars.ParkedLine` already makes beside them.
+    the argument :class:`~._bars.BarredLine` already makes beside them.
 
     **It DOES carry a placement since plan step ``bank_import:X-gj-2a``, and
     this docstring said it could not.**  It read *no placement to suggest*,
@@ -207,7 +207,7 @@ class RecordableInflow:
             .placement` carries.
         withheld: Why this line may NOT be recorded, or ``None`` when it may.
             **ONE server-derived sentence rather than two Jinja conditions**,
-            which is :attr:`~._bars.ParkedLine.reason`'s argument: a template
+            which is :attr:`~._bars.BarredLine.reason`'s argument: a template
             restating a partition is a second place for it to be wrong, and
             here the two arms are *your calendar does not reach that day* and
             *your bank dates that money as moving in the future*.
@@ -235,7 +235,7 @@ def _creatable_lines(
     destinations: "list[PurchaseDestination]",
     view: RuleView,
     bars: CreationBars,
-) -> "tuple[tuple[CreatableLine, ...], tuple[ParkedLine, ...], int]":
+) -> "tuple[tuple[CreatableLine, ...], tuple[BarredLine, ...], int]":
     """Split the unmatched lines it is GIVEN into what may be recorded and what may not.
 
     *It said OUTFLOWS until plan step ``bank_import:X-gj-2b-3``*, which its own
@@ -280,7 +280,7 @@ def _creatable_lines(
     Returns:
         ``(creatable, parked, impossible_day_count)`` -- one
         :class:`CreatableLine` per offerable LINE a create control may be
-        rendered for, one :class:`~._bars.ParkedLine` per line ruling
+        rendered for, one :class:`~._bars.BarredLine` per line ruling
         **R-GJ** bars, both in the order the lines were given, and how many
         were declined for dating their own purchase after their own posting.
 
@@ -314,7 +314,7 @@ def _creatable_lines(
             destination.period.period_id, [],
         ).append(destination)
     creatable: "list[CreatableLine]" = []
-    parked: "list[ParkedLine]" = []
+    parked: "list[BarredLine]" = []
     for line in offerable:
         # ONE ask of the bar per line, and its answer is what routes the line:
         # a second ask -- once to partition and once to word the sentence -- is
@@ -338,7 +338,7 @@ def _creatable_lines(
             # be given again, and a source's filing is lifted by nothing.  Both
             # come off the bars this pass already derived; the value asks
             # nothing for itself.
-            parked.append(ParkedLine(
+            parked.append(BarredLine(
                 line=line,
                 barred_by=barred_by,
                 also_pays_an_account=bars.pays_an_account(line.merchant_id),
@@ -579,7 +579,7 @@ class Leftovers:
             **bank_import:R-II**), which is :func:`~._rules.pipeline_for`'s
             partition rather than the sign's.
         parked: The offerable unexplained lines ruling **R-GJ** bars, each
-            with the reason (:class:`~._bars.ParkedLine`).  Both directions:
+            with the reason (:class:`~._bars.BarredLine`).  Both directions:
             the card-payment arm is a claim about the MERCHANT, so a credit
             from one is barred exactly as its debits are.
         recordable_inflows: The unexplained INFLOWS, each with the period
@@ -590,7 +590,7 @@ class Leftovers:
     """
 
     creatable: "tuple[CreatableLine, ...]"
-    parked: "tuple[ParkedLine, ...]"
+    parked: "tuple[BarredLine, ...]"
     recordable_inflows: "tuple[RecordableInflow, ...]"
     merchants: MerchantSection
     impossible_day_count: int

@@ -46,7 +46,7 @@ from ._already_held import (
     ArrivalsAlreadyHeld,
     arrivals_already_held,
 )
-from ._bars import ParkedLine
+from ._bars import BarredLine
 from ._gaps import ReviewBounds, bounded_lines, search_gap
 from ._leftovers import CreatableLine, RecordableInflow, leftovers
 from ._propose import propose
@@ -265,7 +265,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             DIRECTIONS (it said OUTFLOW until plan step
             ``bank_import:X-gj-2b-3``; see :attr:`~._leftovers.Leftovers.parked`,
             which this is assigned from verbatim), with
-            the reason each may not (:class:`~._bars.ParkedLine`, ruling
+            the reason each may not (:class:`~._bars.BarredLine`, ruling
             **R-GJ**).  Its two arms are a merchant the owner answered *never a
             purchase* and a merchant a source files as a payment to a credit
             card that they have not answered for at all.  They are still in
@@ -330,7 +330,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     unmatched: "tuple[BankLine, ...]"
     unmatched_rows: "tuple[CandidateRow, ...]"
     creatable: "tuple[CreatableLine, ...]"
-    parked: "tuple[ParkedLine, ...]"
+    parked: "tuple[BarredLine, ...]"
     recordable_inflows: "tuple[RecordableInflow, ...]"
     merchants: MerchantSection
     bounds: ReviewBounds

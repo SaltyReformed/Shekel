@@ -74,7 +74,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
 
     from app.services.bank_agreement import BankAgreement
 
-    from ._bars import ParkedLine
+    from ._bars import BarredLine
     from ._last_import import LastImport
     from ._reads import ReviewSet
     from ._scope import ReviewScope
@@ -345,7 +345,7 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             :attr:`unexamined`, because unlike every sentence in that tuple
             this one ends in an ACT, and the template has to render that act
             as a link -- which is the one fact a service may not build
-            (:attr:`~._bars.ParkedLine.answer_door`).
+            (:attr:`~._bars.BarredLine.answer_door`).
     """
 
     tab: Tab
@@ -379,7 +379,7 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
         )
 
 
-def _parked_tab(parked: "ParkedLine") -> Tab:
+def _parked_tab(parked: "BarredLine") -> Tab:
     """Return which holding tab one parked line belongs on.
 
     **The bank's OBSERVATION decides, not the owner's answer**, and the two
@@ -400,7 +400,7 @@ def _parked_tab(parked: "ParkedLine") -> Tab:
     rendered on his data.
 
     Args:
-        parked: The :class:`~._bars.ParkedLine`.
+        parked: The :class:`~._bars.BarredLine`.
 
     Returns:
         :attr:`Tab.TRANSFERS` or :attr:`Tab.SKIPPED`.

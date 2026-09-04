@@ -48,7 +48,7 @@ from ._verdict import look_first
 if TYPE_CHECKING:  # pragma: no cover -- the edge back would be a cycle
     # The three mechanism values appear only in annotations, so they are
     # imported for the type checker rather than at runtime.
-    from ._bars import ParkedLine
+    from ._bars import BarredLine
     from ._offers import BankLine
     from ._leftovers import CreatableLine, RecordableInflow
     from ._reads import ArrivalsAlreadyHeld, ReviewSet
@@ -91,7 +91,7 @@ class Evidence(enum.Enum):
 
 
 #: The heading and the one sentence under it, per group.  **Server-derived and
-#: printed unbranched**, which is the rule :attr:`~._bars.ParkedLine.reason`
+#: printed unbranched**, which is the rule :attr:`~._bars.BarredLine.reason`
 #: and :attr:`~._leftovers.RecordableInflow.withheld` both exist to state: the
 #: partition is this module's, and a template picking the wording with
 #: ``{% if %}``/``{% elif %}`` would be a second place for it to be wrong.
@@ -155,18 +155,18 @@ class QueueRow:
     ``if item.destinations`` would be reading a control out of an empty
     collection, which is the defect that made the existing-envelope arm
     unreachable from a browser at plan step ``X-f6a-3b`` and the shape
-    :class:`~._bars.ParkedLine` refuses in as many words.
+    :class:`~._bars.BarredLine` refuses in as many words.
 
     Attributes:
         evidence: Which group this row sits in (:class:`Evidence`).
         item: The mechanism's own value -- a
             :class:`~._leftovers.CreatableLine`, a
-            :class:`~._bars.ParkedLine` or a
+            :class:`~._bars.BarredLine` or a
             :class:`~._leftovers.RecordableInflow`.  It is NOT flattened into
             one record carrying every field: a value holding empty destinations
             beside an empty withheld sentence would be a control one Jinja
             condition away from rendering, which is the argument
-            :class:`~._bars.ParkedLine` already makes for existing separately.
+            :class:`~._bars.BarredLine` already makes for existing separately.
         act: Which control this row renders (:class:`QueueAct`).
         notes: Every plain sentence this row owes the reader, in reading
             order, composed by :func:`_notes_for`.  **Printed unbranched**,
@@ -192,7 +192,7 @@ class QueueRow:
     """
 
     evidence: Evidence
-    item: "CreatableLine | ParkedLine | RecordableInflow"
+    item: "CreatableLine | BarredLine | RecordableInflow"
     act: QueueAct
     notes: "tuple[str, ...]"
     arrivals_already_held: "ArrivalsAlreadyHeld | None"
@@ -473,7 +473,7 @@ def _evidence_for(gap: "str | None", positive: bool) -> Evidence:
 
 
 def _notes_for(
-    item: "CreatableLine | ParkedLine | RecordableInflow",
+    item: "CreatableLine | BarredLine | RecordableInflow",
     act: QueueAct, gap: "str | None",
 ) -> "tuple[str, ...]":
     """Return every plain sentence one row owes the reader, in reading order.
@@ -589,7 +589,7 @@ def _rows(review: "ReviewSet") -> "tuple[QueueRow, ...]":
 
 
 def _positive_for(
-    item: "CreatableLine | ParkedLine | RecordableInflow",
+    item: "CreatableLine | BarredLine | RecordableInflow",
     act: QueueAct, held: "ArrivalsAlreadyHeld | None",
     gap: "str | None",
 ) -> bool:
@@ -621,7 +621,7 @@ def _positive_for(
 
 def _row(
     review: "ReviewSet",
-    item: "CreatableLine | ParkedLine | RecordableInflow",
+    item: "CreatableLine | BarredLine | RecordableInflow",
     act: QueueAct, held: "ArrivalsAlreadyHeld | None",
 ) -> QueueRow:
     """Return one assembled queue row.

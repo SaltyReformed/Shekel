@@ -104,7 +104,7 @@ _NO_SUCH_SKIP = (
 #: exact shape R-GJ closed, so the refusal lives here.
 #:
 #: **And it is not only a doctrine point.**  Such a line is a
-#: :class:`~._bars.ParkedLine` the Reconcile page counts on its *waiting for
+#: :class:`~._bars.BarredLine` the Reconcile page counts on its *waiting for
 #: the account they paid* chip, whose label carries a COUNT and a MAGNITUDE
 #: (:func:`~._reconcile._chips`).  Skipping one drops it out of the pass, so
 #: that money figure falls -- a skip moving a rendered amount, which is the

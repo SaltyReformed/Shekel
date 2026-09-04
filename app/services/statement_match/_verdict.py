@@ -19,7 +19,7 @@ the verdict is derived ONCE, here, and both read it (finding **N-359**).
 **The SENTENCE the screen prints is derived here too, whole**, and that is not
 convenience.  A first version of this step set two facts in Jinja and picked
 between them with ``{% if %}``/``{% elif %}`` -- the shape
-:attr:`~._bars.ParkedLine.reason` and :attr:`~._leftovers.RecordableInflow
+:attr:`~._bars.BarredLine.reason` and :attr:`~._leftovers.RecordableInflow
 .withheld` exist to refuse, stated in as many words in the very template it was
 written into: *a template restating a partition is a second place for it to be
 wrong*.  Found by adversarial design review 2026-08-27.
@@ -113,7 +113,7 @@ _ALREADY_EXPLAINED = (
 #: which counts the literal string "the match form below" and not the coupling
 #: (adversarial design review 2026-08-28).  What the sentence
 #: states is the ACT; the row renders the link, which is the one fact a service
-#: may not build (:attr:`~._bars.ParkedLine.answer_door` sets the precedent).
+#: may not build (:attr:`~._bars.BarredLine.answer_door` sets the precedent).
 #:
 #: **It said *as new spending* until plan step ``bank_import:X-gj-2b-3``**, and
 #: ruling **bank_import:R-II** is what made that false: a merchant credit a

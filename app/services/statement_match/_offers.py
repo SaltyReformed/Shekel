@@ -91,7 +91,7 @@ class NotShownAlone:
         label: The chip's own text, short enough to sit beside a row label.
         sentence: The whole reason, carried as the chip's title.  It ends in
             the ACT rather than in the diagnosis, which is
-            :attr:`~._bars.ParkedLine.reason`'s shape one card over: a row the
+            :attr:`~._bars.BarredLine.reason`'s shape one card over: a row the
             owner cannot act on is a row they will read once.
     """
 
@@ -454,7 +454,7 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         """Return why the bank never shows this row alone, or ``None``.
 
         **Server-derived rather than a Jinja branch**, for the reason
-        :attr:`~._bars.ParkedLine.reason` is: a template restating a partition
+        :attr:`~._bars.BarredLine.reason` is: a template restating a partition
         is a second place for it to be wrong, and this one is a claim about
         money -- the panel that reads it is asserting the bank failed to make a
         payment.  ``app.routes.accounts.bank_agreement._anchor_is_assumed``

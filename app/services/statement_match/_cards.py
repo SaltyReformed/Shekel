@@ -14,7 +14,7 @@ settled and an act already applied carry disjoint facts -- a
 :class:`LineCard` has a bank line and a :class:`~._panel.VerbPanel`, an
 :class:`ActCard` has an Undo and what it would destroy -- and one value
 holding empty versions of the other's fields is a control one Jinja condition
-away from rendering, which is what :class:`~._bars.ParkedLine` exists to
+away from rendering, which is what :class:`~._bars.BarredLine` exists to
 refuse.
 
 **What the card SHOWS and what the panel DISCLOSES are two values** (ruling
@@ -46,7 +46,7 @@ from ._verbs import ADD_SHUT_BY_A_PROPOSAL, Verb, VerbOffer, offers_for
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._accepted_view import AcceptedGroup
-    from ._bars import ParkedLine
+    from ._bars import BarredLine
     from ._leftovers import CreatableLine, RecordableInflow
     from ._offers import BankLine, MatchProposal
     from ._reads import ArrivalsAlreadyHeld, ReviewSet
@@ -546,7 +546,7 @@ def _inflow_card(
 
 
 def parked_card(
-    review: "ReviewSet", parked: "ParkedLine",
+    review: "ReviewSet", parked: "BarredLine",
 ) -> LineCard:
     """Return the holding card for an outflow that may not become spending.
 
@@ -558,7 +558,7 @@ def parked_card(
 
     Args:
         review: The pass.
-        parked: The :class:`~._bars.ParkedLine`.
+        parked: The :class:`~._bars.BarredLine`.
 
     Returns:
         The :class:`LineCard`.  Its ADD is shut by the bar, its TRANSFER and

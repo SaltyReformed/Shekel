@@ -909,7 +909,7 @@ class TestWhereAParkedLineSAnswerIsCHANGED:
         submission can never succeed.
 
         Delete the ``also_pays_an_account`` guard in
-        :attr:`~._bars.ParkedLine.answer_door` and only this case falls.
+        :attr:`~._bars.BarredLine.answer_door` and only this case falls.
         """
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)

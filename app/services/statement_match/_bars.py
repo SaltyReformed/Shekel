@@ -361,8 +361,19 @@ class CreationBars:
 
 
 @dataclass(frozen=True)
-class ParkedLine:
+class BarredLine:
     """One unexplained line that may not become a purchase, EITHER DIRECTION.
+
+    *It was ``ParkedLine`` until plan step ``bank_import:X-gj-4c``.*  That name
+    said where the value LANDS, and ruling **bank_import:R-JH** gives it two
+    destinations: a line a source files as paying an account the owner holds is
+    parked on the Transfers tab, and one barred only by the owner's own *never
+    a purchase* answer goes back to the INBOX, because that answer shuts the
+    ADD door and claims nothing about what the line is.  The bar is what every
+    instance shares, so the bar is what it is named for.  Renamed rather than
+    re-documented, which is the call :func:`~._undisposed.undisposed_lines`
+    made one step earlier for its own reason: a name that has to be corrected
+    in prose is a name the next reader trusts anyway.
 
     *It said OUTFLOW until plan step ``bank_import:X-gj-2b-3``.*
     :func:`bar_for` is sign-blind and :func:`~._leftovers._creatable_lines`

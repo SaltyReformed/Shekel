@@ -79,7 +79,7 @@ The public surface, and what each piece is for:
   Two bars: the owner answered *never a purchase*, or a SOURCE files the
   merchant as a payment to a credit card and they have not answered for it at
   all.  A barred line is not offered a create control and is refused at the
-  door; it is listed as a :class:`ParkedLine` beside the hand-build form, where
+  door; it is listed as a :class:`BarredLine` beside the hand-build form, where
   the group match this ruling leaves open is made.  Until this step *never a
   purchase* only withheld a sweep value, and one YTD pass recorded
   **`$7,412.94`** of card payments the app already held as ``CC Payback`` rows
@@ -167,10 +167,10 @@ owner has not accepted, and :mod:`._propose` cannot write at all.
 
 from ._accept import AcceptedMatch, accept_match
 from ._bars import (
+    BarredLine,
     CreationBar,
     CreationBars,
     MerchantAnswers,
-    ParkedLine,
 )
 from ._release import (
     PlannedRemoval,
@@ -317,6 +317,7 @@ __all__ = [
     "RecordableInflow",
     "CreatedPurchase",
     "IncomeCreation",
+    "BarredLine",
     "CreationBar",
     "CreationBars",
     "MerchantAnswers",
@@ -334,7 +335,6 @@ __all__ = [
     "MatchProposal",
     "MatchSubmission",
     "NewEnvelope",
-    "ParkedLine",
     "Placement",
     "PlacementKind",
     "PlannedRemoval",

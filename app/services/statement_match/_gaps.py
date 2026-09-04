@@ -114,15 +114,15 @@ class BooksBound:
         """Return the sentence the screen prints for this bound.
 
         Composed here rather than in Jinja, which is this package's standing
-        rule (:attr:`~._bars.ParkedLine.reason`): a template restating a
+        rule (:attr:`~._bars.BarredLine.reason`): a template restating a
         partition is a second place for it to be wrong, and three surfaces
         render this one -- the reconcile page's holding chip, the workbench's
         pick-list caveat and the review body's bounds panel.
 
         **It states the BOUND and stops there**, and the ACT is
         :attr:`restatement_act` beside it -- the exact pairing
-        :attr:`~._bars.ParkedLine.reason` has with
-        :attr:`~._bars.ParkedLine.answer_door`, and for its reason: a surface
+        :attr:`~._bars.BarredLine.reason` has with
+        :attr:`~._bars.BarredLine.answer_door`, and for its reason: a surface
         that can build a URL renders the act as a link, and one that cannot
         prints it, so the two have to be separable.  Neither names a POSITION
         on any page, which is the coupling ruling **bank_import:R-HC** found in
@@ -154,7 +154,7 @@ class BooksBound:
 
         Split from :attr:`said` so a surface holding a URL can render it as a
         link and one that cannot can print it, without either restating the
-        other's half (:attr:`~._bars.ParkedLine.answer_door`'s shape).
+        other's half (:attr:`~._bars.BarredLine.answer_door`'s shape).
 
         **It is UNCONDITIONAL, where its precedent is not**, and the
         difference is the point that value makes: ``answer_door`` returns
