@@ -86,9 +86,9 @@ def anchor_visible_on(anchor_date: date) -> date:
     (:func:`app.services._posting_reconcile.emit_anchor_correction_entry`).  It no
     longer needs the owner's calendar -- the pre-C2 rule
     ``LEAST(anchor_date, containing period.start)`` did, only to reach the pay
-    period the anchor had to be FILED under -- an obligation of the ledger,
-    which ``pay_period_id``'s ``NOT NULL`` expresses rather than creates
-    (ruling **pay_calendar:R-PC53**) -- and that
+    period the anchor had to be FILED under -- a requirement of the per-period
+    readers, which ``pay_period_id``'s ``NOT NULL`` expresses rather than
+    creates (ruling **pay_calendar:R-PC53**) -- and that
     ``LEAST`` is exactly what made a future-dated anchor visible early (N-10).
 
     Kept as a named one-liner rather than inlined so the fold reads with the same

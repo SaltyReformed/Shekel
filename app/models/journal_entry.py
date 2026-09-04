@@ -169,45 +169,23 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=False,
     )
-    # **The paycheck this entry ACTUALLY posted into.  It is KEPT, and the
-    # reason has TWO halves because the column does** (ruling **R-PC53**, plan
-    # step ``pay_calendar:C7``, 2026-09-03).  Ledger row **P18** read it as a
+    # **The paycheck this entry posted into.  KEPT rather than derived**
+    # (plan step ``pay_calendar:C7``, ruling **R-PC53**, which holds the
+    # measurements and the argument).  Ledger row **P18** read the column as a
     # materialisation of "which paycheck does ``entry_date`` fall in" and asked
-    # whether to drop it.  Measured on production that day, P18's premise is
-    # OVER-GENERALISED rather than simply wrong, and both halves keep the
-    # column:
+    # for its removal; that is refused, because the column has TWO halves and
+    # the premise fits neither as stated.  A SOURCE-LINKED entry COPIES its
+    # source row's own ``pay_period_id`` -- the owner's budgeting choice, not a
+    # function of ``entry_date``.  An ANCHOR correction DERIVES its period from
+    # the entry's date through ``PayCalendar.filing_period`` (ruling
+    # **balance:R-EA**).
     #
-    #  * the 332 SOURCE-LINKED entries COPY the source row's own
-    #    ``pay_period_id`` at posting time -- a budgeting decision rather than
-    #    a fact about the settle date -- and 105 of them genuinely disagree
-    #    with what ``PayCalendar.filing_period`` would answer, so deriving them
-    #    destroys a fact nothing else holds;
-    #  * the 218 ANCHOR corrections ARE that derivation stored (ruling
-    #    **balance:R-EA** requires it; 216 equal it exactly), which rule 14
-    #    would normally delete.  What keeps the copy is that the derivation is
-    #    not STABLE over time: the R2 attribution rule needs the period the
-    #    postings actually LANDED in, so a reversal recomputed from today's
-    #    answer files against the wrong paycheck.  Finding **N-161** measured
-    #    that at ``$2,854.36``.
-    #
-    # Either way a source row that later moves paycheck does NOT rewrite this:
-    # it earns a REVERSING entry in the original period and a fresh entry in
-    # the new one, which production carries live on entries 112 / 187 / 219.
-    #
-    # **How hard it is to rewrite: THREE tiers, and only the third binds the
-    # running app.**  An earlier draft of this comment said the value "cannot
-    # be refreshed even in principle", which is false.  (a) The listeners at
-    # the foot of this module refuse a unit-of-work UPDATE or DELETE, catching
-    # the mistake at its call site.  (b) ``Query.update()`` and raw SQL go
-    # straight past them -- ``JournalEntryImmutableError``'s own docstring says
-    # so, and the idiom is used elsewhere in ``app/``.  (c) Migration
-    # ``e3c23fadb21d`` REVOKEs ``UPDATE`` and ``DELETE`` on the ledger tables
-    # from ``shekel_app``, which is what actually binds.  The OWNER role keeps
-    # both, so a MIGRATION can still rewrite this column -- named here because
-    # a re-derivation backfill is exactly the shape a future repair would take,
-    # and it would silently rewrite the record of where money landed.  The
-    # honest claim is not "nothing can refresh it" but **no code path refreshes
-    # it, and the app role cannot.**
+    # **Read this column back; never recompute it at read time.**  The reconcile
+    # targets a reversal at the period its postings landed in, which is what the
+    # stored value records.  R-PC53 states why that matters and what actually
+    # holds the value against rewriting -- in short, the ``shekel_app`` role has
+    # no ``UPDATE`` on this table (migration ``e3c23fadb21d``) while the owner
+    # role, and therefore any migration, does.
     pay_period_id = db.Column(
         db.Integer,
         db.ForeignKey(
@@ -221,13 +199,9 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
     # Civil date of the confirmed event, in the USER's timezone (ruling
     # R-DH (b)).  Not derivable from ``pay_period_id`` (a period spans 14
     # days), so it is stored, not computed.  **Nor does it DETERMINE
-    # ``pay_period_id``**, which ruling **R-PC53** settled: on production 18
-    # entry dates carry two or more different paychecks.  The relationship is
-    # not symmetric, though, and an earlier draft here wrongly called the two
-    # "independent stored facts" -- for the 218 ANCHOR corrections the period
-    # IS derived from this date through ``PayCalendar.filing_period`` (ruling
-    # **balance:R-EA**); it is the 332 source-linked entries that carry no
-    # derivation between the pair.  See ``pay_period_id`` above.
+    # ``pay_period_id``** -- see that column's comment above and ruling
+    # **R-PC53**: the relationship differs by source kind and is not a
+    # derivation in general.
     #
     # A source entry takes the source
     # row's stored ``transactions.settled_on``; an anchor correction takes the
