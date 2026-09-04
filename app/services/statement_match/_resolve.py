@@ -85,6 +85,20 @@ def load_lines(
     nothing raises.  No key can hold it -- the rule spans two tables -- which
     is the position ``accept_match``'s balance refusal is already in.
 
+    *The two-cards half of that sentence was written at ``X-gj-4a`` and was
+    FALSE until plan step ``bank_import:X-gj-4c-2``*: the Skipped tab then held
+    the lines a standing *never a purchase* answer barred rather than recorded
+    skips, so such a line rendered on Explained and nowhere else.  It is true
+    now, and it is MEASURED rather than asserted --
+    ``test_reconcile.TestADoublyAnsweredLineIsTHECOSTTwoRefusalsBUY`` builds
+    the match through the real door at a moment when no skip exists, then
+    inserts the SKIP row at the ORM tier -- so only the second answer is
+    planted, which is the half this refusal owns.  *An earlier draft said
+    "past both doors"; only one is bypassed, and the resulting STATE is the
+    thing neither door would allow.*  Recorded
+    because a justification written ahead of the surface it describes reads,
+    to the next reader, exactly like one that was checked.
+
     **Asked HERE and not in the three doors**, because this function is
     already the one statement of *is this line on this account, and has
     anything claimed it*: the paragraph above says two implementations of that

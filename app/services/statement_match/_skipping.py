@@ -1,9 +1,24 @@
 """The SKIP act: recording that a bank line is explained by nothing, and undoing it.
 
-Plan step ``bank_import:X-gj-4a``, rulings **bank_import:R-HP** and **R-JG**.
-SKIP is the fourth of the four verbs a bank line can end on, and the only one
-that names no row of the owner's: *a duplicate your bank later reversed, or a
-figure that is not money you spent*.  This module is its two doors.
+Plan steps ``bank_import:X-gj-4a`` and ``X-gj-4c-2``, rulings
+**bank_import:R-HP**, **R-JG** and **R-JH**.  SKIP is the fourth of the four
+verbs a bank line can end on, and the only one that names no row of the
+owner's: *a duplicate your bank later reversed, or a figure that is not money
+you spent*.  This module is its two doors and the two readers over what they
+have recorded -- :func:`skipped_count` for the tab bar's figure and
+:func:`skipped_acts` for its cards, narrowed by one shared clause.
+
+**The reader is HERE and not in a view module of its own**, which is the
+placement :mod:`._accepted_view` deliberately does NOT take for the other act.
+That module was split out of :mod:`._reads` on SIZE (ruling **balance:R-IR**),
+and this one has none of that pressure; what it has instead is a coupling the
+split would break.  The ``skip_id`` :func:`skipped_acts` puts on a card is the
+one :func:`unskip_line` accepts, and the ORDER a card is offered in is only
+honest if the row behind it is one the undo door can still find -- two modules
+would be two places for that pair to drift.  :func:`~._undisposed.skipped`
+already reads the same table for a different question (*has this line been
+answered*), so "one module owns the store" was never the rule here; what this
+module owns is the ACT.
 
 **It MOVES NO MONEY and can move none, which is what makes this leaf safe.**
 Both doors write exactly one table -- ``budget.statement_line_skips`` -- and
@@ -50,6 +65,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.exceptions import ValidationError
 from app.extensions import db
@@ -63,8 +79,13 @@ from app.utils.log_events import (
     log_event,
 )
 
+from ._accepted_view import REGISTER_LIMIT
+from ._reads import as_bank_line
 from ._undisposed import answered_by_a_match
 from ._vocabulary import account_payment_merchants
+
+if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from ._offers import BankLine
 
 _logger = logging.getLogger(__name__)
 
@@ -348,12 +369,17 @@ def unskip_line(skip_id: int, owner_id: int, account_id: int) -> int:
             Raised rather than ignored because this door names ONE act on
             purpose -- :func:`~._release.release_match`'s own rule.
     """
+    # **THE READER'S OWN NARROWING** (:func:`_mine`), not a third spelling of
+    # it.  The ids this door accepts are the ids :func:`skipped_acts` put on a
+    # card, so the two must agree about whose rows they are -- and two clauses
+    # that agree today are still two clauses (``CLAUDE.md`` rule 14).  Named by
+    # adversarial review 2026-09-04, which found this door restating the very
+    # narrowing ``_mine``'s docstring cites it as sharing.
     skip = (
         db.session.query(StatementLineSkip)
         .filter(
             StatementLineSkip.id == skip_id,
-            StatementLineSkip.account_id == account_id,
-            StatementLineSkip.user_id == owner_id,
+            _mine(owner_id, account_id),
         )
         .one_or_none()
     )
@@ -375,3 +401,251 @@ def unskip_line(skip_id: int, owner_id: int, account_id: int) -> int:
         skip_id=skip_id,
     )
     return line_id
+
+
+@dataclass(frozen=True)
+class SkippedAct:
+    """One recorded skip, as the Skipped tab renders it.
+
+    Plan step ``bank_import:X-gj-4c-2``.  **Two fields and not a flattened
+    copy of the line**, which is :class:`~._cards.ActCard`'s own argument: the
+    card prints the bank's facts off :attr:`line` and nothing else about the
+    act is rendered, so a second spelling of the merchant or the amount here
+    would be a second place for the card to disagree with the row.
+
+    Attributes:
+        skip_id: The act, which is what the Undo control submits and what
+            :func:`unskip_line` accepts.
+        line: The bank's own record of the movement
+            (:class:`~._offers.BankLine`) -- the merchant, the posted day, the
+            raw description and the amount, exactly as a
+            :class:`~._cards.LineCard` shows them, so the two kinds of card
+            read as one list.
+
+    **It carries no ``decided_on``**, and the absence is deliberate rather
+    than an oversight: ``budget.statement_line_skips`` records ``created_at``,
+    the card renders the BANK's day the way every other card on this page
+    does, and a field written on every read and printed on none is the shape
+    :class:`~._reconcile.ReconcilePage` deleted an ``account_id`` for.  There
+    is also no ``was_already_skipped`` twin of :class:`SkippedLine`'s: that is
+    a fact about a PRESS, and this is a fact about a standing row.
+    """
+
+    skip_id: int
+    line: "BankLine"
+
+
+def _mine(owner_id: int, account_id: int):
+    """Return the clause admitting only this owner's skips on this account.
+
+    **ONE narrowing for the count and the list**, which is finding **N-389**'s
+    lesson applied before it can happen again: the accepted set had a caption
+    derived by one reader and cards by another, they disagreed by one, and the
+    remedy was a single clause both compose on
+    (:data:`~._release.NAMES_A_BANK_LINE`).
+
+    **It filters the OWNER as well as the account**, which is
+    :func:`~._accepted_view.accepted_counts`' own narrowing and
+    :func:`unskip_line`'s: the account implies the owner through
+    ``fk_statement_line_skips_owner``, and a reader feeding a screen narrows by
+    the same columns the write door does.
+
+    Args:
+        owner_id: The user the route proved owns the account.
+        account_id: The account.
+
+    Returns:
+        The clause, ready to hand to ``filter``.
+    """
+    return db.and_(
+        StatementLineSkip.account_id == account_id,
+        StatementLineSkip.user_id == owner_id,
+    )
+
+
+def skipped_count(owner_id: int, account_id: int) -> int:
+    """Return how many of this account's lines the owner has skipped.
+
+    Plan step ``bank_import:X-gj-4c-2``.  **The tab bar's figure, on every
+    render whichever tab is open**, which is why it is a COUNT in the database
+    rather than ``len`` over :func:`skipped_acts`: the Reconcile page builds
+    the cards of ONE tab and takes every other tab's count cheaply, which is
+    the measurement ruling **R-GX** established for the settled tabs.
+
+    **It cannot disagree with what the tab draws, and that is structural.**
+    :func:`skipped_acts` narrows on the same clause (:func:`_mine`) and adds
+    TWO joins, neither of which can drop a row.  The INNER join to the line
+    cannot, because ``fk_statement_line_skips_line_account`` guarantees the
+    parent row exists -- **the KEY is what guarantees it, not its ``ON DELETE
+    CASCADE``**, which decides what happens when the line goes rather than
+    whether it is there.  The second is the LEFT OUTER join to
+    ``budget.merchants`` that ``lazy="joined"`` adds, which cannot drop a row
+    because it is outer and cannot duplicate one because it matches on a
+    primary key.  *An earlier draft of this paragraph said "only an INNER
+    JOIN" and did not know about the second*, which adversarial review found
+    by compiling the statement -- a paragraph whose whole job is to enumerate
+    what could drop a row may not omit a join.  So there is no state in which
+    the caption counts a skip the tab could not draw FOR WANT OF A JOIN --
+    the defect finding **N-389** measured for the accepted set, where the
+    loader's own ``NAMES_A_BANK_LINE`` clause is what a key gives this one for
+    free.  **What the caption may legitimately exceed is what the BOUND
+    renders**, which is a different thing and is said on the page rather than
+    hidden: the bar states the whole record and the list says how many it
+    withheld (:class:`SkippedRegister`).
+
+    Args:
+        owner_id: The user the route proved owns the account.
+        account_id: The account.
+
+    Returns:
+        The count, ``0`` for an account nothing has been skipped on.  A bare
+        aggregate always returns one row, so this is total.
+    """
+    return db.session.query(
+        db.func.count(StatementLineSkip.id),
+    ).filter(_mine(owner_id, account_id)).scalar()
+
+
+@dataclass(frozen=True)
+class SkippedRegister:
+    """The recorded skips a tab renders, and how many it withheld.
+
+    Plan step ``bank_import:X-gj-4c-2``, ruling **bank_import:R-GX** applied to
+    a third tab (developer, 2026-09-04).  **The count travels with the rows**
+    for the reason :class:`~._accepted_view.AcceptedRegister` states: a
+    truncated list that does not say it is truncated is a page claiming to be
+    the whole record -- and this tab is the only surface a skipped line can be
+    found and undone on.
+
+    Attributes:
+        shown: The acts to render, newest bank day first.
+        withheld_count: How many the bound left out -- ``0`` when the whole
+            record is on screen, which is what tells the surface whether to
+            offer the link that shows everything.  **No default**, which is
+            :attr:`~._cards.CardSection.withheld`'s own discipline: ``0`` is
+            the value that reads as safe and it claims *this is all of them*.
+    """
+
+    shown: "tuple[SkippedAct, ...]"
+    withheld_count: int
+
+
+def skipped_acts(
+    owner_id: int, account_id: int, limit: "int | None" = REGISTER_LIMIT,
+) -> SkippedRegister:
+    """Return this account's recorded skips, as the Skipped tab lists them.
+
+    Plan step ``bank_import:X-gj-4c-2``, ruling **bank_import:R-JG**.  **The
+    tab holds only lines the OWNER skipped** (ruling **R-JH**): a standing
+    *never a purchase* answer claims nothing about what a line is, so no such
+    line is here -- it is in the inbox, which is what plan step
+    ``bank_import:X-gj-4c-1`` put back.
+
+    **ONE query, and the merchant rides along.**
+    :attr:`~app.models.statement_import.BankStatementLine.merchant` is
+    ``lazy="joined"`` for exactly this reason (finding **N-309**), so listing
+    the lines costs no load per card.  The join is spelled here rather than
+    through a relationship on
+    :class:`~app.models.statement_line_skip.StatementLineSkip`: that model
+    deliberately carries none, and adding one for a single reader that a
+    two-term join already serves is the abstraction ahead of its caller
+    ``CLAUDE.md`` rule 13 forbids.  **Both terms of the composite key are in
+    the join**, so the account equality travels with it rather than being a
+    filter a later reader could drop (finding **bank_import:N-358**).
+
+    **It BOUNDS what it renders at** :data:`~._accepted_view.REGISTER_LIMIT`
+    **and says how many it withheld**, which is ruling **bank_import:R-GX**'s
+    shape on a third tab (developer, 2026-09-04).
+
+    **It is the PAGE's one bound and not a second constant.**  A first version
+    of this step declared a ``SKIPPED_LIMIT`` of its own and defended the
+    duplicated literal as letting the two DIVERGE -- and adversarial review
+    measured that the page never read it: :func:`~._reconcile.reconcile_page`
+    threads ONE ``limit`` from the route into every bounded arm positionally,
+    so the default was shadowed on every render and the constant governed
+    nothing but its own tests.  A value that cannot change what a reader sees
+    is not a knob, and flexibility nobody asked for is what ``CLAUDE.md`` rule
+    13 refuses.
+
+    *The bound itself replaced NO bound at all, on a reason review measured
+    false*: this step first claimed the settled tabs bound because they VALUE
+    every act they render.  :data:`~._accepted_view.REGISTER_LIMIT`'s own
+    docstring and R-GX say the opposite -- the fold reads every act either
+    way, and *what is bounded is what is RENDERED*.  A reason that is wrong
+    about the precedent it cites is worse than none, because the next tab
+    copies it.
+
+    Measured 2026-09-04 on the real rendered page: a skip card costs **1,427
+    bytes** marginal against about 980 for a settled act (216,637 bytes over
+    221), so a skip card is ~1.46x the byte cost of the thing that already had
+    a bound.  Unbounded, this owner's 378 recorded lines would render about
+    **556 KB** -- 32x the 17,162-byte empty tab, and the same order as the
+    578,523-byte review page R-GX split up.  *An earlier draft called 556 KB
+    "larger than" that page; it is slightly smaller, and the comparison was
+    wrong in either unit convention.*
+
+    Args:
+        owner_id: The user the route proved owns the account.
+        account_id: The account.
+        limit: How many acts to render, or ``None`` for the whole record --
+            which is what the tab's own *show the other N* link asks for, and
+            is :func:`~._accepted_view.accepted_register`'s own spelling of the
+            same parameter.
+
+    Returns:
+        The :class:`SkippedRegister`.  Its acts are NEWEST bank day first --
+        the order the locked direction gives every tab on this page
+        (``docs/design/bank_import_audit.md``), ordered in SQL rather than in
+        Python because the reader that builds the list is where an order
+        belongs.  Ties break on the line id descending, so two lines the bank
+        posted on one day keep a STABLE order between renders rather than one
+        a reader comparing screenshots would see move -- **which is also what
+        makes the bound deterministic**: an unstable sort under a ``LIMIT``
+        would render a different 50 on each visit, and the acts it dropped
+        would be reachable only by luck.
+    """
+    # **The WHOLE size and the bounded page in ONE statement.**  A window
+    # ``count`` is evaluated over the filtered set BEFORE ``LIMIT`` applies, so
+    # the total and the rows come from one snapshot and one predicate.  *An
+    # earlier version read the total from a second* :func:`skipped_count`
+    # *call and carried a ``max(..., 0)`` clamp* whose only reachable cause was
+    # a concurrent insert between the two statements -- a race reporting "this
+    # is all of them" over a truncated list, which is the one direction
+    # ``withheld_count`` exists to prevent.  Named by adversarial review.
+    total_over_all = db.func.count().over().label("total")
+    query = (
+        db.session.query(
+            StatementLineSkip.id, BankStatementLine, total_over_all,
+        )
+        .join(
+            BankStatementLine,
+            db.and_(
+                BankStatementLine.id
+                == StatementLineSkip.bank_statement_line_id,
+                BankStatementLine.account_id == StatementLineSkip.account_id,
+            ),
+        )
+        .filter(_mine(owner_id, account_id))
+        .order_by(
+            BankStatementLine.posted_on.desc(),
+            BankStatementLine.id.desc(),
+        )
+    )
+    # **BOUNDED IN SQL, before anything is valued**, which is
+    # :func:`~._accepted_view.accepted_register`'s own rule for its parameter:
+    # a caller slicing this function's RESULT would have hydrated and mapped
+    # every row on the account to drop most of them.
+    if limit is not None:
+        query = query.limit(limit)
+    rows = query.all()
+    # **Read off the rows, so shown and withheld are halves of ONE read.**  No
+    # clamp: an empty result means an empty SET, because a bound is never zero
+    # -- there is no state where nothing was drawn and something was withheld.
+    total = rows[0][2] if rows else 0
+    return SkippedRegister(
+        shown=tuple(
+            SkippedAct(skip_id=skip_id, line=as_bank_line(line))
+            for skip_id, line, _total in rows
+        ),
+        withheld_count=total - len(rows),
+    )

@@ -155,13 +155,19 @@ class StatementLineSkip(UserScopedMixin, CreatedAtMixin, db.Model):
 
     # **THERE IS DELIBERATELY NO ``line`` RELATIONSHIP.**  One was written and
     # removed before this shipped: nothing reads it.  Both doors address the id
-    # columns directly, and the tab that will render a skipped line's card is
-    # plan step ``bank_import:X-gj-4c``'s -- so a relationship here would be an
-    # abstraction one leaf ahead of its only reader, which is what ``CLAUDE.md``
-    # rule 13 forbids.  When 4c needs it, it adds it, joined through the
-    # COMPOSITE key so the account equality travels in the join (finding
-    # **bank_import:N-358**) and ``viewonly`` because the writer states the id
-    # columns.  Named by adversarial design review 2026-09-02.
+    # columns directly, and a relationship here would be an abstraction one
+    # leaf ahead of its only reader, which is what ``CLAUDE.md`` rule 13
+    # forbids.  Named by adversarial design review 2026-09-02.
+    #
+    # **The tab that renders a skipped line's card has SHIPPED, and it did not
+    # need one** (plan step ``bank_import:X-gj-4c-2``).  This comment said
+    # "when 4c needs it, it adds it"; :func:`~app.services.statement_match
+    # ._skipping.skipped_acts` spells the two-term join in its own query
+    # instead, which puts BOTH halves of the composite key in the join -- so
+    # the account equality travels with it (finding **bank_import:N-358**)
+    # exactly as a relationship would have, with no model surface added and
+    # nothing to keep ``viewonly``.  The promise is recorded as KEPT by being
+    # unnecessary rather than deleted silently.
 
     def __repr__(self):
         return (
