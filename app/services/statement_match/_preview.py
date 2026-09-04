@@ -138,7 +138,7 @@ class HandTotals:
             reading of what justified means -- the app has a candidate here
             (the member whose figure is computed rather than stored) and not a
             justification.  **No later step supplies one**: ``X-gj-3b`` was
-            withdrawn 2026-09-02 (**R-JJ**), and ``recurrence:R18`` removes the
+            withdrawn 2026-09-02 (**R-JJ**), and ``salary:R18`` removes the
             CHOICE instead of justifying it, by making one payroll deposit name
             one row.  The control is NOT retired with it -- a genuine multi-row
             group has no computed member, so it has no candidate either.

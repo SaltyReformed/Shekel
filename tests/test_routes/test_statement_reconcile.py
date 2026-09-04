@@ -628,7 +628,7 @@ class TestTheMatchPanePricesWhatIsTicked:
     """
 
     def _a_payroll_deposit_and_its_two_rows(self, seed_user, db):
-        """Stage finding **balance:N-391**'s own case.
+        """Stage finding **salary:N-391**'s own case.
 
         N-239 until `balance:X-aw` retired that row on 2026-08-30 and split
         its bank half off as N-391; `grep -c '| N-239 ' docs/plans/ledger.md`

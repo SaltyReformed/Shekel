@@ -2303,7 +2303,7 @@ def restore_pay_period_derived_columns(db_session):
     general shape -- migration tests in this suite drive their callables at
     HEAD rather than at the revision's own parent -- is a latent category error
     that C4-c is simply the first step to make fire; it is recorded as ledger
-    row ``pay_calendar:P79`` rather than fixed inside this step.*
+    row ``balance:P79`` rather than fixed inside this step.*
 
     No restore is needed afterwards: the ``db`` fixture drops and re-clones the
     per-worker database for every test, so a schema this leaves off head cannot

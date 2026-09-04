@@ -35,7 +35,7 @@ load-bearing:
   renders across all 27 cards -- and every payroll deposit finds its own
   components there, ``2026-03-26``'s `$2,573.42` against
   ``Health Insurance Allowance`` `$100.00` + ``Data Manager`` `$2,473.38`, a
-  difference of `$0.04` (finding **balance:N-391**, which is the bank half
+  difference of `$0.04` (finding **salary:N-391**, which is the bank half
   of the retired **N-239**);
 * the SEARCH is over every unexplained row on the account, because a bound
   that cannot be widened is the cap finding **N-374** refused -- *the row that
