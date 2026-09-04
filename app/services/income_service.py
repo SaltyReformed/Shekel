@@ -164,7 +164,9 @@ def get_current_gross_biweekly(
     return breakdown.earnings.gross_biweekly
 
 
-def project_profile(profile, calendar: PayCalendar) -> list:
+def project_profile(
+    profile, calendar: PayCalendar,
+) -> list[paycheck_calculator.PaycheckBreakdown]:
     """Return one salary profile's paycheck for every payday it is paid on.
 
     **The ONE spelling of a profile's projection, and closing that it was
@@ -304,7 +306,9 @@ class SalaryPricing:
         # salary:R14-a (ledger row N-443): keeping only ``net_pay`` is what
         # put this projection out of the two salary route sites' reach and
         # left one call spelled three times.
-        self._breakdown_by_profile: "dict[int, dict[int, object]]" = {}
+        self._breakdown_by_profile: (
+            "dict[int, dict[int, paycheck_calculator.PaycheckBreakdown]]"
+        ) = {}
 
     def net_for(
         self, template_id: int, pay_period_id: int,
@@ -367,7 +371,9 @@ class SalaryPricing:
             self._profiles = {p.template_id: p for p in profiles}
         return self._profiles
 
-    def _breakdown_by_period(self, profile) -> dict:
+    def _breakdown_by_period(
+        self, profile,
+    ) -> dict[int, paycheck_calculator.PaycheckBreakdown]:
         """Return ``{pay_period_id: PaycheckBreakdown}``, projecting once.
 
         The EXPENSIVE stage, memoized per profile.  Runs
@@ -449,8 +455,15 @@ def salary_net_for(txn, pricing: SalaryPricing) -> "Decimal | None":
     supersede and the repair was deleted rather than left as a second walk to
     one answer (``CLAUDE.md`` rule 14, rulings **R-IZ** / **R-JA**).
 
-    *It became the only spelling of the paycheck DERIVATION at plan step*
-    **salary:R14-a**, *which is finding* **N-443** *closed.*
+    *It became the only spelling of the CALENDAR-WIDE projection at plan
+    step* **salary:R14-a**, *which is finding* **N-443** *closed.*  The
+    qualifier is load bearing and a second adversarial review put it back:
+    ``tax_withholding_service`` and ``tax_report_service`` still run
+    ``project_salary`` themselves over a single tax YEAR with
+    ``tax_configs=``, which is a different question and not a fourth
+    spelling -- the arch test's own predicate says so, and prose that
+    claims more than the test enforces is the wider claim this paragraph
+    was already corrected for once.
     ``routes/salary/views`` and ``routes/salary/cockpit`` each built the same
     ``project_salary`` call over the same calendar, because they render the
     whole breakdown rather than the net -- so the shared leaf had to BE the

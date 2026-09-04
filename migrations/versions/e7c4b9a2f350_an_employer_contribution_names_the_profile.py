@@ -109,6 +109,17 @@ STRANGER's ``salary_profile_id`` onto this owner's row, which ``R14-b`` would
 have priced an employer contribution from.  Both were measured by running the
 pre-fix predicate and the fixed one against the same constructed state.
 
+**Row 5's owner was given a SECOND active profile, and without that detail the
+row is not reproducible** -- a second adversarial review asked for it.  Post-fix
+the stranger's deduction is excluded, so ``naming_profiles`` is 0 and step 2
+decides; with the single active profile the *Measured* table above reports,
+step 2 would legitimately write that profile rather than NULL, and the row
+would demonstrate nothing about owner scoping.  Two active profiles make step 2
+ambiguous, so NULL is the only correct answer and any id proves the stranger's
+profile was taken.  ``tests/test_integration/
+test_employer_contribution_profile_backfill.py`` constructs it the same way and
+says so.
+
 ## Both directions
 
 The upgrade is additive -- a nullable column, an FK and an index -- so no

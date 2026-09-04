@@ -666,9 +666,12 @@ def _salary_answer(txn, basis: AmountBasis) -> Decimal:
     the same calendar to render their own breakdowns, so the derivation was
     written three times.  **That was finding N-443 and plan step salary:R14-a
     closed it**: all three now call
-    :func:`app.services.income_service.project_profile`, so the wider claim is
-    true again for the DERIVATION even though this function still owns only
-    the narrow one -- what a ROW's amount is.
+    :func:`app.services.income_service.project_profile`.  The wider claim
+    is still NOT true and a second adversarial review caught this sentence
+    making it: ``tax_withholding_service`` and ``tax_report_service``
+    derive breakdowns of their own over a single tax YEAR.  What R14-a
+    made single is the CALENDAR-WIDE projection; what this function owns
+    is still only the narrow claim -- what a ROW's amount is.
 
     **The refusal narrowed at that step and is stated as it now is.**  It
     fired where the app held two answers: the read-time producer scoped its

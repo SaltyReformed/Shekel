@@ -41,8 +41,11 @@ _MIGRATION = load_migration_module(
     "e7c4b9a2f350_an_employer_contribution_names_the_profile.py"
 )
 
-#: The pre-fix step-1 predicate, kept verbatim so each test can show what the
-#: broken backfill WOULD have written for the same state.  It differs from the
+#: The pre-fix step-1 predicate, RECONSTRUCTED from the migration comment
+#: that describes it -- the broken SQL was never committed, so there is no
+#: artifact to recover it from and nothing can diff the two.  It is here so
+#: each defect test can show what the broken backfill WOULD have written
+#: for the same state; the grading power is in the POST-fix assertions.  It differs from the
 #: shipped one in exactly the two ways the review found: it tests the
 #: DEDUCTION's ``is_active`` and never the PROFILE's, and it never scopes the
 #: profile to the account's owner.
@@ -262,17 +265,36 @@ class TestTheBackfillPicksTheRightProfile:
         The positive control, and it is not optional: both tests above assert
         that a profile is NOT written, and a backfill that wrote nothing at all
         would satisfy both.  This is the case the column exists for -- an
-        active deduction, on the owner's own active profile, naming the account
-        -- and it must pick that profile over the step-2 fallback, which is why
-        the owner is given a SECOND active profile that step 2 could not
-        choose between.
+        active deduction, on the owner's own active profile, naming the
+        account -- and it must be answered by STEP 1.
+
+        **The decoy profile is created FIRST, and that ordering is the whole
+        test.**  A second adversarial review measured the first draft of this
+        case grading nothing: it created the funder first, so the funder held
+        the lowest id, and step 2's fallback is ``min(p.id)`` -- the same
+        answer by a different route.  Deleting step 1 from the shipped SQL
+        outright left all five tests in this file GREEN.  With the decoy
+        lower, step 2 would answer the DECOY, so the assertion can only pass
+        when step 1 actually ran.  Step 2 is reachable here (this owner has
+        two active profiles but the ``naming_profiles = 1`` arm already
+        satisfies the WHERE), which is exactly why the two arms have to be
+        told apart by their ANSWERS rather than by reachability.
         """
         _none_id, flat_id = employer_type_ids
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
-            funder = _profile(user_id, scenario_id, "Funding Job", is_active=True)
-            _profile(user_id, scenario_id, "Other Job", is_active=True)
+            # The DECOY first, so it holds the lower id and therefore IS
+            # step 2's ``min(p.id)`` answer.  Reverse these two lines and this
+            # test stops grading step 1 at all -- measured.
+            decoy = _profile(user_id, scenario_id, "Other Job", is_active=True)
+            funder = _profile(
+                user_id, scenario_id, "Funding Job", is_active=True,
+            )
+            assert decoy.id < funder.id, (
+                "the decoy must sort below the funder, or step 2's min(p.id) "
+                "returns the funder and this test grades nothing"
+            )
             account, params = _investment_account(
                 user_id, scenario_id, flat_id,
             )
@@ -319,6 +341,17 @@ class TestTheBackfillIsGraded:
         """
         assert _MIGRATION.revision == "e7c4b9a2f350"
         assert _MIGRATION.down_revision == "c8f3a5d2e714"
-        # The two qualifiers the review added are IN the shipped statement.
-        assert "p.is_active" in _MIGRATION._BACKFILL  # pylint: disable=protected-access
-        assert "p.user_id = a.user_id" in _MIGRATION._BACKFILL  # pylint: disable=protected-access
+        # The two qualifiers the review added are IN the NAMING join.
+        #
+        # ``p.is_active`` is asserted as a COUNT rather than by membership: the
+        # ``owner_profile`` CTE carries its own ``WHERE p.is_active``
+        # independently, so a bare ``in`` test passes even with the naming
+        # join's copy deleted -- measured by a second adversarial review, which
+        # dropped that clause and watched this assertion stay green while the
+        # archived-profile control failed alone.
+        backfill = _MIGRATION._BACKFILL  # pylint: disable=protected-access
+        assert backfill.count("p.is_active") == 2, (
+            "expected p.is_active in BOTH the naming join and the "
+            "owner_profile CTE; one of them has been dropped"
+        )
+        assert "p.user_id = a.user_id" in backfill

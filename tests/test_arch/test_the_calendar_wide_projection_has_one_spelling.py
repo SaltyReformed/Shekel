@@ -51,9 +51,11 @@ above -- which a grep cannot do at all.
 What this census CANNOT see
 ---------------------------
 
-Stated because an unstated limit reads as no limit, and
-:func:`test_the_blind_spots_are_the_ones_named` pins every row of it so the
-list cannot rot into a wish.  Each was measured against this scanner:
+Stated because an unstated limit reads as no limit.
+:func:`test_the_blind_spots_are_the_ones_named` pins the FIRST FOUR of the
+five below, which are call shapes it can parse; the fifth is a different
+code shape entirely and no assertion over this scanner can pin it.  Each of
+the four was measured against this scanner:
 
 * ``project_salary(b, p, **{"configs_by_year": c})`` and
   ``project_salary(b, p, **kw)`` -- a ``**`` unpacking is an
@@ -62,10 +64,12 @@ list cannot rot into a wish.  Each was measured against this scanner:
 * ``f = paycheck_calculator.project_salary`` then ``f(...)`` -- an assignment
   alias, where :func:`_local_names` reads only ``ImportFrom``.
 * ``getattr(pc, "project_salary")(...)``.
-* A hand-rolled ``load_tax_configs_for_periods`` plus a per-period
-  :func:`~app.services.paycheck_calculator.calculate_paycheck` loop -- the
-  same duplication in different clothes, and the one a future author is most
-  likely to write.
+* NOT PINNED, and unpinnable here: a hand-rolled
+  ``load_tax_configs_for_periods`` plus a per-period
+  :func:`~app.services.paycheck_calculator.calculate_paycheck` loop.  It
+  calls ``project_salary`` nowhere, so this census cannot see it by
+  construction -- and it is the shape a future author is MOST likely to
+  write, which is why it is named here rather than left implicit.
 
 None of these appears in ``app/`` today.  They are the shapes a reviewer must
 still catch by eye; this test is a floor, not a ceiling.  The census also
