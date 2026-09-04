@@ -41,7 +41,8 @@ item, so it fails the whole request loud (``CLAUDE.md`` rule 4).
 each in the order it was submitted** -- which is the order the screen renders
 them, so the receipt reads down the page.  *This named two arms until plan
 step ``bank_import:X-gj-4b``, and the income arm had been missing from it
-since ``X-gf-1``*: a sentence enumerating the loops is a claim about the code
+since ``X-gf-1``* -- checkable: ``a4db019f`` adds the income loop and does not
+touch this paragraph.  A sentence enumerating the loops is a claim about the code
 below it, so it is re-counted off them rather than appended to.
 
 **SKIP runs LAST, and that is the ruled precedence rather than an arbitrary
@@ -579,25 +580,11 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             # rather than left to whoever adds the next count.
             or self.deposited_count
             # **A skip changes a RECORD, which is what this predicate asks**
-            # -- and it is not a money effect at all, the repeat below it
-            # being the other arm of that kind (plan step
-            # ``bank_import:X-gj-4b``).  **No count is asserted over the arms**,
-            # because the membership test would be undefined: ``redated_count``
-            # corrects a PURCHASE day and :mod:`._receipt_sentences` says in as
-            # many words that it "moves no money at all", so a reader applying
-            # this comment's own words finds three.  A count whose scope is
-            # left to the reader is how "one" survived three passes in
-            # ``outcome_counts``; this one inherited the number and not the
-            # precision, and the census of 2026-09-04 caught it.  *It said
-            # "the one arm", in the same commit that added the second* -- the
-            # identical
-            # said-ONE-while-introducing-TWO shape that took four adversarial
-            # passes to kill in ``outcome_counts``, live in the other home of
-            # the same fact.  Found by pass five 2026-09-04, outside its own
-            # scope.  ``budget.statement_line_skips`` holds
+            # -- and it is not a money effect (plan step
+            # ``bank_import:X-gj-4b``).  ``budget.statement_line_skips`` holds
             # no figure and a skip closes no difference between the books and
-            # the bank, so nothing MOVED; what changed is that four cards left
-            # the inbox and the Skipped tab now holds them.  Without this arm
+            # the bank, so nothing MOVED; what changed is that the skipped
+            # lines left the inbox and the Skipped tab now holds them.  Without this arm
             # a skip-only pass rendered *"Nothing moved.  Everything that was
             # applied confirmed a day you already had"*, whose second sentence
             # is false of an act that confirms no day at all.
@@ -703,15 +690,12 @@ def _run(tally: _Tally, line_ids: "tuple[int, ...]", act) -> object:
 
 # **FOUR ARMS, ONE PER ACT CLASS, and the split is what the fourth forced.**
 # ``apply_reviewed`` ran all four loops inline until plan step
-# ``bank_import:X-gj-4b``, at which point it was 16 locals against a limit
-# of 15, and over the branch limit of 12 as well.  *The branch COUNT is
-# deliberately not stated: this comment claimed 13, and a reviewer who
-# reconstructed the pre-split function by inlining the four helpers measured
-# 14 -- the locals figure reproduced exactly and the branch figure did not.*
-# What is load-bearing is that it was over both limits.  An ordinal nobody
-# can reproduce is the claim this package keeps getting wrong. The honest answer to a function over
-# the
-# limit is to DECOMPOSE it rather than to widen the limit
+# ``bank_import:X-gj-4b``, at which point it was over pylint's locals limit
+# of 15 and its branch limit of 12 -- both of which `.pylintrc` leaves at the
+# default, so both are checkable.  Neither figure it exceeded them BY is
+# stated: those are measurements on an intermediate no commit holds.  The
+# honest answer to a function over the limit is to DECOMPOSE it rather than to
+# widen the limit
 # (``docs/coding-standards.md``), and the seam is the one the value already
 # draws: :class:`ReviewedBatch` carries one list per act class, each reaching
 # its own door and writing its own shape, so one arm per list restates no

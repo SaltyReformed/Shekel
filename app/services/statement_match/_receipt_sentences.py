@@ -3,7 +3,7 @@
 Plan step ``bank_import:X-gj-4b``, split out of :mod:`._batch` under ruling
 **balance:R-IR**, which puts a module split on the session that BREAKS the
 1,000-line bound.  Lighting the SKIP verb gave the receipt a fourth act class
-and took that module to 1,042.
+and took that module past it.
 
 **The seam is :mod:`._sentence`'s, one tier over.**  That module composes the
 sentence a CARD carries, as spans, for a screen that has not acted yet; this
@@ -113,7 +113,8 @@ def created_summary(recorded) -> str:
 
     **It names both days only when they differ.**  A purchase carries the day
     it was MADE beside the day the bank TOOK it (ruling **R-FW**), and on 179
-    of the developer's 361 lines the source states no separate made-day at all
+    of the developer's 361 recorded lines -- measured 2026-08-19 at ``46bec314``
+    on data this repository does not hold -- the source states no made-day
     -- so printing "made on" unconditionally would report the clearing day as a
     swipe day on half of every statement, which is the exact substitution R-FW
     rejected.
