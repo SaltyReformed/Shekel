@@ -78,7 +78,8 @@ Every figure is dated and rests on the developer's own data; re-measure before c
 | the whole raise-blind feed against the engine, over all 63 saved paydays | `$1,646.84` understated (`$898.18` employee + `$748.66` employer); `$562.12` a full year. *Superseded `$137.51`, which was the employer half at ONE raise and did not compound* | 2026-09-03 clone, **D45** |
 | one owner-level gross on a two-job owner, R-F16's reverted fix | a 39% swing that flips between renders with no data change | 2026-08-19, **D45** |
 | the 2026-08-28 calibration applied to the seven RECEIVED March-June paychecks | `$2,454.10 -> $2,483.19`, `+$29.09` each, `+$203.63` over seven | 2026-09-02 clone, **N-441** |
-| the same seven re-derived with the calibration removed, against their generated figure | `$2,473.38 -> $2,454.10`, `-$19.28`, unaccounted for by any audit row | 2026-09-02, **N-442** |
+| the same seven re-derived with the calibration removed, against their generated figure | `$2,473.38 -> $2,454.10`, `-$19.28`; the input is a calibration DELETED 2026-08-28 | 2026-09-04, **N-442** closed |
+| all 12 settled paychecks priced under every calibration the data has held | 11 reproduce under the deleted row, the 12th only under the live one; none reproduces both | 2026-09-04, **N-535** |
 | payroll deposits against the app's rows, seven of seven | `$0.04`-`$0.06` above the app; pricing at the stub's gross collapses it to `$0.00`-`$0.02` | 2026-08-30, **N-391** |
 | live deductions carrying the `24` mode | 11 of 12 | 2026-08-19, **F-21** |
 | the Health Insurance Allowance modelled as a 26-of-26 template | a `$100.00` income row on 2026-07-30 the employer does not pay, stopped only by an `end_date` | 2026-09-02, **D59** |
@@ -94,8 +95,9 @@ Every figure is dated and rests on the developer's own data; re-measure before c
    paycheck" is one entry of it (C12). A second walk is a cache with no column (**balance:R-IZ**).
 2. **Every time-varying input is effective-dated, and the base is per paycheck.** The stored fact is
    what ONE paycheck pays, dated, with the annual figure derived beside it (**balance:R-HW(b)**,
-   X-av); raises already are; a calibration applies forward from its stub's date (**R-SAL4**, S1);
-   inflation escalation anchors on the line's own date, not a row timestamp (X-av).
+   X-av); raises already are; a calibration applies forward from its stub's date (**R-SAL4**, S1)
+   and calibrations ACCUMULATE, none destroyed (**R-SAL9**); inflation escalation anchors on the
+   line's own date, not a row timestamp (X-av).
 3. **A line's cadence is a recurrence RULE against the pay calendar** (**R-SAL3**): a deduction or
    an earnings line names a rule, `NULL` meaning every paycheck, and the engine that already places
    recurring rows decides which paychecks a line lands on. `_deduction_applies_at` and the 26 / 24 /
@@ -113,30 +115,30 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 
 ## 4. Step sequence
 
-- [ ] **S2 -- name the input that moved a past paycheck `-$19.28`** (finding **N-442**).
-      Production's seven March-June 2026 paychecks were generated and settled at `$2,473.38` and
-      re-derive at `$2,454.10` with the calibration removed; the `salary` schema's whole audit trail
-      since generation is one calibration row and one tax edit, and reverting the tax edit moves the
-      answer `$0.00`. What is left is a paycheck-ENGINE change since 2026-03 that no audit trail
-      records, and `balance:X-aw`'s deletion of the biweekly rounding residue (**N-239**) is the
-      named, UNCONFIRMED candidate. **A trace step, not a build**: bisect `paycheck_calculator`
-      against a fixed profile and period on a production clone, name the input, and record whether
-      it is a correction the settled rows should keep as a variance or a regression. It ships as an
-      as-built record and a ledger disposition; the reason it is first is that S1 changes what a
-      past paycheck is EXPECTED to be, and that change is unmeasurable against an unexplained
-      baseline.
-- [ ] **S1 -- a calibration applies FORWARD from its stub's date** (**R-SAL4**; finding **N-441**,
-      and **N-530**'s calibration kind). `salary.calibration_overrides` carries effective tax rates
-      derived from ONE stub on ONE date and stores no date, so entering a stub restates every
-      paycheck the owner ever had: `+$29.09` on each of seven RECEIVED paychecks, visible since
-      `balance:X-au-d` made a settled row's plan a derivation. The remedy the developer ruled on
-      2026-09-02: an effective date on the row, a migration backfilling the existing row at its
-      stub's date, and the engine resolving the calibration per period as it resolves a raise --
-      applied from its date forward and never before. **It can never move a balance** (a settled row
-      is worth what it recorded); what it moves is the EXPECTED figure and the variance shown beside
-      it. The row's "derived effective rates" that nothing recomputes (**N-530**) are decided here:
-      the rates derive from the stub's stated figures at read, or the stub's figures are the stored
-      fact and the rates go (**balance:R-IY**). A migration; own review pass.
+- [x] **S2 -- the `-$19.28` was a DELETED calibration, not the engine.** `08638f61`.
+      `calibration_overrides` id 2 was deleted 2026-08-28 in the act that inserted id 3
+      (`system.audit_log` 4212/4213). Eleven settled paychecks re-derive `$0.00` under it and the
+      twelfth only under the live one, so none alone reproduces the record; `balance:X-aw` refuted.
+      Closed **N-442**, opened **N-535**, ruled **R-SAL9**. As-built:
+      `historical/salary_s2_as_built_2026-09-04.md`.
+- [ ] **S1 -- a calibration is a DATED OBSERVATION and is never destroyed** (**R-SAL9**, amending
+      **R-SAL4**; findings **N-441**, **N-535**, and **N-530**'s calibration kind).
+      `salary.calibration_overrides` carries effective rates derived from ONE stub on ONE date and
+      stores no date, so entering a stub restates every paycheck the owner ever had: `+$29.09` on
+      each of seven RECEIVED paychecks, visible since `balance:X-au-d` made a settled row's plan a
+      derivation. **And the write door REPLACES**, so the stub that priced the eleven earlier
+      paychecks is already gone (**N-535**, measured at S2). Three parts, ruled 2026-09-04: an
+      effective date on the row, backfilled at its stub's date; the calibration deleted 2026-08-28
+      RESTORED from `system.audit_log` id 4212's `old_data` as a second dated row; and the door made
+      to ADD rather than replace. The engine then resolves the calibration in force for each period
+      as it resolves a raise, and all 12 settled paychecks re-derive to their generated figure.
+      **Dating the survivor ALONE was rejected**: it resolves no calibration before 2026-08-27 and
+      costs `-$334.32` on the 2026 net total the projection page and the cockpit show.
+      **It can never move a balance** (a settled row is worth what it recorded); what moves is the
+      EXPECTED figure and the variance beside it. The row's "derived effective rates" that nothing
+      recomputes (**N-530**) are decided here: the rates derive from the stub's stated figures at
+      read, or the stub's figures are the stored fact and the rates go (**balance:R-IY**). A
+      migration; own review pass.
 - [ ] **R14 -- what a payroll deduction's gross is priced from** -- the DECOMPOSED parent, split
       2026-09-03 (**R-SAL6**) into the EXPAND and the MONEY, because an additive migration is graded
       by its backfill's branches and a money cutover by what it moves against a named input set.
