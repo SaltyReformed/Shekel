@@ -458,7 +458,7 @@ class InflowPlacement:
             the answer it describes.
         unresolved_reason: One sentence saying why the rule does not reach this
             line, or ``None`` when it does.  **Exactly one of the two is set**,
-            which is :attr:`~._bars.ParkedLine.answer_door`'s own idiom: a
+            which is :attr:`~._bars.BarredLine.answer_door`'s own idiom: a
             value that could carry a destination AND a reason not to use it is
             two answers to one question.
     """

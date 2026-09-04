@@ -46,7 +46,7 @@ from ._already_held import (
     ArrivalsAlreadyHeld,
     arrivals_already_held,
 )
-from ._bars import ParkedLine
+from ._bars import BarredLine
 from ._gaps import ReviewBounds, bounded_lines, search_gap
 from ._leftovers import CreatableLine, RecordableInflow, leftovers
 from ._propose import propose
@@ -258,19 +258,38 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             rule names -- and the inflows here are exactly the ones a container
             answer claims.  Every other inflow is in
             :attr:`recordable_inflows`.  **A line that ruling R-GJ bars is not
-            here** -- it is in :attr:`parked` -- so this
-            list is exactly the lines a create control may be rendered for,
-            and the screen cannot render one for a line the door would refuse.
-        parked: The unmatched lines that may NOT become purchases, IN BOTH
-            DIRECTIONS (it said OUTFLOW until plan step
+            here** -- it is in :attr:`parked` or :attr:`answered_never` -- so
+            this list is exactly the lines a create control may be rendered
+            for, and the screen cannot render one for a line the door would
+            refuse.  *That was one list until plan step
+            ``bank_import:X-gj-4c``*, and both halves are still out of this
+            one: which of the two a barred line is in decides where it
+            RENDERS, never whether the create door would take it.
+        parked: The unmatched lines a source files as paying an account the
+            owner holds, IN BOTH DIRECTIONS (it said OUTFLOW until plan step
             ``bank_import:X-gj-2b-3``; see :attr:`~._leftovers.Leftovers.parked`,
             which this is assigned from verbatim), with
-            the reason each may not (:class:`~._bars.ParkedLine`, ruling
-            **R-GJ**).  Its two arms are a merchant the owner answered *never a
-            purchase* and a merchant a source files as a payment to a credit
-            card that they have not answered for at all.  They are still in
+            the reason each may not become a purchase
+            (:class:`~._bars.BarredLine`, ruling **R-GJ**).  They are still in
             ``unmatched``, so the group-match arm the ruling leaves open is
             reached exactly as it was.
+
+            **It held BOTH of ruling R-GJ's arms until plan step
+            ``bank_import:X-gj-4c``** -- a merchant the owner answered *never a
+            purchase* and a merchant a source files as an account payment --
+            and ruling **bank_import:R-JH** separated them, because only the
+            second is a disposition.  A line carrying BOTH bars is here, since
+            the money did move between two of the owner's accounts whatever
+            else they said about it.
+        answered_never: The unmatched lines barred ONLY by the owner's own
+            *never a purchase* answer (:class:`~._bars.BarredLine`, ruling
+            **bank_import:R-JH**, plan step ``bank_import:X-gj-4c``).  **Inbox
+            work, and that is the whole of the ruling**: the answer shuts the
+            ADD door and claims nothing about what the line IS, since a
+            paycheck is not a purchase either -- so these are rendered under
+            *Nothing suggested* keeping MATCH, rather than filed as though the
+            owner had disposed of them.  A SUBSET of ``unmatched`` like the
+            two lists above it.
         recordable_inflows: The unmatched INFLOW lines, each with the period
             that would hold it (:class:`RecordableInflow`, ruling **bank_import:R-GW**).
             The mirror of ``creatable`` on the direction that had no door at
@@ -301,10 +320,14 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         merchants: The queue's rule control
             (:class:`~._section.MerchantSection`) -- the merchants this pass
             has an unexplained outflow for and the owner has NEVER answered
-            about, which is a decision they owe.  **It counts** ``parked``
-            **beside** ``creatable``, because a merchant a source files as an
-            account payment is parked for want of an answer and this is the
-            control that gives one.  An ANSWERED merchant is on the register
+            about, which is a decision they owe.  **It counts EVERY list a
+            line can land in**, because a merchant a source files as an account
+            payment is barred for want of an answer and this is the control
+            that gives one.  *It said* ``parked`` *beside* ``creatable`` *until
+            plan step ``bank_import:X-gj-4c``*, when ``answered_never`` became
+            a third: those lines were inside ``parked`` and therefore already
+            counted, so naming two lists after the split would have narrowed
+            this control silently.  An ANSWERED merchant is on the register
             instead (ruling **bank_import:R-GX**).
         bounds: What this pass did NOT look at (:class:`ReviewBounds`).
         declined_lines: WHAT THIS PASS CONSIDERED and would not conclude
@@ -330,7 +353,8 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     unmatched: "tuple[BankLine, ...]"
     unmatched_rows: "tuple[CandidateRow, ...]"
     creatable: "tuple[CreatableLine, ...]"
-    parked: "tuple[ParkedLine, ...]"
+    parked: "tuple[BarredLine, ...]"
+    answered_never: "tuple[BarredLine, ...]"
     recordable_inflows: "tuple[RecordableInflow, ...]"
     merchants: MerchantSection
     bounds: ReviewBounds
@@ -825,6 +849,7 @@ def review_set(scope: ReviewScope) -> ReviewSet:
             _already_held_by_line(parts.creatable, never_shown),
         ),
         parked=parts.parked,
+        answered_never=parts.answered_never,
         recordable_inflows=parts.recordable_inflows,
         merchants=parts.merchants,
         bounds=bounds,

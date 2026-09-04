@@ -165,22 +165,34 @@ class TestALineWithNoAvailableActNeverEntersTheInbox:
         assert any("Capital One" in note for note in card.panel.notes)
 
 
-class TestAStandingNeverAnswerIsAlreadyASkip:
-    """Ruling **R-HP**: a line deliberately explained by nothing is SKIPPED.
+class TestAStandingNeverAnswerIsNotADisposition:
+    """Ruling **bank_import:R-JH**, plan step ``bank_import:X-gj-4c``.
 
-    **This arm has never rendered on the developer's data and is built
-    anyway**, because the predicate is real and the data is one account's:
-    measured 2026-08-29, all 9 of his parked lines carry BOTH bars, so every
-    one is a transfer.  A merchant he answers *never a purchase* for that no
-    source files as an account payment is the case with only the first.
+    **It REPLACES** ``TestAStandingNeverAnswerIsAlreadyASkip``, and the
+    replacement is what ``CLAUDE.md`` rule 5's one exception looks like: the
+    developer confirmed the expected behaviour CHANGED.  That class asserted a
+    *never a purchase* answer put its line on the SKIPPED tab in the past
+    tense, on the argument that the standing answer WAS the disposition.  It
+    is not one: *not a purchase* is not *explained by nothing* -- a paycheck is
+    neither and a transfer to savings is neither -- so the answer shuts the ADD
+    door and claims nothing about what the line IS.
 
-    **It needs none of** ``X-gj-4``'s **store**: the standing answer IS the
-    disposition, so the Skipped tab has members before a disposition column
-    exists.
+    **The deleted arm was REACHABLE, and that is why this class exists rather
+    than the deletion standing alone.**  A first draft of R-JH called it
+    structurally memberless; the class it replaces was a PASSING test in this
+    repository proving otherwise, on exactly the staging below.  So the
+    deletion rests on the semantic argument and on nothing else, and what the
+    old cases measured -- that such a line exists and lands somewhere -- is
+    measured here against the destination the ruling gives it.
     """
 
     def _a_never_answered_swipe(self, seed_user, db):
         """Stage one outflow whose merchant the owner has answered NEVER for.
+
+        **An ordinary swipe merchant and NOT a card payment**, which is the
+        whole population of this class: a line whose source ALSO files it as
+        paying an account the owner holds is a transfer whatever they said, and
+        is graded by :class:`TestALineWithNoAvailableActNeverEntersTheInbox`.
 
         Args:
             seed_user: The seeded user bundle.
@@ -196,37 +208,117 @@ class TestAStandingNeverAnswerIsAlreadyASkip:
         a_rule(seed_user, "Foundation Donation")
         db.session.commit()
 
-    def test_it_lands_on_SKIPPED_and_not_on_transfers(
+    def test_it_is_INBOX_WORK_and_on_neither_holding_tab(
         self, app, db, seed_user,
     ):
-        """The two bars are different kinds of fact and may not be collapsed.
+        """The line is unexplained, so the hero counts it and the tabs do not.
 
-        Filing the owner's own decision under Transfers would tell them their
-        bank had decided for them -- which is the collapse
-        :class:`~app.services.statement_match._bars.CreationBar` exists to
-        refuse.
+        **``Tab.SKIPPED`` at zero is the half that used to be one**, and
+        ``Tab.TRANSFERS`` at zero is the half that must not become one: leaving
+        the line in ``parked`` and merely dropping the tab arm would total that
+        list on TRANSFERS, whose chip renders a COUNT and a MAGNITUDE -- a
+        money figure over a line no source filed as a payment.
         """
         self._a_never_answered_swipe(seed_user, db)
 
         counts = _counts(_page(seed_user, Tab.TO_EXPLAIN))
 
-        assert counts[Tab.SKIPPED] == 1
+        assert counts[Tab.TO_EXPLAIN] == 1
+        assert counts[Tab.SKIPPED] == 0
         assert counts[Tab.TRANSFERS] == 0
-        assert counts[Tab.TO_EXPLAIN] == 0
 
-    def test_its_sentence_is_PAST_tense_and_names_the_answer(
+    def test_the_TRANSFERS_chip_counts_and_SUMS_neither_of_these_lines(
         self, app, db, seed_user,
     ):
-        """The decision has already been made, so the card reports it."""
+        """**A MIXED population, which is the only staging that can fail.**
+
+        Rulings **R-JH** and **R-JI** both turn on the same fact: the Transfers
+        chip's label carries a COUNT and a MAGNITUDE, so a line arriving there
+        arrives under a rendered money figure.  A single-card-payment case
+        cannot tell a correct sum from one that also added the swipe, because
+        there is nothing else to add; this stages both and asserts the figure
+        excludes the `$4.00`.
+        """
+        self._a_never_answered_swipe(seed_user, db)
+        an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        page = _page(seed_user, Tab.TO_EXPLAIN)
+        chip = next(
+            one for one in page.chips if one.tab is Tab.TRANSFERS
+        )
+
+        assert chip.count == 1
+        assert chip.amount == Decimal("793.23")
+        assert _counts(page)[Tab.TO_EXPLAIN] == 1
+
+    def test_it_reads_NOTHING_SUGGESTED_and_proposes_no_verb(
+        self, app, db, seed_user,
+    ):
+        """The app has not worked out what this is, and says so.
+
+        A card suggesting SKIP would be the app stating a disposition on the
+        strength of an answer that claims nothing about the line -- which is
+        the sentence ``_sentence.for_parked_never`` composed and this step
+        deleted.
+        """
         self._a_never_answered_swipe(seed_user, db)
 
-        card = _cards(_page(seed_user, Tab.SKIPPED))[0]
+        page = _page(seed_user, Tab.TO_EXPLAIN)
+        section = page.sections[0]
+        card = section.cards[0]
         said = " ".join(span.text or "" for span in card.sentence)
 
-        assert card.suggested is Verb.SKIP
-        assert said.startswith(Verb.SKIP.past)
-        assert "is never a purchase" in said
+        assert section.section is statement_match._cards.Section.NOTHING
+        assert card.suggested is None
         assert card.offers_ok is False
+        assert Verb.SKIP.past not in said
+
+    def test_ADD_is_shut_and_carries_the_owner_s_own_reason(
+        self, app, db, seed_user,
+    ):
+        """R-GJ's bar is unchanged; only where its line renders moved.
+
+        The reason is in the panel both ways ruling **R-JH** asks for: as the
+        ADD verb's own refusal, and as a note the opened card prints without
+        the reader having to find the tab.
+        """
+        self._a_never_answered_swipe(seed_user, db)
+
+        card = _cards(_page(seed_user, Tab.TO_EXPLAIN))[0]
+        add = card.panel.offer_for(Verb.ADD)
+
+        assert add.is_open is False
+        assert "is never a purchase" in add.waiting_for
+        assert card.panel.add is None
+        assert any(
+            "is never a purchase" in note for note in card.panel.notes
+        )
+
+    def test_MATCH_stays_open_and_the_answer_door_is_offered(
+        self, app, db, seed_user,
+    ):
+        """**Why R-HQ is not breached by putting this line in the inbox.**
+
+        A line with no available act is a holding state; this one keeps MATCH,
+        so it is work.  And unlike a card payment it has a door worth naming:
+        the owner gave this answer and can give another, which
+        :attr:`~._bars.BarredLine.answer_door` withholds for a bar no answer
+        lifts.
+        """
+        a_transaction(seed_user, name="Groceries", is_envelope=True)
+        self._a_never_answered_swipe(seed_user, db)
+
+        card = _cards(_page(seed_user, Tab.TO_EXPLAIN))[0]
+
+        assert card.panel.offer_for(Verb.MATCH).is_open is True
+        assert card.takes_ok is True
+        assert card.panel.answer_door == (
+            "Change what you have said about Foundation Donation"
+        )
 
 
 class TestAnUNANSWEREDInflowIsNeverPreFilled:

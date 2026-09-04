@@ -394,7 +394,7 @@ class TestWhatTheScreenSaysInstead:
         """A surface with a URL links the act; one without prints it.
 
         They are separate strings for that reason, so neither restates the
-        other's half -- ``ParkedLine.reason`` / ``answer_door``'s shape.  A
+        other's half -- ``BarredLine.reason`` / ``answer_door``'s shape.  A
         single string would force every surface without a URL to render an
         anchor's words as prose or drop the remedy.
         """

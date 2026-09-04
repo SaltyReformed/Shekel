@@ -3255,7 +3255,7 @@ class TestEveryExceptionLinksToTheTool:
     about the act rather than a shortcut: every line the three cards show is in
     ``review.unmatched``, which is exactly the set the workbench renders a
     checkbox for, so there is no line here the tool cannot take.  Compare
-    ``ParkedLine.answer_door`` beside it, which the service withholds on 9 of 9
+    ``BarredLine.answer_door`` beside it, which the service withholds on 9 of 9
     of the developer's parked lines because restating that answer would change
     nothing.
     """
@@ -3297,7 +3297,7 @@ class TestEveryExceptionLinksToTheTool:
         A card payment meets the payback rows it repays by being ticked beside
         them.  The reason beside such a line USED to end "tick them together
         below and match them" -- a sentence composed in the SERVICE
-        (``ParkedLine.reason``) naming a position on a page the service cannot
+        (``BarredLine.reason``) naming a position on a page the service cannot
         see.  It states the bar now, and this link states the act.
         """
         an_envelope(seed_user)

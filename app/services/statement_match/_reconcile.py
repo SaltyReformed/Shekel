@@ -25,23 +25,41 @@ the cards of ONE tab and takes the other four's counts from
 tab                  source
 ===================  ==========================================================
 To explain           the pass: :attr:`~._reads.ReviewSet.proposals`,
-                     ``creatable`` and ``recordable_inflows``, in three
-                     sections by what SUGGESTED the verb (**R-HP**)
+                     ``creatable``, ``recordable_inflows`` and
+                     ``answered_never``, in three sections by what SUGGESTED
+                     the verb (**R-HP**)
 Explained            :func:`~._accepted_view.accepted_register`, acts a person
                      ticked
 Filed by rules       :func:`~._accepted_view.accepted_register` narrowed to
                      the acts a standing rule performed (**R-GT**)
-Transfers            the pass's ``parked`` lines a source files as paying an
-                     account the owner holds -- a HOLDING state (**R-HQ**),
-                     never inbox work
-Skipped              the pass's ``parked`` lines the owner has answered *never
-                     a purchase* for, whose standing answer IS the disposition
+Transfers            the pass's ``parked`` lines, which a source files as
+                     paying an account the owner holds -- a HOLDING state
+                     (**R-HQ**), never inbox work
+Skipped              the acts recorded in ``budget.statement_line_skips``.
+                     **It holds nothing in this build and cannot**, which is
+                     stated below
 ===================  ==========================================================
+
+**THE SKIPPED TAB IS EMPTY BY CONSTRUCTION HERE, AND THAT IS AN ORDERING
+RATHER THAN A GAP.**  It listed the pass's barred lines the owner had answered
+*never a purchase* for, on the argument that the standing answer WAS the
+disposition; ruling **bank_import:R-JH** refuted that -- *not a purchase* is
+not *explained by nothing* -- and plan step ``bank_import:X-gj-4c`` returned
+those lines to the inbox.  What belongs on this tab is the recorded SKIP act
+``X-gj-4a`` built the store for, and no door in the app records one yet:
+:func:`~._skipping.skip_line` is exported and nothing calls it, because
+``X-gj-4b`` is what lights the verb.  So the count is 0 for every account and
+the tab renders its empty state.  The reader over that store is the second
+half of this step and lands BEFORE the verb, which is the order **R-GY** and
+**R-HU** put a result's home ahead of the control that fills it.
 
 **A line with no available act never enters To explain** (**R-HQ**).  That is
 what makes the inbox reach zero: measured 2026-08-29 on the developer's own
 account, 9 of the 27 unexplained lines are card payments no screen in the app
-can resolve, and a queue that cannot empty is not a queue.
+can resolve, and a queue that cannot empty is not a queue.  **A line the owner
+answered *never a purchase* for HAS one** -- it keeps MATCH and gains SKIP at
+``X-gj-4b`` -- which is why **R-JH** puts it back in the inbox without
+breaching this.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
 frozen dataclasses out, no Flask import, no clock read.  The two reads it does
@@ -74,7 +92,6 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
 
     from app.services.bank_agreement import BankAgreement
 
-    from ._bars import ParkedLine
     from ._last_import import LastImport
     from ._reads import ReviewSet
     from ._scope import ReviewScope
@@ -345,7 +362,7 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             :attr:`unexamined`, because unlike every sentence in that tuple
             this one ends in an ACT, and the template has to render that act
             as a link -- which is the one fact a service may not build
-            (:attr:`~._bars.ParkedLine.answer_door`).
+            (:attr:`~._bars.BarredLine.answer_door`).
     """
 
     tab: Tab
@@ -377,35 +394,6 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             and self.hero.unpriced_after == 0
             and self.hero.to_explain == 0
         )
-
-
-def _parked_tab(parked: "ParkedLine") -> Tab:
-    """Return which holding tab one parked line belongs on.
-
-    **The bank's OBSERVATION decides, not the owner's answer**, and the two
-    bars are different kinds of fact (:class:`~._bars.CreationBar`): a source
-    filing this merchant as paying an account the owner holds is an
-    observation about where the money went, and *never a purchase* is a
-    decision they made.  A line carrying BOTH is a TRANSFER, because the
-    money did move between two accounts whatever the owner also said about it
-    -- and filing it under Skipped would tell them they had disposed of
-    money the app is still waiting to pair.
-
-    **A line carrying only the owner's answer is already SKIPPED**, by that
-    standing answer rather than by a stored disposition, which is why the
-    Skipped tab needs none of ``X-gj-4``'s store to have members.
-
-    Measured 2026-08-29 on the developer's own account: 9 of 9 parked lines
-    carry both bars, so every one is a transfer and the Skipped arm has never
-    rendered on his data.
-
-    Args:
-        parked: The :class:`~._bars.ParkedLine`.
-
-    Returns:
-        :attr:`Tab.TRANSFERS` or :attr:`Tab.SKIPPED`.
-    """
-    return Tab.TRANSFERS if parked.also_pays_an_account else Tab.SKIPPED
 
 
 def _sweeps(sections: "tuple[CardSection, ...]") -> "tuple[Sweep, ...]":
@@ -660,17 +648,37 @@ def reconcile_page(
     # the index was derived over 248 cards and 11 periods for a value nobody
     # read.  ``accounts.statement_reconcile_match`` builds it now, once per
     # opened tab, which is where it is looked at.
-    parked = tuple(
-        (_parked_tab(one), parked_card(review, one))
-        for one in review.parked
-    )
     # **The two holding tabs, keyed by the tab that owns them.**  A mapping
-    # rather than two tuples threaded side by side, so a third holding state
-    # -- ``X-gj-4``'s recorded disposition is the one already ruled -- adds a
-    # key here and an arm to :func:`_parked_tab`, and no signature grows.
+    # rather than two tuples threaded side by side, so a holding state added
+    # later adds a key here and no signature grows.
+    #
+    # **WHICH TAB A BARRED LINE IS ON IS THE PASS'S ANSWER NOW, NOT THIS
+    # FUNCTION'S** (ruling **bank_import:R-JH**, plan step
+    # ``bank_import:X-gj-4c``).  A private ``_parked_tab`` read one ``parked``
+    # list and answered *Transfers or Skipped*; the second answer was wrong,
+    # and moving the split into :func:`~._leftovers._creatable_lines` is what
+    # makes it unrepresentable here rather than merely unreachable -- the lines
+    # it used to send to Skipped are not in ``parked`` at all, so they cannot
+    # be counted onto the Transfers chip, whose label carries a MAGNITUDE.
+    #
+    # ``Tab.SKIPPED`` holds the recorded SKIP acts and gets its reader with
+    # the second half of this step; until ``X-gj-4b`` lights the verb no door
+    # records one, so the empty tuple is this account's real answer rather
+    # than a placeholder (the module docstring carries the whole argument).
+    #
+    # **``X-gj-4b`` MAY NOT PRECEDE ``X-gj-4c-2``, and this line is why.**  The
+    # moment a door records a skip, :func:`~._undisposed.undisposed` drops that
+    # line from the pass -- and with this tuple hard-coded the tab would not
+    # show it either, so the line would leave EVERY surface with no way back.
+    # Nothing in the code refuses that ordering; the blocker in
+    # ``docs/plans/steps.md`` is what holds it, which is plan discipline rather
+    # than a structural refusal.  Named by adversarial design review
+    # 2026-09-03.
     holding = {
-        where: tuple(card for tab_, card in parked if tab_ is where)
-        for where in (Tab.TRANSFERS, Tab.SKIPPED)
+        Tab.TRANSFERS: tuple(
+            parked_card(review, one) for one in review.parked
+        ),
+        Tab.SKIPPED: (),
     }
     transfers = holding[Tab.TRANSFERS]
     counts = accepted_counts(scope.owner_id, scope.account_id)
@@ -687,6 +695,23 @@ def reconcile_page(
         })
         + len(review.creatable)
         + len(review.recordable_inflows)
+        # **The lines a standing *never a purchase* answer bars are WORK**
+        # (ruling **bank_import:R-JH**), so the hero counts them.  They were
+        # on a holding tab and counted nowhere here until plan step
+        # ``bank_import:X-gj-4c``.
+        #
+        # **It NARROWS a standing disagreement with the grid's badge and does
+        # not close it.**  :func:`~._undisposed.awaiting_review_count` has
+        # counted these lines all along -- a bar is not one of the four
+        # predicates it splits on -- so this figure moves toward it by
+        # ``len(answered_never)``.  What still parts them is ``parked`` and the
+        # impossible-day lines, which that count admits and this one does not,
+        # because the two answer different questions: it counts every line no
+        # ACT has answered, and this counts the ones the inbox is asking
+        # about.  Recorded rather than repaired here: which of the two a badge
+        # linking to this page should render is a decision, not a defect this
+        # step may take unilaterally.
+        + len(review.answered_never)
     )
 
     sections = _tab_sections(scope, review, tab, holding, limit)

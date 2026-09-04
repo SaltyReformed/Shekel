@@ -204,7 +204,7 @@ class VerbPanel:
             sixteen times.
         answer_door: The sentence naming where a standing answer that parks
             this line is changed, or ``None`` where changing it would change
-            nothing (:attr:`~._bars.ParkedLine.answer_door`).
+            nothing (:attr:`~._bars.BarredLine.answer_door`).
         add: What ADD offers (:class:`AddTab`), or ``None`` where this line's
             mechanism offers no ADD act at all.
         proposal: The match a tier offers for this line

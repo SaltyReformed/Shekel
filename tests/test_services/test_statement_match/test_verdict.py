@@ -391,7 +391,8 @@ def _review(creatable):
     """
     return ReviewSet(
         proposals=(), unmatched=(), unmatched_rows=(),
-        creatable=creatable, parked=(), recordable_inflows=(),
+        creatable=creatable, parked=(), answered_never=(),
+        recordable_inflows=(),
         merchants=MerchantSection(merchants=(), templates=()),
         bounds=_bounds(),
     )

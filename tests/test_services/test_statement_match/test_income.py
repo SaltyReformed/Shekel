@@ -1033,6 +1033,12 @@ class TestWhichLinesGetAnActAndWhichSTILLDoNot:
 
         assert review.creatable == ()
         assert review.parked == ()
+        # **The fourth list, added by plan step ``bank_import:X-gj-4c``.**
+        # ``unmatched`` holding the line does not exclude it: the other three
+        # are all SUBSETS of ``unmatched``, so "no control anywhere" is a claim
+        # about every one of them and an enumeration missing one is a claim
+        # about three.
+        assert review.answered_never == ()
         assert review.recordable_inflows == ()
         assert [item.line_id for item in review.unmatched] == [line.id]
         assert review.bounds.impossible_day_count == 1
