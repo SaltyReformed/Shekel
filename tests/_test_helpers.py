@@ -5544,6 +5544,71 @@ def make_loan_payment_template(
     return template
 
 
+def make_retired_loan_payment(
+    db_session, seed_user, *, origination_date, cleared_on, payment_day=1,
+    name="Retired Loan",
+):
+    """Create a MONTHLY loan payment whose loan was trued to ZERO on *cleared_on*.
+
+    The fixture the three surfaces that read a definition's stop share since
+    plan step R7d-e -- the Recurring surface, the obligations aggregator and
+    the ``/savings`` floor -- because each asserts the same money fact: a
+    payment against a loan that is finished leaves the committed totals on the
+    day the loan closed.  One builder, so the three cannot describe three
+    different loans.
+
+    The loan is ``$12,000.00`` at 5% over 24 months, originating
+    *origination_date* with the contractual *payment_day*; its first
+    installment is that day of the month AFTER origination
+    (``rate_period_engine.first_installment_date``: a loan closed 2026-05-01
+    with a ``payment_day`` of 1 owes first on 2026-06-01, not on the day it
+    closed).  The true-up to ``$0.00`` on *cleared_on* retires it, so its
+    closing date is
+    *cleared_on* -- the day it LAST became closed (plan step ``recurrence:R7d-h``)
+    -- and the definition has fired once wherever *cleared_on* follows the
+    first installment, so the derived stop is a date and not "never runs".
+
+    The payment is bound to the loan through the production door for the
+    OPENING bound (``bind_rule_to_loan``), so ``starts_on`` is the contract's
+    first installment rather than a fixture day.  **Its ``end_date`` column is
+    left NULL**: nothing stored could supply the stop, so whatever a reader
+    names about it came from the derivation.
+
+    Args:
+        db_session: The test ``db.session``.
+        seed_user: The ``seed_user`` fixture dict (the owner and the checking
+            account the payment leaves from).
+        origination_date: The loan's origination date.
+        cleared_on: The day the balance is trued to zero.
+        payment_day: The contractual day of the month (default 1).
+        name: The loan account's name.
+
+    Returns:
+        ``(loan, template)``, committed.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.loan_recurrence_sync import bind_rule_to_loan
+    from tests.oracles.recurrence_baseline import MONTHLY
+
+    loan = create_loan_account(
+        seed_user, db_session, name=name,
+        principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
+        origination_date=origination_date, payment_day=payment_day,
+    )
+    insert_trueup_event(
+        loan_params_for(db_session, loan.id), Decimal("0.00"),
+        anchor_date=cleared_on,
+    )
+    template = make_loan_payment_template(
+        db_session, seed_user, loan, cadence=MONTHLY, fires_on_day=payment_day,
+    )
+    bind_rule_to_loan(template.recurrence_rule, loan.id)
+    db_session.commit()
+    return loan, template
+
+
 def make_appreciating_account(seed_user, db_session, anchor_period, balance, rate):
     """Create a Property account (APPRECIATING) with AssetAppreciationParams.
 

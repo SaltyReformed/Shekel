@@ -32,10 +32,9 @@ from app.extensions import db
 from tests._test_helpers import (
     create_loan_account,
     freeze_today,
-    insert_trueup_event,
-    loan_params_for,
     make_cadence_rule,
     make_loan_payment_template,
+    make_retired_loan_payment,
 )
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
@@ -49,10 +48,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service, balance_at, recurring_view
 from app.services.balance_at import BalanceContext
-from app.services.loan_recurrence_sync import (
-    bind_rule_to_loan,
-    owns_validity_window,
-)
+from app.services.loan_recurrence_sync import owns_validity_window
 from app.services.obligations_aggregator import committed_monthly
 from app.services.pay_calendar import (
     PayCadence,
@@ -317,12 +313,11 @@ class TestSubtotals:
         e2 = _create_expense(seed_user, MONTHLY, Decimal("500.00"), name="B", day_of_month=15)
         as_of = date.today()
 
-        view = recurring_view.build_view(
-            [], [e1, e2], [], _ctx(seed_user),
-        )
+        ctx = _ctx(seed_user, as_of)
+        view = recurring_view.build_view([], [e1, e2], [], ctx)
         assert view.expenses.subtotal.monthly == Decimal("716.67")
         assert view.expenses.subtotal.monthly == committed_monthly(
-            [e1, e2], as_of, _calendar(seed_periods_today),
+            [e1, e2], ctx,
         )
 
     def test_subtotal_per_paycheck_derives_from_monthly(
@@ -791,22 +786,12 @@ def _retired_loan_payment(seed_user):
     Returns:
         ``(loan, template)``, committed.
     """
-    loan = _loan(
-        seed_user, name="Retired Loan",
-        origination_date=date(2026, 5, 1), payment_day=1,
+    # The shared builder since plan step R7d-e, so the aggregator's and the
+    # /savings floor's retired-loan cases describe THIS loan and not a cousin.
+    return make_retired_loan_payment(
+        db.session, seed_user,
+        origination_date=date(2026, 5, 1), cleared_on=date(2026, 6, 15),
     )
-    insert_trueup_event(
-        loan_params_for(db.session, loan.id), Decimal("0.00"),
-        anchor_date=date(2026, 6, 15),
-    )
-    tpl = make_loan_payment_template(
-        db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
-    )
-    # The production door for the OPENING bound, so ``starts_on`` is the
-    # contract's first installment rather than a fixture day.
-    bind_rule_to_loan(tpl.recurrence_rule, loan.id)
-    db.session.commit()
-    return loan, tpl
 
 
 class TestTheDestinationsStopReachesTheRow:
@@ -907,9 +892,10 @@ class TestTheDestinationsStopReachesTheRow:
         archived loan payment is no longer that -- so the column the chokepoints
         wrote while it was active is read in the Archived drawer as its owner's
         bound, and a cache EARLIER than the derived stop still binds the drawer
-        row.  The drawer is not the cache's only remaining reader: the monthly
-        equivalent on this surface, the edit form and generation off it read
-        the column too.  The schema records who wrote a bound nowhere, so no
+        row.  The drawer is not the cache's only remaining reader: the edit
+        form and generation off it read the column too (the monthly equivalent
+        on this surface stopped at plan step R7d-e, when the aggregator took
+        the door).  The schema records who wrote a bound nowhere, so no
         predicate can tell this cache from an owner's date, and plan step R7d-g
         must DECIDE archived loan payments rather than sweep them (ledger row
         D56, an open fork).
@@ -955,11 +941,14 @@ class TestTheDestinationsStopReachesTheRow:
         payment against a debt that is gone -- which is exactly what the
         NEVER_ENDS column showed before this step.
 
-        The monthly equivalent is NOT asserted here.  It comes from
-        ``obligations_aggregator.template_monthly_or_none``, which still reads
-        the authored bound alone; moving it onto the door is plan step R7d-e's
-        leaf, and until then a retired loan's row states a monthly figure
-        beside a stop line that says the money has stopped.
+        **The monthly equivalent is asserted too, since plan step R7d-e.**  It
+        comes from ``obligations_aggregator.monthly_or_none``, which reads the
+        same door as the stop line and the next date; until that step it read
+        the authored bound alone, so this row stated ``$200.00`` a month beside
+        a stop line that said the money had stopped, and the section total
+        carried a retired loan's payment.  The row's figure and the subtotal
+        are both asserted: a blank cell over a total that still counts it is
+        the surface disagreeing with itself.
         """
         loan, tpl = _retired_loan_payment(seed_user)
         assert tpl.recurrence_rule.end_date is None, (
@@ -978,6 +967,65 @@ class TestTheDestinationsStopReachesTheRow:
             f"a payment dated {row.next_date} was projected against a loan "
             "that closed 2026-06-15"
         )
+        assert row.equivalent.monthly is None, (
+            f"a retired loan's payment states {row.equivalent.monthly} a "
+            "month beside a stop line that says the money has stopped"
+        )
+        assert view.transfers.subtotal.monthly == Decimal("0.00")
+
+    def test_a_stale_EARLIER_cached_column_does_not_BLANK_the_monthly_figure(
+        self, seed_user, seed_periods_52,
+    ):
+        """The limit plan step R7d-d named and R7d-e closes.
+
+        Plan ledger row **D35**'s shape, read on a day BETWEEN the cached date
+        and the loan's payoff: the door names the payoff (ruling **R-R56**)
+        and the walk still places a next date, but until R7d-e the monthly
+        equivalent read the column alone -- so the row showed
+        ``until Jul 01, 2028`` and a next date beside a BLANK figure, for
+        every installment the derived stop adds past the cached date.  One
+        row disagreeing with itself about whether the commitment is over,
+        which is the HIGH-05 defect this producer exists to have fixed.
+
+        The cache is ``2026-07-15`` and the pass is pinned at 2026-07-20 --
+        after the cache, before the first installment on 2026-08-01, so no
+        installment has gone unpaid and the payoff the door's own tests pin
+        for this loan (``2028-07-01``) still holds.  The loan's own stop is
+        asserted as a precondition so a drift in the fixture reports as one
+        rather than as a display defect.  ``$200.00`` monthly is
+        ``200 * 12 / (1 * 12)``.
+        """
+        loan = _loan(seed_user)
+        tpl = make_loan_payment_template(
+            db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
+        )
+        db.session.commit()
+        stale = date(2026, 7, 15)
+        reauthor_rule(
+            tpl.recurrence_rule,
+            replace(recurrence_spec(tpl.recurrence_rule), end_bound=EndsOnDate(on=stale)),
+            _ctx(seed_user, _LOAN_TODAY).calendar(),
+        )
+        db.session.commit()
+        assert tpl.recurrence_rule.end_date == stale, "precondition: stale"
+        assert owns_validity_window(tpl), (
+            "precondition: this is the definition whose bound the app writes"
+        )
+        ctx = _ctx(seed_user, date(2026, 7, 20))
+        assert balance_at.loan_figures(loan, ctx).closing_date == (
+            date(2028, 7, 1)
+        ), "precondition: the loan's own stop is LATER than the cache"
+
+        view = recurring_view.build_view([], [], [tpl], ctx)
+        row = view.transfers.rows[0]
+
+        assert row.recurrence.stops == "until Jul 01, 2028"
+        assert row.next_date is not None
+        assert row.equivalent.monthly == Decimal("200.00"), (
+            "the stale cache blanked the monthly figure for a loan that still "
+            "owes all twenty-four installments"
+        )
+        assert view.transfers.subtotal.monthly == Decimal("200.00")
 
     def test_the_archived_drawer_names_the_same_stop(
         self, seed_user, seed_periods_52,
@@ -1010,13 +1058,17 @@ class TestTheDestinationsStopReachesTheRow:
         :meth:`TestTheRecurrenceDescription.test_each_rule_is_RESOLVED_exactly_once_per_build`,
         and the control is shown to fire before the count is read.
 
-        **Scoped to a NULL stored column, which is what it guards.**  A loan
-        payment whose column holds a FUTURE date is resolved a second time on
+        **It covers a SYNCED column too, since plan step R7d-e.**  A loan
+        payment whose column held a FUTURE date was resolved a second time on
         this surface by the monthly-equivalent producer
         (``template_monthly_or_none`` -> ``has_ended`` ->
-        ``EndsOnDate.has_closed``), a walk plan step R7d-e removes by moving
-        that reader onto the door; this case counts the door's own
-        resolutions and would read two on a synced column for that reason.
+        ``EndsOnDate.has_closed`` walked the rule again off its own columns),
+        so until that step this case had to scope itself to a NULL column and
+        read two otherwise.  The monthly figure now derives from the door's
+        one reading, and the second sweep below -- the same loan payment with
+        a cached bound written into its column -- reads ONE resolution as
+        well, which is the walk R7d-e deleted, shown gone rather than
+        described.
         """
         loan = _loan(seed_user)
         tpl = make_loan_payment_template(db.session, seed_user, loan)
@@ -1039,6 +1091,38 @@ class TestTheDestinationsStopReachesTheRow:
         assert len(calls) == 1, (
             f"one loan payment resolved its rule {len(calls)} times in one "
             f"build; the door resolves once and hands the value down"
+        )
+
+        # The synced column: the shape the monthly producer used to resolve a
+        # second time.  Written through the real door, then counted afresh.
+        monkeypatch.setattr(_reading, "resolve", real_resolve)
+        reauthor_rule(
+            tpl.recurrence_rule,
+            replace(
+                recurrence_spec(tpl.recurrence_rule),
+                end_bound=EndsOnDate(on=date(2028, 7, 1)),
+            ),
+            _ctx(seed_user, _LOAN_TODAY).calendar(),
+        )
+        db.session.commit()
+        assert tpl.recurrence_rule.end_date == date(2028, 7, 1), (
+            "precondition: the column holds a synced FUTURE bound"
+        )
+        calls.clear()
+        monkeypatch.setattr(_reading, "resolve", counting_resolve)
+
+        view = recurring_view.build_view(
+            [], [], [tpl], _ctx(seed_user, _LOAN_TODAY),
+        )
+
+        assert view.transfers.rows[0].equivalent.monthly == Decimal("433.33"), (
+            "precondition: the synced payment is still a live commitment "
+            "($200 every paycheck is 200 * 26 / 12)"
+        )
+        assert len(calls) == 1, (
+            f"a loan payment with a synced column resolved its rule "
+            f"{len(calls)} times in one build; the monthly figure must derive "
+            f"from the door's one reading (plan step R7d-e)"
         )
 
 

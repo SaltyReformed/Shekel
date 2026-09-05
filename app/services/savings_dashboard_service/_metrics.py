@@ -25,6 +25,7 @@ from app.services import (
     obligations_aggregator,
     paycheck_calculator,
 )
+from app.services.balance_at import BalanceContext
 from app.services.payroll_basis import PayrollBasis
 from app.services.savings_dashboard_service._debt_line import (
     LoanPayoffOutlook,
@@ -434,8 +435,7 @@ def _recent_settled_expenses_monthly(
 
 
 def _committed_expense_floor(
-    user_id: int, checking_ids: list[int], calendar: PayCalendar,
-    as_of: date,
+    checking_ids: list[int], ctx: BalanceContext,
 ) -> Decimal:
     """Committed monthly expense floor from active checking templates.
 
@@ -443,25 +443,31 @@ def _committed_expense_floor(
     and active outgoing transfer templates on the user's checking
     accounts, via the canonical obligations aggregator (E-24 / HIGH-05)
     -- so the same skip-non-repeating / skip-expired filter the
-    /obligations page applies governs the emergency-fund baseline.
+    Recurring surface applies governs the emergency-fund baseline.
+
+    **It hands the aggregator the READ PASS** (plan step R7d-e), where it
+    threaded the pass's calendar and day separately until then.  The expired
+    filter now asks what stops a definition through the composed door --
+    the rule's own bound AND its destination's derived stop -- so a loan
+    payment leaving from checking drops out of this floor on the day its loan
+    is finished rather than on the day a chokepoint last rewrote the cached
+    bound; the door needs the pass to fold the loan, and a pass carries the
+    schedule and the day together so the two cannot disagree.  What the
+    calendar and the day bought here is unchanged: a paycheck-space
+    template's monthly equivalent is measured against the owner's real
+    rhythm, a count-bounded template that has spent its count leaves the
+    baseline (plan step R7b-3), and the day is the pass's own rather than a
+    bare clock read (pay-calendar plan step C2-f2d-3, ledger row **P55**), so
+    this floor sits on the same day as the settled-expense operand it is
+    compared against by ``max()``.  The owner is the pass's, not a second
+    argument beside it (developer ruling 2026-08-16: an id beside a required
+    pass is two spellings of the owner that nothing checks agree).
 
     Args:
-        user_id: Integer ID of the current user.
-        checking_ids: IDs of the user's checking accounts (the
+        checking_ids: IDs of the owner's checking accounts (the
             :func:`_checking_account_ids` set the historical operand
             also uses).
-        calendar: The owner's whole pay-period schedule, threaded into the
-            aggregator so a paycheck-space template's monthly equivalent is
-            measured against the owner's real rhythm -- and so a
-            count-bounded template that has spent its count leaves the
-            baseline, which needs the paydays and not just their spacing
-            (plan step R7b-3).
-        as_of: The read pass's day.  It was ``date.today()`` here until
-            pay-calendar plan step C2-f2d-3 (ledger row **P55**): the
-            aggregator decides whether a bounded template still commits
-            anything AS OF the day it is given, so a bare clock read put this
-            floor on a different day from the settled-expense operand it is
-            compared against by ``max()``.
+        ctx: The render's read pass; its ``user_id`` scopes both queries.
 
     Returns:
         The committed monthly floor as a Decimal.  ``Decimal("0.00")``
@@ -474,7 +480,7 @@ def _committed_expense_floor(
     active_expense_templates = (
         db.session.query(TransactionTemplate)
         .filter(
-            TransactionTemplate.user_id == user_id,
+            TransactionTemplate.user_id == ctx.user_id,
             TransactionTemplate.account_id.in_(checking_ids),
             TransactionTemplate.transaction_type_id == expense_type_id,
             TransactionTemplate.is_active.is_(True),
@@ -484,7 +490,7 @@ def _committed_expense_floor(
     active_transfer_templates = (
         db.session.query(TransferTemplate)
         .filter(
-            TransferTemplate.user_id == user_id,
+            TransferTemplate.user_id == ctx.user_id,
             TransferTemplate.from_account_id.in_(checking_ids),
             TransferTemplate.is_active.is_(True),
         )
@@ -492,13 +498,12 @@ def _committed_expense_floor(
     )
     return obligations_aggregator.committed_monthly(
         list(active_expense_templates) + list(active_transfer_templates),
-        as_of,
-        calendar,
+        ctx,
     )
 
 
 def _compute_avg_monthly_expenses(
-    user_id: int, core: _DashboardCoreData, calendar: PayCalendar,
+    core: _DashboardCoreData, calendar: PayCalendar,
 ) -> Decimal:
     """Compute average monthly expenses for emergency fund coverage.
 
@@ -521,11 +526,16 @@ def _compute_avg_monthly_expenses(
     cadence does NOT, and is passed separately for the reason that class's
     docstring gives.
 
+    **It took the owner's id beside the bundle until plan step R7d-e**, whose
+    only use was to hand it on to the committed floor; that floor reads the
+    owner off the pass now (developer ruling 2026-08-16: an id beside a
+    required pass is two spellings of the owner), so the argument had no
+    reader left and went.
+
     Args:
-        user_id: Integer ID of the current user.
         core: The read pass's loaded bundle -- its accounts scope the checking
-            set, and its pass's reported periods and scenario scope the
-            historical operand.
+            set, and its pass's owner, reported periods and scenario scope
+            both operands.
         calendar: The owner's whole pay-period schedule.  ``calendar.cadence``
             converts BOTH operands into month space -- one value for both, so
             the ``max()`` cannot compare figures measured against two rhythms
@@ -540,9 +550,7 @@ def _compute_avg_monthly_expenses(
         checking_ids, core.balance_ctx.reported_periods(), core.current_period,
         core.balance_ctx.scenario_id, calendar.cadence,
     )
-    floor = _committed_expense_floor(
-        user_id, checking_ids, calendar, core.balance_ctx.as_of,
-    )
+    floor = _committed_expense_floor(checking_ids, core.balance_ctx)
     return max(historical, floor)
 
 
