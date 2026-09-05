@@ -90,10 +90,11 @@ must DECIDE archived loan payments rather than sweep them (plan ledger row
 authored bound from the cache, so D56 asks R7d-g either to scope the migration
 or to rule the erasure intended).  (3) **R7d-g must DELETE this arm with the
 column**, and not because the arm goes dead: limit (1) means the create form
-stores an owner's bound in that column and R7d-g removes the sync that
-overwrote it, so a kept arm would read that owner's word as the cache forever.
-The same holds if R7d-f unlocks the edit control first.  It is a fence around
-the stored copy and not a design, and it leaves with the copy.
+stores an owner's bound in that column; R7d-g stops nine of the ten syncs and
+must name whether the tenth still overwrites a create-form bound; if none does,
+a kept arm would read that owner's word as the cache forever.  The same holds
+if R7d-f unlocks the edit control first.  It is a fence around the stored copy
+and not a design, and it leaves with the copy.
 
 Flask-isolated (``CLAUDE.md`` Architecture): it takes a template and a read
 pass and returns plain values, reads no ``request`` / ``session``, opens no
