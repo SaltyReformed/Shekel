@@ -9,6 +9,23 @@
 #     ./scripts/test.sh tests/test_routes/...     # targeted run
 #     ./scripts/test.sh -n 0 -x                   # pass-through flags
 #     RESTART_TEST_DB=1 ./scripts/test.sh         # + hygiene restart
+#     TEST_DB_PER_RUN=1 ./scripts/test.sh         # private throwaway cluster
+#
+# TEST_DB_PER_RUN: a cluster of this run's own
+#     Starts a container from the image
+#     ``scripts/build_test_db_image.py`` bakes -- the test template already
+#     inside it -- on a docker-assigned port, points the run at it, and
+#     removes it afterwards.  Nothing is shared, so nothing needs
+#     coordinating: no suite slot, no hygiene restart, no live-backend
+#     probe, no per-worktree template or worker-database prefix.  Those all
+#     exist because ONE postmaster serves every worktree.
+#
+#     It is OPT-IN and will stay opt-in until the harness has a daemon of
+#     its own.  A container per run on the SYSTEM daemon is exactly the
+#     churn ``docs/test-harness-isolation.md`` was written to stop: that
+#     daemon also runs the production database, and the homelab
+#     wud/cadvisor/alloy stack watches every container on it.  Flipping the
+#     default belongs after ``DOCKER_HOST`` points somewhere isolated.
 #
 # Why a restart exists at all
 #     Phase 3b per-test isolation drops and re-clones a per-worker
@@ -138,6 +155,20 @@
 #                        one.
 #     READINESS_TIMEOUT_SECONDS  Cap on the post-restart
 #                        ``pg_isready`` wait.  Default: 15.
+#     TEST_DB_IMAGE      Per-run mode only.  An image to use INSTEAD of
+#                        building and verifying one.  Skips
+#                        build_test_db_image.py entirely, so whoever sets
+#                        it owns the image's correctness -- CI, which
+#                        builds once per job, and tests driving a stub
+#                        docker are the two callers that know more than
+#                        this script does.  Unset is the developer's case
+#                        and is verified on every invocation.
+#     TEST_DB_PER_RUN    Truthy (same words as RESTART_TEST_DB) to give
+#                        this run its own throwaway cluster.  Overrides
+#                        the shared-container path entirely, so
+#                        RESTART_TEST_DB, TEST_DB_CONTAINER and the
+#                        live-backend probe are all inapplicable and are
+#                        skipped.
 #     PYTEST_MARKER_EXPR Marker expression handed to pytest.
 #                        Default: ``not docker`` (see the note above
 #                        the ``exec`` at the bottom of this file).
@@ -224,6 +255,9 @@ if [ -z "${TEST_ADMIN_DATABASE_URL:-}" ] && [ -n "${TEST_DATABASE_URL:-}" ]; the
     export TEST_ADMIN_DATABASE_URL
 fi
 
+# Resolve TEST_DB_PER_RUN the same way RESTART_TEST_DB is resolved: shared
+# vocabulary, and an unrecognised value refused rather than guessed.  Two
+# flags that mean "yes" differently would be their own small trap.
 # Resolve RESTART_TEST_DB to a decision, refusing anything ambiguous.  Bare
 # presence would be simpler, and is wrong here for one specific reason: the
 # variable this replaced was opt-OUT, so ``SKIP_DB_RESTART=0`` -- a natural
@@ -252,6 +286,204 @@ case "${_restart_value,,}" in
         ;;
 esac
 unset _restart_value
+
+# Both flags are resolved BEFORE either branch is taken.  Resolving
+# TEST_DB_PER_RUN first and exiting inside its branch meant a typo'd
+# RESTART_TEST_DB was silently accepted whenever the other flag was set --
+# `TEST_DB_PER_RUN=1 RESTART_TEST_DB=garbage` exited 0 while the same typo
+# alone exits 2.  A refusal that depends on which other flag is set is not a
+# refusal.
+_per_run=""
+_per_run_value="${TEST_DB_PER_RUN:-}"
+case "${_per_run_value,,}" in
+    '' | 0 | false | no | off) _per_run="" ;;
+    1 | true | yes | on) _per_run=yes ;;
+    *)
+        echo "[test.sh] TEST_DB_PER_RUN='${TEST_DB_PER_RUN}' is not a value I" \
+            "will guess at.  Use 1/true/yes/on for a private cluster, or" \
+            "0/false/no/off (or leave it unset) for the shared one." >&2
+        exit 2
+        ;;
+esac
+unset _per_run_value
+
+if [ -n "$_per_run" ]; then
+    # The image builder imports app.ref_seeds and app.audit_infrastructure to
+    # read the counts it verifies against, so it needs the project's
+    # interpreter -- a bare python3 has neither the package nor psycopg2.
+    if [ -x "${_REPO_ROOT}/.venv/bin/python" ]; then
+        _PYTHON="${_REPO_ROOT}/.venv/bin/python"
+    else
+        _PYTHON="$(command -v python3 || true)"
+    fi
+    if [ -z "$_PYTHON" ]; then
+        echo "[test.sh] TEST_DB_PER_RUN needs a python interpreter." >&2
+        exit 2
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "[test.sh] TEST_DB_PER_RUN needs docker, which is not on PATH." >&2
+        exit 2
+    fi
+    # TEST_DB_IMAGE lets a caller supply an image this run should use and
+    # skip the build-and-verify entirely.  It exists for two callers that
+    # both know more than this script does: CI, which builds the image once
+    # per job and would otherwise re-verify it per invocation, and a test
+    # driving a stub docker, which cannot satisfy a real verification.  When
+    # it is unset -- the developer's case -- the builder runs and checks the
+    # cached image on EVERY invocation rather than trusting the tag, so a
+    # stale or damaged image is rebuilt here instead of being cloned from
+    # for the whole run.
+    if [ -n "${TEST_DB_IMAGE:-}" ]; then
+        _image="$TEST_DB_IMAGE"
+        echo "[test.sh] using the image given in TEST_DB_IMAGE ($_image);" \
+            "it is NOT verified here, so whoever set it owns that" >&2
+    else
+        _image="$("$_PYTHON" "${_REPO_ROOT}/scripts/build_test_db_image.py" \
+            --print-tag 2>/dev/null || true)"
+        if [ -z "$_image" ]; then
+            echo "[test.sh] could not resolve the test-db image tag; run" \
+                "scripts/build_test_db_image.py by hand to see why." >&2
+            exit 2
+        fi
+        if ! "$_PYTHON" "${_REPO_ROOT}/scripts/build_test_db_image.py" >&2; then
+            echo "[test.sh] could not prepare $_image" >&2
+            exit 2
+        fi
+    fi
+
+    # The name carries the PID because the whole point is that two runs can
+    # coexist -- including two in the SAME worktree, which no amount of
+    # TEST_DB_PREFIX ever fixed.
+    _run_container="shekel-testrun-$$"
+
+    # ``-v`` removes the container's ANONYMOUS VOLUME with it.  The baked
+    # image inherits the base's ``VOLUME /var/lib/postgresql`` declaration
+    # even though PGDATA lives elsewhere, so every run created a volume that
+    # ``docker rm -f`` left behind: measured 101 of 112 volumes on this
+    # daemon dangling, the newest in one-second pairs matching this script's
+    # own verify+run invocations.  Each holds ~0 B, so the cost is unbounded
+    # metadata on a daemon the homelab stack watches, not disk.
+    #
+    # And the removal REPORTS ITS OWN FAILURE.  Discarding the status,
+    # stdout and stderr made the one step whose entire job is cleanup unable
+    # to say it had failed: a wedged or unreachable daemon left the
+    # container running and the wrapper still exited with pytest's status.
+    _teardown_run_container() {
+        docker rm -fv "$_run_container" >/dev/null 2>&1 || true
+        if docker inspect "$_run_container" >/dev/null 2>&1; then
+            echo "[test.sh] WARNING: $_run_container survived teardown --" \
+                "remove it by hand ('docker rm -fv $_run_container') or the" \
+                "next run reusing that PID collides with it." >&2
+        fi
+    }
+
+    # Forward the signal to pytest FIRST, so the run stops rather than being
+    # abandoned, then tear down and exit with the conventional status.
+    # shellcheck disable=SC2329 # invoked only through the INT and TERM traps below, which shellcheck cannot follow
+    _stop_run() {
+        kill -"$2" "$1" 2>/dev/null || true
+        wait "$1" 2>/dev/null || true
+        _teardown_run_container
+        exit "$3"
+    }
+    # EXIT alone is not enough: Ctrl-C at the terminal delivers INT to the
+    # whole process group, and without these traps the container outlives
+    # the run and the next one collides with nothing but a leaked cluster.
+    trap '_teardown_run_container' EXIT
+    trap '_teardown_run_container; exit 130' INT
+    trap '_teardown_run_container; exit 143' TERM
+
+    docker run -d --rm --name "$_run_container" \
+        -e POSTGRES_USER=shekel_user \
+        -e POSTGRES_PASSWORD=shekel_pass \
+        -e POSTGRES_DB=postgres \
+        -e PGDATA=/pgdata-baked \
+        -p 127.0.0.1::5432 \
+        "$_image" \
+        -c fsync=off \
+        -c synchronous_commit=off \
+        -c full_page_writes=off >/dev/null
+
+    # THE NON-DURABLE KNOBS ARE WHAT MAKE THIS AFFORDABLE, and leaving them
+    # off is the difference between a design that pays for itself and one
+    # that does not.  Measured: the full suite took 753 s in a per-run
+    # container against 356 s on the shared cluster -- 2.1x -- purely because
+    # the baked image runs with docker's default durability while
+    # docker-compose.dev.yml gives the shared test-db `fsync=off`,
+    # `synchronous_commit=off` and `full_page_writes=off`.  Per-test
+    # drop-and-reclone is thousands of DDL cycles, and
+    # docs/testing-standards.md prices one at 1618 ms with fsync on against
+    # 31 ms with it off.  The cluster is a throwaway that lives for one run,
+    # so a crash losing its last transactions costs a re-run and nothing
+    # else -- exactly the argument the compose file already makes, which is
+    # why these three are copied from it rather than invented here.
+    #
+    # TCP, not the socket: the entrypoint's initdb window answers on the
+    # socket before the real server exists (see scripts/build_test_db_image.py).
+    _deadline=$(($(date +%s) + READINESS_TIMEOUT_SECONDS))
+    until docker exec "$_run_container" \
+        pg_isready -q -h 127.0.0.1 -U shekel_user 2>/dev/null; do
+        # shellcheck disable=SC2312 # date +%s always succeeds; it only drives this timeout
+        if [ "$(date +%s)" -ge "$_deadline" ]; then
+            echo "[test.sh] $_run_container did not accept connections within" \
+                "${READINESS_TIMEOUT_SECONDS}s" >&2
+            exit 2
+        fi
+        sleep 0.1
+    done
+
+    # `docker port` prints e.g. "127.0.0.1:32768"; take the part after the
+    # last colon with parameter expansion rather than a pipe, so there is no
+    # reader to close early and no SIGPIPE for pipefail to promote.
+    _run_mapping="$(docker port "$_run_container" 5432/tcp)"
+    _run_mapping="${_run_mapping%%$'
+'*}"
+    _run_port="${_run_mapping##*:}"
+    if [ -z "$_run_port" ]; then
+        echo "[test.sh] no published port for $_run_container" >&2
+        exit 2
+    fi
+    export TEST_ADMIN_DATABASE_URL="postgresql://shekel_user:shekel_pass@127.0.0.1:${_run_port}/postgres"
+    export TEST_DATABASE_URL="postgresql://shekel_user:shekel_pass@127.0.0.1:${_run_port}/shekel_test"
+    # The baked template's name, not the worktree's: a private cluster has
+    # exactly one template and nothing to collide with.
+    export TEST_TEMPLATE_DATABASE=shekel_test_template
+
+    echo "[test.sh] private cluster $_run_container on 127.0.0.1:${_run_port}" \
+        "from $_image" >&2
+
+    PYTEST_MARKER_EXPR="${PYTEST_MARKER_EXPR:-not docker}"
+    # NOT `exec`: the container has to be removed after pytest returns, and
+    # an exec'd process has no after.  pytest's status is preserved and
+    # re-raised so the wrapper stays transparent to callers and to CI.
+    #
+    # ``env -u TEST_DB_PER_RUN`` is load-bearing.  The flag was INHERITED by
+    # pytest, and five cases in
+    # tests/test_scripts/test_test_runner_container_states.py re-invoke this
+    # wrapper with ``env={**os.environ, ...}`` -- so each re-entered per-run
+    # mode, started TWO more containers on the production daemon nested
+    # inside the suite, and asserted on a state message it never got.
+    # Measured: 8 failed, 18 passed, green on the shared path.  A child must
+    # take the SHARED path, which is what those tests grade.
+    #
+    # BACKGROUNDED, then waited.  Bash does not service a trap while waiting
+    # on a FOREGROUND child, so with pytest in the foreground a SIGTERM to
+    # the wrapper did nothing until pytest finished -- measured 20 s of
+    # silence -- which broke `timeout` and left the SIGKILL escalation
+    # leaking a container AND orphaning pytest onto PID 1.  ``wait`` is
+    # interruptible, so the traps below can actually run.
+    set +e
+    env -u TEST_DB_PER_RUN pytest -m "$PYTEST_MARKER_EXPR" "$@" &
+    _pytest_pid=$!
+    trap '_stop_run "$_pytest_pid" INT 130' INT
+    trap '_stop_run "$_pytest_pid" TERM 143' TERM
+    wait "$_pytest_pid"
+    _pytest_status=$?
+    set -e
+    _teardown_run_container
+    trap - EXIT INT TERM
+    exit "$_pytest_status"
+fi
 
 if [ -z "$_restart_requested" ]; then
     # The DEFAULT, and it reports the container's STATE rather than merely
