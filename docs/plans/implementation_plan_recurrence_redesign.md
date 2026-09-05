@@ -417,18 +417,12 @@ on -- Van Loan, 24 projected rows, stamped clone 2026-08-31: unedited `2029-02-2
       finishes that module), and a loan cleared before its first installment now STORES an inverted
       pair until R7d-g NULLs the column. As built: the commit message and PR #214.
 
-- [ ] **R7d-d -- the DISPLAY readers take the resolver, through a COMPOSED DOOR.**
-
-`recurring_view` and `describe` stop reading the column, so the Recurring surface's cadence sentence
-and its next date name the derived payoff rather than the last value a chokepoint wrote.
-
-**It reaches as far as the COMPOSED VALUE** (**R-R55**): the conjunction of the authored bound and
-the derived stop is a VALUE the walk already reads (`ResolvedRecurrence.closing`), not a narrowing
-each of five surfaces performs, and the answer SHAPES move to `recurrence/_closing.py` because
-`_describe` cannot import `loan_recurrence_sync` without a cycle. **Was BLOCKED on `R7d-h`**
-(shipped `83dd4b8a`), whose absence this step first papered over with a fourth shape. Held at
-`ea61116d` (`feat/r7d-d`, no PR) -- composed value, door and type move built and green; the display
-readers are NOT moved and the step may not tick until they are.
+- [x] **R7d-d** `4a839587` -- the DISPLAY readers took the resolver through a COMPOSED DOOR:
+      `recurring_view` and its route take ONE read pass and read each definition through
+      `recurring_definition`; the resolver takes the resolved rule; `4f40d6de` is ruling **R-R56**
+      (an app-written `end_date` is read as the cache). Later steps obey: R7d-e moves the monthly
+      equivalent off the column; R7d-f owns **N-511** and **N-512**; R7d-g deletes the door's arm
+      with the column. As built: commits `f6ba59f8`..`713c4fce` (PR #240).
 
 - [ ] **R7d-e -- `/obligations` and the emergency-fund baseline take the resolver.**
 
@@ -453,7 +447,14 @@ could invert it no longer store a closing bound. Decide first what repairs the t
 `_sync_loan_cadence` covers -- and note it does the SAME read-and-write-back round trip, inside the
 module this leaf rewrites, so it OUTLIVES the deletion unless named: finding **D50**, re-pointed
 here from `R7d-c` on 2026-08-27. **D35 only HALF closes** (`starts_on` stays derived AND persisted
-under R-R29), so re-point that row rather than ticking it.
+under R-R29), so re-point that row rather than ticking it. **D56 is an OPEN fork**: a
+NULL-every-loan-payment predicate cannot tell an authored bound from the cache, so this step either
+scopes the migration to the rows the sync wrote or rules the erasure intended -- and must DECIDE
+archived loan payments, whose cached columns the composed door still reads as authored (ruling
+**R-R56**). It stops nine of the ten syncs and must NAME whether the tenth (`params.py:190`, kept
+for the opening bound) still overwrites a closing bound authored on the generic create form
+(**N-512**); if none does, the door's arm in `recurring_definition` must be DELETED with the column
+or it reads that owner's word as the cache forever.
 
 - [ ] **R7e -- the recurrence form's three-state fields become ONE typed submission.**
 
