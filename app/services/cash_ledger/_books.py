@@ -113,13 +113,17 @@ def books_hold(opened_on: date, day: date) -> bool:
     a MODELLED account the correction that heals the double count books to
     ``unrealized_change``, so a transfer becomes market performance that never
     unwinds.  Stating it in one function is what stops the two readings
-    drifting apart across its five call sites in this package, two in
-    ``statement_match`` (``_gaps._split_at_books_open`` asks it; ``_undisposed
-    .awaiting_review_count`` cannot, and open-codes the same ``>`` as a COLUMN
-    EXPRESSION because a SQL filter cannot call a Python predicate -- that
-    exception is stated at the site), and one SQL tier -- and the SQL tier states it once too, as
+    drifting apart across its five call sites in this package, ONE in
+    ``statement_match`` (``_gaps._split_at_books_open``), and one SQL tier --
+    and the SQL tier states it once too, as
     ``budget.books_hold``, which every predicate there asks rather
-    than re-spelling.  It was open-coded in five PL/pgSQL predicates
+    than re-spelling.  *It said TWO in ``statement_match``, the second being
+    ``_undisposed.awaiting_review_count`` open-coding the same ``>`` as a
+    COLUMN EXPRESSION because a SQL filter cannot call a Python predicate.*
+    Plan step ``bank_import:X-gm`` deleted that count in favour of a walk over
+    the rows ``_split_at_books_open`` already bounds, so the exception it
+    stated no longer exists and this census is re-read rather than
+    decremented.  It was open-coded in five PL/pgSQL predicates
     until plan step X-f3c-2b-2b's adversarial design review counted
     them, three of which that step had just added under a docstring
     claiming the comparison was stated once.

@@ -620,18 +620,20 @@ class BankLine:  # pylint: disable=too-many-instance-attributes
         ``DTPOSTED``, and a constraint a real statement violates would make the
         truth unimportable.
 
-        **So the guard is a reader's, and it is stated HERE because two readers
-        ask it** (finding **N-325**).  :func:`~._pairing.within_window` asks it
+        **So the guard is a reader's, and it is stated HERE because three
+        readers ask it** (finding **N-325**): :func:`~._pairing.within_window`,
         to decide whether a purchase recorded after the line posted may still
-        be paired -- it may, because the bank's own stated day is later too --
-        and :func:`~._leftovers._creatable_lines` asks it to decline OFFERING such a
-        line as a purchase at all, because ``entry_service.create_entry``
-        refuses a purchase whose money left before it was spent and the screen
-        would be rendering a chooser whose submission can never succeed.  Two
-        spellings of one predicate on a money screen is this arc's own root
-        cause 1 -- and this sentence was FALSE when first written: the proposer
-        went on spelling it inline, so the claim described an intention rather
-        than the tree.  Both adversarial reviews of 2026-08-19 caught it.
+        be paired -- it may, because the bank's own stated day is later too;
+        :func:`~._leftovers._add_refusal`, to WITHHOLD the ADD control, because
+        ``entry_service.create_entry`` refuses a purchase whose money left
+        before it was spent; and :func:`~._scope.reject_impossible_days` at the
+        DOOR, so that withholding is a refusal rather than a paragraph.  *It
+        said TWO until plan step ``bank_import:X-gm`` gave the rule its door*,
+        re-read off the callers rather than incremented.  Two spellings of one
+        predicate on a money screen is this arc's own root cause 1 -- and this
+        sentence was FALSE when first written: the proposer went on spelling it
+        inline, so the claim described an intention rather than the tree.  Both
+        adversarial reviews of 2026-08-19 caught it.
 
         0 of the developer's 361 recorded lines are this shape; the OFX
         adapter's own measurement found 2 of 361, so a second source makes it

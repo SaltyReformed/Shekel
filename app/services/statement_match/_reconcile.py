@@ -525,16 +525,22 @@ def _chips(
 def _unexamined(review: "ReviewSet") -> "tuple[str, ...]":
     """Return what this pass did NOT look at, one sentence each.
 
-    **Three of the five bounds, and the partition is decided HERE.**  The
+    **Two of the four bounds, and the partition is decided HERE.**  The
     other two are stated elsewhere on the page and stating either twice is
     the clutter this rebuild removed:
     :attr:`~._gaps.ReviewBounds.before_calendar_count` is a
     :class:`HoldingChip` above the fold, and
     :attr:`~._gaps.ReviewBounds.books` is
     :attr:`ReconcilePage.books_bound`, which carries an ACT and so cannot
-    be one of these plain sentences.  A template picking three of five
+    be one of these plain sentences.  A template picking two of four
     would be the *second place for a partition to be wrong* this package
     refuses everywhere else.
+
+    **It said THREE of FIVE until plan step ``bank_import:X-gm``**, which
+    deleted ``ReviewBounds.impossible_day_count`` rather than reworded its
+    sentence here: the lines it counted are inbox cards now, each carrying its
+    own refusal, so a sentence in this panel would be announcing work the page
+    is already showing.  :class:`~._gaps.ReviewBounds` carries the argument.
 
     Args:
         review: The pass.
@@ -555,12 +561,6 @@ def _unexamined(review: "ReviewSet") -> "tuple[str, ...]":
         said.append(
             f"{bounds.unpriceable_count} of your rows could not be priced, "
             f"so nothing here was offered against them."
-        )
-    if bounds.impossible_day_count:
-        said.append(
-            f"{bounds.impossible_day_count} bank line(s) are dated as made "
-            f"AFTER they posted, so no day exists a purchase could be made "
-            f"on and nothing here can record them."
         )
     return tuple(said)
 
@@ -680,39 +680,47 @@ def reconcile_page(
     # so this figure and the open tab's own total cannot see different sets;
     # :func:`~._skipping.skipped_count` records both legs of that.
     skipped = skipped_count(scope.owner_id, scope.account_id)
-    # **Distinct LINES, not proposals**, which is the spelling
-    # :attr:`~._reads.ReviewSet.explained_by_a_proposal` records the reason
-    # for: every tier builds ``lines=(line,)`` today, so the two agree on
-    # every input that exists -- and a multi-line tier would make the other
-    # one wrong silently.  The inbox counts what a reader can act on, and
-    # that is lines.
-    to_explain = (
-        len({
-            line.line_id
-            for proposal in review.proposals for line in proposal.lines
-        })
-        + len(review.creatable)
-        + len(review.recordable_inflows)
-        # **The lines a standing *never a purchase* answer bars are WORK**
-        # (ruling **bank_import:R-JH**), so the hero counts them.  They were
-        # on a holding tab and counted nowhere here until plan step
-        # ``bank_import:X-gj-4c``.
-        #
-        # **It NARROWS a standing disagreement with the grid's badge and does
-        # not close it.**  :func:`~._undisposed.awaiting_review_count` has
-        # counted these lines all along -- a bar is not one of the four
-        # predicates it splits on -- so this figure moves toward it by
-        # ``len(answered_never)``.  What still parts them is ``parked`` and the
-        # impossible-day lines, which that count admits and this one does not,
-        # because the two answer different questions: it counts every line no
-        # ACT has answered, and this counts the ones the inbox is asking
-        # about.  Recorded rather than repaired here: which of the two a badge
-        # linking to this page should render is a decision, not a defect this
-        # step may take unilaterally.
-        + len(review.answered_never)
-    )
+    # **THE COUNT IS THE CARDS** (plan step ``bank_import:X-gm``).  It was a
+    # SUM over four of the pass's lists, written here, and that shape has
+    # failed both ways it can: plan step ``bank_import:X-gj-4c`` added a fifth
+    # list and had to remember to add a term, and the lines the bank dates
+    # impossibly never got a list at all, so they fell out of the sum AND off
+    # every tab with nothing able to notice.  Counting what
+    # :func:`~._card_sections.to_explain_sections` BUILT means a class that
+    # reaches a card is counted and one that does not is visibly missing from
+    # the tab rather than silently missing from a figure.
+    #
+    # **Built on every render whichever tab is open**, which the two settled
+    # tabs' counts do NOT do -- and the asymmetry is the honest one: those
+    # counts are database aggregates and this is arithmetic over a pass that is
+    # already in hand.  :mod:`._card_sections` performs no query.
+    #
+    # **THIS COUNTS CARDS AND THE BADGE COUNTS LINES, and they agree because
+    # every proposal names exactly ONE line.**
+    # :func:`~._propose._one_to_one`, :func:`~._propose._groups` and
+    # :func:`~._near.near_misses` all construct ``lines=(line,)``, and
+    # :attr:`~._cards.LineCard.line` is singular -- ``proposal_card`` renders
+    # ``proposal.lines[0]``.  So a proposal naming TWO lines would render one
+    # card about the first and NO card for the second, and this figure would
+    # be one short of :func:`~._undisposed.inbox_partition`'s.
+    # **That is plan step ``bank_import:X-gn``'s to keep** -- it is the step
+    # that lets a match name a second bank line -- and the failure it would
+    # cause is the RIGHT one: a badge disagreeing with the page it links to,
+    # rather than a line silently rendering nowhere.  **It is not caught for
+    # free, and saying so is the point**: the equality is asserted by ONE case
+    # (``test_awaiting_count.TestTheCountAgreesWithTheScreenItLinksTo
+    # .test_the_badge_equals_the_page_it_links_to``) over ONE fixture, whose
+    # proposal names one line -- so ``X-gn`` owes that case a multi-line
+    # fixture or the alarm will not fire.  Counting distinct proposal LINES
+    # here instead would restore the arithmetic and hide the missing card,
+    # which is the trade plan step ``bank_import:X-gm`` exists to refuse; the
+    # opposite reading of the same premise is argued at
+    # :attr:`~._reads.ReviewSet.explained_by_a_proposal`, which counts lines
+    # for a value that is a REPORT rather than a caption over cards.
+    inbox = to_explain_sections(review)
+    to_explain = sum(len(section.cards) for section in inbox)
 
-    kind, sections = _tab_sections(scope, review, tab, transfers, limit)
+    kind, sections = _tab_sections(scope, tab, transfers, inbox, limit)
     return ReconcilePage(
         tab=tab,
         # **The kind comes back FROM the builder**, so the page cannot claim a
@@ -766,9 +774,9 @@ def _holding(cards: "tuple[LineCard, ...]") -> "tuple[CardSection, ...]":
 
 def _tab_sections(
     scope: "ReviewScope",
-    review: "ReviewSet",
     tab: Tab,
     transfers: "tuple[LineCard, ...]",
+    inbox: "tuple[CardSection, ...]",
     limit: "int | None",
 ) -> "tuple[CardKind, tuple[CardSection, ...]]":
     """Return which KIND of card the open tab holds, and its cards.
@@ -792,11 +800,17 @@ def _tab_sections(
 
     Args:
         scope: The pass's scope, for the two reads the settled tabs need.
-        review: The pass.
-        tab: Which tab is open.
+        tab: Which tab is open.  **The PASS itself is no longer a parameter**
+            (plan step ``bank_import:X-gm``): the only arm that read it was the
+            inbox's, and the inbox arrives already built because the hero
+            counts its cards.
         transfers: The Transfers tab's cards, built by the caller because the
             hero's own chip is derived from them and a second build would be
             two derivations of one list.
+        inbox: The To-explain tab's sections, built by the caller for the same
+            reason one step stronger: the hero's ``to_explain`` is their card
+            count, so building them again here would be two derivations of the
+            list a rendered number is about (plan step ``bank_import:X-gm``).
         limit: How many rows a bounded arm may render, or ``None`` for all of
             them.  **THREE arms read it** -- the two settled ones and Skipped
             (**R-JW**) -- while the inbox is bounded by what
@@ -819,7 +833,7 @@ def _tab_sections(
             defaulted so that adding one is a failure and not a blank screen.
     """
     if tab is Tab.TO_EXPLAIN:
-        return CardKind.LINE, to_explain_sections(review)
+        return CardKind.LINE, inbox
     if tab is Tab.EXPLAINED:
         return CardKind.ACT, act_sections(accepted_register(
             scope.owner_id, scope.account_id, limit, applied_by_rule=False,

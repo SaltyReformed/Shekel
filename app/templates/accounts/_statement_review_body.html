@@ -568,12 +568,27 @@
               </td>
               <td>
                 {% if row.records_a_purchase %}
-                {% if row.item.pay_period_id is none %}
+                {# NO CONTROL WHERE THE DOOR WOULD REFUSE ONE, and the reason
+                   is the SERVICE's own sentence rather than one composed here.
+
+                   This asked `row.item.pay_period_id is none` and printed its
+                   own prose, which was a second spelling of
+                   `CreatableLine.withheld` -- correct only while that field had
+                   exactly ONE cause.  Plan step bank_import:X-gm gave it a
+                   second (a line the bank dates MADE after it POSTED), and the
+                   old condition did not know about it, so such a line rendered
+                   the full destination select: a chooser whose submission can
+                   never succeed, which is the shape ruling R-GJ cost $7,412.94
+                   to learn.
+
+                   The two spellings had also DRIFTED, which is what a second
+                   spelling does: `_scope.no_period_refusal` says to extend the
+                   pay schedule to cover that day, and the prose deleted here
+                   said extending it forward would never reach it.  One of them
+                   was telling the owner the opposite of the other. #}
+                {% if row.item.withheld is not none %}
                 <span class="small text-warning-emphasis">
-                  No pay period covers {{ row.line.transaction_on or row.line.posted_on }},
-                  the day this was made, so there is no budget for it to belong to.
-                  That day is usually before your pay calendar opens, which no
-                  amount of extending it forward will reach.
+                  {{ row.item.withheld }}
                 </span>
                 {% else %}
                 <div class="row g-2 align-items-center" data-creatable-row
@@ -973,36 +988,20 @@
         valued, so they were not offered as matches.
       </li>
       {% endif %}
-      {% if review.bounds.impossible_day_count %}
-      {# Finding N-325, ruled 2026-08-19: SAID rather than clamped.  Money
-         cannot leave an account before it is spent, so a line whose bank dates
-         the purchase after the day it took the money has no day a purchase
-         could be made on -- and the app refuses one, correctly.  Offering it a
-         destination chooser would render a control whose submission can never
-         succeed.  The rejected alternative was to take whichever day is
-         earlier, which decides which day the app believes when the bank
-         contradicts itself; ruling R-FW refused that substitution one clock
-         over. #}
-      {# THE ONE BULLET THAT NAMES A LINE STILL ACTIONABLE, so it names where.
-         Every other limit here removes a line from the pass entirely; this one
-         removes it only from the CREATE arm, and such a line stays in
-         `review.unmatched` -- which means it is still tickable on the
-         hand-build surface, and until plan step bank_import:X-gf-3b it was
-         listed on this page because that form was on this page.  Moving the
-         form left this count naming lines with no path to them, which is the
-         "a bound is only a bound if it can be acted on" shape plan step
-         bank_import:X-f6d-3 corrected for the near tier.  0 of the developer's
-         378 recorded lines are this shape; the OFX adapter's own measurement
-         found 2 of 361, so a second source makes it live. #}
-      <li>
-        {{ review.bounds.impossible_day_count }} line(s) are dated by your bank
-        as having been MADE after the day it took the money, so there is no day
-        a purchase could have happened on. Money cannot leave before it is
-        spent, so they are not offered as purchases here. They can still be
-        <a href="{{ url_for('accounts.statement_workbench', account_id=account.id) }}">matched
-        against rows you already hold</a>.
-      </li>
-      {% endif %}
+      {# THE IMPOSSIBLE-DAY BULLET IS GONE (plan step bank_import:X-gm).  It
+         was the one limit here that named a line still actionable, and this
+         comment already recorded why that was wrong: moving the hand-build
+         form off this page left the count naming lines with no path to them,
+         which is the "a bound is only a bound if it can be acted on" shape
+         plan step bank_import:X-f6d-3 corrected for the near tier.  The
+         remedy is the one that ruling implies -- the bound moved onto the
+         LINE.  Such a line is a creatable line whose ADD carries
+         `_scope.impossible_days_refusal`, so it renders as a card beside the
+         act it is withheld from.  Finding N-325's ruling of 2026-08-19 is
+         untouched: the app still says rather than clamps, because taking
+         whichever day is earlier decides which day it believes when the bank
+         contradicts itself, and ruling R-FW refused that substitution one
+         clock over. #}
     </ul>
   </div>
   {% endif %}

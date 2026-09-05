@@ -113,12 +113,8 @@ what it leaves a LATER step is on that step's own entry.
 - [x] **X-gf-3b-1** `d2248fe6` -- the workbench is not the queue (**R-HC**). Closed **N-374**.
 - [x] **X-gf-3b-2** `ff744d79` -- one list by the decision (**R-HB**, **R-HD**). **N-380** shut,
       **N-381** open.
-- [x] **X-gj** `f119ec0a` -- the Reconcile rebuild, one page on four verbs (**R-HP**..**R-HX**),
-      ticked with `X-gj-4b`, which closed `X-gj-4` and this. Detail:
-      `historical/bank_import_x_gj_as_built_2026-09-04.md`.
-      **What it binds on later steps is on `X-gl-1` and `X-gl-5`**, R-JY's container having been
-      minted in the commit that archived this span; it is not restated here, because a constraint
-      with two homes has a maintenance contract and rule 14 is that the remedy is to delete a home.
+- [x] **X-gj** `f119ec0a` -- the Reconcile rebuild, one page on four verbs (**R-HP**..**R-HX**);
+      ticked with `X-gj-4b`. Detail: `historical/bank_import_x_gj_as_built_2026-09-04.md`.
 - [x] **X-gj-1** `a43e8e2f` -- the page, split three ways on the services boundary.
 - [x] **X-gj-1a** `bc851df9` -- the pass becomes CARDS (**R-HP**, **R-HQ**, **R-HW**).
 - [x] **X-gj-1b** `cfcfcac9` -- the page and the three bank-line tabs; minted `X-gk`.
@@ -133,19 +129,11 @@ what it leaves a LATER step is on that step's own entry.
 - [x] **X-gj-3a** `e42dcd6b` -- a group's difference lands on a member the OWNER names (**R-IU**).
 - [x] **X-gj-4** `f119ec0a` -- the SKIP verb, split at its gate; **R-JG** took the act ROW.
 - [x] **X-gj-4a** `758bbe55` -- the STORE and its two doors: `budget.statement_line_skips`.
-- [x] **X-gj-4b** `f119ec0a` -- the VERB LIT (**R-HW**, **R-JI**): `offers_for` stops shutting SKIP,
-      a `skips` list on the batch schema, `reconcile_payload` reads `verb=skip`, `apply_reviewed`
-      grows a fourth arm, the SKIP pane renders. Shut for a line a source files as paying an account
-      the owner holds, read off the PASS's merchant set so a PROPOSED line is shut too.
+- [x] **X-gj-4b** `f119ec0a` -- the SKIP verb LIT, shut on an account payment (**R-HW**, **R-JI**).
 - [x] **X-gj-4c** `56f97b98` -- the SKIPPED TAB (**R-JH**); its ORDER argument is spent.
 - [x] **X-gj-4c-1** `456d6bd2` -- a *never a purchase* answer is not a disposition (**R-JH**).
 - [x] **X-gj-4c-2** `56f97b98` -- the TAB, its Undo, and a `CardKind` the building arm states.
-- [x] **X-gk** `8569e5ec` -- the MERCHANTS surface (**R-IC**): every merchant an account has seen,
-      its standing answer or *You have not said*, edited ONE at a time through
-      `record_submitted_rules`, so four surfaces keep one grader and one writer. On a 2026-08-31
-      clone **32 of 62 were on NO surface**. Opened **N-402** (the statements route family is absent
-      from the auth sweep) and **N-403** (the new-envelope answer needs scripting, on all three
-      controls) -- `X-gi` and `X-gj-1c` own them, and the register's retirement is now unblocked.
+- [x] **X-gk** `8569e5ec` -- the MERCHANTS surface (**R-IC**); opened **N-402** and **N-403**.
 - [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the DECOMPOSED
       parent of the exception queue's retirement, split 2026-09-05 at its own census into five
       leaves. **The census may delete nothing it has not shown orphaned**, because a route that
@@ -155,17 +143,29 @@ what it leaves a LATER step is on that step's own entry.
       *It VOIDED its own headline*: 287 matches, none naming two bank lines, measures an import
       feature the developer had abandoned, so no step may cite it.
   - [ ] **X-gi-1** `feat(import): the links point at Reconcile, and MATCH works unscripted` -- the
-        six repoints, plus **R-KA**: `?open=<line_id>` renders ONE card's candidate rows
+        FOUR repoints left, plus **R-KA**: `?open=<line_id>` renders ONE card's candidate rows
         server-side. Rendering ALL of them is 143,298 bytes of a 238,645-byte page, which is
-        **N-374** re-opened; one card is at most 15 rows. **Waits on `X-gm`** (developer
-        2026-09-05).
+        **N-374** re-opened; one card is at most 15 rows. `X-gm` took the grid pair.
+        **The parent's "SIX" was a count with no census under it and it enumerated FIVE.** The
+        census, 2026-09-05, over every `url_for` to the three retiring endpoints on a template
+        `X-gi-2` keeps: `statements.html` 45, 88, 375, and `_statement_reconcile_macros.html:138`.
+        JS carries none. **THE FOURTH IS R-KA, NOT A REPOINT**: it is the Reconcile page's own
+        `<noscript>` Build link, the scriptless path for the hand-built group match **R-GJ** leaves
+        as a parked card payment's ONLY arm (`$7,412.94`), pointing into the workbench `X-gi-2`
+        deletes -- so it becomes `?open=<line_id>` or the arm goes. Had `X-gi-2` shipped on the old
+        enumeration that class would have lost its only act and looked like a clean deletion.
   - [ ] **X-gi-2** `refactor(import): review, register and workbench retire as pages` -- **R-HU**'s
         deletion, once nothing links in. Closes **N-404**, whose remedy was always this.
   - [ ] **X-gi-3** `refactor(import): the queue's model has no reader` -- `_queue.py` whole
         (`_SAID`, `_notes_for`, the evidence grouping), `_register.py`, four `ReviewSet` members,
         their re-exports, `test_queue.py`, and `test_rules.py`'s queue half.
         **A LATER READER must obey**: `TestNoSweptRowCarriesASentence` goes WITH the queue, never
-        before it.
+        before it. **Plus a TEMPLATE orphan** (X-gi-1's census, 2026-09-05):
+        `_statement_queue_macros.html` SURVIVES -- `_statement_reconcile_macros.html:3` imports
+        `books_already_hold` -- but its `match_by_hand` does not, its sole importer being the review
+        body `X-gi-2` deletes. A LIVE file holding a DEAD macro whose `url_for` names a deleted
+        endpoint; Jinja never evaluates an uncalled macro, so nothing raises until someone calls it
+        and gets a `BuildError`.
   - [ ] **X-gi-4** `fix(import): three findings the deletion does not close` -- **N-470**'s two
         unrendered receipt figures, **N-405**'s CSP-dead inline style, **N-402**'s 12 uncovered
         route decorators. **N-405's ledger diagnosis was WRONG**: djlint H021 runs in pre-commit and
@@ -174,13 +174,12 @@ what it leaves a LATER step is on that step's own entry.
   - [ ] **X-gi-5** `fix(import): one ordered read takes every lock a pass needs` -- **N-471**.
         `apply_reviewed` locks in submission order across THREE loops, so two presses naming the
         same lines in opposite order deadlock. **MOVES MONEY, OWN PR.** No X-gm dependency.
-- [ ] **X-gm** `refactor(import): the badge and the inbox are one producer` -- **R-KB**. Measured
-      2026-09-05 at head: the grid badge reads **27** and the Reconcile inbox **18**, the delta
-      being 9 parked card payments at `$7,412.94` on the Transfers tab, and 18 + 9 = 27 exactly.
-      Today they AGREE because the badge opens the queue, so `X-gi-1` is what would MINT the
-      disagreement -- which is why it ranks first and no interim sentence is built. Move the parked
-      and impossible-day split off the proposer into `_undisposed`, which **R-HQ** already implies:
-      a holding state is not a task, so nothing should be proposing a match for one.
+- [x] **X-gm** `1b722d52` -- the badge and the inbox are ONE producer (**R-KB**, **R-KD**):
+      `inbox_partition` is one Python walk that BOTH read, and it owns BOTH halves, moving the
+      badge's LINK to Reconcile too. **27 against 18 -> 18 against 18.** Closed **N-476**; deleted
+      `impossible_day_count` and two SQL restatements. **A LATER STEP OBEYS TWO**: the walk decides
+      what the PROPOSER is given, so removing a line reprices another's row (**R-GD(a)**), and
+      `to_explain` counts CARDS where the badge counts LINES -- `X-gn` keeps those equal.
 - [ ] **X-gn** `feat(import): a match may name a second bank line` -- **R-KC**. The workbench is the
       only door to a multi-line group and `X-gi-2` deletes it; the developer accepted that gap. The
       AXIS stays: `MatchSides.of` sums over lines, `MatchDays.posted_first` exists only for it,

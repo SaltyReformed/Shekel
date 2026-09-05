@@ -11,19 +11,24 @@ from two signals that are not exclusive -- a positive counterpart signal, and a
 search this pass could not finish.  A case that only asserted "the line is on
 the page" would pass for a queue that put every line in one group.
 
-**The conservation case is the one that catches a whole class**, and the
-identity is not the obvious one.  A line must appear at most ONCE across the
-groups -- twice would render two controls against one movement -- but the
-groups do not cover ``unmatched``: an outflow the bank dates MADE after it
-POSTED reaches none of the three mechanisms (finding **N-325**), so it is in
-``unmatched``, in no group, and disclosed as
-``ReviewBounds.impossible_day_count`` instead.  The conserved sum is therefore
-``grouped + impossible_day_count == unmatched``.
+**The conservation case is the one that catches a whole class.**  A line must
+appear at most ONCE across the groups -- twice would render two controls
+against one movement -- and since plan step ``bank_import:X-gm`` the groups
+COVER ``unmatched``, so the conserved identity is ``grouped == unmatched``.
 
-*A first version of this module asserted the simpler identity and an
-adversarial review measured it FALSE by staging that one line shape: the queue
-rendered ZERO groups for a statement holding one unexplained line, and no case
-here varied the axis that would have shown it.*
+*It was ``grouped + impossible_day_count == unmatched`` until that step*, and
+the extra term was a real class: an outflow the bank dates MADE after it POSTED
+reached none of the mechanisms (finding **N-325**), because
+``_leftovers._creatable_lines`` dropped it into a count.  That drop is deleted
+-- such a line is a ``CreatableLine`` carrying ``withheld`` now -- so the term
+is gone rather than merely zero on this fixture, and
+``TestALineNoMECHANISMReaches`` below is the case that grades the difference.
+
+*A first version of this module asserted the simple identity while the extra
+term was live, and an adversarial review measured it FALSE by staging that one
+line shape: the queue rendered ZERO groups for a statement holding one
+unexplained line, and no case here varied the axis that would have shown it.
+The identity is simple again for a different reason, so that case is kept.*
 """
 
 from datetime import timedelta
@@ -316,10 +321,7 @@ class TestEveryLineIsGroupedExactlyOnce:
         review = review_set(a_scope(seed_user))
 
         grouped = [row for group in review.queue.groups for row in group.rows]
-        assert (
-            len(grouped) + review.bounds.impossible_day_count
-            == len(review.unmatched)
-        )
+        assert len(grouped) == len(review.unmatched)
         assert (
             sorted(row.line.line_id for row in grouped)
             == sorted(line.line_id for line in review.unmatched)
@@ -597,18 +599,23 @@ class TestNoSweptRowCarriesASentence:
 
 
 class TestALineNoMECHANISMReaches:
-    """Finding **N-325**: the class that is in ``unmatched`` and no group."""
+    """Finding **N-325**: the class that WAS in ``unmatched`` and no group.
 
-    def test_an_impossible_day_line_is_counted_on_the_BOUNDS_instead(
+    Plan step ``bank_import:X-gm`` closed it, and this is where the closure is
+    graded: the line the queue used to skip now reaches a row like every other,
+    so the conserved identity above holds with no second term.
+    """
+
+    def test_an_impossible_day_line_reaches_a_row_like_every_other(
         self, app, db, seed_user,
     ):
-        """The queue owes it no row, and the page still owes it a sentence.
+        """The queue owes it a row, and the row carries the door's refusal.
 
-        ``_leftovers._creatable_lines`` drops an outflow the bank dates MADE
-        after it POSTED, so it reaches none of the three mechanisms.  It stays
-        in ``unmatched`` and is disclosed as ``impossible_day_count``.  The
-        conserved sum is what this pins, because a reader asserting the
-        simpler identity would be wrong by exactly this class.
+        ``_leftovers._creatable_lines`` used to drop an outflow the bank dates
+        MADE after it POSTED, so it reached none of the mechanisms and the
+        conserved sum needed a second term.  It is a ``CreatableLine`` with
+        ``withheld`` set now, so it is grouped -- and the refusal rides on the
+        line rather than in a count that names none.
         """
         day = seed_user["bootstrap_period"].start_date
         an_envelope(seed_user)
@@ -621,13 +628,15 @@ class TestALineNoMECHANISMReaches:
         review = review_set(a_scope(seed_user))
 
         assert len(review.unmatched) == 1
-        assert review.queue.groups == ()
-        assert review.bounds.impossible_day_count == 1
         grouped = [row for group in review.queue.groups for row in group.rows]
-        assert (
-            len(grouped) + review.bounds.impossible_day_count
-            == len(review.unmatched)
-        )
+        assert len(grouped) == 1
+        assert len(grouped) == len(review.unmatched)
+        assert grouped[0].line.line_id == review.unmatched[0].line_id
+        # **The row carries no SWEEP**, because a placement is what the sweep
+        # presses and this line has none: the door would refuse it.
+        assert review.creatable[0].placement is None
+        assert review.creatable[0].withheld is not None
+        assert all(group.sweeps == () for group in review.queue.groups)
 
 
 class TestTheSweepReachesOnlyTheGroupThatOffersIt:

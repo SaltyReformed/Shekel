@@ -1208,16 +1208,25 @@ class TestTheRegisterStatesNoFigureItHasNotMeasured:
 
 
 class TestALineDatedMadeAfterItPosted:
-    """Finding **N-325**, ruled 2026-08-19: not offered, and SAID."""
+    """Finding **N-325**, ruled 2026-08-19: the ADD is withheld, and SAID.
 
-    def test_it_is_not_offered_as_a_purchase(self, app, db, seed_user):
-        """The submission could never succeed, so the chooser is not rendered.
+    **The rule is unchanged and its PLACEMENT is what plan step
+    ``bank_import:X-gm`` moved** (developer 2026-09-05).  The app still refuses
+    to choose between the bank's two days; what it stopped doing is dropping
+    the line out of every list to say so, which left it on no tab of the
+    Reconcile page at all.
+    """
+
+    def test_it_is_offered_with_its_ADD_withheld(self, app, db, seed_user):
+        """The line is on the page, and the control that cannot succeed is not.
 
         ``entry_service.create_entry`` refuses a purchase whose money left
         before it was spent -- correctly, because money cannot -- so a line the
         bank dates MADE after it POSTED has no day a purchase could happen on.
-        0 of the developer's 361 recorded lines are this shape; the OFX
-        adapter's own measurement found 2 of 361.
+        The line is still WORK: it keeps MATCH, so it is in ``creatable``
+        carrying the refusal and carrying NO placement, which is what a sweep
+        would otherwise press.  0 of the developer's 378 recorded lines are
+        this shape; the OFX adapter's own measurement found 2 of 361.
         """
         a_transaction(seed_user, name="Groceries", is_envelope=True)
         statement = an_import(seed_user)
@@ -1230,14 +1239,21 @@ class TestALineDatedMadeAfterItPosted:
 
         review = review_set(a_scope(seed_user))
 
-        assert review.creatable == ()
-        assert review.bounds.impossible_day_count == 1
-        assert review.bounds.any_limit is True
+        assert len(review.creatable) == 1
+        offered = review.creatable[0]
+        assert offered.placement is None
+        assert offered.withheld is not None
+        # The sentence names BOTH of the bank's own days, because a refusal
+        # the owner cannot check against their statement is not actionable.
+        assert day.isoformat() in offered.withheld
+        assert (day + timedelta(days=1)).isoformat() in offered.withheld
+        # It is not a BOUND: nothing here was left unexamined.
+        assert review.bounds.any_limit is False
 
-    def test_a_line_dated_made_BEFORE_it_posted_is_still_offered(
+    def test_a_line_dated_made_BEFORE_it_posted_keeps_its_placement(
         self, app, db, seed_user,
     ):
-        """The firing control's other side, so the exclusion is not vacuous."""
+        """The firing control's other side, so the withholding is not vacuous."""
         a_transaction(seed_user, name="Groceries", is_envelope=True)
         statement = an_import(seed_user)
         day = seed_user["bootstrap_period"].start_date + timedelta(days=2)
@@ -1250,7 +1266,7 @@ class TestALineDatedMadeAfterItPosted:
         review = review_set(a_scope(seed_user))
 
         assert len(review.creatable) == 1
-        assert review.bounds.impossible_day_count == 0
+        assert review.creatable[0].withheld is None
 
 
 class TestTheTableRefusesWhatIsNotAnAnswer:
