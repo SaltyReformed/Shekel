@@ -275,13 +275,12 @@ their only live specimen from them, which both `_staging` docstrings predict and
       the eras -- which is also the door `P78`'s eight fixtures need, so they move there too. Until
       then the rhythm keeps its phase from the recorded paydays, whose one bounded gap is an owner
       whose FIRST recorded payday was itself shifted.
-- [ ] **C14-a -- the shared business-day module.** `app/utils/business_days.py`: the weekend rule,
-      the computed federal holiday set of `5 U.S.C. 6103(a)` under the observance rules of `6103(b)`
-      and E.O. 11582, and ONE `shift_to_business_day` displacement. Pure, and it reuses the EXISTING
-      `BusinessDayShiftEnum` and `ref.business_day_shifts` seeded at `recurrence:R2` rather than
-      minting a vocabulary. It satisfies `recurrence:R8-d`'s pay-calendar-side dependency, so that
-      step names this leaf rather than a money-moving parent -- it does NOT start R8-d earlier,
-      whose binding blocker is `recurrence:R5`.
+- [x] **C14-a -- the shared business-day module.** `088339f5`. `app/utils/business_days.py`: the
+      weekend rule, the computed federal holiday set of `5 U.S.C. 6103(a)` under `6103(b)` and E.O.
+      11582, and ONE `shift_to_business_day` displacement, pure and reusing the
+      `BusinessDayShiftEnum` seeded at `recurrence:R2`. **What a later step must obey**: the
+      displacement may answer OUTSIDE `CALENDAR_DATE_MIN`..`MAX` and bounding it is the CALLER's,
+      and it REFUSES a non-member convention rather than defaulting one forward.
 - [ ] **C14-b -- the convention column.** Keyed to `ref.business_day_shifts`, defaulting to `none`
       and asked on all four templates that already ask for a cadence (**R-PC56**), under a CHECK
       that a non-`none` convention requires a cadence longer than the longest run of closed days.
