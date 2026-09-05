@@ -288,7 +288,25 @@ if [ -z "$_restart_requested" ]; then
         if _db_raw="$(docker ps -a --filter "name=^${TEST_DB_CONTAINER}$" \
             --format '{{.Status}}' 2>/dev/null)"; then
             _daemon_ok=yes
-            _db_status="$(printf '%s\n' "$_db_raw" | head -n1)"
+            # First line, via parameter expansion rather than ``| head -n1``.
+            # The pipe was a latent abort: ``head`` exits after one line,
+            # ``printf`` takes SIGPIPE, ``pipefail`` propagates 141 and
+            # ``errexit`` kills the wrapper with NO output and a non-pytest
+            # status.  Measured with a docker shim emitting ~429 KB.  An
+            # anchored ``name=^...$`` filter should never produce that much,
+            # which makes it robustness rather than a live bug -- but the
+            # failure mode is silent, and expansion costs nothing.
+            _db_status="${_db_raw%%$'\n'*}"
+        else
+            # Re-ask for the ERROR, on the failure path only.  The branch
+            # below asserts a cause from an exit status; without this it
+            # asserts it while discarding the one line that substantiates
+            # it, and a DOCKER_HOST typo (a CLI configuration error, healthy
+            # daemon) is indistinguishable from a daemon that is genuinely
+            # down.  ``2>&1 >/dev/null`` keeps stderr and drops stdout.
+            _docker_err="$(docker ps -a --filter "name=^${TEST_DB_CONTAINER}$" \
+                --format '{{.Status}}' 2>&1 >/dev/null || true)"
+            _docker_err="${_docker_err%%$'\n'*}"
         fi
         unset _db_raw
     fi
@@ -318,10 +336,10 @@ if [ -z "$_restart_requested" ]; then
         echo "[test.sh] not restarting $TEST_DB_CONTAINER (docker is not on" \
             "PATH) -- set RESTART_TEST_DB=1 to force the hygiene restart" >&2
     elif [ -z "$_daemon_ok" ]; then
-        echo "[test.sh] cannot reach the docker daemon, so the state of" \
+        echo "[test.sh] docker could not answer, so the state of" \
             "$TEST_DB_CONTAINER is UNKNOWN -- not 'missing'.  pytest will" \
             "fail to connect unless the database is reachable another way." \
-            "Check the daemon (systemctl status docker, or DOCKER_HOST)." >&2
+            "docker said: ${_docker_err:-(no message)}" >&2
     else
         case "$_db_status" in
             '')
@@ -348,9 +366,19 @@ if [ -z "$_restart_requested" ]; then
                 ;;
         esac
     fi
-    unset _db_status _have_docker _daemon_ok
+    unset _db_status _have_docker _daemon_ok _docker_err
 elif ! command -v docker >/dev/null 2>&1; then
     echo "[test.sh] docker not on PATH -- skipping container restart" >&2
+elif ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+    # Daemon reachability BEFORE existence.  ``docker inspect`` fails the
+    # same way for "no such container" and "cannot reach the daemon", so the
+    # restart path announced a missing container on evidence that did not
+    # establish it -- the same conflation the no-restart path above fixes,
+    # left behind in the branch a GATING run actually takes.  ``docker
+    # version`` asks the SERVER, so it fails exactly when the daemon is
+    # unreachable and succeeds otherwise.
+    echo "[test.sh] docker could not answer, so the state of" \
+        "$TEST_DB_CONTAINER is UNKNOWN -- not 'missing'; skipping restart" >&2
 elif ! docker inspect "$TEST_DB_CONTAINER" >/dev/null 2>&1; then
     echo "[test.sh] container $TEST_DB_CONTAINER does not exist -- skipping restart" >&2
 elif _live_test_backends="$(docker exec "$TEST_DB_CONTAINER" \

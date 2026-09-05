@@ -24,7 +24,9 @@ also runs in CI, which the execution harness never did.
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -57,7 +59,15 @@ _ARM_TEMPLATE = r"^{indent}(\S[^\n]*)\)$"
 # every arm ends ``;;``: with ``;;&`` on the paused arm a paused container
 # prints the warning AND the everything-is-fine line this fix exists to
 # delete, and both shell linters accept it.
-_TERMINATOR = re.compile(r"^[ \t]+(;;&?|;&)$", re.M)
+# The optional trailing comment is not decoration: anchoring the terminator
+# to end-of-line made ``;;& # also print the uptime line`` INVISIBLE, and a
+# comment is the form a developer changing a terminator is most likely to
+# write.  Measured: with that mutation the guard reported 16 passed, bash -n,
+# shellcheck and shfmt were all clean, and a paused container printed BOTH
+# the PAUSED warning and the everything-is-fine line this module exists to
+# keep deleted.  A trailing-whitespace variant evades the anchored form too,
+# though shfmt catches that one in CI.
+_TERMINATOR = re.compile(r"^[ \t]+(;;&?|;&)[ \t]*(?:#.*)?$", re.M)
 
 # Real strings docker emits, and the state each MUST be classified as.
 # Sources: `Up ... (Paused)` and `Up ... (healthy)` captured from this host;
@@ -188,20 +198,89 @@ class TestTestRunnerContainerStates:
         the PAUSED warning, and both shell linters accept it.
         """
         _, body = _case_block_body()
+        # One capturing group means findall yields STRINGS, not tuples.
+        # Indexing [0] took the first CHARACTER and compared {";"} to {";;"}.
         terminators = _TERMINATOR.findall(body)
+        arms = _case_arms()
 
-        assert terminators, "no arm terminators found; the extractor is broken"
+        # Count first.  A SET comparison passes while terminators go missing
+        # from the census -- {';;'} == {';;'} whether it holds four of them
+        # or one -- so a terminator the regex stops matching would silently
+        # stop being graded, which is how the anchored version hid ``;;&``
+        # followed by a comment.
+        assert len(terminators) == len(arms), (
+            f"{len(arms)} case arms but {len(terminators)} terminators "
+            f"({terminators}): one is written in a form this test cannot "
+            "see, so it is ungraded rather than absent"
+        )
         assert set(terminators) == {";;"}, (
             f"found {sorted(set(terminators))}: an arm falls through, so the "
             "first matching arm is no longer the only one that runs and this "
             "module's classification model no longer describes the shell"
         )
 
+    @pytest.mark.parametrize("restart", ["", "1"])
+    def test_an_unreachable_daemon_is_not_called_a_missing_container(
+        self, restart: str
+    ) -> None:
+        """Both paths say UNKNOWN, not "missing", when docker cannot answer.
+
+        This runs the real wrapper against a DOCKER_HOST with nothing behind
+        it, which needs no daemon and no container -- only the docker CLI.
+        It is the one state the ``case`` census cannot reach, because it is
+        decided before the ``case``: deleting the whole branch left every
+        other test in this module green.
+
+        Both values of RESTART_TEST_DB are exercised because the fix landed
+        on the no-restart path first and the restart path -- the one a
+        gating run actually takes -- went on announcing a missing container
+        on evidence that never established one.
+
+        Args:
+            restart: The RESTART_TEST_DB value to run under.
+        """
+        if shutil.which("docker") is None:
+            pytest.skip("no docker CLI; this asserts CLI-level behaviour")
+
+        env = {
+            **os.environ,
+            "DOCKER_HOST": "tcp://127.0.0.1:59999",
+            "TEST_DB_CONTAINER": "shekel-unreachable-probe",
+            "RESTART_TEST_DB": restart,
+        }
+        result = subprocess.run(
+            [str(_TEST_RUNNER), "--version"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(_REPO_ROOT),
+            check=False,
+        )
+
+        assert "UNKNOWN" in result.stderr, (
+            f"RESTART_TEST_DB={restart!r} with an unreachable daemon said: "
+            f"{result.stderr.strip()!r}"
+        )
+        assert "does not exist" not in result.stderr, (
+            "the wrapper claimed the container does not exist, which an "
+            "unreachable daemon does not establish: "
+            f"{result.stderr.strip()!r}"
+        )
+        assert "no such container" not in result.stderr, (
+            "same conflation on the no-restart path: "
+            f"{result.stderr.strip()!r}"
+        )
+
     def test_the_classifier_is_found_and_has_every_arm(self) -> None:
         """Extraction works, so the classification below is not vacuous.
 
-        A regex that stops matching would make every parametrized case fall
-        through to the catch-all and quietly agree with itself.
+        A regex that stops matching does NOT fail quietly -- an empty arm
+        list makes ``_classify`` raise, so every parametrized case errors
+        loudly.  What this pins is the other direction: extraction that
+        still works but returns the WRONG arms, which classification alone
+        would not notice as long as each string still reached a compatible
+        arm.  (An earlier draft of this docstring claimed the quiet
+        fall-through; measured false, and recorded as N-458.)
         """
         assert _case_arms() == list(_EXPECTED_ARMS), (
             f"case arms are {_case_arms()}, expected {list(_EXPECTED_ARMS)}. "
