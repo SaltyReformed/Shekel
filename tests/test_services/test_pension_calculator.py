@@ -392,31 +392,37 @@ class TestMeritHorizon:
         assert result[2031] == Decimal("110000.00")  # 100000 * 1.10
         assert result[2032] == Decimal("121000.00")  # 100000 * 1.10^2
 
-    def test_mixed_flat_and_percentage_colas_pinned_not_horizon_invariant(self):
-        """PINS current behavior: mixed flat+pct COLAs are NOT horizon-invariant (L4).
+    def test_mixed_flat_and_percentage_colas_horizon_invariant(self):
+        """Mixed flat+pct COLAs ARE horizon-invariant (L4 fixed, chronological walk).
 
         base 100,000; a flat $1,000 recurring COLA + a 10% recurring COLA,
-        both effective 2026.  ``apply_raises`` applies each raise's full
-        application count in sorted order, flat before percentage (M-01),
-        so splitting the compounding at the cutoff changes the ORDER the
-        flats interleave with the percents even though both raises are
-        pure COLAs:
+        both effective 2026.  ``apply_raises`` now applies each APPLICATION
+        on the date it lands, flat before percentage within a date (M-01),
+        so the money compounds in the order it arrives:
 
-        continuous (N large, e.g. 10 -- cutoff beyond the range), 2030:
-          flat 5x first: 100,000 + 5,000 = 105,000
-          pct 5x:        105,000 * 1.10^5 = 105,000 * 1.61051
-                       = 169,103.55
-        horizon N=2 (cutoff 2028), 2030:
-          cutoff base:   (100,000 + 3 * 1,000) * 1.10^3
-                       = 103,000 * 1.331 = 137,093.00
-          post-cutoff (2 applications each, flat first):
-                         (137,093.00 + 2,000) * 1.21
-                       = 139,093.00 * 1.21 = 168,302.53
+          2026: (100,000 + 1,000) * 1.10 = 111,100.00
+          2027: (111,100 + 1,000) * 1.10 = 123,310.00
+          2028: (123,310 + 1,000) * 1.10 = 136,741.00
+          2029: (136,741 + 1,000) * 1.10 = 151,515.10
+          2030: (151,515.10 + 1,000) * 1.10 = 167,766.61
 
-        The 801.02 difference is the split-at-cutoff compounding-order
-        artifact this test DOCUMENTS (review finding L4) -- it is not a
-        behavioral promise, and any deliberate change to the split rule
-        must re-derive both pins.
+        **This test is not a tautology**: ``project_salaries_by_year``
+        still splits at the cutoff and still re-anchors the post-cutoff
+        colas, so the N=2 and N=10 calls run genuinely different code
+        paths.  They agree because the WALK is now order-correct, not
+        because the horizon was removed -- revert the walk and the two
+        diverge again by 801.02.
+
+        **What this test used to assert**, as
+        ``..._pinned_not_horizon_invariant``: ``horizon[2028] ==
+        137,093.00``, ``continuous[2030] == 169,103.55`` and
+        ``horizon[2030] == 168,302.53``.  Every one of those credited 10%
+        growth to flat dollars that had not arrived yet -- the old rule
+        added all five $1,000s to the base and only then compounded.  The
+        801.02 gap it documented as review finding L4 was a symptom of
+        that ordering, not of the split, which is why removing the split
+        was never the fix.  Both pins re-derived per that test's own
+        instruction.
         """
         raises = [
             FakeRaise(flat_amount="1000", effective_month=1,
@@ -432,12 +438,15 @@ class TestMeritHorizon:
         horizon = dict(project_salaries_by_year(
             Decimal("100000"), raises, 2026, 2030, 2,
         ))
-        # (100,000 + 3,000) * 1.331 = 137,093.00 at the cutoff.
-        assert horizon[2028] == Decimal("137093.00")
-        # Continuous: (100,000 + 5,000) * 1.61051 = 169,103.55.
-        assert continuous[2030] == Decimal("169103.55")
-        # Split: (137,093.00 + 2,000) * 1.21 = 168,302.53.
-        assert horizon[2030] == Decimal("168302.53")
+        # Third year of the walk above, and the cutoff year for N=2.
+        assert horizon[2028] == Decimal("136741.00")
+        # Fifth year of the walk above.
+        assert continuous[2030] == Decimal("167766.61")
+        # The split path reaches the same place: this is the assertion
+        # that inverts, and it was 168,302.53 before the walk was fixed.
+        assert horizon[2030] == Decimal("167766.61")
+        # The invariance itself, across every year rather than one pin.
+        assert horizon == continuous
 
     def test_real_shaped_cola_and_merit(self):
         """Real-shaped 3% July cola + 2.5% January merit, N=5.
