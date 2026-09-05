@@ -187,16 +187,25 @@ def calculate_employer_contribution(
             - flat_percentage: Decimal (for flat_percentage type)
             - match_percentage: Decimal (for match type)
             - match_cap_percentage: Decimal (for match type)
-            - gross_biweekly: Decimal (gross pay per period)
+            - gross_biweekly: Decimal (gross pay per period).  **No builder
+              emits this key since plan step salary:R14-b** (ledger row
+              **N-538**): ``investment_projection
+              .employer_contribution_params`` is its only producer and that
+              step removed it, so the
+            fallback below reads a MISSING key and answers ``$0``.  Every
+            production caller supplies ``gross_override`` (or ``salary_basis``,
+            which becomes it); a caller that forgets gets silence rather than
+            an error, which is why the row exists.
         employee_contribution: Decimal amount the employee contributed.
-        gross_override: Optional Decimal per-period gross that replaces
-            the constant ``employer_params["gross_biweekly"]`` for this
-            period (P1b / finding D3 / fork F3).  ``None`` (the default)
-            keeps the constant-base behavior every existing caller relies
-            on; the retirement projection passes a per-period gross grown
-            with the salary path so the flat-percentage employer
-            contribution tracks the projected salary rather than freezing
-            at today's gross.
+        gross_override: The per-period gross a percentage is taken OF
+            (P1b / finding D3 / fork F3).  **Effectively required since plan
+            step salary:R14-b**: it replaced the constant
+            ``employer_params["gross_biweekly"]``, which no builder emits any
+            more, so ``None`` no longer means "keep the constant base" -- it
+            means a basis of ``$0`` and therefore no employer money at all.
+            Every production caller passes one, directly or through
+            ``project_balance``'s ``salary_basis``.  Making that structural
+            rather than documented is ledger row **N-538**.
 
     Returns:
         Decimal employer contribution amount.
@@ -388,11 +397,12 @@ class _PeriodInputs:
             :func:`calculate_employer_contribution`).
         annual_contribution_limit: Decimal annual cap, normalized once, or
             ``None`` for accounts with no IRS limit.
-        salary_basis: Optional per-period gross resolver (P1b / fork F3).
-            When set, ``period -> Decimal gross_biweekly`` supplies the
-            employer-contribution base for each period, overriding the
-            constant ``employer_params["gross_biweekly"]``; ``None`` keeps
-            the constant-base behavior every non-retirement consumer uses.
+        salary_basis: Per-period gross resolver (P1b / fork F3),
+            ``period -> Decimal gross_biweekly``, supplying the
+            employer-contribution base for each period.  **Every consumer
+            that configures an employer contribution passes one since plan
+            step salary:R14-b**; ``None`` no longer means a constant base,
+            because there is no constant left to fall back to (**N-538**).
     """
 
     assumed_annual_return: Decimal
@@ -493,10 +503,12 @@ def _project_one_period(
     )
 
     # Step 3: Employer contribution on the capped employee amount.  P1b /
-    # fork F3: when a per-period salary basis is supplied, this period's
-    # gross overrides the constant ``employer_params["gross_biweekly"]`` so
-    # the flat-percentage employer contribution grows with the projected
-    # salary instead of freezing at today's gross.
+    # fork F3: the per-period salary basis supplies this period's gross, so
+    # the flat-percentage employer contribution tracks the paycheck rather
+    # than freezing at one.  It REPLACED a constant
+    # ``employer_params["gross_biweekly"]`` that no builder emits since plan
+    # step salary:R14-b, so a caller that omits the basis now gets a $0
+    # basis rather than a constant one -- ledger row N-538.
     gross_override = (
         inputs.salary_basis(period)
         if inputs.salary_basis is not None
@@ -583,12 +595,14 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
                                   distinct from a missing entry.  None or [] uses the static
                                   periodic_contribution for all periods.
         salary_basis:             Optional ``period -> Decimal gross_biweekly`` resolver
-                                  (P1b / fork F3).  When set, it supplies the per-period
-                                  employer-contribution base, overriding the constant
-                                  ``employer_params["gross_biweekly"]`` so the flat-percentage
-                                  employer contribution grows with the projected salary; None
-                                  (the default) keeps the constant-base behavior every
-                                  non-retirement consumer relies on.
+                                  (P1b / fork F3).  Supplies the per-period
+                                  employer-contribution base so the flat-percentage employer
+                                  contribution tracks the paycheck.  It replaced a constant
+                                  ``employer_params["gross_biweekly"]`` that no builder emits
+                                  since plan step salary:R14-b, so None no longer means a
+                                  constant base -- it means a $0 basis (ledger row N-538).
+                                  Every consumer configuring an employer contribution passes
+                                  one.
 
     Returns:
         List of ProjectedBalance, one per period.

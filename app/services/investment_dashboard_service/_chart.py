@@ -25,6 +25,7 @@ from decimal import Decimal, InvalidOperation
 
 from app.models.account import Account
 from app.services import balance_at, growth_engine
+from app.services.investment_projection import build_contribution_timeline
 from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
@@ -57,6 +58,24 @@ def _run_growth_projection(
     period OUTSIDE the window, so the engine never applies that period's own
     contribution and the strictly-before seed would leave the limit one period
     too roomy (:func:`._context._projection_ytd` carries the worked figure).
+
+    **The contribution timeline is assembled HERE since plan step
+    salary:R14-b**, not carried on the context.  A timeline's domain is the
+    axis it will be projected over, and this chart's axis is a function of the
+    horizon the REQUEST names -- so assembling it beside the other per-account
+    inputs fixed it to the owner's saved window and left every period past
+    that to ``periodic_contribution``, one raise-blind figure covering up to
+    38 years of a 40-year chart (finding **D45**).  Built over ``periods``, a
+    dated record answers every projected period and that fallback never fires.
+
+    **The employer contribution is sized per period too**, through the engine's
+    own ``salary_basis`` hook: the gross of the paycheck the account's funding
+    profile was paid on each payday
+    (:meth:`~app.services.investment_projection.AccountPayrollFeed.salary_basis`),
+    where ``employer_params`` used to carry ONE gross for the whole run.  That
+    hook existed already and only ``/retirement`` supplied it, which is why
+    this chart's employer line and that page's disagreed about the same
+    account.
     """
     return growth_engine.project_balance(
         current_balance=ctx.projection_seed,
@@ -66,7 +85,13 @@ def _run_growth_projection(
         employer_params=ctx.inputs.employer_params,
         annual_contribution_limit=ctx.params.annual_contribution_limit,
         ytd_contributions_start=ctx.projection_ytd,
-        contributions=ctx.contributions,
+        contributions=build_contribution_timeline(
+            feed=ctx.feed,
+            contribution_transactions=ctx.shadow_contributions,
+            periods=periods,
+            as_of=ctx.balance_ctx.as_of,
+        ),
+        salary_basis=ctx.feed.salary_basis(),
     )
 
 
@@ -359,6 +384,11 @@ def _compute_what_if_overlay(
         annual_contribution_limit=ctx.params.annual_contribution_limit,
         ytd_contributions_start=ctx.projection_ytd,
         contributions=None,
+        # The employer match still sizes off each period's OWN gross (plan
+        # step salary:R14-b): the what-if varies what the OWNER puts in, not
+        # what the employer pays them, so freezing the basis here would make
+        # the overlay and the committed line disagree about the same paycheck.
+        salary_basis=ctx.feed.salary_basis(),
     )
 
     what_if_balances = [

@@ -58,13 +58,13 @@ from app.services.balance_at import (
     _cash_periods,
 )
 from app.services.balance_at._asset_contributions import ContributionInputs
-from app.services.investment_projection import adapt_deductions
+from app.services.investment_projection import AccountPayrollFeed
 from app.services.pay_calendar import calendar_for
 from app.services.balance_at._context import BalanceContext
 from app.services.cash_ledger import ReconciledThrough
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.projection_inputs import (
-    load_active_deductions_for_accounts,
+    load_payroll_feeds,
     load_investment_params_for_accounts,
 )
 from tests._test_helpers import (
@@ -105,51 +105,77 @@ def _ctx(seed_user, as_of=_LATE_AS_OF):
     return BalanceContext.build(seed_user["user"].id, as_of=as_of)
 
 
-def _inputs(params=None, deductions=(), gross=_ZERO):
+def _inputs(params=None, feed=None):
     """Bundle a case's contribution feed the way the seam's callers do."""
     return ContributionInputs(
         investment_params=params,
-        deductions=list(deductions),
-        salary_gross_biweekly=gross,
+        feed=AccountPayrollFeed.absent() if feed is None else feed,
     )
 
 
-def _fold(account, ctx, dates, *, params=None, deductions=(), gross=_ZERO):
+def _fold(account, ctx, dates, *, params=None, feed=None):
     """Fold *account* at each of *dates*, returning ``{date: Decimal}``."""
     return _asset_fold.fold_asset_balances(
-        account, ctx, list(dates), _inputs(params, deductions, gross),
+        account, ctx, list(dates), _inputs(params, feed),
     )
 
 
-def _view(account, ctx, periods, *, params=None, deductions=(), gross=_ZERO):
+def _view(account, ctx, periods, *, params=None, feed=None):
     """Return *account*'s modelled per-period columns."""
     return _asset_fold.asset_period_view(
-        account, ctx, _inputs(params, deductions, gross),
+        account, ctx, _inputs(params, feed),
     )
 
 
-def _growth(account, ctx, as_of, *, params=None, deductions=(), gross=_ZERO):
+def _growth(account, ctx, as_of, *, params=None, feed=None):
     """Return *account*'s ``(accrual, contribution)`` through *as_of*."""
     return _asset_fold.asset_growth_at(
-        account, ctx, as_of, _inputs(params, deductions, gross),
+        account, ctx, as_of, _inputs(params, feed),
     )
 
 
-def _deductions_for(seed_user, account):
-    """Return the account's active deductions, ADAPTED as the seam's loader does.
+def _feed_for(seed_user, account, params=None):
+    """Return the account's payroll feed, PRICED as the seam's loader prices it.
 
-    ``ContributionInputs.deductions`` holds the namedtuple rather than the ORM
-    row since plan step **R-F16**, which moved the adaptation to the ORM
-    boundary in ``balance_at._inputs`` -- the adapter needs the owner's pay
-    cadence, and only a caller holding the read pass has one.  Handing the raw
-    rows to the pure tier below the seam is a shape production cannot produce.
+    ``ContributionInputs`` holds an
+    :class:`~app.services.investment_projection.AccountPayrollFeed` since plan
+    step **salary:R14-b** (ruling **R-SAL2**), and it is built by the real
+    loader here rather than by hand: what a deduction takes from a paycheck is
+    the paycheck ENGINE's answer, so a hand-built feed would grade this file's
+    arithmetic instead of the engine's.  It replaced an ``adapt_deductions``
+    call that flattened the ORM rows into a shape whose per-period figure this
+    tier then re-derived, raise-blind (finding **D45**).
+
+    ``params`` is passed through so the EMPLOYER half is priced too: the gross
+    an employer percentage is taken of comes off the profile
+    ``investment_params.salary_profile_id`` names (**R-SAL5**), so a case that
+    wants employer money needs the link its own ``_salaried_deduction`` wrote.
     """
     user_id = seed_user["user"].id
-    return adapt_deductions(
-        load_active_deductions_for_accounts(
-            user_id, [account.id],
-        ).get(account.id, []),
-        calendar_for(user_id).cadence,
+    return load_payroll_feeds(
+        user_id, calendar_for(user_id), [account.id],
+        {} if params is None else {account.id: params},
+    )[account.id]
+
+
+def _flat_feed(periods, amount, gross=None):
+    """A feed paying *amount* on every one of *periods*' paydays.
+
+    For the cases that drive :func:`_asset_contributions._dated_events`
+    directly over periods no owner has -- the calendar-year limit rules, which
+    need a schedule spanning New Year.  The engine cannot price a paycheck for
+    a calendar nobody holds, and these cases are about the LIMIT walk rather
+    than about what a paycheck pays, so the feed is stated rather than priced.
+    """
+    return AccountPayrollFeed(
+        employee_by_payday={
+            period.start_date: Decimal(amount) for period in periods
+        },
+        gross_by_payday=(
+            {} if gross is None
+            else {period.start_date: Decimal(gross) for period in periods}
+        ),
+        is_payroll_linked=True,
     )
 
 
@@ -204,6 +230,16 @@ def _salaried_deduction(seed_user, account, amount):
     now build the same feed, and the modelled tier is only LIVE when one exists
     -- a fixture without it cannot tell a partition from a union (finding N-69,
     which is how the first version of the R-R pin was found vacuous).
+
+    **It also records which job FUNDS the account** (plan step
+    **salary:R14-b**, ruling **R-SAL5**), which is what
+    ``salary:R14-a``'s backfill wrote for exactly this shape: an account with a
+    deduction naming it is funded by that deduction's own profile.  Without
+    the link the employer half models nothing at all (the developer's
+    2026-09-04 ruling), so a case asserting an employer figure would assert
+    ``$0.00`` and pass for the wrong reason.  The profile pays
+    ``$94,425.24 / 26 = $3,631.74`` a paycheck, which is the gross those cases
+    size a percentage off.
     """
     profile = make_salary_profile(
         seed_user, db.session, annual_salary=Decimal("94425.24"),
@@ -221,6 +257,9 @@ def _salaried_deduction(seed_user, account, amount):
         is_active=True,
     )
     db.session.add(deduction)
+    params = load_investment_params_for_accounts([account]).get(account.id)
+    if params is not None:
+        params.salary_profile_id = profile.id
     db.session.commit()
     return deduction
 
@@ -835,6 +874,15 @@ class TestTheContributionTier:
         The opening is asserted on period 0's first day, so period 0's own
         payday (01-02) is NOT strictly after it and contributes nothing (ruling
         R-Z); period 1's payday (01-16) is, and contributes $181.59.
+
+        **The account NAMES the job that funds it** (ruling **R-SAL5**, plan
+        step **salary:R14-b**), which is what makes this shape modellable at
+        all: no deduction names the account, so before that column there was
+        no link to any profile and the gross fell to an owner-level
+        ``.first()``.  Without the link the ruling of 2026-09-04 models no
+        employer money, and this case would assert ``$0.00`` twice and pass
+        for the wrong reason -- which is why the link is written here rather
+        than the gross being stated.
         """
         account = _401k(
             seed_user, seed_periods[0], Decimal("20000.00"),
@@ -843,12 +891,17 @@ class TestTheContributionTier:
         )
         params = _params_for(account)
         params.employer_flat_percentage = Decimal("0.0500")
+        profile = make_salary_profile(
+            seed_user, db.session, annual_salary=Decimal("94425.24"),
+        )
+        db.session.flush()
+        params.salary_profile_id = profile.id
         db.session.commit()
         ctx = _ctx(seed_user)
 
         columns = _view(
             account, ctx, seed_periods[:2], params=params,
-            gross=Decimal("3631.74"),
+            feed=_feed_for(seed_user, account, params),
         )
         assert columns[seed_periods[0].id].contribution == Decimal("0.00")
         assert columns[seed_periods[1].id].contribution == Decimal("181.59")
@@ -879,17 +932,17 @@ class TestTheContributionTier:
         _salaried_deduction(seed_user, account, "500.00")
         ctx = _ctx(seed_user)
 
-        deductions = _deductions_for(seed_user, account)
         params = _params_for(account)
+        feed = _feed_for(seed_user, account, params)
         columns = _view(
             account, ctx, seed_periods[:2], params=params,
-            deductions=deductions,
+            feed=feed,
         )
         assert columns[seed_periods[1].id].contribution == Decimal("500.00")
 
         folded = _fold(
             account, ctx, [date(2026, 1, 15), date(2026, 1, 16)],
-            params=params, deductions=deductions,
+            params=params, feed=feed,
         )
         assert folded[date(2026, 1, 15)] == Decimal("20051.97")
         assert folded[date(2026, 1, 16)] == Decimal("20555.78")
@@ -916,10 +969,11 @@ class TestTheContributionTier:
         _salaried_deduction(seed_user, account, "500.00")
         ctx = _ctx(seed_user)
 
-        deductions = _deductions_for(seed_user, account)
+        params = _params_for(account)
+        feed = _feed_for(seed_user, account, params)
         columns = _view(
             account, ctx, seed_periods[:3], params=_params_for(account),
-            deductions=deductions,
+            feed=feed,
         )
         assert columns[seed_periods[1].id].contribution == Decimal("0.00")
         assert columns[seed_periods[2].id].contribution == Decimal("500.00")
@@ -956,17 +1010,17 @@ class TestTheContributionTier:
         db.session.commit()
         ctx = _ctx(seed_user)
         params = _params_for(account)
-        deductions = _deductions_for(seed_user, account)
+        feed = _feed_for(seed_user, account, params)
 
         folded = _fold(
             account, ctx, [date(2026, 1, 19), date(2026, 1, 20)],
-            params=params, deductions=deductions,
+            params=params, feed=feed,
         )
         step = folded[date(2026, 1, 20)] - folded[date(2026, 1, 19)]
         assert Decimal("500.00") < step < Decimal("505.00")
         assert _view(
             account, ctx, seed_periods[:2],
-            params=params, deductions=deductions,
+            params=params, feed=feed,
         )[seed_periods[1].id].contribution == Decimal("100.00")
 
     def test_the_employer_match_sizes_off_the_resolved_employee_total(
@@ -1001,10 +1055,11 @@ class TestTheContributionTier:
         db.session.commit()
         ctx = _ctx(seed_user)
 
-        deductions = _deductions_for(seed_user, account)
+        params = _params_for(account)
+        feed = _feed_for(seed_user, account, params)
         columns = _view(
             account, ctx, seed_periods[:2], params=_params_for(account),
-            deductions=deductions, gross=Decimal("3631.74"),
+            feed=feed,
         )
         assert columns[seed_periods[1].id].contribution == Decimal("308.95")
 
@@ -1063,15 +1118,15 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         Hand-computed: the cap is ``max(limit - ytd, 0)`` applied per period,
         which is the growth engine's own ``cap_contribution_at_limit``.
         """
+        periods = self._periods(date(2026, 1, 2), 4)
         plan = _asset_contributions._ContributionPlan(
-            per_period=Decimal("500.00"),
+            feed=_flat_feed(periods, "500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={},
         )
         events = _asset_contributions._dated_events(
-            plan, self._periods(date(2026, 1, 2), 4),
-            ReconciledThrough(date(2026, 1, 1)),
+            plan, periods, ReconciledThrough(date(2026, 1, 1)),
         )
         assert [amount for _day, amount in events] == [
             Decimal("500.00"), Decimal("500.00"), Decimal("200.00"),
@@ -1107,7 +1162,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         """
         periods = self._periods(date(2026, 1, 2), 4)
         plan = _asset_contributions._ContributionPlan(
-            per_period=Decimal("500.00"),
+            feed=_flat_feed(periods, "500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={},
@@ -1167,7 +1222,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         """
         periods = self._periods(date(2026, 1, 2), 3)
         plan = _asset_contributions._ContributionPlan(
-            per_period=Decimal("500.00"),
+            feed=_flat_feed(periods, "500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={periods[0].period_id: Decimal("900.00")},
@@ -1184,14 +1239,15 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         paydays fall in 2026 and exhaust a $600 limit ($500 then $100); the
         2027 paydays start a fresh $600 and pay $500 again.
         """
+        periods = self._periods(date(2026, 12, 4), 4)
         events = _asset_contributions._dated_events(
             _asset_contributions._ContributionPlan(
-                per_period=Decimal("500.00"),
+                feed=_flat_feed(periods, "500.00"),
                 employer_params=None,
                 annual_limit=Decimal("600.00"),
                 recorded_by_period={},
             ),
-            self._periods(date(2026, 12, 4), 4),
+            periods,
             ReconciledThrough(date(2026, 12, 3)),
         )
         assert [(day.isoformat(), amount) for day, amount in events] == [
@@ -1280,6 +1336,14 @@ class TestThePerPeriodIdentity:
         )
         params = _params_for(account)
         params.employer_flat_percentage = Decimal("0.0500")
+        # The job that funds the employer contribution (R-SAL5): without it
+        # the 2026-09-04 ruling models no employer money and this shape would
+        # be missing the contribution it is here to mix in.
+        profile = make_salary_profile(
+            seed_user, db.session, annual_salary=Decimal("94425.24"),
+        )
+        db.session.flush()
+        params.salary_profile_id = profile.id
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], account,
             seed_periods[2], amount=Decimal("750.00"),
@@ -1288,10 +1352,8 @@ class TestThePerPeriodIdentity:
         db.session.commit()
         ctx = _ctx(seed_user, as_of=date(2026, 3, 1))
 
-        columns = _view(
-            account, ctx, seed_periods, params=params,
-            gross=Decimal("3631.74"),
-        )
+        feed = _feed_for(seed_user, account, params)
+        columns = _view(account, ctx, seed_periods, params=params, feed=feed)
         cash = _cash_periods.period_view_of(
             _cash_fold.assembled_fold(account, ctx),
             period_window(seed_periods),
@@ -1299,7 +1361,7 @@ class TestThePerPeriodIdentity:
         openings = _fold(
             account, ctx,
             [period.start_date - timedelta(days=1) for period in seed_periods],
-            params=params, gross=Decimal("3631.74"),
+            params=params, feed=feed,
         )
         for period in seed_periods:
             column, cash_column = columns[period.id], cash.columns[period.id]
@@ -1354,17 +1416,17 @@ class TestTheGrowthDecomposition:
         _salaried_deduction(seed_user, account, "500.00")
         ctx = _ctx(seed_user)
         params = _params_for(account)
-        deductions = _deductions_for(seed_user, account)
+        feed = _feed_for(seed_user, account, params)
 
         accrual, contribution = _growth(
             account, ctx, date(2026, 1, 16),
-            params=params, deductions=deductions,
+            params=params, feed=feed,
         )
         assert accrual == Decimal("55.78")
         assert contribution == Decimal("500.00")
         assert Decimal("20000.00") + accrual + contribution == _fold(
             account, ctx, [date(2026, 1, 16)],
-            params=params, deductions=deductions,
+            params=params, feed=feed,
         )[date(2026, 1, 16)]
 
     def test_the_anchor_periods_own_days_are_reported_not_hidden(
@@ -1449,7 +1511,7 @@ class TestTheContributionTierIsDecidedByTheKind:
         columns = _view(
             house, ctx, seed_periods[:2],
             params=_params_for(investment),
-            deductions=_deductions_for(seed_user, investment),
+            feed=_feed_for(seed_user, investment),
         )
         assert columns[seed_periods[0].id].accrual == Decimal("113.44")
         assert columns[seed_periods[0].id].contribution == Decimal("0.00")

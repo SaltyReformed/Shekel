@@ -136,7 +136,8 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import TxnTypeEnum
+from app.enums import EmployerContributionTypeEnum, TxnTypeEnum
+from app.models.investment_params import InvestmentParams
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.services import account_resolver, pay_schedule_service
@@ -179,6 +180,13 @@ _PER_PLAN = ("app.services.retirement_projection", "project_accounts_with_batch"
 #: ``derive_periods`` is the one function every ``PayCalendar`` runs through
 #: (``PayCalendar.__post_init__``), so counting it cannot be walked around.
 _CALENDAR_DOOR = ("app.services.pay_calendar._derive", "derive_periods")
+
+#: The PAYCHECK-PROJECTION door, as ``(module path, attribute)``.  One
+#: calendar-wide projection per salary profile per render is the budget
+#: (plan step **salary:R14-b**); see
+#: :class:`TestOnePaycheckProjectionPerProfilePerRender` for why this door
+#: and not ``calculate_paycheck``.
+_PROJECTION_DOOR = ("app.services.income_service", "project_profile")
 
 #: What the budget dashboard resolves about its own SUBJECT, as
 #: ``(module path, attribute)``.  A render answers "which account is this page
@@ -235,14 +243,21 @@ def _seed_projecting_account(db, seed_user, seed_periods_today):
         .one()
     )
     settings.planned_retirement_date = add_months(date.today(), 240)
-    # **The SALARY PROFILE is load-bearing and was missing until 2026-08-16.**
-    # ``income_service.get_current_gross_biweekly`` returns at its profile
-    # lookup for an owner who has none, and every producer that reaches it does
-    # so behind that early return -- so a calendar count taken without a
-    # profile read the same number on the tree that derived the owner's
-    # schedule SEVEN times and on the tree that derives it once.  That is the
-    # arm-that-cannot-fail shape one line up, found the same way: by an
-    # adversarial review re-running the measurement over a richer owner.
+    # **The SALARY PROFILE was load-bearing for this count until plan step
+    # salary:R14-b, and the reason is recorded because the reason is what
+    # decayed.**  ``income_service.get_current_gross_biweekly`` returned at
+    # its profile lookup for an owner who had none, and every producer that
+    # reached it did so behind that early return -- so a calendar count taken
+    # without a profile read the same number on the tree that derived the
+    # owner's schedule SEVEN times and on the tree that derives it once.  That
+    # was the arm-that-cannot-fail shape one line up, found the same way: by
+    # an adversarial review re-running the measurement over a richer owner.
+    # That producer is DELETED, and the seam hands the pass's own calendar to
+    # ``projection_inputs.load_payroll_feeds`` whether or not a profile
+    # exists, so no early return can hide a derivation now.  The profile stays
+    # because a richer owner is still the better subject -- it is what gives
+    # the feed a paycheck to price -- but this case no longer DEPENDS on it,
+    # and a future reader should not infer that it does.
     make_salary_profile(seed_user, db.session)
     account = make_investment_account(
         seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
@@ -733,7 +748,9 @@ class TestOneCalendarDerivationPerRender:
     ``income_service.get_current_gross_biweekly`` derived its own from a
     ``user_id`` while every chain reaching it already held the pass.  The
     count grew with the account count, since the seam asks for a
-    per-account contribution feed.
+    per-account contribution feed.  *That producer was DELETED at plan step
+    salary:R14-b; the measurement is kept as the reason this second count
+    exists, not as a live claim about a live function.*
 
     **This is a SECOND count of the same question and that is the point.**
     ``TestOneReadPassPerRender`` proves the render opens one pass; it cannot
@@ -1187,4 +1204,142 @@ class TestOneCalendarDerivationPerRender:
         assert counts["derive_periods"] == 1, (
             f"{path} derived the pay calendar {counts['derive_periods']} times; "
             "the three cell fragments share one resolver and it derives one"
+        )
+
+
+class TestOnePaycheckProjectionPerProfilePerRender:
+    """Every render below runs the paycheck ENGINE once per salary profile.
+
+    **The third count of one question, and the one the other two were blind
+    to** (plan step **salary:R14-b**).  ``TestOneReadPassPerRender`` proves a
+    render opens one pass; ``TestOneCalendarDerivationPerRender`` proves every
+    producer below it reads that pass's CALENDAR.  Neither can see a producer
+    that holds the pass, reads its calendar, and then runs the paycheck engine
+    over the owner's whole saved window again -- which is exactly what
+    ``salary:R14-b`` introduced and what an adversarial review of that step
+    measured: ``/savings`` ran ``calculate_paycheck`` **61** times on a
+    3-account, 10-period fixture where the pre-step tree ran it once per
+    account, because ``_contribution_inputs_for_account`` is the batch loader
+    over a one-element set and each call re-projected the whole window.
+
+    ``project_profile`` is the door counted rather than ``calculate_paycheck``
+    for two reasons: it is the ONE spelling of a calendar-wide projection
+    (ledger row **N-443**, closed at ``salary:R14-a``), and its per-paycheck
+    count is a property of the owner's schedule LENGTH, so counting the inner
+    call would make the assertion a function of the fixture's payday count
+    rather than of the code under test.
+
+    The budget is ONE per active salary profile: a profile's projection is a
+    function of the profile and the calendar alone, so a second run of the
+    same one is a memo that was missed.  ``BalanceContext.payroll_breakdowns``
+    is the memo, and this class is what keeps it load bearing -- without a
+    counting gate a future refactor can drop the argument at a call site and
+    no test would notice, which is how two of that memo's four callers came to
+    bypass it inside the step that added it.
+    """
+
+    @staticmethod
+    def _fund_the_account(db, seed_user, account):
+        """Name the owner's profile as the account's funding job.
+
+        Without the link (**R-SAL5**) the loader resolves no profile, projects
+        nothing, and the count reads ZERO on the fixed tree and the broken one
+        alike -- the arm-that-cannot-fail shape this file's own fixture
+        docstring warns about one function up.  ``_seed_projecting_account``
+        already created the profile; this is what makes it FUND something.
+        """
+        profile = (
+            db.session.query(SalaryProfile)
+            .filter_by(user_id=seed_user["user"].id, is_active=True)
+            .first()
+        )
+        params = (
+            db.session.query(InvestmentParams)
+            .filter_by(account_id=account.id).one()
+        )
+        params.employer_contribution_type_id = (
+            ref_cache.employer_contribution_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE,
+            )
+        )
+        params.employer_flat_percentage = Decimal("0.0500")
+        params.salary_profile_id = profile.id
+        db.session.commit()
+
+    def test_savings_projects_each_profile_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /savings runs the paycheck engine once for the owner's profile."""
+        with app.app_context():
+            account = _seed_projecting_account(
+                db, seed_user, seed_periods_today,
+            )
+            self._fund_the_account(db, seed_user, account)
+
+        with counting_calls(_PROJECTION_DOOR) as counts:
+            resp = auth_client.get("/savings")
+
+        assert resp.status_code == 200
+        assert counts["project_profile"] == 1, (
+            f"/savings projected the owner's paycheck "
+            f"{counts['project_profile']} times; every producer below the "
+            "route's one read pass must read that pass's projection memo"
+        )
+
+    def test_retirement_projects_each_profile_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /retirement runs the paycheck engine once for the profile.
+
+        The third of the memo's call sites (``retirement_projection
+        .load_projection_batch``), which an adversarial review noted this
+        class did not cover even though the site is one of the three.
+        """
+        with app.app_context():
+            account = _seed_projecting_account(
+                db, seed_user, seed_periods_today,
+            )
+            self._fund_the_account(db, seed_user, account)
+
+        with counting_calls(_PROJECTION_DOOR) as counts:
+            resp = auth_client.get("/retirement")
+
+        assert resp.status_code == 200
+        assert counts["project_profile"] == 1, (
+            f"/retirement projected the owner's paycheck "
+            f"{counts['project_profile']} times; the page holds one read pass "
+            "and its batch load and its seam reads must share that pass's "
+            "projection memo"
+        )
+
+    def test_investment_projects_each_profile_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET the investment dashboard runs the engine once for the profile.
+
+        The account carries an employer contribution and NAMES the job that
+        funds it, so the feed actually prices a gross -- without the link the
+        loader resolves no profile at all and the count would read 0 on the
+        fixed tree and the broken one alike.
+        """
+        with app.app_context():
+            account = _seed_projecting_account(
+                db, seed_user, seed_periods_today,
+            )
+            self._fund_the_account(db, seed_user, account)
+            account_id = account.id
+
+        with counting_calls(_PROJECTION_DOOR) as counts:
+            resp = auth_client.get(f"/accounts/{account_id}/investment")
+
+        assert resp.status_code == 200
+        assert "$" in resp.get_data(as_text=True), (
+            "the dashboard did not render figures, so this count was taken "
+            "over a producer that returned early"
+        )
+        assert counts["project_profile"] == 1, (
+            f"/investment projected the owner's paycheck "
+            f"{counts['project_profile']} times; the page holds one read pass "
+            "and both its seam reads and its own feed load must share that "
+            "pass's projection memo"
         )

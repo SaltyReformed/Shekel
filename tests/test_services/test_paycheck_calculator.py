@@ -35,10 +35,6 @@ from app.services.paycheck_calculator import (
 )
 from app import ref_cache
 from app.enums import CalcMethodEnum, DeductionTimingEnum
-from app.services.investment_projection import (
-    AdaptedDeduction,
-    _compute_deduction_per_period,
-)
 from app.services.pay_calendar import (
     DerivedPeriod,
     PayCadence,
@@ -4046,60 +4042,26 @@ class TestTheGrossIsARateAndNotAShareOfAYear:
         assert total == expected_year_total
         assert total - annual_salary.quantize(TWO_PLACES) == expected_gap
 
-    def test_the_investment_projection_prices_the_same_gross(
-        self, simple_tax_configs,
-    ):
-        """ONE producer: a percentage contribution and the paycheck agree.
-
-        ``investment_projection`` prices a percentage deduction against its own
-        derived gross.  Until plan step balance:X-aw it spelled that division
-        itself while the engine distributed a residue, and the two were
-        measured DIFFERENT on 5 of the owner's 63 saved periods -- 2027-01-14
-        through 2027-03-11, where the engine said $3,722.54 and the projection
-        said $3,722.53, so a percentage was taken against a gross a cent below
-        the one the paycheck subtracted it from.  Both now ask
-        ``payroll_basis.gross_per_paycheck``.
-
-        Driven at $96,785.88 -- the owner's own 2027 post-raise salary, and the
-        salary the divergence was measured at.
-
-        **This grades the ROUNDING RULE and deliberately not the wiring**, a
-        distinction an adversarial review of X-aw drew after a first draft of
-        this docstring blurred it.  The profile here is raise-free, which is the
-        one case where the two sides' INPUTS agree: in production
-        ``adapt_deductions`` stamps the profile's raw ``annual_salary`` where
-        the engine passes ``apply_raises(...)`` for the period, so for an owner
-        with an applicable raise the two still differ -- by the raise, not by a
-        cent.  That is finding **D45** and it is owned elsewhere; a case
-        asserting these two equal on a raise-BEARING profile would fail, and
-        should.
-        """
-        annual = Decimal("96785.88")
-        profile = FakeProfile(annual_salary=annual, created_at=date(2026, 1, 1))
-        periods = [
-            _period(start_date=date(2027, 1, 14) + timedelta(days=14 * i),
-                    period_id=i + 1)
-            for i in range(26)
-        ]
-        pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
-
-        engine = calculate_paycheck(
-            payroll_basis(profile, periods), periods[0], simple_tax_configs,
-        ).earnings.gross_biweekly
-        _, projection = _compute_deduction_per_period(
-            AdaptedDeduction(
-                amount=Decimal("0.06"),
-                calc_method_id=pct_id,
-                annual_salary=annual,
-                periods_per_year=Decimal("26"),
-                annual_cap=None,
-            ),
-            pct_id,
-        )
-
-        assert engine == projection == Decimal("3722.53"), (
-            f"engine={engine}, investment projection={projection}"
-        )
+    # **``test_the_investment_projection_prices_the_same_gross`` was DELETED
+    # at plan step salary:R14-b, and what it graded is worth stating.**  It
+    # pinned that the paycheck engine and ``investment_projection`` rounded a
+    # percentage deduction's gross identically -- driven at the owner's own
+    # 2027 salary of $96,785.88, where until plan step balance:X-aw the two
+    # answered $3,722.54 and $3,722.53 on 5 of his 63 saved periods, so a
+    # percentage was taken against a gross a cent below the one the paycheck
+    # subtracted it from.  X-aw made both ask
+    # ``payroll_basis.gross_per_paycheck``, and this case held them there.
+    #
+    # It has no successor because it has no SUBJECT: the second producer is
+    # gone.  The contribution feed reads this engine's own breakdown now
+    # (ruling **R-SAL2**), so the agreement the case enforced is structural
+    # rather than asserted -- and the caveat it carried is settled with it.
+    # Its own docstring recorded that it graded the rounding rule and NOT the
+    # wiring, because the two sides' INPUTS still differed by any applicable
+    # raise (finding **D45**), and that "a case asserting these two equal on a
+    # raise-BEARING profile would fail, and should".  There is one input now,
+    # and ``test_income_service.TestThePerPeriodGrossIsTheENGINES`` grades a
+    # raise-bearing profile end to end.
 
 
 class TestGrossPerPaycheck:

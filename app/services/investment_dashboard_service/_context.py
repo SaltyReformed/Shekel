@@ -24,19 +24,18 @@ from app.models.user import UserSettings
 from app.services import (
     balance_at,
     cash_ledger,
-    growth_engine,
-    income_service,
 )
 from app.services.balance_at import BalanceContext
 from app.services.investment_projection import (
+    AccountPayrollFeed,
     InvestmentInputs,
-    adapt_deductions,
-    build_contribution_timeline,
+    PricedContribution,
 )
 from app.services.pay_calendar import DerivedPeriod
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_account,
+    load_payroll_feeds,
     load_shadow_income_contributions_for_account,
 )
 
@@ -102,12 +101,29 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
         inputs: The :class:`InvestmentInputs` the growth engine needs
             (periodic contribution, employer params, annual contribution
             limit, YTD contributions).
-        contributions: The per-period contribution timeline (deductions
-            plus transfer receipts) fed to ``project_balance``.
+        shadow_contributions: The account's priced, dated shadow-income
+            contributions -- the RECORDED half of the feed.  **It was the
+            assembled per-period timeline until plan step salary:R14-b**, and
+            it could not stay one: a timeline's domain is the axis it will be
+            projected over, and that axis is a function of the horizon the
+            REQUEST names, so building it here fixed it to the saved window
+            and left every period past it to the engine's
+            ``periodic_contribution`` fallback -- the raise-blind scalar that
+            step deleted.  :func:`._chart._run_growth_projection` assembles it
+            now, where the axis is known.
+        feed: The account's :class:`AccountPayrollFeed` -- what its payroll
+            puts in per payday and what gross funds its employer contribution,
+            both priced by the paycheck engine (plan step **salary:R14-b**).
+            A field because the chart needs it directly: the growth engine's
+            per-period employer basis is :meth:`AccountPayrollFeed.gross_at`,
+            where it was one frozen ``employer_params["gross_biweekly"]``.
         deductions: The raw :class:`PaycheckDeduction` rows targeting
             this account; drives the contribution-prompt decision.
-        active_profile: The user's active :class:`SalaryProfile`, or
-            ``None``; drives the deduction-path salary-profile link.
+        salary_profiles: The user's active :class:`SalaryProfile` rows,
+            primary first.  Two readers: the funding-job selector on the
+            parameters form (**R-SAL5** -- which job's paycheck funds this
+            account's employer contribution) and the deduction-path
+            salary-profile link, which reads the first.
         balance_ctx: The read pass's ``BalanceContext``; the history chart and
             anchor caption read it so both agree with the headline balance, and
             its :meth:`~app.services.balance_at.BalanceContext.reported_periods`
@@ -139,21 +155,51 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
     projection_ytd: Decimal
     projection_seed: Decimal
     inputs: InvestmentInputs
-    contributions: list[growth_engine.ContributionRecord]
+    shadow_contributions: list[PricedContribution]
+    feed: AccountPayrollFeed
     deductions: list[PaycheckDeduction]
-    active_profile: SalaryProfile | None
+    salary_profiles: list[SalaryProfile]
     balance_ctx: BalanceContext
     anchor_as_of: date | None
     planned_retirement_date: date | None
     current_period: DerivedPeriod | None
 
 
-def _load_active_salary_profile(user_id: int) -> SalaryProfile | None:
-    """Return the user's active salary profile, or ``None`` if none exists."""
+def _load_active_salary_profiles(user_id: int) -> list[SalaryProfile]:
+    """Return the user's active salary profiles, PRIMARY first.
+
+    Two consumers, which is why the list replaced a ``.first()`` at plan step
+    **salary:R14-b**: the funding-job selector on the parameters form, which
+    needs every profile the owner could name (**R-SAL5**), and the
+    contribution prompt's salary-profile link, which needs one.
+
+    Ordered ``(sort_order, name)`` -- the same ORDER
+    :func:`app.services.projection_inputs.load_active_salary_profiles` uses,
+    where "primary" is defined.  **Not the same FILTER**: that sibling is
+    scoped to one scenario and this is not, so the funding-job selector offers
+    every active profile the owner holds.  That is deliberate and matches the
+    two sites the selector feeds -- ``projection_inputs._load_funding_profiles``
+    reads the named profile without a scenario filter, and ``salary:R14-a``'s
+    backfill resolved one the same way -- but the two functions are not
+    interchangeable and a reader should not infer that they are.
+
+    The single-profile read it replaced was an
+    UNORDERED ``.first()``, so a two-job owner's prompt could link to either
+    job across two renders.  That link moves no money, which is why it is
+    noted rather than claimed as this step's subject; the money half of the
+    same shape is what **R-SAL5** rules.
+
+    Args:
+        user_id: The owner.
+
+    Returns:
+        The active profiles, possibly empty.
+    """
     return (
         db.session.query(SalaryProfile)
         .filter_by(user_id=user_id, is_active=True)
-        .first()
+        .order_by(SalaryProfile.sort_order, SalaryProfile.name)
+        .all()
     )
 
 
@@ -469,27 +515,28 @@ def _load_projection_context(
     periods = balance_ctx.reported_periods()
     current_period = _current_period(balance_ctx)
     projection_start = _projection_start(balance_ctx)
-    active_profile = _load_active_salary_profile(user_id)
-    # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the
-    # off-engine ``annual_salary / <a stored paycheck count>`` recompute that
-    # silently dropped any applicable ``SalaryRaise`` row pre-Commit-17.
-    salary_gross_biweekly = income_service.get_current_gross_biweekly(
-        user_id, balance_ctx.calendar(),
-    )
+    salary_profiles = _load_active_salary_profiles(user_id)
     deductions = load_active_deductions_for_account(user_id, account.id)
-    # The cadence is asked for only when there is a deduction to stamp it on
-    # (plan step R-F16).  **The second conjunct is DELETED at plan step
-    # pay_calendar:C4-d** (ruling R-PC45): it read ``and
-    # balance_ctx.calendar().cadence_days is not None``, because
-    # ``PayCalendar.cadence`` REFUSED an owner who had never stated one and
-    # this is a GET route.  Such an owner has no calendar at all now --
-    # ``pay_calendar.calendar_for`` refuses them -- so the conjunct guarded a
-    # state no ``balance_ctx.calendar()`` can return.  The ``if deductions``
-    # half stays: it is about having something to adapt, not about the cadence.
-    adapted_deductions = (
-        adapt_deductions(deductions, balance_ctx.calendar().cadence)
-        if deductions else []
-    )
+    # **The paycheck ENGINE prices this account's payroll feed** (plan step
+    # salary:R14-b, ruling R-SAL2).  Two inputs stood here instead: one
+    # ``income_service.get_current_gross_biweekly`` scalar -- the raise-aware
+    # gross of TODAY's paycheck, applied to every period of a 40-year
+    # projection -- and the deduction rows flattened by an ``adapt_deductions``
+    # adapter this package's consumer then re-priced off the profile's stored
+    # annual salary, raise-blind (finding D45).  Both are one figure standing
+    # in for a series.  The feed answers per payday, so nothing here computes
+    # a dollar and the ``if deductions`` guard that fed the adapter has
+    # nothing left to guard.
+    feed = load_payroll_feeds(
+        user_id, balance_ctx.calendar(), [account.id],
+        {account.id: params} if params is not None else {},
+        # The PASS's projection memo, which this render's balance-seam reads
+        # fill and read too.  Without it this page ran the engine over the
+        # owner's whole saved window twice -- once here and once through the
+        # seam -- which is the shape an adversarial review measured at
+        # ``salary:R14-b`` and which this argument exists to close.
+        balance_ctx.payroll_breakdowns,
+    ).get(account.id, AccountPayrollFeed.absent())
     acct_contributions = load_shadow_income_contributions_for_account(
         balance_ctx.amounts(),
         account.id, [period.period_id for period in periods],
@@ -503,14 +550,7 @@ def _load_projection_context(
         account, balance_ctx, projection_start,
     )
     inputs = build_investment_projection_inputs(
-        params, adapted_deductions, acct_contributions,
-        current_period, salary_gross_biweekly,
-    )
-    contributions = build_contribution_timeline(
-        deductions=adapted_deductions,
-        contribution_transactions=acct_contributions,
-        periods=periods,
-        as_of=balance_ctx.as_of,
+        params, feed, acct_contributions, current_period,
     )
     return _ProjectionContext(
         params=params,
@@ -526,9 +566,10 @@ def _load_projection_context(
         projection_ytd=_projection_ytd(inputs),
         projection_seed=projection_seed,
         inputs=inputs,
-        contributions=contributions,
+        shadow_contributions=acct_contributions,
+        feed=feed,
         deductions=deductions,
-        active_profile=active_profile,
+        salary_profiles=salary_profiles,
         balance_ctx=balance_ctx,
         # Two per-user lookups, inlined to stay under the locals limit.
         anchor_as_of=_resolve_anchor_as_of(account),

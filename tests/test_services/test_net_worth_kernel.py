@@ -58,8 +58,6 @@ class TestBuildAccountBalanceMap:
                 account, bctx,
                 ContributionInputs(
                     investment_params=None,
-                    deductions=[],
-                    salary_gross_biweekly=Decimal("0.00"),
                 ),
             )
 

@@ -183,6 +183,52 @@ def get_or_404(model, pk, user_id_field="user_id"):
 
 
 
+def require_owned_fk(model, data, key):
+    """Abort 404 if a submitted FK in *data* names a row the user does not own.
+
+    **The ONE spelling of "a form payload's foreign key must be the
+    requester's own"**, extracted at plan step **salary:R14-b** when a third
+    door needed it and pylint's ``duplicate-code`` gate said so.  Its three
+    callers are the links between a user's own rows that a schema cannot
+    check, because a schema sees an integer and not an owner:
+
+    * ``routes/retirement.create_pension`` / ``update_pension`` -- which
+      salary profile a pension's projected salary comes from.
+    * ``routes/investment.update_params`` -- which salary profile FUNDS an
+      account's employer contribution (**R-SAL5**), whose paychecks
+      ``salary:R14-b`` then prices that contribution off.
+    * ``routes/salary/items`` -- which account a payroll deduction FEEDS
+      (ledger row **N-534**, ruling **R-SAL8**, closed at ``salary:R14-a``).
+      **R-SAL8 is cited rather than the date it was ruled on**, which is that
+      ruling's own point: the guard this replaced carried "a developer ruling
+      of 2026-09-04" in its docstring, and a date is not a key anybody can
+      look up.
+
+    Each dropdown lists only the requester's own rows, so a foreign or
+    non-existent id in the submission is a forged FK (IDOR).  Before the first
+    of these guards the schema checked only that the value was a positive
+    integer (``RowId``) and the database FK checked only that the row EXISTED,
+    so one owner could point at another owner's row and read their salary --
+    or their raise history -- into their own figures.
+
+    :func:`get_or_404` verifies ownership and emits the cross-user denial
+    audit event; its ``None`` result maps to a 404 per the security response
+    rule (404 for both "not found" and "not yours").  An absent or ``None``
+    id means the link is simply not set, which is a legal state at all three
+    doors, so it passes through to the normal create/update path.
+
+    Args:
+        model: The SQLAlchemy model the id must name a row of.
+        data: The schema-loaded form payload.
+        key: The payload key holding the id.
+    """
+    row_id = data.get(key)
+    if row_id is None:
+        return
+    if get_or_404(model, row_id) is None:
+        abort(404)
+
+
 def log_refused_lookup(model_name: str, pk) -> None:
     """Log a refused id lookup where the two denial states are indistinguishable.
 
