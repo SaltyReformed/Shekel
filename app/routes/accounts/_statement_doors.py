@@ -41,13 +41,14 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
-from flask import Response, flash, redirect
+from flask import Response, flash, redirect, request
 from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.extensions import db
 from app.exceptions import ValidationError
 from app.routes._commit_helpers import DbErrorContext, handle_db_error
+from app.schemas.validation import form_payload
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_BATCH_APPLIED,
@@ -62,6 +63,7 @@ from app.services.statement_match import (
     PurchaseCreation,
     ReviewedBatch,
     ReviewScope,
+    SkipRequest,
 )
 
 
@@ -130,6 +132,77 @@ def run_statement_door(
     message, category = on_success(result)
     flash(message, category)
     return redirect(ctx.target)
+
+
+def run_one_id_door(
+    schema, field: str, ctx: StatementDoorContext,
+    act_for: Callable, on_success: Callable,
+) -> Response:
+    """Grade a form naming ONE row id, then run *act_for* on it.
+
+    Plan step ``bank_import:X-gj-4c-2`` extracted this, and the reason is the
+    module docstring's own: *three copies of a rollback-and-flash are three
+    places for a refusal to stop being rendered.*  Two doors here name exactly
+    one act and nothing else -- releasing a match
+    (:func:`~._statement_release.release_and_return`) and undoing a skip
+    (:func:`~.statement_reconcile.unskip_from_reconcile`) -- and they were
+    STRUCTURALLY identical for eight lines, five of them byte-identical:
+    build the payload, validate, flash the refusal and redirect, load the id,
+    hand it to :func:`run_statement_door`.  The three that differed named the
+    schema and the field.
+
+    **Pylint's cross-file ``duplicate-code`` did NOT report it**, and that is
+    why this is written down rather than left to the gate.  The longest
+    byte-identical run was FOUR lines (``return run_statement_door(`` through
+    ``refusal=ValidationError,``), and the checker requires more than its
+    ``min-similarity-lines`` to fire -- so at the default of 4 a four-line run
+    is silent, and it takes 5 to report.  *An earlier version of this
+    paragraph said "byte-identical for seven lines" and "three consecutive
+    lines against a minimum of four"; both were measured false, and the second
+    would have taught a reader that four identical lines ARE caught.*  A gate
+    is a floor.  Named by adversarial review 2026-09-04.
+
+    **It is the VALIDATE half only, and the two acts stay separate.**  What
+    the doors share is the shape of grading a one-id form; what they do not
+    share is the act, the receipt or the refusal story, which is why undoing a
+    skip does not go through ``release_and_return``.  Folding those would be a
+    helper for two things that only look alike.
+
+    Args:
+        schema: The Marshmallow schema naming the id field, one instance
+            constructed at the caller's import like every sibling's.
+        field: Which key to read off the loaded payload.
+        ctx: What this door needs in order to fail well
+            (:class:`StatementDoorContext`), whose ``target`` is where every
+            outcome redirects -- including the schema refusal below, which is
+            why the caller builds it before validating.
+        act_for: ``row_id -> result``.  The service call, applied to the graded
+            id -- THIS function wraps it in the zero-argument callable
+            :func:`run_statement_door` takes, so *act_for* is not itself a
+            factory.  It MUST NOT
+            commit; that function owns the unit of work.  *An earlier version
+            documented ``row_id -> (() -> result)``, which both live callers
+            contradict: a third written to that contract would hand
+            ``on_success`` a lambda object where the service's return value
+            belongs, and build a receipt off a function.*
+        on_success: ``result -> (message, category)``, called AFTER the commit.
+
+    Returns:
+        A redirect to ``ctx.target``, with exactly one flash set -- the
+        schema's refusal, the door's, or the receipt.
+    """
+    payload = form_payload(request.form, schema)
+    errors = schema.validate(payload)
+    if errors:
+        # **A schema refusal redirects to the SAME target as every other
+        # outcome**, which is :class:`StatementDoorContext`'s own rule stated
+        # one tier up: a door that redirected elsewhere on failure would lose
+        # the flash it just set.
+        flash(refusal_sentence(errors), "warning")
+        return redirect(ctx.target)
+    return run_statement_door(
+        ctx, lambda: act_for(schema.load(payload)[field]), on_success,
+    )
 
 
 @dataclass(frozen=True)
@@ -363,9 +436,10 @@ def submitted_item_count(submitted) -> int:
     """Return how many ACTS one loaded pass carries.
 
     **Every kind, counted once** (ruling **bank_import:R-GW**).  A count that
-    named two of the three would make the audit trail disagree with
-    ``applied_count`` for any pass holding a deposit, and it was written that
-    way once.  Stated here because both surfaces that apply a pass log it, and
+    named three of the four would make the audit trail disagree with
+    ``applied_count`` for any pass holding a skip, and it was written a kind
+    short once already -- for the deposit, which is why the sentence names the
+    failure rather than the arm.  Stated here because both surfaces that apply a pass log it, and
     pylint's cross-file ``duplicate-code`` reported the second copy the moment
     the Reconcile page became one.
 
@@ -381,6 +455,7 @@ def submitted_item_count(submitted) -> int:
         len(submitted["matches"])
         + len(submitted["creations"])
         + len(submitted["incomes"])
+        + len(submitted["skips"])
     )
 
 
@@ -475,11 +550,15 @@ def submitted_batch(submitted) -> ReviewedBatch:
             IncomeCreation(line_id=item["line_id"])
             for item in submitted["incomes"]
         ),
+        skips=tuple(
+            SkipRequest(line_id=item["line_id"])
+            for item in submitted["skips"]
+        ),
     )
 
 
 def outcome_counts(outcome) -> dict:
-    """Return one applied pass's money effects, as ``log_event`` keywords.
+    """Return what one applied pass DID, as ``log_event`` keywords.
 
     Stated ONCE for both doors that apply a
     :class:`~app.services.statement_match.BatchOutcome` -- the reviewed pass
@@ -491,8 +570,9 @@ def outcome_counts(outcome) -> dict:
     adversarial financial review 2026-08-23.
 
     **Every count, including the ones a given door cannot produce.**  A
-    hand-built match carries no creation and no income, so ``recorded_count``,
-    ``refunded_count``, ``envelopes_created`` and ``deposited_count`` are
+    hand-built match carries no creation, no income and no skip, so
+    ``recorded_count``, ``refunded_count``, ``envelopes_created``,
+    ``deposited_count``, ``skipped_count`` and ``already_skipped_count`` are
     structurally zero there
     -- and they are still emitted, because an audit trail whose FIELDS depend
     on which door wrote the row cannot be queried across the two.
@@ -524,6 +604,22 @@ def outcome_counts(outcome) -> dict:
         "refunded_count": outcome.refunded_count,
         "envelopes_created": outcome.envelopes_created,
         "deposited_count": outcome.deposited_count,
+        # Added at plan step ``bank_import:X-gj-4b`` with the fourth act
+        # class, for this function's own stated reason.  **They are the two
+        # counts here of acts that LANDED and moved no money** -- the scope
+        # matters, because ``refused_count`` above reports no money either and
+        # ``here`` is the whole dict.  Emitted anyway: a trail whose fields
+        # depend on which door wrote the row cannot be queried across them,
+        # and *how many lines this pass stopped asking about* is exactly the
+        # question a skip answers.
+        #
+        # *This sentence has been miscounted twice.*  It said ONE count while
+        # introducing two, a correction was appended BESIDE the false claim
+        # rather than replacing it so both stood, and the number was right for
+        # a set the words did not name.  A count claim whose scope is left to
+        # the reader is how "one" survived three passes.
+        "skipped_count": outcome.skipped_count,
+        "already_skipped_count": outcome.already_skipped_count,
     }
 
 

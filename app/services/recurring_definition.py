@@ -35,8 +35,13 @@ and nothing raises.
 So the conjunction is not a step a reader performs.  It is a VALUE
 (:class:`~app.services.recurrence.Closing`) carried by the resolved recurrence
 this door returns, and the walk that already reads that value narrows without
-gaining a parameter.  A reader cannot reach the un-narrowed answer by
-forgetting an argument, because there is no un-narrowed answer to reach.
+gaining a parameter.  A reader that takes this door cannot reach the
+un-narrowed answer by forgetting an argument.  A reader that goes ROUND the
+door still can: ``resolve`` builds a value with no derived half, because the
+pure package cannot fold a balance, and generation
+(``recurrence_engine/_plan.py``) reads that value until plan step R7d-c-2 takes
+this door -- so the encoding gets stronger with each R7d leaf rather than being
+complete here (:mod:`app.services.recurrence._closing` states the same limit).
 
 What it does NOT do
 -------------------
@@ -102,11 +107,12 @@ def resolved_definition(
             check, as every seam entry this reaches states.  A cross-owner
             pairing is refused one call down by
             :func:`~app.services.recurrence.resolve`, which will not resolve a
-            rule against another owner's calendar -- and that refusal is
-            reached FIRST here, deliberately, because
-            :func:`~app.services.loan_recurrence_sync.loan_payment_window`
-            records that such a pairing produces a plausible BLENDED answer
-            rather than a refusal.
+            rule against another owner's calendar, and that refusal is reached
+            FIRST here: the read pass refuses a foreign loan too
+            (``ForeignAccountError`` from ``BalanceContext._memoize_once``,
+            plan step X-i4), but only after loading the account, so resolving
+            first is the cheaper refusal and the one whose exception names the
+            rule.
         ctx: The read pass.  Its ``calendar()`` is the schedule the cadence
             resolves against and its ``as_of`` and scenario scope the fold, so
             both halves are measured in one pass.
@@ -143,13 +149,17 @@ def resolved_definition(
         return None
     # The occurrence walk is deliberately NOT run first.  ``resolved_recurrence``
     # refuses a rule paired with another owner's calendar, so resolving before
-    # the destination is asked about is what makes a cross-owner pairing raise
-    # rather than reach the loan fold.
+    # the destination is asked about makes a cross-owner pairing raise the
+    # rule's own refusal before any account is loaded (the pass would refuse
+    # the foreign loan too, one load later).  The resolved value is then HANDED to
+    # the resolver, whose EMPTY test needs the definition's first occurrence:
+    # this is the one resolution of the rule on the pass (``CLAUDE.md`` rule
+    # 14), where a first build had the resolver derive it again on its own.
     return replace(
         resolved,
         closing=Closing(
             authored=resolved.closing.authored,
-            derived=loan_payment_window(template, ctx),
+            derived=loan_payment_window(template, resolved, ctx),
         ),
     )
 

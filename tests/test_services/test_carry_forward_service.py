@@ -58,6 +58,7 @@ from tests._test_helpers import (
     settled_day_basis_id,
     settlement_basis_id,
     settlement_columns,
+    state_template_price,
 )
 from tests._test_helpers import make_every_period_rule
 from app.models.amount_ownership import AmountOwnership
@@ -88,6 +89,7 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
     _settle_day = default_settle_day(seed_periods[period_index], status.id)
 
     txn = Transaction(
+        user_id=seed_periods[period_index].user_id,
         pay_period_id=seed_periods[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -295,6 +297,7 @@ class TestCarryForwardUnpaid:
 
             # Baseline projected transaction.
             baseline_txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=baseline_scenario.id,
                 account_id=seed_user["account"].id,
@@ -308,6 +311,7 @@ class TestCarryForwardUnpaid:
 
             # Alternative scenario projected transaction.
             alt_txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=alt_scenario.id,
                 account_id=seed_user["account"].id,
@@ -923,6 +927,7 @@ def _create_template(seed_user, name="Recurring Bill",
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     return template
 
 
@@ -1371,6 +1376,7 @@ def _create_envelope_template(
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     if with_rule:
         # The definition first, then the cadence onto it (plan step R-F6).
         make_every_period_rule(db.session, template)
@@ -1412,6 +1418,7 @@ def _create_envelope_txn(
     settled_on = default_settle_day(period, status.id)
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -2679,6 +2686,7 @@ class TestCarryForwardEnvelopeIncomeFalse:
             )
             source = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,

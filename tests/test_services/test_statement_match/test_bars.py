@@ -505,7 +505,7 @@ class TestABarredItemCostsOnlyItself:
         db.session.commit()
 
         outcome = statement_match.apply_reviewed(
-            ReviewedBatch(consent=Consent.TICKED, matches=(), incomes=(), creations=(
+            ReviewedBatch(skips=(), consent=Consent.TICKED, matches=(), incomes=(), creations=(
                 PurchaseCreation(line_id=barred.id, new_envelope=NewEnvelope(
                     name=CARD_MERCHANT,
                     category_id=seed_user["categories"]["Groceries"].id,
@@ -778,6 +778,7 @@ class TestWhatTheScreenShowsInstead:
 
         outcome = statement_match.apply_reviewed(
             ReviewedBatch(
+                skips=(),
                 consent=Consent.TICKED,
                 incomes=(),
                 matches=(a_submission(
@@ -792,9 +793,13 @@ class TestWhatTheScreenShowsInstead:
         assert not outcome.refused, [item.reason for item in outcome.refused]
         assert outcome.applied_count == 1
         # ...and the line is no longer anybody's question: not parked, not
-        # creatable, not unmatched.
+        # answered-never, not creatable, not unmatched.  **All four, because
+        # the pass has four places an unexplained line can be** since plan step
+        # ``bank_import:X-gj-4c``: an enumeration that named three of them
+        # would pass while the line sat in the fourth.
         after = review_set(a_scope(seed_user))
         assert after.parked == ()
+        assert after.answered_never == ()
         assert after.creatable == ()
         assert [row.line_id for row in after.unmatched] == []
         # The bar refused a PURCHASE and never touched the match: both rows
@@ -863,8 +868,8 @@ class TestWhatTheScreenShowsInstead:
         assert row.pays_an_account is True
 
 
-class TestWhereAParkedLineSAnswerIsCHANGED:
-    """Plan step ``bank_import:X-gf-3a``: the door a parked line does not name.
+class TestWhereABarredLineSAnswerIsCHANGED:
+    """Plan step ``bank_import:X-gf-3a``: the door a barred line does not name.
 
     Since ruling **bank_import:R-GX** an ANSWERED merchant leaves the review
     screen's own control for the register, so a line parked by an answer the
@@ -892,11 +897,16 @@ class TestWhereAParkedLineSAnswerIsCHANGED:
         a_rule(seed_user, "Food Lion")
         db.session.commit()
 
-        parked = review_set(a_scope(seed_user)).parked[0]
+        # **Off ``answered_never`` and not ``parked`` since plan step
+        # ``bank_import:X-gj-4c``** (ruling **bank_import:R-JH**): a line
+        # barred ONLY by the owner's own answer is inbox work, so the pass
+        # files it in the list the inbox draws from.  What this case grades is
+        # unchanged -- the value, its two bars and its door.
+        barred = review_set(a_scope(seed_user)).answered_never[0]
 
-        assert parked.barred_by is CreationBar.NEVER_A_PURCHASE
-        assert parked.also_pays_an_account is False
-        assert parked.answer_door == "Change what you have said about Food Lion"
+        assert barred.barred_by is CreationBar.NEVER_A_PURCHASE
+        assert barred.also_pays_an_account is False
+        assert barred.answer_door == "Change what you have said about Food Lion"
 
     def test_an_answer_that_would_change_NOTHING_names_no_door(
         self, app, db, seed_user,
@@ -909,7 +919,7 @@ class TestWhereAParkedLineSAnswerIsCHANGED:
         submission can never succeed.
 
         Delete the ``also_pays_an_account`` guard in
-        :attr:`~._bars.ParkedLine.answer_door` and only this case falls.
+        :attr:`~._bars.BarredLine.answer_door` and only this case falls.
         """
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)
@@ -975,7 +985,8 @@ class TestWhereAParkedLineSAnswerIsCHANGED:
         a_rule(seed_user, "Food Lion")
         db.session.commit()
 
-        reason = review_set(a_scope(seed_user)).parked[0].reason
+        # ``answered_never`` for the reason the case three above states.
+        reason = review_set(a_scope(seed_user)).answered_never[0].reason
 
         assert "You have said" in reason
         assert "Your bank also" not in reason
@@ -1134,4 +1145,12 @@ class TestACARDPAYMENTMerchantsCREDITIsBarredToo:
         offered = review_set(a_scope(seed_user))
 
         assert credit.id in [item.line.line_id for item in offered.creatable]
+        # **Both barred lists, since plan step ``bank_import:X-gj-4c``.**  The
+        # positive assertion above already carries this case -- the four lists
+        # are disjoint -- but a negative naming ONE of two is a narrower claim
+        # than it reads as, which is what a reader would take from it next
+        # time.
         assert credit.id not in [item.line.line_id for item in offered.parked]
+        assert credit.id not in [
+            item.line.line_id for item in offered.answered_never
+        ]

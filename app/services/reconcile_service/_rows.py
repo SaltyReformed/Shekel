@@ -135,11 +135,30 @@ class Statement:
 
         **The OWNERSHIP scope for every arm of this package, and it comes off
         the CALENDAR rather than off ``pay_periods.user_id``** (pay-calendar
-        plan step C4-a-2).  ``budget.transactions`` carries no ``user_id``, so
-        whose a row is has to be reached through its paycheck; doing that with
-        a correlated subquery asks the TABLE a question this value already
-        answers, which is two statements of one fact inside one request -- the
-        same defect :attr:`owner_id` exists to remove, one clause down.
+        plan step C4-a-2).  Whose a row is is reached through its paycheck
+        here, and doing that with a correlated subquery would ask the TABLE a
+        question this value already answers -- two statements of one fact
+        inside one request, the same defect :attr:`owner_id` exists to remove
+        one clause down.
+
+        **``budget.transactions`` HAS carried a ``user_id`` since plan step
+        ``pay_calendar:C13-a``, and this scope has not moved onto it.**  The
+        sentence here used to be "it carries no ``user_id``, so ownership has
+        to be reached through the paycheck", which is no longer the reason for
+        anything.  Whether this scope should become one equality on that
+        column, or stay the calendar's saved ids, is a question with an
+        answer already: what this scope needs is the PERIOD SET and not the
+        owner, so ``Transaction.user_id`` cannot replace it.  It is also NOT
+        one of finding **P75**'s nineteen -- that census counts reads that
+        REFUSE and excludes scopes by name -- and the clause is graded:
+        deleting ``_purchases.py``'s copy of it fails
+        ``test_the_PURCHASE_arm_is_scoped_the_same_way`` (measured
+        2026-09-02).  A ``C13-b`` that treated it as a comparison to retire
+        would delete load-bearing code.  **``C13-b`` did not** (2026-09-03):
+        it moved the ELEVEN reads that walk a row's paycheck for its owner and
+        the EIGHT that refetch a submitted period, and left every SCOPE --
+        this one and ``statement_match._candidates``' two -- exactly as it
+        found them.
 
         **The "is this period SAVED" filter is the CALENDAR's own** since
         pay-calendar plan step C4-a-4:
@@ -524,34 +543,35 @@ def outstanding_rows(
     here because these arms' writers need the ROWS (their settle is a per-row
     service verb, not a bulk ``UPDATE``).
 
-    Two eager loads are ALWAYS applied: ``entries`` feeds
-    :func:`wholly_spent_by`, and ``pay_period`` feeds ONE branch of the write
-    half.  **The second one's reason changed at pay-calendar plan step C4-a-2
-    and the load did not**, so the reason is written out rather than left to be
-    reconstructed from the load's presence.  It fed the attribution clamp until
-    then; :func:`attributed_on` now reads the span off the statement's calendar
-    and the row's ``pay_period_id`` column, so the READER touches no
-    relationship at all.
+    Two eager loads are ALWAYS applied.  ``entries`` feeds
+    :func:`wholly_spent_by`.  ``pay_period`` feeds NOTHING NAMED any more, and
+    the paragraph below is why it is still here.  **Its reason changed at
+    pay-calendar plan step C4-a-2 and the load did not**, so the reason is
+    written out rather than left to be reconstructed from the load's presence:
+    it fed the attribution clamp until then; :func:`attributed_on` now reads
+    the span off the statement's calendar and the row's ``pay_period_id``
+    column, so the READER touches no relationship at all.
 
-    **The consumer it is KEPT for is one line, measured rather than assumed**:
-    ``transaction_service._settle.settle_from_entries`` logs
-    ``txn.pay_period.user_id`` (``Transaction`` carries no ``user_id`` of its
-    own), which is the ENVELOPE close alone -- a bill's settle reads no such
-    relationship.  The load stays for what that site SAYS about it rather than
-    for the join: it states that ``pay_period`` is already loaded by the
-    caller, so dropping the option here would put a lazy load, and with it an
-    AUTOFLUSH, in the middle of a settle that has already mutated the row.  It
-    goes when ``pay_calendar:C13`` makes that owner a column and the read has
-    no subject.
+    **The one consumer it was KEPT for is GONE, and the option is not**
+    (plan step ``pay_calendar:C13-b``).  It was kept for a single line --
+    ``transaction_service._settle.settle_from_entries`` logging
+    ``txn.pay_period.user_id`` -- and that line reads ``txn.user_id`` now, so
+    no code this loader feeds names the relationship any more.  Three reads in
+    ``loan_posting_service._payments`` moved the same way in the same step.
 
-    **What was NOT measured is said rather than implied** (adversarial code
-    review, 2026-08-28, which caught a wider claim here).  The transfer arm's
-    settle reaches ``loan_posting_service._payments``, which reads
-    ``shadow.pay_period.user_id`` at three sites and eager-loads the
-    relationship itself for one of them -- on the LOAN-side leg, which this
-    loader never returns.  Whether the transfer settle can reach those from a
-    row in THIS scope was not established, so the paragraph above claims the
-    transaction arm and no more.
+    **What has NOT been established is whether anything else on the TRANSFER
+    arm reaches it**, and that is exactly the claim an adversarial code review
+    narrowed here on 2026-08-28 -- so this step declines to widen it back by
+    deleting the option on a census it did not take.  The predicate the next
+    reader owes, rather than a count: an attribute read of ``pay_period`` on a
+    row :func:`outstanding_rows` RETURNED, reachable from either arm's write
+    half, which is a grep for an attribute read of ``pay_period`` across
+    ``app/`` with the docstring mentions struck out and each survivor traced
+    to the query that produced its row.  ``loan_loaders`` has three, and whether a row from THIS
+    scope can reach them is the open half.  Removing the option is a
+    MEASUREMENT -- a lazy load here lands an AUTOFLUSH in the middle of a
+    settle that has already mutated the row -- and it belongs to whoever takes
+    that census, not to the step that emptied the named consumer.
 
     An arm adds its own through :attr:`Arm.load_options` -- the transaction arm
     loads ``template`` because it reads ``tracks_purchases``, which lazy-loads a

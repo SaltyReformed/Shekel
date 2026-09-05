@@ -18,7 +18,6 @@ from decimal import Decimal
 
 import pytest
 
-from app.exceptions import ForeignAccountError
 from app.models.pay_period import PayPeriod
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
@@ -35,6 +34,10 @@ from app.services.recurrence import (
     recurrence_spec,
     resolved_recurrence,
 )
+# Imported as a MODULE so the resolve-once control below patches the name the
+# read door resolves at CALL time; patching this file's imported name would
+# leave the composition calling the real one.
+from app.services.recurrence import _reading
 from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.services.recurring_definition import (
     read_definition,
@@ -111,12 +114,17 @@ class TestWhatTheDoorComposes:
         The door must not invent a reading for a one-off charge: the absence
         of a ``budget.recurrence_rules`` row naming the definition IS how a
         definition says it does not repeat.
+
+        **The definition pays into a LOAN, deliberately.**  Since plan step
+        R7d-d the resolver takes the resolved recurrence, and a one-time
+        transfer into a loan is the state in which there is none to hand it --
+        so this is where a door that asked the loan before checking the rule
+        would fail, and a savings transfer could not show that.  (The
+        resolver's own case for this state moved here with that step.)
         """
         with app.app_context():
-            savings = create_account_of_type(
-                seed_user, db.session, "Savings", name="Rainy Day",
-            )
-            tpl = make_transfer_template(db.session, seed_user, savings)
+            loan = _loan(seed_user, db.session)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
             tpl.recurrence_rule = None
             db.session.commit()
 
@@ -192,13 +200,13 @@ class TestWhatTheDoorComposes:
     def test_the_stored_column_is_NOT_what_the_door_reads(
         self, app, db, seed_user, seed_periods,
     ):
-        """Plan ledger row **D35**, made unconstructible for this reader.
+        """Plan ledger row **D35**, on the DERIVED half: the door asks the loan.
 
         The column is deliberately falsified to a date the loan's own fold
-        does not name.  Before this step the surface read that value; the door
-        asks the loan instead, so the falsified column reaches only the
-        AUTHORED half -- where it belongs, since a stored bound is what an
-        owner authors.
+        does not name.  The derived half comes from the loan and never from the
+        column, so the falsified value reaches the AUTHORED half alone.  What
+        that authored half then DOES to the phrase and the walk is the next
+        case's subject -- and it is not nothing.
         """
         with app.app_context():
             loan = _loan(seed_user, db.session)
@@ -214,6 +222,51 @@ class TestWhatTheDoorComposes:
             assert rule.end_date == stale, "precondition: the column is stale"
             assert resolved.closing.derived == ClosesOn(on=date(2028, 7, 1))
             assert resolved.closing.authored == EndsOnDate(on=stale)
+
+    def test_a_stale_EARLIER_stored_bound_still_binds_as_authored(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The interim, pinned: until the stored copy is gone, the earlier date wins.
+
+        For a loan payment the ``end_date`` column is not the owner's word --
+        the form locks the Ends control and ten chokepoints write the loan's
+        derived payoff into it -- but the composed value cannot tell a cached
+        date from an authored one and ANDs the two
+        (:meth:`~app.services.recurrence.Closing.admits`, and the ``min`` in
+        ``_describe._derived_closes_on``).  So where the cache is EARLIER than
+        the loan's closing date -- plan ledger row **D35**'s measured shape,
+        ``2029-01-22`` stored against ``2029-02-22`` derived -- the cell still
+        names the cached date and the walk still stops there, exactly as before
+        plan step R7d-d.  Only a NULL or LATER column lets the derived stop
+        bind.
+
+        Plan step R7d-g deletes the stored copy.  This pins the interim so that
+        deletion -- or a ruling that has the door read an app-written bound as
+        the cache it is -- trips an alarm here instead of moving the surface
+        silently.
+        """
+        with app.app_context():
+            loan = _loan(seed_user, db.session)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
+            db.session.commit()
+            stale = date(2027, 1, 1)
+            _restate_bound(
+                tpl.recurrence_rule, EndsOnDate(on=stale), _ctx(seed_user),
+            )
+            db.session.commit()
+
+            ctx = _ctx(seed_user)
+            resolved = resolved_definition(tpl, ctx)
+            narrowed = list(occurrences(
+                resolved, ctx.calendar(), through=date(2030, 1, 1),
+            ))
+
+            assert resolved.closing.derived == ClosesOn(on=date(2028, 7, 1)), (
+                "precondition: the loan's own stop is LATER than the cache"
+            )
+            assert describe(resolved).stops == "until Jan 01, 2027"
+            assert narrowed, "precondition: it fires at all"
+            assert max(narrowed) <= stale
 
 
 class TestTheNarrowingReachesTheWalk:
@@ -281,11 +334,31 @@ class TestTheNarrowingReachesTheWalk:
             db.session.commit()
 
             ctx = _ctx(seed_user)
-            reading = read_definition(tpl, ctx)
+            resolved = resolved_definition(tpl, ctx)
+            # Walked PAST the fixture's horizon, as the truncation case above
+            # is.  ``read_definition``'s placements reach only as far as the
+            # schedule does (2026-05-21), which precedes the authored date by
+            # 21 months -- so "every placement is on or before 2027-03-01"
+            # held with NO bound at all, and a first draft of this test
+            # asserted exactly that.  An adversarial review of the step caught
+            # it; the walk is asked directly, through a window that spans both
+            # stops.
+            beyond = date(2030, 1, 1)
+            narrowed = list(occurrences(resolved, ctx.calendar(), through=beyond))
 
-            assert reading.placements, "precondition: it fires at all"
-            assert max(p.occurrence for p in reading.placements) <= authored
-            assert describe(reading.resolved).stops == "until Mar 01, 2027"
+            assert resolved.closing.derived == ClosesOn(on=date(2028, 7, 1)), (
+                "precondition: the loan alone would run 16 months past the "
+                "authored date, so only the authored bound can stop the walk "
+                "at it"
+            )
+            assert narrowed, "precondition: it fires at all"
+            assert max(narrowed) <= authored
+            assert max(narrowed) >= authored - timedelta(days=31), (
+                f"the walk stopped at {max(narrowed)}, well short of the "
+                f"authored {authored}, so something other than that bound -- a "
+                f"horizon -- ended it"
+            )
+            assert describe(resolved).stops == "until Mar 01, 2027"
 
     def test_a_loan_that_closed_before_its_first_firing_names_NOTHING(
         self, app, db, seed_user, seed_periods,
@@ -293,9 +366,12 @@ class TestTheNarrowingReachesTheWalk:
         """The EMPTY window, and the cell that must not name its date.
 
         Originated 2026-06-20 with a ``payment_day`` of 15, so the first
-        installment is 2026-07-15; trued to zero it retires before the
-        definition ever fires, and the window ``[2026-07-15, 2026-07-01]``
-        is correct at nought occurrences.
+        installment is 2026-07-15; trued to zero the day after origination
+        (the helper's default) it retires on 2026-06-21, before the definition
+        ever fires, and the window ``[2026-07-15, 2026-06-21]`` is correct at
+        nought occurrences.  The closing date is the day the loan was CLEARED,
+        not the read pass's now (plan step ``recurrence:R7d-h``), so the
+        window is stable across read dates.
         """
         with app.app_context():
             loan = _loan(
@@ -310,8 +386,12 @@ class TestTheNarrowingReachesTheWalk:
             )
             bind_rule_to_loan(tpl.recurrence_rule, loan.id)
             db.session.commit()
+            ctx = _ctx(seed_user)
+            assert balance_at.loan_figures(loan, ctx).closing_date == (
+                date(2026, 6, 21)
+            ), "precondition: the loan closed the day after it originated"
 
-            reading = read_definition(tpl, _ctx(seed_user))
+            reading = read_definition(tpl, ctx)
 
             assert reading.resolved.closing.derived == EMPTY
             assert reading.placements == ()
@@ -329,12 +409,27 @@ class TestWhatTheDoorRefuses:
         The Recurring surface renders every definition a user has, and taking
         a whole page to a 500 for a schedule state no rule of this rule's is
         wrong about would be a fence rather than a fix.
+
+        **The resolver never meets this state since plan step R7d-d.**  It
+        takes the resolved recurrence, and an owner with no pay periods has
+        none to hand it -- so the door answers ``None`` before the loan is
+        asked, nothing says "finished" about the definition, and the
+        ``rule.starts_on`` fallback the resolver used to carry for this state is
+        deleted rather than kept for a caller that cannot reach it.  (What the
+        Recurring surface does with that ``None`` for a rule-bearing definition
+        is RAISE, as a broken invariant; ``test_recurring_view`` holds that.)
+
+        **The definition pays into a LOAN, deliberately**, built while the
+        bootstrap period still exists and the schedule emptied afterwards --
+        the order the state arises in.  With a loan behind it this is the state
+        where a door that handed ``resolved=None`` down would fail at
+        ``resolved.starts_on``; the resolver's own case for it moved here.
         """
         with app.app_context():
-            savings = create_account_of_type(
-                seed_user, db.session, "Savings", name="Rainy Day",
+            loan = _loan(seed_user, db.session, name="No Schedule Loan")
+            tpl = make_loan_payment_template(
+                db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
             )
-            tpl = make_transfer_template(db.session, seed_user, savings)
             db.session.commit()
             db.session.query(PayPeriod).filter_by(
                 user_id=seed_user["user"].id,
@@ -350,14 +445,15 @@ class TestWhatTheDoorRefuses:
     def test_a_cross_owner_pairing_is_REFUSED_before_the_loan_is_folded(
         self, app, db, seed_user, second_user, seed_periods,
     ):
-        """The order inside the door is load-bearing, not incidental.
+        """The order inside the door is graded, not merely described.
 
         ``resolved_recurrence`` refuses a rule paired with another owner's
-        calendar; ``loan_payment_window`` does NOT refuse the same pairing --
-        its own docstring records that it produces a plausible BLENDED answer,
-        because the loan bundle scopes its payment feed by the PASS's scenario
-        and its standing payment by the ACCOUNT's owner.  So resolving FIRST
-        is what turns a blended figure into a refusal.
+        calendar with the rule's own exception.  The read pass would refuse the
+        foreign loan too (``ForeignAccountError`` from ``_memoize_once``, plan
+        step X-i4), but only after loading the account -- so the door resolves
+        first, and this asserts the RULE's refusal alone.  Accepting either
+        exception, as a first draft did, would have passed with the two calls
+        reversed.
         """
         with app.app_context():
             loan = _loan(seed_user, db.session)
@@ -365,10 +461,47 @@ class TestWhatTheDoorRefuses:
             db.session.commit()
             foreign = BalanceContext.build(second_user["user"].id, _TODAY)
 
-            with pytest.raises(
-                (RecurrenceResolutionError, ForeignAccountError),
-            ):
+            with pytest.raises(RecurrenceResolutionError):
                 resolved_definition(tpl, foreign)
+
+
+class TestTheDoorResolvesTheRuleOnce:
+    """One rule, one resolution per pass -- ``CLAUDE.md`` rule 14's ONE WALK."""
+
+    def test_a_loan_payment_resolves_its_rule_exactly_once(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """The resolver TAKES the resolved recurrence; it does not re-derive it.
+
+        Its EMPTY comparison needs the definition's first occurrence, and the
+        first build of this step had ``loan_payment_window`` resolve the rule
+        again on its own to get one -- the same rule, twice, on one pass.  The
+        door now hands down the value it already built.  Counted at the
+        definition site (``_reading.resolve``), and the control is shown to
+        fire: the composed value carries the loan's stop, so the door did run.
+        """
+        with app.app_context():
+            loan = _loan(seed_user, db.session)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
+            db.session.commit()
+            ctx = _ctx(seed_user)
+
+            calls = []
+            real_resolve = _reading.resolve
+
+            def counting_resolve(spec, calendar):
+                calls.append(spec.unit)
+                return real_resolve(spec, calendar)
+
+            monkeypatch.setattr(_reading, "resolve", counting_resolve)
+
+            resolved = resolved_definition(tpl, ctx)
+
+            assert resolved.closing.derived == ClosesOn(on=date(2028, 7, 1))
+            assert len(calls) == 1, (
+                f"one loan payment resolved its rule {len(calls)} times on "
+                f"one pass"
+            )
 
 
 class TestTheDoorAgreesWithItsOwnParts:
@@ -429,4 +562,47 @@ class TestTheDoorAgreesWithItsOwnParts:
 
 class TestTheDerivedStopIsMeasuredInTheCallersPass:
     """One pass in, one answer out -- the read clock is never this module's."""
+
+    def test_the_passes_as_of_selects_which_crossing_answers(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Two passes over ONE loan answer two stops, and the pass decides which.
+
+        The loan originates 2026-05-01 and is trued to ``$0.00`` on 2026-06-15.
+        Read as of 2026-06-10 it still owes, so the derived stop is the
+        FORWARD crossing, a payoff after the true-up day; read as of ``_TODAY``
+        (2026-07-01) it is retired, so the stop is the day it LAST became
+        closed (plan step ``recurrence:R7d-h``).  The door reads neither the
+        clock nor a calendar of its own: both answers come off the pass it was
+        handed, which is what the two DIFFERING shows -- a door that built its
+        own pass or read ``date.today()`` would answer the frozen day's stop
+        for both.
+        """
+        with app.app_context():
+            loan = _loan(
+                seed_user, db.session, name="Two Passes",
+                origination_date=date(2026, 5, 1), payment_day=1,
+            )
+            insert_trueup_event(
+                loan_params_for(db.session, loan.id), Decimal("0.00"),
+                anchor_date=date(2026, 6, 15),
+            )
+            tpl = make_loan_payment_template(
+                db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
+            )
+            bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+            db.session.commit()
+            owner = seed_user["user"].id
+            before = BalanceContext.build(owner, date(2026, 6, 10))
+            after = BalanceContext.build(owner, _TODAY)
+
+            still_owing = resolved_definition(tpl, before).closing.derived
+            retired = resolved_definition(tpl, after).closing.derived
+
+            assert retired == ClosesOn(on=date(2026, 6, 15))
+            assert isinstance(still_owing, ClosesOn)
+            assert still_owing.on > date(2026, 6, 15), (
+                f"read before the true-up the loan still owes, so its stop is "
+                f"a forward payoff, not {still_owing.on}"
+            )
 

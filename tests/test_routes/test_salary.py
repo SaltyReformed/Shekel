@@ -1183,6 +1183,119 @@ class TestDeductions:
             assert deduction.target_account_id is None
             assert deduction.annual_cap is None
 
+    def test_add_deduction_refuses_another_users_target_account(
+        self, app, auth_client, seed_user, seed_second_user, seed_periods
+    ):
+        """A forged ``target_account_id`` is refused at the create door.
+
+        Ledger row **N-534**.  ``target_account_id`` is what makes a deduction
+        a contribution FEED into an investment account, and the schema checked
+        only that it was a positive integer while the database FK checked only
+        that the account existed -- so this payload was accepted and the
+        deduction pointed at a stranger's account.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+            victim_account_id = seed_second_user["account"].id
+
+            response = auth_client.post(
+                f"/salary/{profile.id}/deductions",
+                data={
+                    "name": "Forged Feed",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "200.00",
+                    "deductions_per_year": "26",
+                    "target_account_id": str(victim_account_id),
+                },
+            )
+
+            assert response.status_code == 404
+            assert db.session.query(PaycheckDeduction).filter_by(
+                name="Forged Feed",
+            ).one_or_none() is None
+
+    def test_add_deduction_still_accepts_the_users_own_target_account(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """The ownership guard refuses a stranger's account and NOTHING else.
+
+        Paired with the refusal above deliberately.  A 404 from the ownership
+        gate and a 404 from a broken URL map are indistinguishable, so a
+        refusal test alone would still pass if the guard rejected every
+        account -- or if the route stopped existing.  This asserts the door is
+        open for the legitimate payload the form actually posts.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            response = auth_client.post(
+                f"/salary/{profile.id}/deductions",
+                data={
+                    "name": "Own Feed",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "200.00",
+                    "deductions_per_year": "26",
+                    "target_account_id": str(seed_user["account"].id),
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            saved = db.session.query(PaycheckDeduction).filter_by(
+                name="Own Feed",
+            ).one()
+            assert saved.target_account_id == seed_user["account"].id
+
+    def test_update_deduction_refuses_repointing_to_another_users_account(
+        self, app, auth_client, seed_user, seed_second_user, seed_periods
+    ):
+        """The EDIT door refuses a forged re-point too, and keeps the old link.
+
+        The create and update doors load through different schemas
+        (``_deduction_schema`` / ``_deduction_update_schema``) and the update
+        one writes through the ``_DEDUCTION_UPDATE_FIELDS`` allowlist, so
+        guarding only the create door would leave the same forged FK reachable
+        one route over -- which is how this class of defect survives a fix.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+            own_account_id = seed_user["account"].id
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="Retirement Feed",
+                amount=Decimal("200.00"),
+                target_account_id=own_account_id,
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/deductions/{deduction.id}/edit",
+                data={
+                    "name": "Retirement Feed",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "200.00",
+                    "deductions_per_year": "26",
+                    "target_account_id": str(seed_second_user["account"].id),
+                },
+            )
+
+            assert response.status_code == 404
+            db.session.refresh(deduction)
+            assert deduction.target_account_id == own_account_id
+
     def test_update_deduction_percentage_conversion(
         self, app, auth_client, seed_user, seed_periods
     ):
@@ -2451,7 +2564,7 @@ class TestNetBiweeklyMismatchFixes:
         **Read through the AMOUNT MODEL since plan step balance:X-au-d**, where
         it read ``Transaction.estimated_amount``: a salary row stores no figure
         at all now, so the per-year resolution the case is about lives in
-        ``income_service.SalaryPricing._net_by_period`` and this asks the rule
+        ``income_service.SalaryPricing._breakdown_by_period`` and this asks the rule
         that consults it.  The claim and the figures are unchanged.
         """
         with app.app_context():
@@ -2475,7 +2588,10 @@ class TestNetBiweeklyMismatchFixes:
             # Find a 2026 transaction and a 2027 transaction.
             txn_2026 = (
                 db.session.query(Transaction)
-                .join(PayPeriod)
+                # The relationship rather than the entity: since plan step
+                # ``pay_calendar:C13-a`` two foreign keys link these tables,
+                # so an entity join has no single onclause to infer.
+                .join(Transaction.pay_period)
                 .filter(
                     Transaction.template_id == profile.template_id,
                     Transaction.scenario_id == seed_user["scenario"].id,
@@ -2485,7 +2601,10 @@ class TestNetBiweeklyMismatchFixes:
             )
             txn_2027 = (
                 db.session.query(Transaction)
-                .join(PayPeriod)
+                # The relationship rather than the entity: since plan step
+                # ``pay_calendar:C13-a`` two foreign keys link these tables,
+                # so an entity join has no single onclause to infer.
+                .join(Transaction.pay_period)
                 .filter(
                     Transaction.template_id == profile.template_id,
                     Transaction.scenario_id == seed_user["scenario"].id,

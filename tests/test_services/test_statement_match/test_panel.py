@@ -11,6 +11,8 @@ and which of the account's rows a line may be paired against.
 
 from decimal import Decimal
 
+from app.exceptions import ValidationError
+
 from datetime import timedelta
 
 import pytest
@@ -21,7 +23,8 @@ import pytest
 # ``test_reconcile``).  The alternative is widening the package's public
 # surface for the tests alone.
 # pylint: disable=shekel-private-module-import
-from app.services.statement_match._cards import to_explain_sections
+from app.services.statement_match._card_sections import to_explain_sections
+from app.services.statement_match._cards import parked_card
 from app.services.statement_match._panel import (
     AddAct,
     MatchCandidates,
@@ -34,6 +37,7 @@ from app.services.statement_match._stating import (
     rule_naming,
     state_rules,
 )
+from app.services.statement_match._skipping import skip_line
 from app.services.statement_match._verbs import Verb
 
 from ._builders import (
@@ -43,6 +47,7 @@ from ._builders import (
     a_merchant,
     a_scope,
     a_transaction,
+    a_purchase,
     an_envelope,
     an_import,
     an_unexplained_outflow,
@@ -325,7 +330,7 @@ class TestTheMatchTabOffersThePeriodAndTheSearchReachesFurther:
     def test_the_lines_own_period_holds_the_rows_that_explain_it(
         self, app, db, seed_user,
     ):
-        """Finding **balance:N-391**'s own case, reachable in one click.
+        """Finding **salary:N-391**'s own case, reachable in one click.
 
         Measured 2026-08-30 on the developer's own account: the 2026-03-26
         deposit of `$2,573.42` finds ``Health Insurance Allowance`` `$100.00`
@@ -557,3 +562,142 @@ class TestARuleNamesTheDestinationTheCardChose:
         assert rule.answer is RuleAnswer.NEW_ENVELOPE
         assert rule.envelope_name == "Lowe's"
         assert rule.category_id == 3
+
+
+class TestTheSKIPVerbIsLitAndShutWhereTheDoorWouldRefuse:
+    """Plan step ``bank_import:X-gj-4b``, rulings **R-HW** and **R-JI**.
+
+    The verb is OPEN now: ``budget.statement_line_skips`` and its doors
+    shipped at ``X-gj-4a``, the tab a skip lands on at ``X-gj-4c-2``, and this
+    step gave a route a way to call them.  What these cases hold is the ONE
+    line class it stays shut for, and -- more importantly -- that the shut set
+    is exactly the set the DOOR refuses.
+
+    **The set is the subject, not the sentence.**  A test that only asserted
+    the wording would pass over the defect this step was built to avoid:
+    :attr:`~._bars.BarredLine.also_pays_an_account` answers *does this pay an
+    account you hold* for the two BARRED lists only, and a line a tier has
+    PROPOSED a match for is in neither -- it never meets
+    :meth:`~._bars.CreationBars.bar_for` at all.  So a panel that read the
+    barred value would render an OPEN skip over a door that refuses, which is
+    ruling **R-GJ**'s `$7,412.94` shape one verb over.  The third case below
+    is that line, driven through BOTH paths.
+    """
+
+    def _skip_offer(self, seed_user, line_id):
+        """Return the SKIP offer the panel renders for one line.
+
+        Args:
+            seed_user: The seeded user bundle.
+            line_id: The bank line whose card to find.
+
+        Returns:
+            Its :class:`~._verbs.VerbOffer` for :attr:`Verb.SKIP`.
+        """
+        cards, _ = _cards(seed_user)
+        card = next(one for one in cards if one.line.line_id == line_id)
+        return card.panel.offer_for(Verb.SKIP)
+
+    def test_an_ordinary_unexplained_line_offers_SKIP(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: the verb is lit, so an ordinary line may end on it.
+
+        Without this the two cases below would pass against a build that shut
+        SKIP on everything, which is the state this step replaced.
+        """
+        an_envelope(seed_user)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Kroger", amount="-41.18",
+        )
+        db.session.commit()
+
+        offer = self._skip_offer(seed_user, line.id)
+
+        assert offer.is_open
+        assert offer.waiting_for is None
+
+    def test_a_PARKED_card_payment_line_renders_SKIP_shut(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-JI**, on a line the pass PARKS.
+
+        **Its card is built from ``review.parked`` and not from the inbox**,
+        which is ruling **R-HQ**: money a source says went to another account
+        the owner holds is a STATE rather than a task, so it sits on the
+        Transfers tab and :func:`~._card_sections.to_explain_sections` does
+        not hold it.  A first draft of this case looked for it in the inbox
+        and raised ``StopIteration``.
+        """
+        an_envelope(seed_user)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+        parked = next(
+            one for one in review.parked if one.line.line_id == line.id
+        )
+        offer = parked_card(review, parked).panel.offer_for(Verb.SKIP)
+
+        assert not offer.is_open
+        assert "another account you hold" in offer.waiting_for
+
+    def test_a_PROPOSED_card_payment_line_is_shut_TOO(
+        self, app, db, seed_user,
+    ):
+        """The line the barred lists cannot see, driven through BOTH paths.
+
+        A tier proposes a match for this line, so it is in ``proposals`` and
+        in neither barred list -- and the panel must still shut SKIP, because
+        :func:`~._skipping.skip_line` still refuses it.  The two halves are
+        asserted from two independent paths: the rendered card, and the door
+        itself.
+
+        **This is the case a narrower implementation gets wrong**, and this
+        case is what establishes that it is reachable -- by CONSTRUCTION,
+        asserting its own premise, rather than by citing a census.  *An
+        earlier draft cited :mod:`._bars`' seven Van Loan lines as the
+        populated case, and adversarial review measured that the wrong set*:
+        four of those are already MATCHED and three fall before the pay
+        calendar opens, and a matched line is out of the pass entirely.
+        """
+        envelope = an_envelope(seed_user)
+        a_purchase(
+            seed_user, envelope, amount="793.23",
+            description="Capital One Credit Card",
+        )
+        line = an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        scope = a_scope(seed_user)
+        review = review_set(scope)
+        # The premise: this line is PROPOSED, so neither barred list holds it.
+        assert any(
+            one.lines[0].line_id == line.id for one in review.proposals
+        ), "the tier did not propose the pairing this case is about"
+        assert not any(
+            one.line.line_id == line.id
+            for one in review.parked + review.answered_never
+        )
+
+        offer = self._skip_offer(seed_user, line.id)
+        assert not offer.is_open, (
+            "SKIP was offered on a line the door refuses, which is the shut "
+            "tab over an open door ruling R-GJ closed for the ADD verb"
+        )
+
+        # The other path: the door itself, on the same line.
+        with pytest.raises(ValidationError) as caught:
+            skip_line(
+                line.id, seed_user["user"].id, seed_user["account"].id,
+            )
+        assert offer.waiting_for == str(caught.value), (
+            "the panel and the door state the same refusal in different "
+            "words, which is the drift one shared constant exists to stop"
+        )

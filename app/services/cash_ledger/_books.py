@@ -114,7 +114,7 @@ def books_hold(opened_on: date, day: date) -> bool:
     ``unrealized_change``, so a transfer becomes market performance that never
     unwinds.  Stating it in one function is what stops the two readings
     drifting apart across its five call sites in this package, two in
-    ``statement_match`` (``_gaps._split_at_books_open`` asks it; ``_reads
+    ``statement_match`` (``_gaps._split_at_books_open`` asks it; ``_undisposed
     .awaiting_review_count`` cannot, and open-codes the same ``>`` as a COLUMN
     EXPRESSION because a SQL filter cannot call a Python predicate -- that
     exception is stated at the site), and one SQL tier -- and the SQL tier states it once too, as

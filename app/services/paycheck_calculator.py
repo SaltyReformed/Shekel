@@ -143,7 +143,7 @@ through 2026-12-31 -- and driving MED-05's rule over it at a FLAT
 group) pays ``$95,200.96``: a full extra paycheck above the salary its own
 docstring claimed the year would equal.
 
-**The STORED input is still the annual salary, and plan step balance:X-av flips
+**The STORED input is still the annual salary, and plan step salary:X-av flips
 it** to a dated per-paycheck gross with the annual derived (ruling R-HW).  The
 contract stated here -- a constant rate per paycheck, independent of the
 schedule -- is what survives that flip unchanged; only the input improves.

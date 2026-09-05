@@ -149,8 +149,10 @@ class DerivedStop(ABC):
 class ClosesOn(DerivedStop):
     """The derived source names a date the definition stops on.
 
-    For a loan payment: the loan's DERIVED payoff, the date its balance folds
-    to zero (:attr:`~app.services.balance_at.LoanFigures.payoff_date`).
+    For a loan payment: the loan's DERIVED closing date
+    (:attr:`~app.services.balance_at.LoanFigures.closing_date`, plan step
+    ``recurrence:R7d-h``) -- the date its balance folds to zero ahead while
+    it still owes, or the day it LAST became closed once it does not.
 
     Attributes:
         on: The last day an occurrence may fall on, INCLUSIVE, for the same
@@ -203,20 +205,29 @@ class Empty(DerivedStop):
     """The derived source closed BEFORE the definition's first occurrence.
 
     A loan originated 2026-06-20 with a ``payment_day`` of 15 owes its first
-    installment 2026-07-15; true its balance to zero and it retires, so on a
-    read pass as of 2026-07-01 the derived window is
-    ``[2026-07-15, 2026-07-01]`` -- CORRECT at nought occurrences.  Plan ledger
-    row **D35** carries the same shape as the state that held
-    ``ck_recurrence_rules_valid_window`` back, because a CHECK cannot tell it
-    from an owner's mistake.
+    installment 2026-07-15; true its balance to zero on 2026-06-21 and it
+    retires that day, so the derived window is ``[2026-07-15, 2026-06-21]`` --
+    CORRECT at nought occurrences.  Plan ledger row **D35** carries the same
+    shape as the state that held ``ck_recurrence_rules_valid_window`` back,
+    because a CHECK cannot tell it from an owner's mistake.
+
+    **This shape is STABLE, and plan step ``recurrence:R7d-h`` is what made it
+    so.**  A retired loan's closing bound USED TO BE the read pass's own
+    ``as_of``, so this shape was TRANSIENT on the retired branch: the same
+    untouched loan answered ``ClosesOn(today)`` from the day the as-of reached
+    the first occurrence, and its admitted set grew one occurrence per cadence
+    period.  The bound is now the day the loan LAST became closed
+    (:attr:`~app.services.balance_at.LoanFigures.closing_date`), a fact about
+    the LOAN rather than about when the page was rendered, so an untouched
+    retired loan answers the same window on every read.
 
     **It admits exactly what a** :class:`ClosesOn` **before the same first
     occurrence admits -- nothing -- so it is a PRECOMPUTATION of a comparison
     its readers could make, held once where they would each make it.**
     Generation cannot tell the two apart and does not need to: it emits nothing
     either way.  What differs is what a reader may SAY -- a DISPLAY surface
-    naming "until Jul 1, 2026" for a definition that fires from the 15th is
-    false about a date, where "this never runs" is true.
+    naming "until Jun 21, 2026" for a definition that fires from the 15th is
+    false about a date, where "never runs" is true.
     """
 
     def admits(self, occurrence: date) -> bool:
@@ -278,9 +289,16 @@ class Closing:
 
     Attributes:
         authored: The bound the OWNER stated -- :data:`.._bounds.NEVER_ENDS`
-            for the 41 of 46 live rules that state none.  Always present: a
+            for the many live rules that state none.  Always present: a
             definition always has an authored bound, even when that bound is
-            "it does not stop".
+            "it does not stop".  **For a loan payment it is not yet the owner's
+            word**: until plan step R7d-g deletes the stored copy, ten
+            chokepoints write the loan's derived payoff into the authored
+            bound's own column, and this value cannot tell that cached date
+            from an authored one -- so where the cache is EARLIER than the
+            derived stop it still binds.  That is the maintained copy this
+            paragraph's "never maintained" does not yet cover, and deleting
+            the column is what makes it true.
         derived: What something outside the rule allows, or ``None`` when
             nothing does.  ``None`` is "no derived source bounds this
             definition" and is a complete answer rather than an unknown -- a

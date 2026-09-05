@@ -579,9 +579,14 @@ def _reject_unowned_references(
     session, but it made this module's own rule -- every refusal before the
     first write -- untrue of two of its refusals (neutral review, 2026-08-18).
 
-    Ownership is re-checked at the route boundary too (commit C-27 / F-043);
-    this is the service tier's own, so a caller that skips the route cannot
-    write across an ownership line.
+    ``category_id`` is re-checked at the route boundary too (commit C-27 /
+    F-043); this is the service tier's own, so a caller that skips the route
+    cannot write across an ownership line.  **``pay_period_id`` no longer is**
+    -- plan step ``pay_calendar:C13-b`` deleted that route probe as one of the
+    four duplicates of :func:`~._ownership._get_owned_period`, so this call and
+    :func:`~._loan_posting._reject_installment_move_before_loan`'s are the two
+    that remain.  That pair is a SECOND walk and the cost of it is measured in
+    the latter's docstring.
 
     Args:
         user_id: The owner every referenced row must belong to.
@@ -707,6 +712,23 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # here leaves the refusal where every other one is: ahead of the first
     # write.  ``None`` when the caller states no amount, which the arm below
     # distinguishes by asking *updates*, not this value.
+    # WHO AUTHORED the figure (ruling **R-JR**).  POPPED so it never reaches
+    # ``fields_changed`` at the tail -- it is a fact ABOUT a field, not a field.
+    # REFUSED when a figure arrives without it: an earlier revision read
+    # ``updates.get(...)``, so a door that forgot the kwarg silently got
+    # ``False`` and both legs were DECLARED DERIVED, discarding an owner-typed
+    # figure.  This layer's safe default is the opposite of the route's, so
+    # absence must raise rather than resolve.
+    amount_authored = updates.pop("amount_authored", None)
+    if "amount" in updates and amount_authored is None:
+        raise ValueError(
+            "update_transfer was given an amount with no amount_authored. "
+            "Who authored a figure is a fact its caller states (ruling R-JR): "
+            "a door compares the submitted figure against the one it rendered, "
+            "and a service caller says whether it is the definition speaking. "
+            "Omitting it is not a neutral default -- it would hand both legs "
+            "back to the definition and discard an owner's typed figure."
+        )
     amount = (
         _validate_positive_amount(updates["amount"])
         if "amount" in updates else None
@@ -753,6 +775,11 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     if "amount" in updates or "is_override" in updates:
         apply_amount_ownership(
             rows, stated_amount=amount,
+            # Ruling **R-JR** (plan step X-au-h): whether a HUMAN typed this
+            # figure is a fact its caller states, not one this layer computes.
+            # Resolved and REFUSED above, so by here it is never ``None`` when
+            # a figure rides with it.
+            amount_authored=bool(amount_authored),
             stated_override=(
                 bool(updates["is_override"])
                 if "is_override" in updates else None
@@ -939,6 +966,16 @@ def update_transfer(transfer_id, user_id, **kwargs):
                           read-only property over its income leg, and the value
                           carries the day's basis as well as the day.
         is_override    -- Override flag (transfer and both shadows).
+        amount_authored -- Whether a HUMAN authored the ``amount`` in this same
+                          call (ruling **R-JR**, plan step X-au-h).  Decides
+                          whether the two legs TAKE that figure or are
+                          re-declared derived, and is STATED because only a
+                          caller knows it: a DOOR compares the submitted figure
+                          against the one it rendered, a SERVICE caller knows
+                          whether the definition is speaking.  **REQUIRED
+                          whenever an ``amount`` rides with it** -- omitting it
+                          raises, because the two directions are not
+                          interchangeable and silence would discard a figure.
 
     Any other kwargs are silently ignored (consistent with the
     BaseSchema EXCLUDE pattern).

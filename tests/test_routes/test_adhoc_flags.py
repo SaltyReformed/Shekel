@@ -40,6 +40,7 @@ def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False
         amount_ownership=AmountOwnership.own(Decimal(amount)),
         transaction_type_id=ref_cache.txn_type_id(type_enum),
         status_id=ref_cache.status_id(status),
+        user_id=period.user_id,
         pay_period_id=period.id,
         account_id=seed_user["account"].id,
         category_id=list(seed_user["categories"].values())[0].id,
@@ -406,6 +407,9 @@ class TestAdhocFlagPersistence:
             )
             resp = auth_client.patch(f"/transactions/{txn.id}", data={
                 "estimated_amount": "150.00",
+                # What the quick-edit box was rendered with (R-JR); differing
+                # from the submitted figure is what makes this a real retype.
+                "estimated_amount_as_rendered": str(txn.estimated_amount),
                 "version_id": txn.version_id,
             })
             assert resp.status_code == 200

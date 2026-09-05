@@ -805,6 +805,7 @@ def accept_match(
         MatchContent(
             lines=load_lines(
                 scope.account_id, submission.line_ids, matched,
+                for_write=True,
             ),
             rows=resolve_rows(submission, scope, matched),
             # **Nothing, and that is the form door's whole character**: it

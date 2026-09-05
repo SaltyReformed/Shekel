@@ -466,13 +466,25 @@ def require_period(
       ``/dashboard`` open a :func:`~app.db_transaction.write_transaction` block
       for the rolling top-up, so each runs read-only, then writable, then
       read-only again over a NEW snapshot.
-    * **A row filed in ANOTHER owner's pay period.**  ``budget.transactions``
-      carries no ``user_id``: its owner IS its pay period's, and nothing
-      requires that owner to be its ACCOUNT's.  0 such rows on production,
-      re-measured 2026-08-31 over all 1,028 rows -- carried across from
-      ``_calendar.py`` with the rest of this argument and RE-TAKEN rather than
-      copied forward, because a measurement quoted as a reason decays
-      invisibly.
+    * **A row filed in ANOTHER owner's pay period -- and it is UNSTORABLE
+      since plan step ``pay_calendar:C13-a``.**  This clause used to read "0
+      such rows on production, re-measured 2026-08-31 over all 1,028 rows",
+      which is the shape the paragraph below warns about: a measurement quoted
+      as a REASON, decaying invisibly because nobody re-checks a premise.  It
+      decayed by being FIXED.  ``budget.transactions`` now carries a
+      ``user_id`` held equal to both its account's owner and its paycheck's by
+      a composite key each (ruling **R-PC32**), so the row this bullet
+      describes cannot be written at all rather than merely being absent.
+      **``C13-b`` took the decision this clause was left for, and the handling
+      STAYS** (2026-09-03): the refusal is reached by TWO states and only this
+      one became unstorable.  The other -- a picture assembled from more than
+      one moment, the bullet above -- is live, owned by `balance:X-i5`, and
+      reaches this same raise.  So what is dead weight is this BULLET's claim
+      on the handling, not the handling; a caller whose calendar no longer
+      holds a row's period still gets a refusal rather than a wrong span.
+      Taken beside finding **P75**'s nineteen rather than as one of them,
+      because it was a placement question and P75 counts only the reads that
+      REFUSE.
 
     **The three quieter answers were weighed and refused** (the review that
     parked C4-a-1, 2026-08-25): placing the row against no span hides a

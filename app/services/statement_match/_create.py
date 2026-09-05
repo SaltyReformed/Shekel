@@ -49,9 +49,13 @@ tell the two apart and undo either.
 *never a purchase* for, and one a SOURCE files as a payment to a credit card
 that they have not answered for, are BARRED: no destination makes such a line
 legal, because the money it moved is already in the budget in another shape.
-The screen renders no create control for one (:attr:`~._reads.ReviewSet.parked`)
-and :func:`~._bars.reject_barred_line` refuses it at this door, which is the
-half a crafted body or a stale page reaches.  Measured on the developer's own
+The screen renders no create control for one, on EITHER of the two lists the
+pass files a barred line in (:attr:`~._reads.ReviewSet.parked` and
+``answered_never``, split at plan step ``bank_import:X-gj-4c``), and
+:func:`~._bars.reject_barred_line` refuses it at this door, which is the half a
+crafted body or a stale page reaches.  **This door is blind to which list**,
+because it reads :meth:`~._bars.CreationBars.bar_for` rather than the screen's
+partition -- so the split moved no refusal.  Measured on the developer's own
 dev database: nine Capital One ACH payments became `$7,412.94` of purchases in
 eight new envelopes, beside 22 ``CC Payback`` rows RECORDING `$6,286.46` of the
 same card's spending, in one pass, past a warning paragraph.  **Those rows are
@@ -181,6 +185,7 @@ def _load_line(
     """
     line = load_lines(
         scope.account_id, frozenset({creation.line_id}), matched,
+        for_write=True,
     )[0]
     # **An inflow is a purchase only where the owner's own rule claims it**
     # (plan step ``bank_import:X-gj-2b-2``, ruling **R-HT(a)**).  A merchant
@@ -568,7 +573,7 @@ def create_purchase_from_line(
         # the bank's sign convention, so the receipt reads a fact this door
         # established rather than re-deriving a direction from the purchase's
         # own sign -- the rule ``_panel.AddAct`` states for the card and
-        # ``_cards._creatable_card`` already follows.
+        # ``_cards.creatable_card`` already follows.
         records_a_refund=is_inflow(line.amount),
     )
     log_event(

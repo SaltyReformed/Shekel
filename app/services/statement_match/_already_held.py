@@ -139,7 +139,7 @@ class ArrivalsAlreadyHeld:
 
         **The FIGURE carries a currency symbol and separators**, which is what
         every other money sentence this package composes does
-        (:func:`~._batch._created_summary`, :mod:`._gaps`).  Both sides read
+        (:func:`~._receipt_sentences.created_summary`, :mod:`._gaps`).  Both sides read
         ``2473.38`` where the card beside them read ``$2,473.38``, because a
         template's ``money()`` filter never reaches a string a service already
         composed.

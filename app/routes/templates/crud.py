@@ -240,10 +240,15 @@ def create_template():
 
     # Open the amount's dated series at today (plan step X-au-a).  The
     # constructor above also carries the figure because the column is NOT NULL;
-    # this call is what makes the SERIES exist, and plan step X-au-e removes the
-    # redundancy by removing the column.  A template created today generates
-    # rows into historical pay periods too, and those resolve by the series
-    # holding flat before its earliest version
+    # this call is what makes the SERIES exist, and after plan step X-au-e the
+    # series is the only thing that prices this definition's rows -- generation
+    # writes no figure, so a template whose series never opened generates rows
+    # ``_stated_amount`` REFUSES.  *An earlier version of this comment said
+    # X-au-e "removes the redundancy by removing the column"; it does not, and
+    # no step in ``docs/plans/steps.md`` removes ``default_amount`` -- see
+    # ``template_amount_service.set_amount`` for what still reads it.*  A
+    # template created today generates rows into historical pay periods too,
+    # and those resolve by the series holding flat before its earliest version
     # (``template_amount_service.amount_as_of``).
     template_amount_service.set_amount(
         template, template.default_amount, effective_on=display_today(),
@@ -328,6 +333,12 @@ _TXN_TEMPLATE_KIND = RecurrenceConflictKind(
     regenerate_fn=recurrence_engine.regenerate_for_template,
     resolve_fn=recurrence_engine.resolve_conflicts,
     update_endpoint="templates.update_template",
+    # **"Use" states no figure for this kind since plan step balance:X-au-e**
+    # (ruling **R-JD**).  A generated transaction stores no amount, so the
+    # offer is "hand this row back to its definition" and the definition's own
+    # price series answers it on the row's due date.  The transfer kind still
+    # answers True; both answer False after plan step X-au-f.
+    use_states_a_figure=False,
 )
 
 
@@ -459,10 +470,13 @@ def update_template(template_id):
     # form's "Amount effective from" date, which also bounds the regeneration
     # below -- ONE value, though the two apply it with different predicates: the
     # series answers by a row's own DUE date and the sweep selects by its pay
-    # PERIOD's end, so an edit can rewrite a row whose due date precedes the
-    # date it states (finding **N-247**, owned by X-au-e, which deletes the
-    # sweep's amount arm and dissolves it).  Absent from a partial update means
-    # the amount was not restated, and the series is untouched.
+    # PERIOD's end.  **That divergence used to let an edit REWRITE a row whose
+    # due date preceded the date it states (finding N-247); plan step X-au-e
+    # dissolved it** -- the sweep writes a DECLARATION rather than a figure, so
+    # which rows it reaches decides nothing about money and every row resolves
+    # by its own due date whether the sweep touched it or not.  Absent from a
+    # partial update means the amount was not restated, and the series is
+    # untouched.
     #
     # **BEFORE the field loop, because that loop can FLUSH.**  A rename issues a
     # bulk UPDATE over this template's instances, which autoflushes whatever is

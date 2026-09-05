@@ -1494,6 +1494,7 @@ class TestTheACTS_OWN_WRITES_CannotMoveAMemberUnderIt:
         payback = Transaction(
             account_id=seed_user["account"].id,
             template_id=None,
+            user_id=seed_user['bootstrap_period'].user_id,
             pay_period_id=seed_user["bootstrap_period"].id,
             scenario_id=seed_user["scenario"].id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -1624,6 +1625,7 @@ class TestTheReceiptNamesIt:
 
         outcome = statement_match.apply_reviewed(
             statement_match.ReviewedBatch(
+                skips=(),
                 consent=statement_match.Consent.TICKED,
                 incomes=(),
                 matches=(a_submission(
@@ -1677,6 +1679,7 @@ class TestTheReceiptNamesIt:
 
         outcome = statement_match.apply_reviewed(
             statement_match.ReviewedBatch(
+                skips=(),
                 consent=statement_match.Consent.TICKED,
                 incomes=(),
                 matches=(
@@ -1959,7 +1962,7 @@ class TestAGroupLandsNOWHEREUntilTheOwnerNamesAMember:
 class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
     """Plan step **bank_import:X-gj-3a**, through the real door.
 
-    **The staged shape is finding balance:N-391's, measured 2026-09-01.**  The
+    **The staged shape is finding salary:N-391's, measured 2026-09-01.**  The
     owner's `TOWN OF CLAYTON PAYROLL` deposit is two or three app rows summing
     `$0.04`-`$0.06` under it, seven times over the span -- and re-running his
     own paycheck through ``paycheck_calculator`` for each of the seven showed

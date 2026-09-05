@@ -97,9 +97,15 @@ class TestTransactionUpdateSchema:
         assert "estimated_amount" not in data
 
     def test_valid_partial_update(self):
-        """Partial update with valid fields loads correctly."""
+        """Partial update with valid fields loads correctly.
+
+        Carries the rendered-figure companion because ruling **R-JR** makes a
+        figure without one MALFORMED -- see
+        ``TestTheSchemasRefuseAFigureWithNoCompanion`` for that half.
+        """
         data = TransactionUpdateSchema().load({
             "estimated_amount": "200.00",
+            "estimated_amount_as_rendered": "150.00",
         })
         assert data["estimated_amount"] == Decimal("200.00")
 
@@ -399,9 +405,14 @@ class TestTransferUpdateSchema:
     """Tests for TransferUpdateSchema."""
 
     def test_valid_partial_update(self):
-        """Partial update with amount loads correctly."""
+        """Partial update with amount loads correctly.
+
+        Carries the rendered-figure companion because ruling **R-JR** makes a
+        figure without one MALFORMED.
+        """
         data = TransferUpdateSchema().load({
             "amount": "250.00",
+            "amount_as_rendered": "200.00",
         })
         assert data["amount"] == Decimal("250.00")
 

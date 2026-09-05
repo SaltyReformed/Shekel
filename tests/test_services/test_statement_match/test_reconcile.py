@@ -22,8 +22,11 @@ import pytest
 # the package's public surface for the tests alone, which is the
 # "surface nobody asked for" its ``__init__`` refuses in as many words.
 # pylint: disable=shekel-private-module-import
+from app.models.statement_line_skip import StatementLineSkip
 from app.services import statement_match
-from app.services.statement_match import Tab, reconcile_page
+from app.services.statement_match import Tab, reconcile_page, skip_line
+from app.services.statement_match._cards import CardKind
+from app.services.statement_match._sentence import for_skip
 from app.services.statement_match._accepted_view import (
     REGISTER_LIMIT,
     accepted_counts,
@@ -165,22 +168,34 @@ class TestALineWithNoAvailableActNeverEntersTheInbox:
         assert any("Capital One" in note for note in card.panel.notes)
 
 
-class TestAStandingNeverAnswerIsAlreadyASkip:
-    """Ruling **R-HP**: a line deliberately explained by nothing is SKIPPED.
+class TestAStandingNeverAnswerIsNotADisposition:
+    """Ruling **bank_import:R-JH**, plan step ``bank_import:X-gj-4c``.
 
-    **This arm has never rendered on the developer's data and is built
-    anyway**, because the predicate is real and the data is one account's:
-    measured 2026-08-29, all 9 of his parked lines carry BOTH bars, so every
-    one is a transfer.  A merchant he answers *never a purchase* for that no
-    source files as an account payment is the case with only the first.
+    **It REPLACES** ``TestAStandingNeverAnswerIsAlreadyASkip``, and the
+    replacement is what ``CLAUDE.md`` rule 5's one exception looks like: the
+    developer confirmed the expected behaviour CHANGED.  That class asserted a
+    *never a purchase* answer put its line on the SKIPPED tab in the past
+    tense, on the argument that the standing answer WAS the disposition.  It
+    is not one: *not a purchase* is not *explained by nothing* -- a paycheck is
+    neither and a transfer to savings is neither -- so the answer shuts the ADD
+    door and claims nothing about what the line IS.
 
-    **It needs none of** ``X-gj-4``'s **store**: the standing answer IS the
-    disposition, so the Skipped tab has members before a disposition column
-    exists.
+    **The deleted arm was REACHABLE, and that is why this class exists rather
+    than the deletion standing alone.**  A first draft of R-JH called it
+    structurally memberless; the class it replaces was a PASSING test in this
+    repository proving otherwise, on exactly the staging below.  So the
+    deletion rests on the semantic argument and on nothing else, and what the
+    old cases measured -- that such a line exists and lands somewhere -- is
+    measured here against the destination the ruling gives it.
     """
 
     def _a_never_answered_swipe(self, seed_user, db):
         """Stage one outflow whose merchant the owner has answered NEVER for.
+
+        **An ordinary swipe merchant and NOT a card payment**, which is the
+        whole population of this class: a line whose source ALSO files it as
+        paying an account the owner holds is a transfer whatever they said, and
+        is graded by :class:`TestALineWithNoAvailableActNeverEntersTheInbox`.
 
         Args:
             seed_user: The seeded user bundle.
@@ -196,37 +211,117 @@ class TestAStandingNeverAnswerIsAlreadyASkip:
         a_rule(seed_user, "Foundation Donation")
         db.session.commit()
 
-    def test_it_lands_on_SKIPPED_and_not_on_transfers(
+    def test_it_is_INBOX_WORK_and_on_neither_holding_tab(
         self, app, db, seed_user,
     ):
-        """The two bars are different kinds of fact and may not be collapsed.
+        """The line is unexplained, so the hero counts it and the tabs do not.
 
-        Filing the owner's own decision under Transfers would tell them their
-        bank had decided for them -- which is the collapse
-        :class:`~app.services.statement_match._bars.CreationBar` exists to
-        refuse.
+        **``Tab.SKIPPED`` at zero is the half that used to be one**, and
+        ``Tab.TRANSFERS`` at zero is the half that must not become one: leaving
+        the line in ``parked`` and merely dropping the tab arm would total that
+        list on TRANSFERS, whose chip renders a COUNT and a MAGNITUDE -- a
+        money figure over a line no source filed as a payment.
         """
         self._a_never_answered_swipe(seed_user, db)
 
         counts = _counts(_page(seed_user, Tab.TO_EXPLAIN))
 
-        assert counts[Tab.SKIPPED] == 1
+        assert counts[Tab.TO_EXPLAIN] == 1
+        assert counts[Tab.SKIPPED] == 0
         assert counts[Tab.TRANSFERS] == 0
-        assert counts[Tab.TO_EXPLAIN] == 0
 
-    def test_its_sentence_is_PAST_tense_and_names_the_answer(
+    def test_the_TRANSFERS_chip_counts_and_SUMS_neither_of_these_lines(
         self, app, db, seed_user,
     ):
-        """The decision has already been made, so the card reports it."""
+        """**A MIXED population, which is the only staging that can fail.**
+
+        Rulings **R-JH** and **R-JI** both turn on the same fact: the Transfers
+        chip's label carries a COUNT and a MAGNITUDE, so a line arriving there
+        arrives under a rendered money figure.  A single-card-payment case
+        cannot tell a correct sum from one that also added the swipe, because
+        there is nothing else to add; this stages both and asserts the figure
+        excludes the `$4.00`.
+        """
+        self._a_never_answered_swipe(seed_user, db)
+        an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        page = _page(seed_user, Tab.TO_EXPLAIN)
+        chip = next(
+            one for one in page.chips if one.tab is Tab.TRANSFERS
+        )
+
+        assert chip.count == 1
+        assert chip.amount == Decimal("793.23")
+        assert _counts(page)[Tab.TO_EXPLAIN] == 1
+
+    def test_it_reads_NOTHING_SUGGESTED_and_proposes_no_verb(
+        self, app, db, seed_user,
+    ):
+        """The app has not worked out what this is, and says so.
+
+        A card suggesting SKIP would be the app stating a disposition on the
+        strength of an answer that claims nothing about the line -- which is
+        the sentence ``_sentence.for_parked_never`` composed and this step
+        deleted.
+        """
         self._a_never_answered_swipe(seed_user, db)
 
-        card = _cards(_page(seed_user, Tab.SKIPPED))[0]
+        page = _page(seed_user, Tab.TO_EXPLAIN)
+        section = page.sections[0]
+        card = section.cards[0]
         said = " ".join(span.text or "" for span in card.sentence)
 
-        assert card.suggested is Verb.SKIP
-        assert said.startswith(Verb.SKIP.past)
-        assert "is never a purchase" in said
+        assert section.section is statement_match._cards.Section.NOTHING
+        assert card.suggested is None
         assert card.offers_ok is False
+        assert Verb.SKIP.past not in said
+
+    def test_ADD_is_shut_and_carries_the_owner_s_own_reason(
+        self, app, db, seed_user,
+    ):
+        """R-GJ's bar is unchanged; only where its line renders moved.
+
+        The reason is in the panel both ways ruling **R-JH** asks for: as the
+        ADD verb's own refusal, and as a note the opened card prints without
+        the reader having to find the tab.
+        """
+        self._a_never_answered_swipe(seed_user, db)
+
+        card = _cards(_page(seed_user, Tab.TO_EXPLAIN))[0]
+        add = card.panel.offer_for(Verb.ADD)
+
+        assert add.is_open is False
+        assert "is never a purchase" in add.waiting_for
+        assert card.panel.add is None
+        assert any(
+            "is never a purchase" in note for note in card.panel.notes
+        )
+
+    def test_MATCH_stays_open_and_the_answer_door_is_offered(
+        self, app, db, seed_user,
+    ):
+        """**Why R-HQ is not breached by putting this line in the inbox.**
+
+        A line with no available act is a holding state; this one keeps MATCH,
+        so it is work.  And unlike a card payment it has a door worth naming:
+        the owner gave this answer and can give another, which
+        :attr:`~._bars.BarredLine.answer_door` withholds for a bar no answer
+        lifts.
+        """
+        a_transaction(seed_user, name="Groceries", is_envelope=True)
+        self._a_never_answered_swipe(seed_user, db)
+
+        card = _cards(_page(seed_user, Tab.TO_EXPLAIN))[0]
+
+        assert card.panel.offer_for(Verb.MATCH).is_open is True
+        assert card.takes_ok is True
+        assert card.panel.answer_door == (
+            "Change what you have said about Foundation Donation"
+        )
 
 
 class TestAnUNANSWEREDInflowIsNeverPreFilled:
@@ -943,35 +1038,59 @@ class TestACaptionCountsOnlyWhatItsTabCanDraw:
         )
 
 
-class TestWhichKindOfCARDATabHoldsIsTheTabsOwnFact:
-    """Plan step ``bank_import:X-gj-1c``.
+class TestWhichKindOfCARDAPageHoldsIsSTATEDByWhatBuiltThem:
+    """Plan steps ``bank_import:X-gj-1c`` and ``X-gj-4c-2``; ruling **R-JX**.
 
-    The body asks :attr:`~app.services.statement_match.Tab
-    .holds_settled_acts` once and renders one of two partials, because the two
-    card kinds carry disjoint controls -- an Undo is a form and may not nest
-    in the Apply form, and a settled tab has nothing to Apply.  A TOTAL table
-    rather than a membership test, so a sixth tab is a failure here and not a
-    bank-line card rendered over acts.
+    **The two RECONCILING cases that used to live here are DELETED, and the
+    deletion is the point.**  Which kind a tab held was a ``Tab.holds``
+    property over a ``_TAB_CARD_KIND`` table, sitting beside a dispatch that
+    independently built the cards -- one fact in two homes, agreeing only
+    because a test said so.  One case drove the table from the enum and
+    another paired the table against the cards a real page held; both were
+    scaffolding around the defect that the two could differ at all.
+    :func:`~._reconcile._tab_sections` returns the kind BESIDE the sections it
+    just built, so the disagreement is unrepresentable and the reconciler has
+    nothing left to reconcile (``CLAUDE.md`` rule 14: delete a home, do not
+    keep two in step).
+
+    **What replaced them is stronger and lives at the ROUTE**:
+    ``test_statement_reconcile.TestEveryTabTheServiceBuildsIsServed
+    ::test_every_tab_RENDERS_THE_CONTROL_ITS_KIND_CARRIES`` drives every
+    :class:`~app.services.statement_match.Tab` through a real render and
+    asserts each tab emits its own kind's control and NEITHER of the other
+    two -- which grades the service, the page value and the template's three
+    arms in one pass, where these graded a table.
+
+    What is left here is the one claim about :class:`CardKind` itself that no
+    render can make.
     """
 
-    def test_every_tab_answers(self, app, db, seed_user):
-        """Driven from the enum: a new member with no entry raises."""
-        assert {tab: tab.holds_settled_acts for tab in Tab} == {
-            Tab.TO_EXPLAIN: False,
-            Tab.EXPLAINED: True,
-            Tab.FILED_BY_RULES: True,
-            Tab.TRANSFERS: False,
-            Tab.SKIPPED: False,
-        }
+    def test_the_three_predicates_partition_the_kinds(self, app, db, seed_user):
+        """Exactly one of the three is true of every kind.
 
-    def test_it_agrees_with_the_kind_the_sections_actually_hold(
+        The body renders one arm per predicate and NO ``else``, so a kind that
+        answered ``False`` three times would draw a blank tab and a kind that
+        answered ``True`` twice would draw two lists.  Driven from the enum, so
+        a fourth kind fails here rather than on the screen.
+        """
+        for kind in CardKind:
+            answers = (kind.is_line, kind.is_act, kind.is_skip)
+
+            assert sum(answers) == 1, (kind, answers)
+
+    def test_the_page_states_the_kind_its_own_cards_ARE(
         self, app, db, seed_user,
     ):
-        """The predicate and the cards, asked of a page holding both kinds.
+        """The page's ``kind`` against the fields its cards actually carry.
 
-        A table can be right about the enum and wrong about the sections; this
-        is what pairs the two, over an account that really has an act and
-        really has a line to explain.
+        **Not a reconciler**: there is one producer now, and this grades that
+        each of its arms pairs the kind it returns with the cards it built --
+        a dispatch arm can still be written ``CardKind.ACT, skip_sections(...)``
+        in one place, which is a mistake a reader can see rather than a
+        contract two files must keep.
+
+        Staged over an account holding all three at once, because a page can
+        be right about one arm and wrong about another.
         """
         envelope = an_envelope(seed_user)
         settled = an_unexplained_outflow(
@@ -980,17 +1099,276 @@ class TestWhichKindOfCARDATabHoldsIsTheTabsOwnFact:
         an_unexplained_outflow(
             seed_user, merchant="Lowe's", amount="-35.72", sequence=1,
         )
+        skipped = an_unexplained_outflow(
+            seed_user, merchant="Target", amount="-9.99", sequence=2,
+        )
+        # **A card payment, so TRANSFERS holds one too.**  Every tab has to
+        # draw a card or its arm is graded by an empty list, which asserts
+        # nothing at all -- the loop below says so and would pass vacuously.
+        an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            sequence=3, source_category=_CARD_PAYMENT,
+        )
         db.session.commit()
         filed_by(seed_user, settled, envelope, by_rule=False)
+        # ...and one a RULE filed, so FILED BY RULES holds one.
+        filed_acts(seed_user, 1, by_rule=True)
+        skip_line(
+            skipped.id, seed_user["user"].id, seed_user["account"].id,
+        )
         db.session.commit()
 
-        for tab in (Tab.TO_EXPLAIN, Tab.EXPLAINED):
-            cards = _cards(_page(seed_user, tab))
+        #: Which attribute each kind's card carries, and which it must not.
+        owns = {
+            CardKind.LINE: "line",
+            CardKind.ACT: "act",
+            CardKind.SKIP: "skip",
+        }
+        for tab in Tab:
+            page = _page(seed_user, tab)
+            cards = _cards(page)
 
             assert cards, f"{tab} must hold a card, or this grades nothing"
             for card in cards:
-                assert hasattr(card, "act") is tab.holds_settled_acts, tab
-                assert hasattr(card, "line") is not tab.holds_settled_acts, tab
+                for kind, field in owns.items():
+                    assert hasattr(card, field) is (
+                        page.kind is kind
+                    ), (tab, kind, field)
+
+
+class TestTheSkippedTabIsWhereARecordedSkipIsFoundAndUndone:
+    """Plan step ``bank_import:X-gj-4c-2``, rulings **R-JG** and **R-JH**.
+
+    **The tab holds only lines the OWNER skipped.**  R-JH is what makes that
+    a claim rather than a tautology: the tab USED to hold the lines a standing
+    *never a purchase* answer barred, on the argument that the answer was the
+    disposition, and ``X-gj-4c-1`` returned those to the inbox.  So a case
+    that only planted a skip would pass on the old code too; one of these
+    plants BOTH and asserts the barred line is absent.
+    """
+
+    def test_a_recorded_skip_is_a_card_on_this_tab_and_on_no_other(
+        self, app, db, seed_user,
+    ):
+        """One skip, five tabs, and the count that names it.
+
+        **Every tab is asked**, because "it is on Skipped" and "it is on
+        Skipped ALONE" are different claims and only the second is what makes
+        ruling **R-HP**'s *exactly one verb* visible on the screen.
+        """
+        line = an_unexplained_outflow(
+            seed_user, merchant="Target", amount="-9.99",
+        )
+        db.session.commit()
+        recorded = skip_line(
+            line.id, seed_user["user"].id, seed_user["account"].id,
+        )
+        db.session.commit()
+
+        holders = {
+            tab: [
+                card for card in _cards(_page(seed_user, tab))
+                if getattr(card, "skip", None) is not None
+            ]
+            for tab in Tab
+        }
+
+        assert [card.skip.skip_id for card in holders[Tab.SKIPPED]] == [
+            recorded.skip_id
+        ]
+        assert holders[Tab.SKIPPED][0].skip.line.line_id == line.id
+        for tab in Tab:
+            if tab is not Tab.SKIPPED:
+                assert not holders[tab], tab
+        assert _counts(_page(seed_user, Tab.TO_EXPLAIN))[Tab.SKIPPED] == 1
+        assert _cards(_page(seed_user, Tab.TO_EXPLAIN)) == []
+
+    def test_a_line_a_standing_NEVER_answer_bars_is_NOT_on_this_tab(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-JH**, asked of the tab it names.
+
+        *Not a purchase* is not *explained by nothing*, so such a line is inbox
+        work with one door shut -- and this is the case that would still pass
+        on the pre-``X-gj-4c-1`` code if the assertion were only about the
+        skipped line, which is why both are planted at once.
+        """
+        an_envelope(seed_user)
+        barred = an_unexplained_outflow(
+            seed_user, merchant="Foundation Donation", amount="-4.00",
+        )
+        skipped = an_unexplained_outflow(
+            seed_user, merchant="Target", amount="-9.99", sequence=1,
+        )
+        a_rule(seed_user, "Foundation Donation")
+        db.session.commit()
+        skip_line(
+            skipped.id, seed_user["user"].id, seed_user["account"].id,
+        )
+        db.session.commit()
+
+        page = _page(seed_user, Tab.SKIPPED)
+        inbox = _cards(_page(seed_user, Tab.TO_EXPLAIN))
+
+        assert [card.skip.line.line_id for card in _cards(page)] == [
+            skipped.id
+        ]
+        assert [card.line.line_id for card in inbox] == [barred.id]
+        assert _counts(page)[Tab.SKIPPED] == 1
+
+    def test_the_tab_is_EMPTY_with_no_section_when_nothing_is_skipped(
+        self, app, db, seed_user,
+    ):
+        """An empty section is ABSENT rather than rendered empty.
+
+        A heading over no rows reads as work the owner has somewhere to do,
+        which is this package's rule for every list on the page.
+        """
+        an_unexplained_outflow(seed_user, merchant="Target")
+        db.session.commit()
+
+        page = _page(seed_user, Tab.SKIPPED)
+
+        assert page.sections == ()
+        assert _counts(page)[Tab.SKIPPED] == 0
+
+    def test_the_caption_equals_RENDERED_PLUS_WITHHELD_at_every_size(
+        self, app, db, seed_user,
+    ):
+        """The count and the cards, over an account with several skips.
+
+        **The defect this refuses is finding N-389's**: a caption derived by
+        one reader and cards by another, disagreeing by one.  Below the bound
+        the withheld count is 0 and the equality is exact; the case that
+        grades it ABOVE the bound is
+        ``test_skipping.TestTheSkippedTabIsBOUNDEDAndSaysWhatItWithheld``.
+        Asserted at three sizes, because an equality that holds only at one is
+        satisfied by a constant.
+        """
+        owner_id, account_id = (
+            seed_user["user"].id, seed_user["account"].id,
+        )
+        lines = [
+            an_unexplained_outflow(
+                seed_user, merchant=f"Shop {index}",
+                amount="-1.00", sequence=index,
+            )
+            for index in range(3)
+        ]
+        db.session.commit()
+
+        for how_many, line in enumerate(lines, start=1):
+            skip_line(line.id, owner_id, account_id)
+            db.session.commit()
+
+            page = _page(seed_user, Tab.SKIPPED)
+
+            rendered = len(_cards(page))
+            withheld = sum(one.withheld for one in page.sections)
+
+            assert rendered == how_many
+            assert withheld == 0
+            assert rendered + withheld == _counts(page)[Tab.SKIPPED]
+
+    def test_the_card_carries_the_BANKS_facts_and_the_past_tense_sentence(
+        self, app, db, seed_user,
+    ):
+        """What the card renders, from the line and from nothing else.
+
+        The locked direction gives this tab as *the same card with Undo*, so
+        the facts a reader scans for are the line's own -- and the sentence is
+        the To-explain card's one tense over.
+        """
+        line = an_unexplained_outflow(
+            seed_user, merchant="Target", amount="-9.99",
+        )
+        db.session.commit()
+        skip_line(line.id, seed_user["user"].id, seed_user["account"].id)
+        db.session.commit()
+
+        card = _cards(_page(seed_user, Tab.SKIPPED))[0]
+
+        assert card.skip.line.merchant == "Target"
+        assert card.skip.line.amount == Decimal("-9.99")
+        assert card.skip.line.posted_on == line.posted_on
+        assert card.sentence == for_skip()
+        assert card.sentence[0].text == Verb.SKIP.past
+
+
+class TestADoublyAnsweredLineIsTHECOSTTwoRefusalsBUY:
+    """What the two exclusivity refusals are FOR, made visible.
+
+    Plan step ``bank_import:X-gj-4c-2``, ruling **bank_import:R-HP**.
+    :func:`~app.services.statement_match._skipping.skip_line` refuses a line a
+    live match answers and
+    :func:`~app.services.statement_match._undisposed.skipped_among` refuses the
+    mirror, and both docstrings state the same consequence: a line carrying
+    both answers renders a card on the Explained tab AND a card on the Skipped
+    tab, is absent from the inbox for two independent reasons, and nothing
+    raises.
+
+    **That sentence was written at ``X-gj-4a`` and it was FALSE then.**  The
+    Skipped tab held the lines a standing *never a purchase* answer barred, not
+    recorded skips, so a doubly-answered line rendered on Explained and
+    NOWHERE else; ``X-gj-4c-1`` emptied that tab and ``X-gj-4c-2`` gave it the
+    store to read.  This class is what makes the claim a measurement rather
+    than prose -- which it has to be, because the whole justification for two
+    app-tier refusals over a rule no CHECK can carry is what the state they
+    refuse would look like.
+
+    **The MATCH is filed through its real door and only the SKIP is planted at
+    the ORM tier**, which is one door bypassed rather than two: the match is
+    legal at the moment it is made, because no skip exists yet, and it is the
+    RESULTING state that neither door would admit.  A case that went through
+    both would grade the refusals rather than their consequence.  It is also
+    why this is a claim about the SCREEN and not a claim that the doors are
+    broken -- they are not, and :mod:`.test_skipping` grades that they are
+    not.  *An earlier draft of this paragraph said "past BOTH doors", and the
+    two service docstrings that cite this class were corrected before it
+    was.*
+    """
+
+    def test_both_tabs_render_it_and_the_inbox_does_not(
+        self, app, db, seed_user,
+    ):
+        """One line, two answers, two cards, and an inbox that never asks.
+
+        **The inbox half is not an aside.**  It is the second independent
+        reason the state is silent: ``undisposed``'s two ``NOT IN`` terms each
+        exclude the line on their own, so removing either answer still hides
+        it -- which is why nothing anywhere raises and why the refusals have to
+        live at the doors.
+        """
+        envelope = an_envelope(seed_user)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Walmart", amount="-12.34",
+        )
+        db.session.commit()
+        filed_by(seed_user, line, envelope, by_rule=False)
+        db.session.commit()
+        # **Past the SKIP door, deliberately.**  ``skip_line`` refuses this
+        # line by name (a match already answers it), which is the refusal
+        # under discussion -- so the row is inserted directly, exactly as a
+        # concurrent writer without the row lock would have left it.  The
+        # match above went through its real door.
+        db.session.add(StatementLineSkip(
+            bank_statement_line_id=line.id,
+            account_id=seed_user["account"].id,
+            user_id=seed_user["user"].id,
+        ))
+        db.session.commit()
+
+        explained = _cards(_page(seed_user, Tab.EXPLAINED))
+        skipped = _cards(_page(seed_user, Tab.SKIPPED))
+        counts = _counts(_page(seed_user, Tab.TO_EXPLAIN))
+
+        assert [card.skip.line.line_id for card in skipped] == [line.id]
+        assert len(explained) == 1
+        assert line.description in explained[0].act.descriptions
+        assert counts[Tab.EXPLAINED] == 1
+        assert counts[Tab.SKIPPED] == 1
+        assert counts[Tab.TO_EXPLAIN] == 0
+        assert _cards(_page(seed_user, Tab.TO_EXPLAIN)) == []
 
 
 class TestTheSettledBoundIsLIFTABLE:

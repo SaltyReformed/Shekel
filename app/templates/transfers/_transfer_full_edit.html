@@ -79,6 +79,21 @@
                class="form-control form-control-sm"
                placeholder="Amount"
                {{ 'disabled' if locked else '' }}>
+        {# WHAT WE SHOWED, posted back beside whatever comes out of the box
+           above (ruling R-JR, plan step X-au-h).  The transaction popover's
+           twin of this states the argument in full.
+
+           **On a transfer this companion is what keeps the question answerable
+           after plan step X-au-f.**  The door used to compare the submitted
+           figure against ``xfer.amount``; X-au-f empties that column for a
+           generated transfer, at which point the comparison is true for every
+           call and every save claims a re-price (findings N-436 and N-448).
+           Rendering the companion from the SAME expression as the input means
+           it keeps agreeing with the box when that expression becomes the
+           resolved figure rather than the stored one -- the cutover moves both
+           or neither. #}
+        <input type="hidden" name="amount_as_rendered"
+               value="{{ xfer.amount }}">
       </div>
       {# **The ACTUAL: what the bank really moved.**
 

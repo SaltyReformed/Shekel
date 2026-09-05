@@ -235,7 +235,7 @@ class TestEveryFindingNamesALiveOwner:
         bare ``operator`` is indistinguishable from the "someone will get to
         it" values rule 1 retired by name.
         """
-        line = row_of("ledger", "| recurrence | F-4 |")
+        line = row_of("ledger", "| recurrence | D4 |")
         stage("ledger", line, with_cell(line, -1, "operator"))
         problems = registry.owner_violations()
         assert any("must state the question" in p for p in problems), problems
@@ -244,7 +244,7 @@ class TestEveryFindingNamesALiveOwner:
         """A fork with no date cannot be told from a fork nobody has taken."""
         # Re-anchored 2026-08-13 off `balance:N-25`, archived to the loan
         # arc's as-built; a control that names its subject cannot go quiet.
-        line = row_of("ledger", "| balance | N-138 |")
+        line = row_of("ledger", "| balance | FU-1")
         stage("ledger", line, with_cell(line, -1, "developer-decision (the fork)"))
         problems = registry.owner_violations()
         assert any("must carry the date" in p for p in problems), problems
@@ -500,12 +500,13 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
     def test_the_control_fires_on_a_cycle(self, stage):
         """The control fires on a cycle.
 
-        ``R5`` is already blocked by ``X-f4``; pointing ``X-f4`` back at ``R5``
-        closes the loop across two arcs, which is the shape no single arc
-        document could have seen.
+        ``CC0a`` is already blocked by ``X-f4``; pointing ``X-f4`` back at
+        ``CC0a`` closes the loop across two arcs, which is the shape no single
+        arc document could have seen.  (It staged ``R5`` until 2026-09-03, when
+        ruling R-R52 moved R5's gate off X-f4.)
         """
         line = row_of("steps", "| balance | X-f4 |")
-        stage("steps", line, with_cell(line, -1, "recurrence:R5"))
+        stage("steps", line, with_cell(line, -1, "credit_card:CC0a"))
         problems = registry.blocked_by_violations()
         assert any("CYCLE" in p for p in problems), problems
 

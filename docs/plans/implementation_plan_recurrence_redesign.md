@@ -46,10 +46,10 @@ sit on all four of `X-an`'s surfaces and one file of `X-f4`'s deletion set, whic
 separate half and why the index gates them where it does. This arc asks which date IS the
 contractual installment while X-an asks which date decides a payment already HAPPENED.
 
-**`developer-decision` OWED, and it is the one thing here the index cannot settle.** Two options:
-re-point R6 behind R5, which is what `steps.md` currently records; or split off the half that needs
-no `due_on` -- the single `loan_installment_date` accessor over the rule -- and ship that beside the
-remaining X-an leaf. **The index recording the first option is not the developer choosing it.**
+**RULED 2026-09-03 (R-R52)**: `R5` re-points behind `balance:X-bi-4`, not `X-f4` -- the X-f4 gate
+rested on one shared file where R5's touch is a docstring line, merge hygiene and not a
+dependency -- and `R6`, `R8-b`, `R8-c`, `R8-d` and `balance:X-k` follow R5 and inherit the move. R6
+stays behind R5 (it reads `due_on`); the split-off accessor option was not taken.
 
 **Consequence for Half A:** it must leave the `due_date` contract byte-identical so the R1 oracle
 stays green, so no step before R5 touches the column. The transaction-template form's live "Due Day
@@ -404,35 +404,68 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: today it creates
       the Van's `$531.94` installment due `2029-02-22` the stale column drops. Carries **D46**.
 
+**A first build is HELD at `9aff7ab9`** (`feat/r7d-c-2-loan-bound-at-generation`, no PR), recorded
+because nothing else in `docs/` references it. Its `_plan.py` half is superseded by `R7d-d`'s
+`Closing`; its 868 lines of test and harness are not, nor is the measurement `balance:X-au-f` rests
+on -- Van Loan, 24 projected rows, stamped clone 2026-08-31: unedited `2029-02-22`, rows raised to
+`$900.00` `2028-02-22`, halved to `$265.97` `2030-04-22`. The rows bound the generator.
+
+- [ ] **R7d-h -- a loan gets ONE closing date, past AND future.**
+      *(Id append-only per conventions rule 2; its RANK is before `R7d-d`, which it blocks.)*
+
+`balance_at.loan_payoff_date` answers HALF its own question: it folds FORWARD from the confirmed
+present seed, so a loan already at zero has no crossing left to date and returns `None` -- which
+does not mean *never*, it means *not my half*. Three consumers each invent a meaning --
+`recurrence_end_date` substitutes the READ CLOCK, `LoanFigures` adds `is_retired`, the equity chart
+and `/savings` drop the loan -- rule 14's derived half broken by a producer refusing half its
+domain, with each coping strategy an epicycle around a walk nobody wrote.
+
+**The date IS derivable today, which is what the step rests on.** `walk_loan_ledger` ->
+`dated_deltas` already produces the dated recorded balance and `balance:X-au-g-2c-3b-2` (`3b7716f8`)
+put both tiers on `replay_loan_events`, so the backward crossing is `plan_payoff_date`'s forward
+rule read the other way. Production clone at head, Van Loan trued to `$0.00`, read `2026-12-25`:
+`payoff_date=None`, `is_retired=True`, recorded balance folds to `<= 0` on **`2026-09-01`** over
+nine dated movements.
+
+`loan_closing_date(account, ctx) -> date | None` -- closed at `as_of`, the day it LAST became
+closed; else the forward crossing; else `None`, which now means only *never*. `recurrence_end_date`
+is then DELETED and `is_retired` stops being a BOUND discriminator (it stays for badging). It
+deletes a defect rather than ruling on one: a retired loan's stop tracked `ctx.as_of`, so the
+admitted set GREW one occurrence per cadence period where the stored column froze, and at `R7d-c-2`
+that writes a past-dated row per pass against a debt that is gone. A loan closed then trued back UP
+has two crossings and the rule takes the LATER, **RULED `R-R51`** (developer, 2026-09-03): taking
+the first stops recurrence across a span the loan genuinely owed, which under-generates.
+
+**Scope.** A NEW producer beside `loan_payoff_date`, not a change to its contract, so the card,
+`/savings` and the equity chart move one at a time; deleting `loan_payoff_date` at its last consumer
+is a LATER `balance` step, not minted here. No migration.
+
+**It DOES move a stored value, and the first draft of this line said it did not.** An adversarial
+review caught it and the state was then reproduced: `sync_recurring_payment_bounds` WRITES the
+derived answer into `recurrence_rules.end_date`, so every retired loan's stored bound changes at the
+next chokepoint -- usually one past date for another, but for a loan cleared BEFORE its first
+installment the stored pair becomes `[2026-07-15, 2026-06-21]` and is inverted PERMANENTLY, where
+the old `ctx.as_of` bound drifted past `starts_on` and healed. The refusal `refuse_inverted_window`
+reads that stored pair whenever a submission omits both bound keys, and the form locks a loan
+payment's start and "Ends" controls but NOT its "Repeats" select -- so the owner was refused on an
+edit still offered to them, with no control that could fix it. The remedy taken is the one the CHECK
+ruling already implies: that door SKIPS a definition whose window the app derives
+(`owns_validity_window`), because a derived empty window is a correct answer and refusing on it
+makes the door the constraint `ck_recurrence_rules_valid_window` declined to be. `R7d-f` moves the
+rest of that module's loan-payment reads off the column.
+
 - [ ] **R7d-d -- the DISPLAY readers take the resolver, through a COMPOSED DOOR.**
 
 `recurring_view` and `describe` stop reading the column, so the Recurring surface's cadence sentence
 and its next date name the derived payoff rather than the last value a chokepoint wrote.
 
-**It reaches as far as the COMPOSED VALUE** (developer, 2026-09-02, over two smaller options). Five
-surfaces need the conjunction of the authored bound and the derived stop -- generation, this
-surface's next date, its cadence sentence, the `/obligations` and `/savings` totals, and the form's
-preview -- so the conjunction is a VALUE the walk already reads (`ResolvedRecurrence.closing`)
-rather than a narrowing each performs. An optional `narrowed_by=` on the walk was refused: a default
-meaning "no narrowing" leaves each caller one forgotten keyword from admitting occurrences against a
-debt that is gone, with nothing to raise on. The answer SHAPES move to `recurrence/_closing.py`
-because `_describe` cannot import `loan_recurrence_sync` without a cycle -- rule 14's placement
-clause -- while the RESOLVER stays, since deciding which shape applies means folding a balance.
-
-**It is BLOCKED on `R7d-h`, and the reason is a design this step tried to build and got wrong.** A
-first pass added a fourth `DerivedStop` shape for a RETIRED loan, on the premise that the app cannot
-name the day such a loan closed. **That premise was false**: `walk_loan_ledger` -> `dated_deltas`
-already produces the dated recorded balance, and since `balance:X-au-g-2c-3b-2` (`3b7716f8`) both
-tiers share `replay_loan_events`, so the backward crossing is `plan_payoff_date`'s forward rule read
-the other way. Measured on a production clone at head, Van Loan trued to `$0.00`, read 2026-12-25:
-`payoff_date=None`, `is_retired=True`, and the recorded balance folds to `<= 0` on **`2026-09-01`**
-over nine dated movements. So the fourth shape was an epicycle around a producer nobody had written,
-and it carried a defect with it -- a retired loan's stop tracked `ctx.as_of`, so the admitted set
-GREW by one occurrence per cadence period where the stored column froze. `R7d-h` gives the loan ONE
-closing date over past and future; this step then needs three shapes, not four.
-
-`$0.00` and no rendered character on production either way: both live loan payments' stored column
-and derived payoff agree exactly (`2048-12-01`, `2029-02-22`, measured 2026-09-02).
+**It reaches as far as the COMPOSED VALUE** (developer, 2026-09-02, over two smaller options): the
+conjunction of the authored bound and the derived stop is a VALUE the walk already reads
+(`ResolvedRecurrence.closing`), not a narrowing each of five surfaces performs, and the answer
+SHAPES move to `recurrence/_closing.py` because `_describe` cannot import `loan_recurrence_sync`
+without a cycle. **BLOCKED on `R7d-h`**, whose absence this step first papered over with a fourth
+shape. Held at `ea61116d` (`feat/r7d-d`, no PR) -- composed value, door and type move built and
+green; the display readers are NOT moved and the step may not tick until they are.
 
 - [ ] **R7d-e -- `/obligations` and the emergency-fund baseline take the resolver.**
 
@@ -536,11 +569,14 @@ that has none. Whatever this step rules, it states the value honestly at both si
       stored row's date would move at all -- only which paycheck the occurrence places into.
       **RULED 2026-08-16 (R-R26)**: "non-business day" is weekends plus the eleven US federal
       holidays DERIVED as rules rather than seeded as rows, which needs no per-year migration and
-      composes with the nth-weekday machinery R8-c builds. The shift applies to the CASH date
-      only -- a bill due Aug 1 paid Friday because Aug 1 is a Sunday still satisfies the Aug 1
-      installment, so `due_on` is never shifted. `RecurrenceSpec` carries no `shift` field today and
-      `resolve` hardcodes `NONE`; 46 of 46 live rules carry `none`. Finding **F-4** (the PAY
-      SCHEDULE's own holiday shift) is a different question and stays separate.
+      composes with the nth-weekday machinery R8-c builds. **The holiday set and the weekend rule
+      live in the ONE business-day module `pay_calendar:C14-a` builds** (**R-PC47**, 2026-09-03), so
+      this step CONSUMES it for the cash date rather than building a second copy. The shift applies
+      to the CASH date only -- a bill due Aug 1 paid Friday because Aug 1 is a Sunday still
+      satisfies the Aug 1 installment, so `due_on` is never shifted. `RecurrenceSpec` carries no
+      `shift` field today and `resolve` hardcodes `NONE`; 46 of 46 live rules carry `none`. The PAY
+      SCHEDULE's own shift (once **F-4**, merged into `pay_calendar:N-398`) is `C14`'s question and
+      stays separate.
 
 ### R10 -- the regeneration's own defect
 
@@ -578,7 +614,11 @@ guarded on the deferring placement precisely so a LEAD cannot silently inherit i
 `fires_on_day_of_month` stays `False` for it -- so its rows are dated from the funding payday, the
 same deliberate state the deferring placement carries under **D26**. Closes **D40**.
 
-- [ ] **R12 -- the deploy script's refusals get a test.**
+- [ ] **R12 -- the deploy script's refusals get a test, and the image pins its locale.**
+**It also takes F-15** (**R-R54**, 2026-09-03): month names would follow the process locale if
+anything ever called `setlocale` -- nothing does, `$0.00` -- and ONE line, `LC_ALL` pinned in the
+image with a startup assertion, covers all 109 sites and every future one; it lands with the deploy
+predicates because that is where the image is asserted.
 **Opened at plan step R9, by two independent adversarial reviewers of it.** R-F8 built
 `deploy/shekel-deploy.sh`'s two predicates -- `preflight_migrations`, which refuses a TARGET image
 that cannot resolve the database's stamp, and `repin_is_safe`, which after a failure decides whether
@@ -645,86 +685,9 @@ branches THREE producers on it: `pay_period_write.record_paydays` (which spaces 
 deliberately: it edits the pay-calendar package's core, which `pay_calendar:C2`'s remaining leaves
 are still moving, and nothing in either arc depends on it.
 
-- [ ] **R14 -- what a payroll deduction's gross is priced from** (finding **D45**).
-
-`investment_projection._compute_deduction_per_period` divides a profile's stored `annual_salary` by
-the paycheck count, where every sibling surface routes through
-`income_service.get_current_gross_biweekly`. It is the recompute F-20 / MED-06 / F-032 replaced
-everywhere else, and it sets both the employee contribution and the employer-match basis: measured
-at `$137.51` a year understated on the developer's own 5% employer contribution.
-
-**R-F16 fixed this and reverted it, and the revert is the specification.** Swapping in the
-owner-level raise-aware gross made every percentage deduction price off ONE profile, chosen by
-`get_current_gross_biweekly`'s unordered `.first()` -- a measured 39% swing on a two-job owner that
-flips between renders with no data change -- and off a figure that is ZERO whenever no period covers
-today, which deleted the whole contribution plan at onboarding and after a horizon lapse. So the
-step must answer three questions together rather than one: WHOSE salary (the deduction's own
-profile, which the per-row basis gets right), WHICH period's gross (the engine already computes one
-per period, and a contribution TIMELINE wants that rather than one current-period scalar), and
-against WHICH clock -- ledger row **P56**'s question, since a scalar resolved at `date.today()`
-makes a historical modelled balance move when a raise lands.
-
-**MOVES MONEY** and needs its own review pass.
-
-- [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (finding **F-21**).
-
-`salary.paycheck_deductions.deductions_per_year` server-defaults to `26` and the salary form offers
-exactly three values -- `26 (every paycheck)`, `24 (skip 3rd paycheck)`, `12 (monthly)`. It is never
-multiplied or divided: `paycheck_calculator._deduction_applies_at` compares it against `24` and `12`
-and nothing else, so it is a three-valued MODE wearing a biweekly paycheck count, compared in Python
-and again in `_deductions_section.html` -- which is the "IDs for logic, strings for display" rule of
-`CLAUDE.md` with an integer in the string's place. **A THIRD reader ignores it altogether**
-(**N-395**): the investment contribution timeline pays every deduction on every payday, so this step
-APPLIES the frequency as well as ruling it. At a weekly cadence "every paycheck" is 52 and "the 3rd
-paycheck of the month" names nothing; at a monthly one only the third option survives.
-**11 of the developer's 12 live deductions carry `24`**, the mode that generalises least, so the
-migration has real rows to re-express.
-
-**Its own ruling first**: whether the mode becomes a `ref` table, whether "skip the 3rd paycheck"
-generalises to "skip the Nth" or is retired, and what the three live values become. No figure
-moves -- nothing computes from the number -- so it is a migration and a form change rather than a
-money step. Sequenced behind **R14**, which re-opens the same table for what a deduction is PRICED
-from.
-
-- [ ] **R18 -- a paycheck's EARNINGS side gets LINES, as its deductions side already has.**
-
-`paycheck_calculator.Earnings` is four scalars -- `annual_salary`, `gross_biweekly`,
-`taxable_income`, `net_pay` -- and `gross_biweekly` is
-`gross_per_paycheck(annual_salary, periods_per_year)`, a pure function of the salary and the
-cadence. `net_pay` then only ever SUBTRACTS. So there is no way to add a dollar to a paycheck that
-is not an annual-salary raise. `DeductionBreakdown` beside it holds LISTS of `DeductionLine`, each
-filtered by `_deduction_applies_at` on a `deductions_per_year` of 26 / 24 / 12 against
-`_is_third_paycheck`: **deductions have a cadence and earnings have none.** `PaycheckDeduction` also
-carries `ck_paycheck_deductions_positive_amount`, so a negative deduction -- the natural spelling of
-an employer-paid allowance -- is unrepresentable at the database, and
-`salary_profiles.additional_income` is W-4 Step 4(a) and feeds only withholding.
-
-**Measured on the developer's own data 2026-09-01, which is why this is a step and not a
-preference.** His Health Insurance Allowance is paid on 24 of 26 paychecks and his Phone Allowance
-on the first payday of each month -- *exactly* the two cadences `_deduction_applies_at` already
-implements, on the wrong side of the paycheck. Having nowhere to put them he modelled both as
-separate income templates, and it has cost twice: template 2 is a `period` / every-period rule with
-an end date, so a 24-of-26 benefit modelled as 26-of-26
-**would have generated a `$100.00` income row on 2026-07-30 the employer does not pay** -- the first
-three-payday month in the data, and it failed to fire only because the benefit ended 2026-06-30
-first -- and template 3's `month` / `period_starting_on_or_after` rule put rows in the wrong pay
-period **2 times out of 6**, both cancelled by hand.
-
-**What it would delete.** One deposit becomes one app row, so the exact tier explains the
-developer's payroll deposits with no group, no residue and no attribution control -- which is the
-entire population `bank_import:X-gj-3a` was built for and the whole of what `bank_import:X-gj-3b`'s
-group rule would be for. It does NOT delete `DifferenceLanding`: a genuine multi-row deposit (a
-paycheck plus a reimbursement, two jobs on one deposit) still needs it.
-**`X-gj-3a` is therefore a correct interim whose population would go to ZERO if this shipped**,
-which is the honest sequencing statement and is why this row exists rather than living in a commit
-message.
-
-**Its own ruling first**, and it shares R15's subject: whether an earnings line reuses
-`deductions_per_year`'s mode or the two are unified, whether an allowance is taxable, and what
-happens to the two live income templates and every row they have generated. Sequenced behind
-**R15**, which rules what that mode MEANS -- building earnings lines on a mode R15 may retire would
-be designing over a shape the next step deletes. **MOVES MONEY** (it changes `net_pay`), needs a
-migration, and needs its own review pass.
+*`R14`, `R15` and `R18` -- the earnings-lines chain -- moved to the `salary` arc on 2026-09-03
+(**R-SAL1**, ruled with **R-SAL2** and **R-SAL3**); their specifications are
+`implementation_plan_salary.md`, section 4, under their unchanged ids.*
 
 - [ ] **R16 -- the DECOMPOSED parent of the ESTIMATED tier's summing.** Split into FOUR leaves
       2026-08-26 (**R-R36**) when a trace found the forward fold charging one month of interest per
@@ -823,3 +786,21 @@ loan's convention becomes a deliberate act with evidence rather than a side effe
 `debt_strategy_service._accrue_interest`, which inline-copies the formula under a docstring claiming
 it matches the engine. Which convention each loan's NOTE states is an `operator` question the
 backfill does not guess.
+
+- [ ] **R16-e -- walk 3 is DELETED** (ruling **R-R53**; finding **D60**).
+      `rate_period_engine.replay_schedule` is the THIRD walk over a loan: it charges a month per
+      payment RECORD and applies the CONTRACTUAL P&I rather than the actual cash, and its balance
+      has exactly ONE consumption site -- `loan_resolver._payoff._build_forward_inputs`'s
+      `replay.balance_as_of if confirmed_view is None` -- which every production read bypasses since
+      plan step E1d-b. On a due-month collision it differs from walks 1 and 2 by one month's
+      interest, pinned by mechanism in
+      `test_biweekly_due_month_collision_reconciles_and_only_row_dates_differ`. What survives its
+      balance is two CALENDAR scalars that need no walk; the walk goes, after `R16-c` has made the
+      past and the future one stream. Deletion; `$0.00` on production, which never reads it.
+- [ ] **R16-f -- walk 4 is re-expressed over the ONE replay** (ruling **R-R53**; finding **D60**).
+      `amortization_engine.project_forward` is the FOURTH walk, the contractual schedule the payoff
+      and what-if surfaces read. It becomes the one replay (`loan_ledger.replay_loan_events`,
+      shipped at `balance:X-au-g-2c-3b-2`) run with CONTRACTUAL cash plugged in, so a contractual
+      projection, a planned projection and the settled history are one fold with three cash sources
+      and cannot disagree with each other. **MOVES MONEY** on any surface where the two walks
+      parted; own PR, with the pre/post oracle over both live loans.

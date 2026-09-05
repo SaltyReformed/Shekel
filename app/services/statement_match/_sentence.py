@@ -19,7 +19,7 @@ and an ADD sentence do not have the same parts, so a fixed-field value would
 force the template to branch on the verb to lay them out -- a partition
 restated in Jinja, which is the shape this package refuses in
 :attr:`~._placement.Placement.sweep_class`,
-:attr:`~._bars.ParkedLine.reason` and
+:attr:`~._bars.BarredLine.reason` and
 :attr:`~._offers.MatchProposal.review_class`.  A template that loops spans
 branches on nothing.
 
@@ -39,7 +39,7 @@ from ._verbs import Verb
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._accepted_view import AcceptedGroup
-    from ._bars import ParkedLine
+    from ._bars import BarredLine
     from ._offers import MatchProposal
 
 
@@ -317,7 +317,7 @@ def for_income_placement(placement: InflowPlacement) -> "tuple[Span, ...]":
     )
 
 
-def for_parked_transfer(parked: "ParkedLine") -> "tuple[Span, ...]":
+def for_parked_transfer(parked: "BarredLine") -> "tuple[Span, ...]":
     """Return the sentence for a payment to an account the owner holds.
 
     Ruling **bank_import:R-GJ** parks such a line and **R-HQ** makes it a
@@ -325,8 +325,22 @@ def for_parked_transfer(parked: "ParkedLine") -> "tuple[Span, ...]":
     and what the app is waiting for; it carries no control, because there is
     no door (see :data:`~._verbs.TRANSFER_WAITS`).
 
+    **It is the only sentence composed FROM a bar**, and it had a twin --
+    ``for_parked_never``, which opened on ``Skipped`` for a line the owner had
+    answered *never a purchase* for.  Ruling **bank_import:R-JH** DELETED it
+    (plan step ``bank_import:X-gj-4c``): that answer claims nothing about what
+    a line IS, so a past-tense sentence reporting a disposition the owner never
+    made was the card stating the app's own inference as their decision.  Such
+    a line reads :func:`choose` in the inbox now
+    (:func:`~._cards.answered_never_card`) -- which is a sentence about what
+    the app does NOT know, composed from no bar at all, and is why the claim
+    above is about the composition and not about the line.  Recorded here
+    because the remaining sentence's name -- *for a parked line* -- reads as a
+    partition with two arms, and one of them is gone rather than merely
+    unused.
+
     Args:
-        parked: The :class:`~._bars.ParkedLine`, which must be one a source
+        parked: The :class:`~._bars.BarredLine`, which must be one a source
             files as paying an account the owner holds.
 
     Returns:
@@ -340,38 +354,76 @@ def for_parked_transfer(parked: "ParkedLine") -> "tuple[Span, ...]":
     )
 
 
-def for_parked_never(parked: "ParkedLine") -> "tuple[Span, ...]":
-    """Return the sentence for a merchant the owner said is never a purchase.
+def for_skip() -> "tuple[Span, ...]":
+    """Return the past-tense sentence for a line the owner has SKIPPED.
 
-    **This line is already SKIPPED, and by a standing decision rather than a
-    stored disposition** -- which is why it needs none of plan step
-    ``bank_import:X-gj-4``'s store to leave the inbox: the owner has said, once
-    and for this merchant, that its money is not spending, and ruling
-    **R-HP** calls a line deliberately explained by nothing a SKIP.  Ruling
-    **R-HQ** then puts it on the tab that owns it rather than in a queue that
-    offers it no act.
+    Plan step ``bank_import:X-gj-4c-2``, rulings **bank_import:R-JG** and
+    **R-JH**.  The Skipped tab is the same card one tense over, exactly as the
+    two settled tabs are -- and the locked direction gives it in three words
+    (``docs/design/bank_import_audit.md``: *the same card with Undo*).
 
-    **It is NOT a transfer and must not sit with them.**  The two bars are
-    different kinds of fact (:class:`~._bars.CreationBar`): one is a decision
-    the owner made, the other an observation about where the money went, and a
-    screen that filed the first under Transfers would tell someone their bank
-    had decided for them.  Measured 2026-08-29 on the developer's own account:
-    0 of his 9 parked lines are this shape -- all nine carry BOTH bars, so all
-    nine are transfers -- which makes this the arm that has never rendered,
-    built because the predicate is real and the data is one account's.
+    **It takes no argument, and that is the subject rather than a shortcut.**
+    Every other composer here states what the verb ACTED ON -- a row, an
+    envelope, an account -- because that is the fact a reader is scanning for.
+    A skip acts on nothing: ruling **R-JG** stores no reason and there is none
+    to store, since the decision IS *explained by nothing*.  So one sentence
+    is true of every skipped line, and :func:`choose` is the precedent for a
+    composer that is a constant: a sentence about what the app does not know
+    varies with nothing either.
 
-    Args:
-        parked: The :class:`~._bars.ParkedLine`, barred by the owner's own
-            answer and NOT also filed as paying an account they hold.
+    **What a skip does NOT do is never on the CARD** (ruling **R-HR**): a
+    skip closes no difference between the books and the bank, and printing
+    that beside every card is the paragraph-per-row R-HR removed from this
+    screen.  *This said "said once", and it is FIVE* -- a first correction at
+    plan step ``bank_import:X-gj-4b`` said three and adversarial review
+    counted the two it had missed, one of them added by that same step.  The
+    Skipped tab's footer, the SKIP pane where the verb is pressed, that
+    step's own line on the pass receipt
+    (``_statement_pass_receipt.html``), the unskip flash
+    (:func:`~app.routes.accounts.statement_reconcile._unskip_report`, since
+    ``X-gj-4c-2``), and :func:`~._receipt_sentences.skip_summary` -- whose
+    REPEAT branch does not state it, because a press that wrote nothing
+    closed nothing either.  Five audiences at five moments, across a
+    template/service boundary no string crosses.  **The count is stated
+    rather than claimed to be one, which is the only reason it could be
+    caught wrong twice.**
+
+    **Five is exact for the PHRASE and not for this paragraph's own wider
+    framing**, which is *what a skip does NOT do*: the skip card's Undo
+    confirm says *no money moves and no date changes* (a ``data-confirm``
+    attribute, so it is not PRINTED beside the card and **R-HR** is
+    untouched).  Said because the next reader greps for the claim rather than
+    for the sentence.  *The clause about which copy an earlier correction
+    missed is a QUOTE and not a measurement* -- three of the five sites are
+    new in one commit and no intermediate commit distinguishes them.
+
+    **It names no MERCHANT**, where :func:`for_parked_transfer` does.  That
+    sentence names one because the merchant IS what the money went to; here
+    the card's own facts column already prints it above, and a sentence
+    repeating it would be the same fact twice on one line.
 
     Returns:
-        The spans, in the past tense: the decision has already been made.
+        The spans.  They read *Skipped as explained by nothing*, which is
+        :attr:`~._verbs.Verb.past` followed by the page legend's own gloss on
+        the verb (``_statement_reconcile_body.html``: *Skip -- explained by
+        nothing*), so the tab and the legend teach one phrase.  **The panel's
+        SKIP pane teaches it too as of plan step ``bank_import:X-gj-4b``**,
+        which lit the verb and wrote that pane on this phrase.  *An earlier
+        draft of this paragraph claimed the pane already used it, and
+        adversarial review measured that FALSE*: the shut verb's sentence read
+        *explains nothing you budget for*, a near-miss rather than the same
+        words.  That constant is DELETED rather than reworded --
+        :data:`~._verbs.SKIP_SHUT_PAYS_AN_ACCOUNT` is the only SENTENCE
+        :mod:`._verbs` holds about SKIP now, and it is about one class of line
+        rather than about the verb.  *An earlier draft said the only THING,
+        which that same step falsified*: the module also holds
+        :attr:`~._verbs.Verb.SKIP`, its two words in ``_WORDS``, and
+        :attr:`~._verbs.VerbOffer.is_skip`.
     """
     return (
         Span.words(Verb.SKIP.past, Ink.VERB),
-        Span.words("because", Ink.PLAIN),
-        Span.words(parked.line.merchant_label, Ink.STRONG),
-        Span.words("is never a purchase", Ink.PLAIN),
+        Span.words("as", Ink.PLAIN),
+        Span.words("explained by nothing", Ink.STRONG),
     )
 
 

@@ -2303,7 +2303,7 @@ def restore_pay_period_derived_columns(db_session):
     general shape -- migration tests in this suite drive their callables at
     HEAD rather than at the revision's own parent -- is a latent category error
     that C4-c is simply the first step to make fire; it is recorded as ledger
-    row ``pay_calendar:P79`` rather than fixed inside this step.*
+    row ``balance:P79`` rather than fixed inside this step.*
 
     No restore is needed afterwards: the ``db`` fixture drops and re-clones the
     per-worker database for every test, so a schema this leaves off head cannot
@@ -2962,6 +2962,7 @@ def create_settled_cash_transaction(
     )
     txn = Transaction(
         account_id=account.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3119,10 +3120,12 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
     )
     db_session.add(template)
     db_session.flush()
+    state_template_price(template)
     # The definition first, then the cadence onto it (plan step R-F6).
     rule = make_every_period_rule(db_session, template)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3373,9 +3376,18 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     refused, and leaving the band releases the ASSERTION while KEEPING the
     record.
 
-    The row's own ``estimated_amount`` stands in for the resolver's answer,
-    which is what a bare-built fixture row means by "what this settle books":
-    such rows own their plan, so the two agree.
+    **What the settle BOOKS is the app's own published rule**
+    (``transaction_service.settle_amount`` over a basis built the way the verb
+    builds one), not the row's ``estimated_amount`` column.  It WAS that column
+    until plan step balance:X-au-e, on the stated ground that "such rows own
+    their plan, so the two agree" -- true while a generated row stored a figure
+    and false the moment one stopped.  A generated row is DERIVED now and its
+    column is NULL, so the old spelling handed the seam
+    ``Settlement(amount=None, basis=derived)`` and every fixture that settles a
+    generated row died on the record's own refusal: *a 'derived' settlement
+    must state the figure that moved*.  Reading the rule instead is what makes
+    this helper's promise -- that it answers ARM FOR ARM the way the real verbs
+    do -- true again rather than true of the rows fixtures happened to build.
 
     Args:
         txn: The row being moved, at its PRE-move status.
@@ -3389,20 +3401,25 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     # pylint: disable=import-outside-toplevel  -- the lazy-app-import
     # convention every helper in this module follows.
     from app.enums import SettlementBasisEnum
-    from app.services.status_seam import (
-        Settlement,
-        honoured_correction,
-        recorded_settlement,
+    from app.services.status_seam import Settlement, recorded_settlement
+    from app.services.cash_ledger import amount_basis
+    from app.services.transaction_service import (
+        settle_amount,
+        settles_from_entries,
     )
-    from app.services.transaction_service import settles_from_entries
     from app.utils.balance_predicates import enters_settled_band
 
     if not enters_settled_band(txn, new_status_id):
         return None
     if settles_from_entries(txn):
         return Settlement(amount=None, basis=SettlementBasisEnum.PURCHASES)
-    held = honoured_correction(txn)
-    booked = txn.estimated_amount if held is None else held
+    # ONE basis for the whole act, exactly as ``settle_transaction`` builds it,
+    # and ``settle_amount``'s second arm IS the retained correction -- so this
+    # asks the same rule once rather than re-branching on
+    # ``honoured_correction`` beside it.
+    booked = settle_amount(
+        txn, amount_basis(txn.account.user_id, txn.scenario_id),
+    )
     correction = (
         submitted if submitted is not None and submitted != booked else None
     )
@@ -3728,6 +3745,7 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 
     txn = Transaction(
         account_id=account.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario.id,
         status_id=status_id,
@@ -3830,7 +3848,7 @@ def observed_day_of(instant):
     return to_display_date(instant)
 
 
-def add_anchor_history(db_session, account, period, balance, days_ago=0):
+def add_anchor_history(db_session, account, balance, days_ago=0):
     """Append an :class:`AccountAnchorHistory` row ``days_ago`` before now.
 
     The shared anchor-history builder for the dashboard route and
@@ -3845,8 +3863,6 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
         db_session: The test ``db.session``.
         account: The :class:`~app.models.account.Account` the anchor
             belongs to.
-        period: The :class:`~app.models.pay_period.PayPeriod` the anchor
-            is recorded against.
         balance: The anchor balance (str or Decimal-coercible).
         days_ago: How many days before now to date the row (default 0).
 
@@ -4453,7 +4469,7 @@ def restate_account_opening(db_session, account, opened_on):
 
 
 def append_balance_assertion(
-    db_session, account, period, balance, at, recorded_at=None,
+    db_session, account, balance, at, recorded_at=None,
 ):
     """Append one balance ASSERTION (a true-up) at a pinned instant.
 
@@ -4470,6 +4486,13 @@ def append_balance_assertion(
     append-only, so the re-stamp had to go; measuring the reason first is what
     made it cost no caller anything.
 
+    **It takes no pay period, because an assertion is filed under none** (ruling
+    R-EO deleted ``pay_period_id`` from the row).  It carried a ``period``
+    parameter its body never read until 2026-09-03, and 43 call sites
+    computed one to pass it -- the shape ruling R-EH deleted from
+    ``resolve_anchor``'s ``scenario_id``: a parameter that scopes nothing tells
+    its caller the row is filed under something (finding N-393).
+
     **The row carries TWO clocks and this helper can now separate them**
     (*recorded_at*).  ``observed_on`` is the BUSINESS day the balance was true
     for and ``created_at`` is when it was typed; since plan step 2 made
@@ -4483,8 +4506,6 @@ def append_balance_assertion(
     Args:
         db_session: The test ``db.session``.
         account: The :class:`~app.models.account.Account` asserting.
-        period: The :class:`~app.models.pay_period.PayPeriod` the assertion is
-            filed against.
         balance: The asserted balance (str or Decimal-coercible).
         at: The aware-UTC instant whose display-timezone day becomes the
             BUSINESS day (``observed_on``).
@@ -4624,6 +4645,95 @@ def assert_pay_period_invariants(db_session, user_id):
     )
 
 
+def resolved_amount(txn):
+    """Return what the APP says *txn*'s amount is, through the one resolver.
+
+    **The assertion a generated row needs since plan step balance:X-au-e**,
+    where it used to be ``txn.estimated_amount``.  That column is NULL on a
+    derived row -- the whole point of the cutover -- so a test reading it
+    asserts the absence of a cache rather than the presence of money, and
+    ``assert None == Decimal("1200.00")`` is what a correct app now produces.
+
+    Reading the resolver instead keeps the assertion about the FIGURE, which is
+    what the test was always for: it goes through
+    ``cash_ledger.resolve_transaction_amount`` over a basis pinned the way every
+    production reader pins one, so a test asserts the number a screen would
+    show.  Use it for any row whose amount is DERIVED; a row that owns its
+    figure (an ad-hoc one, or one a human re-priced) answers the same through
+    this function, so it is safe everywhere and needed only where the column
+    went away.
+
+    Args:
+        txn: The transaction to price.
+
+    Returns:
+        The row's amount as a ``Decimal``.
+
+    Raises:
+        AmountUnresolvable: When no rule can price the row -- which is a real
+            finding, not a fixture inconvenience.  See
+            :func:`state_template_price` for the fixture shape that causes it.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.cash_ledger import amount_basis, resolve_transaction_amount
+
+    return resolve_transaction_amount(
+        txn, amount_basis(txn.account.user_id, txn.scenario_id),
+    )
+
+
+def state_template_price(template, amount=None, *, effective_on=None):
+    """State *template*'s price through the app's ONE write door.
+
+    **A fixture that constructs a template and stops has built a definition the
+    application cannot build**, and since plan step balance:X-au-e that
+    difference is fatal rather than cosmetic.  Both doors that create a
+    transaction template -- ``routes/templates/crud.create_template`` and
+    ``routes/salary/profiles._salary_template`` -- call
+    ``template_amount_service.set_amount`` immediately after the flush, so every
+    real definition has a price SERIES.  A generated row stores no figure now
+    and is priced by that series on its own due date, and
+    ``cash_ledger._amount_source._stated_amount`` REFUSES a row whose series is
+    empty rather than falling back to ``default_amount`` -- which is X-au-a's
+    ruling, not an oversight: the scalar has no time dimension, so reading it
+    would price a March row at June's figure.
+
+    So a bare-constructed template generates rows nothing can price, and the
+    failure surfaces as ``AmountUnresolvable`` in whatever the test was actually
+    about.  Call this straight after the flush wherever a fixture builds a
+    template by hand.
+
+    Zero production templates have an empty series (measured on the 2026-09-03
+    production clone, all 525 declared rows resolved), so this restores the
+    fixture to the shape the data actually has.
+
+    Args:
+        template: The flushed transaction or transfer template.
+        amount: The price to state; ``template.default_amount`` when omitted,
+            which is what both create doors pass.
+        effective_on: The date it takes effect; the owner's today when omitted,
+            as both doors pass.  One version is enough for any due date --
+            ``amount_as_of`` holds FLAT before the earliest -- so a fixture
+            needs a date only when it is testing the series itself.
+
+    Returns:
+        None.  The caller flushes or commits as it already does.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services import template_amount_service
+    from app.utils.dates import display_today
+
+    template_amount_service.set_amount(
+        template,
+        template.default_amount if amount is None else amount,
+        effective_on=display_today() if effective_on is None else effective_on,
+    )
+
+
 def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
     """Create and flush an expense template carrying NO cadence.
 
@@ -4664,6 +4774,7 @@ def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
     )
     db_session.add(template)
     db_session.flush()
+    state_template_price(template)
     return template
 
 
@@ -5118,6 +5229,7 @@ def make_expense_template(db_session, seed_user, amount="1200.00", is_active=Tru
     )
     db_session.add(template)
     db_session.flush()
+    state_template_price(template)
     # The definition first, then the cadence onto it (plan step R-F6).
     make_every_period_rule(db_session, template)
     return template
@@ -6181,7 +6293,7 @@ def derived_calendar(
 
     The calendar-shaped sibling of :func:`derived_window`, for a producer that
     takes the whole calendar rather than a slice of it -- which
-    :meth:`app.services.income_service.SalaryPricing._net_by_period` does,
+    :meth:`app.services.income_service.SalaryPricing._breakdown_by_period` does,
     because the paycheck engine needs the owner's paycheck COUNT as well as
     their periods and both must come off one derivation (plan step **R-F16**).
 

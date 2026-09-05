@@ -596,8 +596,8 @@ def _transaction_candidates(
       Credit or Cancelled row is not money this account moved, and it is the
       shared gate every cash reader here narrows with rather than a filter
       written again;
-    * its pay period is one of the OWNER'S -- ownership, reached the way
-      ``Transaction`` is scoped (it carries no ``user_id`` of its own).  **The
+    * its pay period is one of the OWNER'S -- ownership, reached through the
+      paycheck; ``C13-b`` REFUSED ``Transaction.user_id`` here.  **The
       ids come from the CALENDAR rather than from a correlated subquery on
       ``pay_periods.user_id``, and that is what makes the window lookup below
       total**: a row this query returns names a period the calendar was built
@@ -857,8 +857,9 @@ def destinations_for(
     Scope, and what each clause is:
 
     * on THIS account, and its pay period is one the OWNER'S CALENDAR holds --
-      a statement is one bank's record of one account, and ``Transaction``
-      carries no ``user_id`` of its own.  **The ids come from the calendar
+      a statement is one bank's record of one account.  Ownership through the
+      paycheck; ``C13-b`` REFUSED ``Transaction.user_id``.  **The ids come
+      from the calendar
       rather than from a correlated subquery on ``pay_periods.user_id``, and
       that is what makes the span lookup below total** (pay-calendar plan step
       C4-a-4): the scan filters on

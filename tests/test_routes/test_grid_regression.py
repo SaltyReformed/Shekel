@@ -128,6 +128,7 @@ class TestPaydayWorkflowRegression:
             )
 
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -200,6 +201,7 @@ class TestPaydayWorkflowRegression:
             # Projected expense 1: template-linked.
             txn_template = Transaction(
                 template_id=template.id,
+                user_id=past_period.user_id,
                 pay_period_id=past_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -211,6 +213,7 @@ class TestPaydayWorkflowRegression:
             )
             # Projected expense 2: ad-hoc (no template).
             txn_adhoc = Transaction(
+                user_id=past_period.user_id,
                 pay_period_id=past_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -222,6 +225,7 @@ class TestPaydayWorkflowRegression:
             )
             # Done expense: should NOT be carried forward.
             txn_done = Transaction(
+                user_id=past_period.user_id,
                 pay_period_id=past_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -287,6 +291,7 @@ class TestPaydayWorkflowRegression:
             )
 
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -337,6 +342,7 @@ class TestPaydayWorkflowRegression:
             # Create expense in seed_periods_today[0]; the payback will go to
             # seed_periods_today[1] (the next period by index).
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -408,6 +414,7 @@ class TestPaydayWorkflowRegression:
                 seed_user["user"].id
             )
             income_txn = Transaction(
+                user_id=current_period.user_id,
                 pay_period_id=current_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -418,6 +425,7 @@ class TestPaydayWorkflowRegression:
                 amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             expense_txn = Transaction(
+                user_id=current_period.user_id,
                 pay_period_id=current_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -557,6 +565,7 @@ class TestPaydayWorkflowRegression:
 
             # Past period: projected expense ($150).
             past_expense = Transaction(
+                user_id=past_period.user_id,
                 pay_period_id=past_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=account.id,
@@ -568,6 +577,7 @@ class TestPaydayWorkflowRegression:
             )
             # Current period: income ($2,000).
             income_txn = Transaction(
+                user_id=current_period.user_id,
                 pay_period_id=current_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=account.id,
@@ -579,6 +589,7 @@ class TestPaydayWorkflowRegression:
             )
             # Current period: expense to mark done ($500).
             expense_done = Transaction(
+                user_id=current_period.user_id,
                 pay_period_id=current_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=account.id,
@@ -590,6 +601,7 @@ class TestPaydayWorkflowRegression:
             )
             # Current period: expense to mark credit ($300).
             expense_credit = Transaction(
+                user_id=current_period.user_id,
                 pay_period_id=current_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=account.id,

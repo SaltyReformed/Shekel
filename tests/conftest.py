@@ -2427,6 +2427,7 @@ def seed_cross_page_account(app, db, seed_user):
 
         txn = Transaction(
             template_id=template.id,
+            user_id=anchor_period.user_id,
             pay_period_id=anchor_period.id,
             scenario_id=scenario.id,
             account_id=account.id,
@@ -3206,6 +3207,7 @@ def _build_full_user_data(db, seed_user, periods):
 
     txn = Transaction(
         template_id=template.id,
+        user_id=periods[0].user_id,
         pay_period_id=periods[0].id,
         scenario_id=scenario.id,
         account_id=account.id,
@@ -3364,6 +3366,7 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
 
     txn = Transaction(
         template_id=template.id,
+        user_id=periods[0].user_id,
         pay_period_id=periods[0].id,
         scenario_id=scenario.id,
         account_id=account.id,
@@ -3477,6 +3480,7 @@ def seed_entry_template(app, db, seed_user, seed_periods):
 
     txn = Transaction(
         template_id=template.id,
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

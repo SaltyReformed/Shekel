@@ -63,6 +63,7 @@ def _settled(db, seed_user, period, name, amount, day, *, is_income=False):
     status_id = ref_cache.status_id(StatusEnum.DONE)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,
@@ -128,7 +129,7 @@ class TestATrueUpCannotHideADisagreement:
                 date(2026, 3, 3),
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[4],
+                db.session, seed_user["account"],
                 Decimal("1234.00"), _instant(2026, 3, 3),
             )
             db.session.commit()
@@ -163,7 +164,7 @@ class TestATrueUpCannotHideADisagreement:
                 date(2026, 3, 3),
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[4],
+                db.session, seed_user["account"],
                 Decimal("1025.00"), _instant(2026, 3, 3),
             )
             db.session.commit()

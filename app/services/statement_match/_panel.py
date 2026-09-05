@@ -20,10 +20,13 @@ the ceiling on its own.
 a purchase into a container the owner picks between, or records an income row
 against no container at all -- two doors, two controls -- so
 :class:`AddTab` names WHICH, and no template asks a bank line's sign.  MATCH
-offers rows, so :class:`MatchTab` carries them.  TRANSFER and SKIP have no
-door in this build at all (:data:`~._verbs.TRANSFER_WAITS`,
-:data:`~._verbs.SKIP_WAITS`), so they have no value: what they render is the
-explanation their :class:`~._verbs.VerbOffer` already carries.
+offers rows, so :class:`MatchTab` carries them.  TRANSFER has no door in this
+build at all (:data:`~._verbs.TRANSFER_WAITS`) and SKIP has one that takes no
+ARGUMENT (plan step ``bank_import:X-gj-4b``), so neither carries a value here
+-- and the two absences are different facts.  A shut TRANSFER renders the
+explanation its :class:`~._verbs.VerbOffer` carries; an OPEN SKIP renders what
+the act does and what it does not do, because there is nothing for the owner
+to choose between.
 
 **The MATCH tab opens on the line's own pay period and the SEARCH reaches
 further** (developer, 2026-08-30, on the measurement below).  Both halves are
@@ -35,7 +38,7 @@ load-bearing:
   renders across all 27 cards -- and every payroll deposit finds its own
   components there, ``2026-03-26``'s `$2,573.42` against
   ``Health Insurance Allowance`` `$100.00` + ``Data Manager`` `$2,473.38`, a
-  difference of `$0.04` (finding **balance:N-391**, which is the bank half
+  difference of `$0.04` (finding **salary:N-391**, which is the bank half
   of the retired **N-239**);
 * the SEARCH is over every unexplained row on the account, because a bound
   that cannot be widened is the cap finding **N-374** refused -- *the row that
@@ -204,7 +207,7 @@ class VerbPanel:
             sixteen times.
         answer_door: The sentence naming where a standing answer that parks
             this line is changed, or ``None`` where changing it would change
-            nothing (:attr:`~._bars.ParkedLine.answer_door`).
+            nothing (:attr:`~._bars.BarredLine.answer_door`).
         add: What ADD offers (:class:`AddTab`), or ``None`` where this line's
             mechanism offers no ADD act at all.
         proposal: The match a tier offers for this line

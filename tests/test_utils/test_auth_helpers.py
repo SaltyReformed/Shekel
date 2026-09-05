@@ -94,6 +94,7 @@ class TestGetOwnedViaParent:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -142,6 +143,7 @@ class TestGetOwnedViaParent:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             txn2 = Transaction(
+                user_id=periods2[0].user_id,
                 pay_period_id=periods2[0].id,
                 scenario_id=second_user["scenario"].id,
                 account_id=second_user["account"].id,
@@ -587,6 +589,7 @@ class TestAccessDeniedLogging:
             name="Expense"
         ).one()
         txn2 = Transaction(
+            user_id=periods2[0].user_id,
             pay_period_id=periods2[0].id,
             scenario_id=second_user["scenario"].id,
             account_id=second_user["account"].id,
@@ -704,6 +707,7 @@ class TestAccessDeniedLogging:
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
         txn = Transaction(
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=owner["scenario"].id,
             account_id=owner["account"].id,

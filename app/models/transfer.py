@@ -106,10 +106,15 @@ class Transfer(
         # Letting an undated row claim nothing was measured at 41 phantom
         # transfers / $20,500 at the unarchive door.
         #
-        # Both stay PARTIAL over ``is_deleted = FALSE AND is_override = FALSE``:
-        # an override sibling may coexist with its rule-generated parent, which
-        # carry-forward relies on so a moved unpaid item lives beside the
-        # generated row for its target period.
+        # **The two predicates DIVERGED at plan step X-au-h**, exactly as the
+        # transaction twin did -- see ``models/transaction.py`` for the full
+        # argument, the measurement, and why the UNDATED index below keeps the
+        # exemption this one drops.  In one line: the exemption guarded a
+        # PAYCHECK-keyed collision, R17 re-keyed this index onto ``occurs_on``,
+        # a move does not change a row's occurrence, and X-au-h made a
+        # RE-PRICE raise the flag -- so keeping it here would have dropped
+        # re-priced rows out of a guarantee they never used to lose.
+        # Ruling **R-JR**, developer 2026-09-03.
         db.Index(
             "idx_transfers_template_scenario_occurrence",
             "transfer_template_id", "scenario_id", "occurs_on",
@@ -117,8 +122,7 @@ class Transfer(
             postgresql_where=db.text(
                 "transfer_template_id IS NOT NULL "
                 "AND occurs_on IS NOT NULL "
-                "AND is_deleted = FALSE "
-                "AND is_override = FALSE"
+                "AND is_deleted = FALSE"
             ),
         ),
         db.Index(

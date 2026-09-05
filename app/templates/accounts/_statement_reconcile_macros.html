@@ -2,21 +2,25 @@
 {% from "accounts/_statement_undo_macros.html" import undo_form, undo_removals %}
 {% from "accounts/_statement_queue_macros.html" import books_already_hold %}
 
-{# THE TWO CARDS THIS PAGE IS MADE OF, and the panel one click behind one of
+{# THE THREE CARDS THIS PAGE IS MADE OF, and the panel one click behind one of
    them.
 
    Plan steps bank_import:X-gj-1b (`line_card`, a bank line the books have not
-   settled) and X-gj-1c (`act_card`, an act already applied); rulings R-HP,
-   R-HQ, R-HR, R-HS, R-HU, R-HW, R-HX.  Locked at Loop A round 4 on 2026-08-29:
-   one bordered card per line, amount then sentence then OK, no checkbox and no
-   confidence pill -- and the settled tabs are "the same card with the sentence
-   in the past tense, and Undo where OK was".
+   settled), X-gj-1c (`act_card`, an act already applied) and X-gj-4c-2
+   (`skip_card`, a line the owner decided explains nothing); rulings R-HP,
+   R-HQ, R-HR, R-HS, R-HU, R-HW, R-HX, R-JG, R-JH.  Locked at Loop A round 4 on
+   2026-08-29: one bordered card per line, amount then sentence then OK, no
+   checkbox and no confidence pill -- and the other tabs are "the same card
+   with the sentence in the past tense, and Undo where OK was".
 
-   THE TWO SHARE THE GRID AND THE SENTENCE AND NOTHING ELSE.  They are two
-   values in the service (LineCard and ActCard) carrying disjoint facts, which
-   is what stops a template printing an act's Undo beside a line's OK: the
-   field is not there to print.  Which kind a tab holds is the TAB's own fact
-   (Tab.holds_settled_acts), asked once by the body.
+   THE THREE SHARE THE GRID AND THE SENTENCE AND NOTHING ELSE.  They are three
+   values in the service (LineCard, ActCard and SkipCard) carrying disjoint
+   facts, which is what stops a template printing an act's Undo beside a line's
+   OK, or an act's removals over a skip that removes nothing: the field is not
+   there to print.  Which kind a page holds is the PAGE's own fact
+   (ReconcilePage.kind, a CardKind), asked once by the body -- set by the arm
+   that BUILT the cards rather than looked up from a table beside it, so a page
+   cannot claim a kind its own sections are not.
 
    THE CARD SHOWS THE DECISION AND THE PANEL DISCLOSES EVERYTHING ELSE
    (R-HR).  The card carries the bank's facts, the amount, ONE sentence whose
@@ -235,6 +239,45 @@
     <div class="small">{{ books_already_hold(card.arrivals_already_held) }}</div>
   </div>
   {% endif %}
+
+  {% elif offer.is_skip %}
+  {# THE FOURTH VERB, LIT (plan step bank_import:X-gj-4b, rulings R-JG and
+     R-HW).
+
+     IT RENDERS NO SUBMITTING CONTROL OF ITS OWN, and that is the ACT rather
+     than an omission. MATCH offers rows and ADD offers a destination because
+     those verbs take an argument; a skip takes none, so the card's own OK
+     checkbox and the verb radio this pane belongs to ARE the submission, and
+     the footer's primary button is named by the verb like every other open
+     one. A hidden field stating the arm -- the shape the income arm above
+     needs -- would be a second spelling of the radio the browser already
+     sent.
+
+     TWO SENTENCES, AND THE SECOND IS THE ONE THIS ACT IS MISREAD WITHOUT.
+     What a skip DOES is easy: the line stays on record and leaves this list.
+     What it does NOT do is close the difference between the books and the
+     bank -- bank_agreement goes on reporting the amount as a disagreement,
+     which is right, because the money the bank showed genuinely is not in the
+     records. An owner who read "skipped" as "resolved" would be reading the
+     hero's own figure wrong.
+
+     THE PHRASE IS THE PAGE'S ONE PHRASE. "explained by nothing" is what the
+     legend glosses the verb with and what `_sentence.for_skip` opens the
+     Skipped tab's card with, so the panel, the legend and the tab teach one
+     wording rather than three near-misses. That reconciliation is this step's:
+     the shut verb's old sentence read "explains nothing you budget for", and
+     `for_skip`'s docstring recorded the near-miss as owed here. #}
+  <p class="small mb-2">
+    Skip leaves this line on record and deliberately
+    <strong>explained by nothing</strong>. It leaves this list, and the
+    Skipped tab is where you undo it.
+  </p>
+  <p class="small text-body-secondary mb-0">
+    It closes no difference between your books and your bank: the money your
+    bank showed is still not in your records, so the difference at the top of
+    this page does not move. The count of lines to explain does -- this one
+    leaves it.
+  </p>
   {% endif %}
 </section>
 {% endmacro %}
@@ -585,4 +628,147 @@
   </div>
   {% endif %}
 </div>
+{% endmacro %}
+
+{% macro skip_card(action, card) %}
+{#- ONE RECORDED SKIP, as the same card with an Undo that destroys nothing.
+
+    Plan step bank_import:X-gj-4c-2; rulings bank_import:R-JG (the act row,
+    deleted to undo), R-JH (the tab holds only lines the OWNER skipped) and
+    R-GY (every press that destroys a record confirms).  The locked direction
+    gives this tab in three words -- docs/design/bank_import_audit.md:
+    "Skipped: the same card with Undo".
+
+    IT IS THE BANK LINE'S FACTS AND THE ACT CARD'S SHAPE, which is the honest
+    composition rather than a copy of either.  A skip names no app row, so
+    there is no `posts_on` an act leads with and no member list; what it names
+    is the LINE, which this card prints exactly as `line_card` does -- merchant,
+    posted day, and the bank's own words underneath.  It reuses .rec-card and
+    .rec-act whole, so a skipped line's amount sits in the same fixed track a
+    bank line's and an act's do, and a reader moving between tabs is reading
+    one list five ways.
+
+    IT ADDS NO CSS, and that is a fact rather than a saving: .rec-act's only
+    rule is `cursor: default` on the summary -- an act card does not open,
+    having nothing to disclose -- which is true of this card for the same
+    reason.  A class of its own setting the same property would be a rule that
+    renders nothing.
+
+    IT HAS NO BANDS.  An act card carries three that render when they have
+    something to say: what no longer holds, the member rows its sentence could
+    not fit, and what the Undo would remove.  A skip has none of those facts --
+    no app row to stop agreeing with, no rows to name, and `unskip_line`
+    removes nothing but the decision -- so there is nothing under the grid and
+    no `{% if %}` claiming there might be.
+
+    THE UNDO IS ITS OWN FORM AND IT CONFIRMS (R-GY).  It is not `undo_form`:
+    that macro reads `group.removes` and submits a `match_id`, and neither is a
+    fact about a skip.  The dialog is always there because this press DESTROYS
+    the owner's own decision, and its wording names that destruction -- and
+    says the one thing about a skip that is easy to get wrong, which is that
+    undoing one moves no money because skipping never moved any. -#}
+<div class="rec-card rec-act">
+  <div class="rec-summary">
+    <div class="rec-facts">
+      <div class="rec-merchant">
+        {{ card.skip.line.merchant_label }}
+        <span class="rec-day font-mono">{{ card.skip.line.posted_on }}</span>
+        {% if card.skip.line.transaction_on %}
+        <span class="rec-day font-mono">made {{ card.skip.line.transaction_on }}</span>
+        {% endif %}
+      </div>
+      {# THE BANK'S OWN WORDS, both of them, on ONE line ellipsised by CSS --
+         `line_card`'s own treatment, because this is the same line one tense
+         over and a reader scanning for it should find it where it always is. #}
+      <div class="rec-raw font-mono">{{ card.skip.line.description }}{% if card.skip.line.source_category %} {{ card.skip.line.source_category }}{% endif %}</div>
+    </div>
+    <div class="rec-amount font-mono{% if card.skip.line.amount < 0 %} rec-out{% endif %}">
+      {{ money(card.skip.line.amount) }}
+    </div>
+    <div class="rec-sentence">
+      {{ sentence(card.sentence) }}
+    </div>
+    <div class="rec-ok">
+      <form method="post" action="{{ action }}"
+            data-confirm="Undo this skip? It destroys the record that you decided this bank line is explained by nothing, and puts the line back among the ones to explain. No money moves and no date changes -- skipping never moved any.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="skip_id" value="{{ card.skip.skip_id }}">
+        {# THE BUTTON SAYS WHICH SKIP IT UNDOES, to anything that cannot see
+           the row it sits in -- the correction adversarial review made to the
+           match's own Undo on 2026-08-31, where a whole tab of buttons had the
+           accessible name "Undo" and nothing else.  The day and the figure are
+           what the card itself leads with, so the label names the same two. #}
+        <button type="submit"
+                aria-label="Undo the skip of {{ card.skip.line.posted_on }} for {{ money(card.skip.line.amount) }}"
+                class="btn btn-sm btn-outline-secondary">Undo</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro nothing_on_this_tab() %}
+{#- THE EMPTY STATE, stated ONCE for the three card arms.
+
+    Plan step bank_import:X-gj-4c-2.  The body renders one arm per CardKind and
+    each needs this block; it was three byte-identical copies the moment the
+    third arm landed, which is three places for the one thing an empty tab says
+    to drift.  A macro rather than a partial because it takes nothing and says
+    one sentence.
+
+    IT IS THE SAME SENTENCE ON EVERY TAB DELIBERATELY.  What differs between an
+    empty inbox, an empty settled tab and an empty Skipped tab is the tab bar's
+    own count beside its name, which is already on screen -- so a per-tab
+    wording here would be the service's partition restated in Jinja for no
+    information. -#}
+<div class="rec-empty">
+  <i class="bi bi-check2-circle"></i>
+  <p class="mb-0">Nothing on this tab.</p>
+</div>
+{% endmacro %}
+
+{% macro show_the_other(account, page, withheld, noun) %}
+{#- THE BOUND, SAID, AND A WAY PAST IT -- stated ONCE for every bounded tab.
+
+    Rulings bank_import:R-GX and R-JW; plan steps X-gj-1c (the settled tabs)
+    and X-gj-4c-2 (the Skipped tab).  A truncated list that does not say it is
+    truncated is a page claiming to be the whole record, and each of these tabs
+    is the only surface its own kind of act can be found and undone on -- so
+    what a bound withholds has to be REACHABLE rather than merely unlisted.
+
+    IT IS A MACRO BECAUSE THE THIRD ARM MADE IT A COPY.  X-gj-4c-2 gave the
+    Skipped tab the same bound and left this paragraph duplicated beside the
+    settled tabs' -- the same `url_for(..., all=1)`, the same count, the same
+    sentence shape, differing in one noun and one trailing clause.  Jinja has
+    no cross-file duplicate-code gate, so nothing would have said so; an
+    unprimed adversarial review did, and its point is that the DUPLICATED half
+    was the one carrying a bound the owner has to trust, while the half already
+    extracted (`nothing_on_this_tab`) said nothing at all.
+
+    IT IS NOT FINDING N-389, and an earlier draft of this comment said it was.
+    That finding is a caption counting an act its tab COULD NOT RENDER -- a
+    silent disagreement.  A bound is a deliberate truncation that ANNOUNCES
+    itself, which is what this paragraph is, and `_skipping.py` refuses the
+    conflation in as many words: what a caption may legitimately exceed is
+    what the bound renders.
+
+    THE COUNT AND THE LINK ARE THE SERVICE'S AND THE ROUTE'S.  `withheld` is
+    `CardSection.withheld`, derived where the cards were built; the href is
+    `url_for` over the tab this page is already on.  Nothing here computes.
+
+    THE TAIL IS THE CALLER'S BLOCK, because what a tab owes past the link is
+    its own: the settled tabs promise that an act which no longer holds is
+    listed whatever its age, and the Skipped tab has no such promise to make.
+
+    THE BLOCK IS OPTIONAL AND THE GUARD IS WHY.  `caller` is undefined unless
+    the macro is invoked through `{% call %}`, so an unguarded `{{ caller() }}`
+    turns a plain `{{ show_the_other(...) }}` into an UndefinedError -- a 500
+    on the reconcile page for a future bounded tab with nothing to add, rather
+    than the missing tail its author expected.  A documented trap is still a
+    trap when no call site exercises it; the guard makes the empty case the
+    thing it looks like.  Named by adversarial review. -#}
+<p class="rec-more small">
+  <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab=page.tab.value, all=1) }}">Show
+  the other {{ withheld }} {{ noun }}</a>{% if caller is defined %}{{ caller() }}{% endif %}
+</p>
 {% endmacro %}

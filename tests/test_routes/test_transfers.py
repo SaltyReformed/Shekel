@@ -9,6 +9,8 @@ import re
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import (
     AcctTypeEnum, SettlementBasisEnum, StatusEnum, TxnTypeEnum,
@@ -34,6 +36,7 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     all_periods,
+    pay_periods_hydrated,
     an_asserted_day,
     an_entered_day,
     an_observed_day,
@@ -758,7 +761,7 @@ class TestTemplateUpdate:
             # Hand-edit the future transfer, shadow-safe via the service.
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("350.00"), is_override=True,
+                amount=Decimal("350.00"), amount_authored=True, is_override=True,
             )
             db.session.commit()
             tid = template.id
@@ -806,7 +809,7 @@ class TestTemplateUpdate:
             )
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("350.00"), is_override=True,
+                amount=Decimal("350.00"), amount_authored=True, is_override=True,
             )
             db.session.commit()
             tid, xfer_id = template.id, xfer.id
@@ -1063,7 +1066,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "250.00"},
+                data={"amount": "250.00", "amount_as_rendered": str(xfer.amount)},
             )
 
             assert response.status_code == 200
@@ -1253,7 +1256,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "300.00", "due_date": ""},
+                data={"amount": "300.00", "amount_as_rendered": str(xfer.amount), "due_date": ""},
             )
 
             assert response.status_code == 200
@@ -1313,13 +1316,95 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "999.99"},
+                data={"amount": "999.99", "amount_as_rendered": str(xfer.amount)},
             )
             assert response.status_code == 400
             body = response.data.decode()
             assert "finalised" in body
             assert "transfer" in body
 
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("200.00")
+
+    @pytest.mark.parametrize("fragment", [
+        "/transfers/quick-edit/{id}",
+        "/transfers/{id}/full-edit",
+    ])
+    def test_every_transfer_form_posts_the_figure_it_rendered(
+        self, app, auth_client, seed_user, seed_periods_today, fragment,
+    ):
+        """Both transfer forms emit the companion, with the SAME value (**R-JR**).
+
+        **The templates were the ungraded half of this ruling.**  Every other
+        case hand-assembles ``amount_as_rendered`` into its payload, so the
+        suite would stay green for a template that stopped emitting it -- and
+        the two transfer templates are exactly the ones plan step X-au-f must
+        rewrite, because they render from the raw ``xfer.amount`` column that
+        step empties.
+
+        Asserting the two values are EQUAL is the load-bearing half.  A
+        companion rendered from a different expression than the box is a
+        difference nobody typed, which the door would read as an authorship and
+        act on -- so "both present" is not enough.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+
+            resp = auth_client.get(fragment.format(id=xfer.id))
+            assert resp.status_code == 200
+            body = resp.data.decode()
+
+            shown = re.search(r'name="amount"[^>]*value="([^"]*)"', body)
+            companion = re.search(
+                r'name="amount_as_rendered"[^>]*value="([^"]*)"', body,
+            )
+            assert shown is not None, "the form renders an amount box"
+            assert companion is not None, (
+                "a form that posts a figure must post what it rendered; "
+                "without it the schema refuses every save this form makes"
+            )
+            assert companion.group(1) == shown.group(1), (
+                "the box and its companion must render from ONE expression"
+            )
+
+    def test_finalised_lock_still_speaks_for_an_ECHOED_amount(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The lock grades what was SUBMITTED, not what survived authorship.
+
+        Plan step balance:X-au-h drops an ``amount`` no human authored before
+        handing the payload to the service, and WHERE that drop happens is a
+        decision this case pins. Dropped before the gates, a crafted request
+        naming a finalised transfer's amount would stop being refused and start
+        being quietly ignored -- the row is unharmed either way, so no other
+        assertion in this suite would notice, and a lock that silently stops
+        speaking is how the next reader concludes it is not needed.
+
+        The sibling above sends a CHANGED figure, which is authored and so
+        survives to the lock however the ordering is written. Only an ECHO
+        distinguishes the two orderings, which is why this case exists.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+            db.session.refresh(xfer)
+            assert xfer.status.is_immutable
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "amount": "200.00",
+                    "amount_as_rendered": "200.00",
+                },
+            )
+
+            assert response.status_code == 400, (
+                "an echoed amount on a finalised transfer is still a locked "
+                "field edit, and the lock must say so rather than ignore it"
+            )
+            assert "finalised" in response.data.decode()
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("200.00")
 
@@ -1338,7 +1423,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"status_id": str(projected_id), "amount": "250.00"},
+                data={"status_id": str(projected_id), "amount": "250.00", "amount_as_rendered": str(xfer.amount)},
             )
             assert response.status_code == 200
             db.session.refresh(xfer)
@@ -1363,7 +1448,12 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transactions/{shadow.id}",
-                data={"estimated_amount": "999.99"},
+                # Well-formed, so the refusal under test is the FINALISED lock
+                # and not the schema declining an unaccompanied figure.
+                data={
+                    "estimated_amount": "999.99",
+                    "estimated_amount_as_rendered": "200.00",
+                },
             )
             assert response.status_code == 400
             assert "finalised" in response.data.decode()
@@ -1527,7 +1617,7 @@ class TestTransferInstance:
 
             auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "999.00"},
+                data={"amount": "999.00", "amount_as_rendered": str(xfer.amount)},
             )
 
             db.session.refresh(xfer)
@@ -1559,7 +1649,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{target.id}",
-                data={"amount": "9999.00"},
+                data={"amount": "9999.00", "amount_as_rendered": str(orig_amount)},
             )
 
             assert response.status_code == 404
@@ -2537,7 +2627,9 @@ class TestTransferNegativePaths:
         with app.app_context():
             resp = auth_client.patch(
                 "/transfers/instance/999999",
-                data={"amount": "100.00"},
+                # A well-formed payload, so the 404 is about the missing row
+                # rather than the schema refusing an unaccompanied figure.
+                data={"amount": "100.00", "amount_as_rendered": "100.00"},
             )
 
             assert resp.status_code == 404
@@ -2770,7 +2862,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "300.00", "source_txn_id": str(shadow.id)},
+                data={"amount": "300.00", "amount_as_rendered": str(xfer.amount), "source_txn_id": str(shadow.id)},
             )
 
             assert resp.status_code == 200
@@ -2872,7 +2964,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "350.00"},
+                data={"amount": "350.00", "amount_as_rendered": str(xfer.amount)},
             )
 
             assert resp.status_code == 200
@@ -2901,7 +2993,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "400.00", "source_txn_id": "999999"},
+                data={"amount": "400.00", "amount_as_rendered": str(xfer.amount), "source_txn_id": "999999"},
             )
 
             assert resp.status_code == 200
@@ -2944,7 +3036,11 @@ class TestShadowContextResponse:
             # Send it with transfer A's update.
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer_a.id}",
-                data={"amount": "450.00", "source_txn_id": str(shadow_b.id)},
+                data={
+                    "amount": "450.00",
+                    "amount_as_rendered": str(xfer_a.amount),
+                    "source_txn_id": str(shadow_b.id),
+                },
             )
 
             assert resp.status_code == 200
@@ -3251,9 +3347,11 @@ class TestOneTimeTransfer:
         so a submission naming no pattern skipped the probe entirely -- which
         was harmless while no-pattern meant "generate nothing", and is not
         once no-pattern is what materialises a Transfer into exactly the
-        submitted period.  ``_materialize_one_time_transfer`` re-checks as
-        defence in depth ("Invalid pay period for one-time transfer."); this
-        asserts the FIRST guard fires, before any row is written.
+        submitted period.  ``_materialize_one_time_transfer`` re-checked as
+        defence in depth ("Invalid pay period for one-time transfer.") until
+        plan step ``pay_calendar:C13-b``, which deleted that second resolution
+        and threads the route's own down instead; the FIRST guard is the only
+        one now, and this asserts it fires before any row is written.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -3636,7 +3734,7 @@ class TestOneTimeTransfer:
                 transfer_template_id=tmpl.id).one()
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("123.45"), is_override=True,
+                amount=Decimal("123.45"), amount_authored=True, is_override=True,
             )
             db.session.commit()
             xfer_id = xfer.id
@@ -4483,7 +4581,7 @@ class TestTransferPeriodMove:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "250.00", "version_id": xfer.version_id},
+                data={"amount": "250.00", "amount_as_rendered": str(xfer.amount), "version_id": xfer.version_id},
             )
             assert resp.status_code == 200
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
@@ -5130,3 +5228,135 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
             ), "a refused request reverted the transfer anyway"
             for leg in self._legs(xfer.id):
                 assert leg.settled_amount == Decimal("214.37")
+
+
+class TestTransferDoorsResolveOwnershipStructurally:
+    """The transfer write doors prove a paycheck's owner without loading it.
+
+    Plan step **pay_calendar:C13-b**, the transfer half of ledger row
+    **P75**'s EIGHT primary-key refetches.  Five of them lived here: two
+    ``_user_owns(PayPeriod, ...)`` calls in ``transfers/mutations``, one in
+    ``transfers/templates``, a bare ``db.session.get`` + compare in
+    ``transfers/_instances``, and the service tier's own
+    ``transfer_service._ownership._get_owned_period``.  Four were duplicates
+    of the fifth -- every create and update path reaches the service one
+    unconditionally -- and the developer ruled them collapsed into it
+    (2026-09-03), with the service call answering the owner's derived CALENDAR
+    instead of comparing a fetched row.  ``transfers/templates`` keeps ONE
+    resolution because it needs the period's ``start_date`` as a ``due_date``,
+    and it threads that value down rather than letting the materializer
+    re-fetch it.
+
+    **Why a hydration count.**  The 404s themselves are graded above and pass
+    either way; what tells a calendar lookup apart from a primary-key compare
+    is that the calendar loads COLUMN TUPLES and never an entity.  An empty
+    hydration list cannot hold while the old guard exists, so this fires.
+
+    ``expunge_all`` FIRST, for the reason
+    :func:`tests._test_helpers.pay_periods_hydrated` gives: a ``session.get``
+    served from the identity map fires no load event, so without it the probe
+    reads zero on the very code it exists to refuse.
+    """
+
+    @staticmethod
+    def _foreign_period(other):
+        """Return one pay period belonging to *other*."""
+        from app.models.pay_period import PayPeriod
+        return (
+            db.session.query(PayPeriod)
+            .filter_by(user_id=other["user"].id)
+            .first()
+        )
+
+    def test_ad_hoc_create_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /transfers/ad-hoc refuses a foreign period, loading none."""
+        with app.app_context():
+            other = _create_other_user_with_template()
+            savings = _create_savings_account(seed_user)
+            payload = {
+                "pay_period_id": self._foreign_period(other).id,
+                "from_account_id": seed_user["account"].id,
+                "to_account_id": savings.id,
+                "amount": "50.00",
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.post("/transfers/ad-hoc", data=payload)
+            assert resp.status_code == 404
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )
+
+    def test_instance_update_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """PATCH /transfers/instance/<id> refuses a foreign period, loading none.
+
+        The transfer is the REQUESTER'S own, so the refusal can only come from
+        the submitted ``pay_period_id``.
+        """
+        with app.app_context():
+            other = _create_other_user_with_template()
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+            xfer = _create_transfer(
+                seed_user, seed_periods_today, savings, template=template,
+            )
+            xfer_id = xfer.id
+            foreign_period_id = self._foreign_period(other).id
+            version = xfer.version_id
+
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.patch(
+                    f"/transfers/instance/{xfer_id}",
+                    data={
+                        "pay_period_id": str(foreign_period_id),
+                        "version_id": str(version),
+                    },
+                )
+            assert resp.status_code == 404
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )
+
+    def test_template_create_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /transfers refuses a foreign start period, loading none.
+
+        The refusal itself -- and that it fires for a RECURRING cadence, where
+        the id is never used -- is
+        :meth:`TestOneTimeTransfer.test_recurring_transfer_idor_period`'s; this
+        asserts the ONE structural property that says the check is the calendar
+        rather than a fetched row.
+        """
+        with app.app_context():
+            other = _create_other_user_with_template()
+            savings = _create_savings_account(seed_user)
+            payload = {
+                "name": "IDOR Attempt",
+                "default_amount": "100.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "recurrence_unit": "",
+                "start_period_id": str(self._foreign_period(other).id),
+            }
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.post(
+                    "/transfers", data=payload, follow_redirects=True,
+                )
+            assert resp.status_code == 200
+            assert b"Invalid start period" in resp.data
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )

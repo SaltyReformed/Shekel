@@ -31,16 +31,14 @@ Route-layer module (leading underscore = route-internal), beside
 
 import logging
 
-from flask import flash, redirect, request, url_for
+from flask import url_for
 from flask_login import current_user
 
 from app.exceptions import ValidationError
 from app.routes.accounts._statement_doors import (
     StatementDoorContext,
-    refusal_sentence,
-    run_statement_door,
+    run_one_id_door,
 )
-from app.schemas.validation import form_payload
 from app.schemas.validation.statements import StatementMatchReleaseSchema
 from app.services.statement_match import release_match
 
@@ -119,15 +117,15 @@ def release_and_return(account, target_endpoint: str, **target_args):
         A redirect to that page, carrying the receipt or the refusal.
     """
     target = url_for(target_endpoint, account_id=account.id, **target_args)
-
-    payload = form_payload(request.form, _release_schema)
-    errors = _release_schema.validate(payload)
-    if errors:
-        flash(refusal_sentence(errors), "warning")
-        return redirect(target)
-
-    match_id = _release_schema.load(payload)["match_id"]
-    return run_statement_door(
+    # **The one-id door's shared VALIDATE half** (:func:`~._statement_doors
+    # .run_one_id_door`, plan step ``bank_import:X-gj-4c-2``), which carries
+    # WHY it exists and what the gate did not see.  Stated THERE and not here:
+    # a measurement in two homes is what this very extraction is about, and
+    # this copy stood with two numbers its twin had already recorded as
+    # measured FALSE -- the correction was applied to one and not the other.
+    # Found by an unprimed adversarial review 2026-09-04.
+    return run_one_id_door(
+        _release_schema, "match_id",
         StatementDoorContext(
             logger=_logger,
             refusal=ValidationError,
@@ -139,6 +137,8 @@ def release_and_return(account, target_endpoint: str, **target_args):
             ),
             target=target,
         ),
-        lambda: release_match(match_id, current_user.id, account.id),
+        lambda match_id: release_match(
+            match_id, current_user.id, account.id,
+        ),
         _release_report,
     )

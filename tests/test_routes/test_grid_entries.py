@@ -118,6 +118,7 @@ def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
     db.session.flush()
 
     txn = Transaction(
+        user_id=seed_periods_today[period_index].user_id,
         pay_period_id=seed_periods_today[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -141,6 +142,7 @@ def _create_plain_txn(seed_user, seed_periods_today, period_index=0,
     projected = db.session.query(Status).filter_by(name="Projected").one()
 
     txn = Transaction(
+        user_id=seed_periods_today[period_index].user_id,
         pay_period_id=seed_periods_today[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -525,6 +527,7 @@ class TestBuildEntryListsDict:
             db.session.add(template)
             db.session.flush()
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -923,7 +926,7 @@ class TestTheEntryListContextHasOneProducer:
             record_settle_day(inside, an_entered_day(asserted_on))
             record_settle_day(outside, an_entered_day(asserted_on + timedelta(days=1)))
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods_today[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(asserted_on),
             )
             db.session.commit()

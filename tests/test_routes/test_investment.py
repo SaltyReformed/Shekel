@@ -2176,6 +2176,7 @@ def _add_envelope_expense_with_cleared_entries_inv(
 
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario.id,
         account_id=account.id,

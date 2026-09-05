@@ -713,11 +713,17 @@ def settle_from_entries(
         logger, logging.INFO,
         EVT_TRANSACTION_SETTLED_FROM_ENTRIES, BUSINESS,
         "Envelope transaction settled at sum(entries)",
-        # PayPeriod owner is the canonical user_id source for Transaction
-        # rows (Transaction has no direct user_id column).  pay_period
-        # is already loaded by the caller so this read does not trigger
-        # an autoflush.
-        user_id=txn.pay_period.user_id,
+        # The owner, read off the ROW (plan step ``pay_calendar:C13-b``).  It
+        # was ``txn.pay_period.user_id``, and the note here said the
+        # relationship was already loaded by the caller so the read triggered
+        # no autoflush -- true, and true of a load this site no longer needs.
+        # ``reconcile_service._rows.outstanding_rows``' eager
+        # ``joinedload(Transaction.pay_period)`` was KEPT for this one line;
+        # its docstring carries what removing it now costs and what has still
+        # not been established.  It is a read that STAMPS a log event rather
+        # than one that refuses, so it was never one of finding **P75**'s
+        # nineteen -- that census excludes it by name.
+        user_id=txn.user_id,
         transaction_id=txn.id,
         new_status_id=new_status_id,
         # What the close BOOKS, computed for the log rather than read back off

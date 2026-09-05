@@ -87,6 +87,17 @@ def _full_edit_save(auth_client, txn, status_id, **overrides):
     a payload carrying them would be refused by ``_finalised_edit_response``
     before any of this suite's subject matter ran -- a helper that tested the
     lock instead of the settle.
+
+    **A GENERATED row submits no due date at all, for the same reason one tier
+    over** (plan step balance:X-au-e).  Its date is its DEFINITION's -- it is a
+    member of ``DerivedRowFields`` and every regeneration rewrites it -- and
+    since that step it is also what prices the row, so the popover renders it
+    as TEXT rather than an input and a browser sends no ``due_date`` key.  A
+    payload carrying one is refused by
+    ``_gates._reject_generated_due_date_edit`` before this suite's subject
+    matter runs, which is the same trap the finalised arm above exists to
+    avoid: seven cases here failed on that refusal the moment the gate landed,
+    all of them testing the settle and none of them testing the date.
     """
     payload = {
         "version_id": str(txn.version_id),
@@ -95,10 +106,23 @@ def _full_edit_save(auth_client, txn, status_id, **overrides):
     }
     if not txn.status.is_immutable:
         payload["estimated_amount"] = str(txn.estimated_amount)
+        # **The amount box's companion, carrying what the form RENDERED into
+        # it** (ruling R-JR, plan step balance:X-au-h).  The popover posts both,
+        # and equal values are what a browser sends when the user did not touch
+        # the box -- which is the case every test using this helper models,
+        # since each one is editing something else.
+        #
+        # Omitting it would not fail: a figure with no companion is treated as
+        # AUTHORED, so every save through this helper would take ownership of
+        # the row's amount and the suite would go on passing while modelling a
+        # browser that does not exist.  That is the trap this docstring's other
+        # two paragraphs already describe, on a third field.
+        payload["estimated_amount_as_rendered"] = str(txn.estimated_amount)
         payload["pay_period_id"] = str(txn.pay_period_id)
-        payload["due_date"] = (
-            txn.due_date.isoformat() if txn.due_date else ""
-        )
+        if txn.template_id is None:
+            payload["due_date"] = (
+                txn.due_date.isoformat() if txn.due_date else ""
+            )
     payload.update(overrides)
     return auth_client.patch(f"/transactions/{txn.id}", data=payload)
 
@@ -336,6 +360,7 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
             # row, non-override -- the state every future period is in.
             occupant = Transaction(
                 template_id=source.template_id,
+                user_id=seed_periods_today[4].user_id,
                 pay_period_id=seed_periods_today[4].id,
                 scenario_id=source.scenario_id,
                 account_id=source.account_id,

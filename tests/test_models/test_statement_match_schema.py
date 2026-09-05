@@ -278,6 +278,7 @@ def _a_transaction(db, seed_user, name="Electricity"):
     db.session.flush()
     txn = Transaction(
         template_id=template.id,
+        user_id=seed_user['bootstrap_period'].user_id,
         pay_period_id=seed_user["bootstrap_period"].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

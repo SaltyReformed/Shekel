@@ -57,8 +57,8 @@ which SAVED paycheck covers this day  :meth:`PayCalendar.period_containing`
 which span covers this day, saved or  :meth:`PayCalendar.span_containing`
 projected                             -- TOTAL from the first payday on
 which SAVED paycheck does a record    :meth:`PayCalendar.filing_period`
-FILE under                            -- never ``None``; a foreign key
-                                      points at the answer
+FILE under                            -- never ``None``; it CLAMPS
+                                      (ruling **R-PC53**)
 ===================================== ==================================
 
 **Beside them sit FOUR ORDERING searches, which are a 2x2 rather than a list**,
@@ -95,18 +95,14 @@ search rather than being a fourth scan, and the search itself is the missing
 mirror of :meth:`PayCalendar.period_starting_on_or_after`, which the recurrence
 arc's calendar already carried.
 
-**Why the filing rule cannot simply be deleted, measured rather than argued.**
-The competing option was to drop ``journal_entries.pay_period_id`` and derive a
-ledger entry's paycheck from its ``entry_date``.  On ``shekel-prod-db``:
-**14 days carry TWO different paychecks for ONE entry date**, so the date does
-not determine the paycheck; **35 of 327 entries (10.7%)** are dated outside
-their own paycheck across five of the seven source kinds, which is the budget
-clock and the cash clock legitimately disagreeing; and **4 ``loan_opening``
-entries** -- a mortgage dated 2018-12-01, a van loan 2023-02-14 -- precede the
-owner's first payday (2026-03-26) by years and rely on the clamp to name any
-paycheck at all.  Ledger row **P18** carries the full measurement; whether the
-column stays is plan step ``C7``'s, and this method is what ``C7`` would delete
-if it rules the column away.
+**Why the filing rule cannot simply be deleted: plan step ``C7`` RULED that
+``journal_entries.pay_period_id`` STAYS** (ruling **R-PC53**, which holds the
+measurements and the argument; nothing is restated here).  The short form is
+that the column has TWO halves and ledger row **P18**'s premise -- that it
+merely materialises ``entry_date`` -- fits neither as stated: a source-linked
+entry COPIES its source row's own period, and an anchor correction DERIVES its
+period through this method (ruling **balance:R-EA**).  A DROP would have
+deleted this method, so it stays.
 
 **A WINDOW is a VIEW, and the type is what makes that structural** (ledger row
 **P14**).  A period's end is its successor's payday, so deriving a calendar from
@@ -486,11 +482,13 @@ class PayCalendar:
         """Return the SAVED period a record dated *day* files under.
 
         **A different question from containment, ruled so 2026-08-10**, because
-        it may never answer ``None``: ``journal_entries.pay_period_id`` is a
-        ``NOT NULL`` foreign key, so a ledger entry needs a paycheck a key can
-        point at even when its own date lies outside every paycheck.  Four
-        entries on production do -- a mortgage dated 2018-12-01 and a van loan
-        2023-02-14, both years before the owner's first payday.
+        it may never answer ``None``: every per-period reader in this app must
+        be able to place every recorded entry, so this rule is TOTAL and CLAMPS
+        rather than answering nothing.  ``journal_entries.pay_period_id`` being
+        ``NOT NULL`` EXPRESSES that requirement rather than causing it.  The
+        causation was stated the other way round here until plan step ``C7``,
+        which is how ledger row **P18** came to read a reader requirement as a
+        storage artifact (ruling **R-PC53**).
 
         The rule is ONE clamp: **the latest period starting on or before *day*,
         else the earliest**.  It replaced the three-branch chain
@@ -521,9 +519,10 @@ class PayCalendar:
         :class:`PayCalendar` can HOLD, and separately over stored-style period
         lists a calendar cannot express -- gapped, two-hole, overlapping, and
         the index-order counterexample -- because derived periods TILE and so
-        cannot produce a hole to test with;
-        ``tests/manual/verify_filing_cutover.py`` re-runs both halves against a
-        real database and is where the cutover's production numbers come from.
+        cannot produce a hole to test with.  *A second proof,
+        ``tests/manual/verify_filing_cutover.py``, was named here until plan
+        step ``C7``; plan step ``C4-c`` had DELETED it, so the pointer named
+        nothing.*
 
         **It never reads a period's END, and that is why C2-d could ship ahead
         of the two steps that close the calendar's write doors.**  The other
@@ -566,8 +565,8 @@ class PayCalendar:
         Raises:
             PayCalendarError: The calendar holds no MATERIALISED period -- it
                 is empty, or every payday in it is an unsaved candidate.  A
-                loud refusal rather than ``None``: the caller is about to write
-                a ``NOT NULL`` column, and there is no safe value to invent.
+                loud refusal rather than ``None``: there is no period for the
+                record to file under and no safe value to invent.
         """
         saved = materialised_periods(self.periods)
         if not saved:

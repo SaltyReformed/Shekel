@@ -17,7 +17,8 @@ rendering both valued all 221 of the developer's accepted acts to draw a panel
 he was not reading -- 442,109 bytes of a 578,523-byte page.  Folding them back
 into one render would rebuild exactly that, so :func:`reconcile_page` builds
 the cards of ONE tab and takes the other four's counts from
-:func:`~._accepted_view.accepted_counts` and the pass itself.
+:func:`~._accepted_view.accepted_counts`, :func:`~._skipping.skipped_count`
+and the pass itself.
 
 **What each tab holds, and where its cards come from:**
 
@@ -25,27 +26,53 @@ the cards of ONE tab and takes the other four's counts from
 tab                  source
 ===================  ==========================================================
 To explain           the pass: :attr:`~._reads.ReviewSet.proposals`,
-                     ``creatable`` and ``recordable_inflows``, in three
-                     sections by what SUGGESTED the verb (**R-HP**)
+                     ``creatable``, ``recordable_inflows`` and
+                     ``answered_never``, in three sections by what SUGGESTED
+                     the verb (**R-HP**)
 Explained            :func:`~._accepted_view.accepted_register`, acts a person
                      ticked
 Filed by rules       :func:`~._accepted_view.accepted_register` narrowed to
                      the acts a standing rule performed (**R-GT**)
-Transfers            the pass's ``parked`` lines a source files as paying an
-                     account the owner holds -- a HOLDING state (**R-HQ**),
-                     never inbox work
-Skipped              the pass's ``parked`` lines the owner has answered *never
-                     a purchase* for, whose standing answer IS the disposition
+Transfers            the pass's ``parked`` lines, which a source files as
+                     paying an account the owner holds -- a HOLDING state
+                     (**R-HQ**), never inbox work
+Skipped              :func:`~._skipping.skipped_acts` over
+                     ``budget.statement_line_skips`` -- the owner's own
+                     decision that a line explains nothing (**R-JG**,
+                     **R-JH**), bounded and linked past like the settled tabs
+                     (**R-GX**)
 ===================  ==========================================================
+
+**THE SKIPPED TAB IS THE RESULT'S HOME, AND IT LANDS BEFORE THE CONTROL THAT
+FILLS IT** (plan step ``bank_import:X-gj-4c-2``), which is the order rulings
+**R-GY** and **R-HU** put those two in.  Its history is worth one paragraph
+because two of its states were wrong in different ways.  It first listed the
+pass's barred lines the owner had answered *never a purchase* for, on the
+argument that the standing answer WAS the disposition; ruling
+**bank_import:R-JH** refuted that -- *not a purchase* is not *explained by
+nothing* -- and ``X-gj-4c-1`` returned those lines to the inbox, which left
+the tab holding a hard-coded empty tuple.  It reads the store now, and **plan step
+``bank_import:X-gj-4b`` gave that store its first writer**:
+:func:`~._batch._apply_skips` calls :func:`~._skipping.skip_line`, so the
+count is whatever the owner has skipped rather than 0 on every account.
+*This said the count was still 0 until that step lit the verb, and the step
+has shipped.*  The point it was making survives unchanged: what the tab shows
+is a fact about the DATA rather than about this module, and whatever a door
+records, this tab renders.
 
 **A line with no available act never enters To explain** (**R-HQ**).  That is
 what makes the inbox reach zero: measured 2026-08-29 on the developer's own
 account, 9 of the 27 unexplained lines are card payments no screen in the app
-can resolve, and a queue that cannot empty is not a queue.
+can resolve, and a queue that cannot empty is not a queue.  **A line the owner
+answered *never a purchase* for HAS one** -- it keeps MATCH, and since plan
+step ``bank_import:X-gj-4b`` it HAS SKIP, which ruling **bank_import:R-JI**
+shuts only for a merchant a source files as paying an account the owner holds
+and so never for this class -- which is why **R-JH** puts it back in the inbox
+without breaching this.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
-frozen dataclasses out, no Flask import, no clock read.  The two reads it does
-perform take the owner and account the route proved, exactly as
+frozen dataclasses out, no Flask import, no clock read.  Every read it
+performs takes the owner and account the route proved, exactly as
 :func:`~._accepted_view.accepted_register` does.
 """
 
@@ -57,15 +84,15 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from ._accepted_view import REGISTER_LIMIT, accepted_counts, accepted_register
-from ._cards import (
-    CardSection,
-    LineCard,
+from ._card_sections import (
     act_sections,
-    parked_card,
+    skip_sections,
     to_explain_sections,
 )
+from ._cards import CardKind, CardSection, LineCard, parked_card
 from ._last_import import last_import
 from ._reads import review_set
+from ._skipping import skipped_acts, skipped_count
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from datetime import date
@@ -74,7 +101,6 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
 
     from app.services.bank_agreement import BankAgreement
 
-    from ._bars import ParkedLine
     from ._last_import import LastImport
     from ._reads import ReviewSet
     from ._scope import ReviewScope
@@ -104,23 +130,6 @@ class Tab(enum.Enum):
         """
         return _TAB_LABELS[self]
 
-    @property
-    def holds_settled_acts(self) -> bool:
-        """Return whether this tab's cards are ACTS rather than bank lines.
-
-        Plan step ``bank_import:X-gj-1c``.  **The one fact a template needs to
-        pick a partial**, and it is the service's rather than a Jinja
-        condition over the tab's name: which KIND a tab's cards are is already
-        stated as the tab's own fact (:attr:`~._cards.CardSection.cards`), and
-        the two kinds carry disjoint controls -- a bank line takes an OK
-        inside the Apply form, an applied act takes an Undo which is a form of
-        its own and may not nest inside one.
-
-        Returns:
-            ``True`` for :attr:`EXPLAINED` and :attr:`FILED_BY_RULES`.
-        """
-        return _TAB_HOLDS_ACTS[self]
-
 
 #: What each tab is called.  A table rather than a property full of branches,
 #: for the reason :data:`~._verbs._WORDS` is one.
@@ -130,19 +139,6 @@ _TAB_LABELS: "dict[Tab, str]" = {
     Tab.FILED_BY_RULES: "Filed by rules",
     Tab.TRANSFERS: "Transfers",
     Tab.SKIPPED: "Skipped",
-}
-
-#: Which tabs hold :class:`~._cards.ActCard` and which hold
-#: :class:`~._cards.LineCard`.  A TOTAL table beside :data:`_TAB_LABELS`
-#: rather than a membership test against two names, so a sixth tab added later
-#: fails loudly here -- exactly as :func:`_tab_sections`' dispatch does -- and
-#: cannot default into rendering a bank-line card for acts.
-_TAB_HOLDS_ACTS: "dict[Tab, bool]" = {
-    Tab.TO_EXPLAIN: False,
-    Tab.EXPLAINED: True,
-    Tab.FILED_BY_RULES: True,
-    Tab.TRANSFERS: False,
-    Tab.SKIPPED: False,
 }
 
 
@@ -296,17 +292,19 @@ class TabCount:
 class ReconcilePage:  # pylint: disable=too-many-instance-attributes
     """Everything the Reconcile page renders, for ONE of its five tabs.
 
-    Pylint: ``too-many-instance-attributes`` (9/7) -- **nine because the page
-    renders nine distinct things**: which tab is open, the hero, what the last
-    import did, the holding chips, the tab bar, the cards, the sweeps, the
-    footer's disclosure and what the account's opening already accounts for.
+    Pylint: ``too-many-instance-attributes`` (10/7) -- **ten because the page
+    renders ten distinct things**: which tab is open, WHICH KIND of card it
+    holds, the hero, what the last import did, the holding chips, the tab bar,
+    the cards, the sweeps, the footer's disclosure and what the account's
+    opening already accounts for.
     Every one of them is read by ``_statement_reconcile_body.html``, so the
     count is re-derivable rather than asserted; folding any pair would be the
     speculative nesting ``CLAUDE.md`` rule 13 forbids, and
     :class:`~._reads.ReviewSet` carries the same disable for the same reason.
-    *It read (8/7) until plan step balance:X-f3c-2b-2b added the ninth* --
-    a count in a rationale is a measurement, and this one went stale in the
-    same commit that made it stale.
+    *It read (8/7) until plan step balance:X-f3c-2b-2b added the ninth, and
+    (9/7) until ``bank_import:X-gj-4c-2`` added the tenth* -- a count in a
+    rationale is a measurement, and the first of those went stale in the same
+    commit that made it stale.
 
     **It carried an ``account_id`` until plan step ``bank_import:X-gj-1b``,
     and NOTHING read it** -- not a template, not the route, not a test.  Every
@@ -320,6 +318,18 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
 
     Attributes:
         tab: Which tab's cards :attr:`sections` holds (:class:`Tab`).
+        kind: Which KIND of card those sections hold
+            (:class:`~._cards.CardKind`) -- the ONE fact a template needs in
+            order to pick a partial, and it is set by the arm that BUILT the
+            cards (:func:`_tab_sections`) rather than looked up from a table
+            beside it.  **That placement is the whole of it** (developer
+            ruling **R-JX**): a ``Tab.holds`` property over a table was one
+            fact with two homes, agreeing only because a test said so, and a
+            table saying ACT over a dispatch building skips rendered the wrong
+            partial and 500'd on a field that is not there.  Here the two
+            cannot part.  **Stated even for a tab with no cards**, which is why
+            it is a page fact and not a section one: an empty inbox still
+            renders the Apply form and an empty Skipped tab still must not.
         hero: The four figures that answer *am I done* (:class:`Hero`).
         last_import: What the newest import on this account did
             (:class:`~._last_import.LastImport`), or ``None`` for an account
@@ -345,10 +355,11 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             :attr:`unexamined`, because unlike every sentence in that tuple
             this one ends in an ACT, and the template has to render that act
             as a link -- which is the one fact a service may not build
-            (:attr:`~._bars.ParkedLine.answer_door`).
+            (:attr:`~._bars.BarredLine.answer_door`).
     """
 
     tab: Tab
+    kind: CardKind
     hero: Hero
     last_import: "LastImport | None"
     chips: "tuple[HoldingChip, ...]"
@@ -377,35 +388,6 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             and self.hero.unpriced_after == 0
             and self.hero.to_explain == 0
         )
-
-
-def _parked_tab(parked: "ParkedLine") -> Tab:
-    """Return which holding tab one parked line belongs on.
-
-    **The bank's OBSERVATION decides, not the owner's answer**, and the two
-    bars are different kinds of fact (:class:`~._bars.CreationBar`): a source
-    filing this merchant as paying an account the owner holds is an
-    observation about where the money went, and *never a purchase* is a
-    decision they made.  A line carrying BOTH is a TRANSFER, because the
-    money did move between two accounts whatever the owner also said about it
-    -- and filing it under Skipped would tell them they had disposed of
-    money the app is still waiting to pair.
-
-    **A line carrying only the owner's answer is already SKIPPED**, by that
-    standing answer rather than by a stored disposition, which is why the
-    Skipped tab needs none of ``X-gj-4``'s store to have members.
-
-    Measured 2026-08-29 on the developer's own account: 9 of 9 parked lines
-    carry both bars, so every one is a transfer and the Skipped arm has never
-    rendered on his data.
-
-    Args:
-        parked: The :class:`~._bars.ParkedLine`.
-
-    Returns:
-        :attr:`Tab.TRANSFERS` or :attr:`Tab.SKIPPED`.
-    """
-    return Tab.TRANSFERS if parked.also_pays_an_account else Tab.SKIPPED
 
 
 def _sweeps(sections: "tuple[CardSection, ...]") -> "tuple[Sweep, ...]":
@@ -602,7 +584,7 @@ def reconcile_page(
     2026-08-29: ``review_set`` 0.136 s, ``accepted_counts`` one aggregate
     query, ``bank_agreement`` 0.108 s.
 
-    **The two settled tabs' CARDS are built only when one is open.**  Their
+    **A bounded tab's CARDS are built only when it is open.**  Their
     counts come from :func:`~._accepted_view.accepted_counts`, which is three
     aggregates over one indexed read; building them would value EVERY act on
     the account -- :data:`~._accepted_view.REGISTER_LIMIT` bounds what is
@@ -621,9 +603,12 @@ def reconcile_page(
             :class:`~app.services.balance_at.BalanceContext`, and only a route
             builds one of those either.
         tab: Which tab's cards to build (:class:`Tab`).
-        limit: How many SETTLED acts a settled tab may render, or ``None`` for
-            the whole record -- which is what the tab's own *show the other N*
-            link asks for (plan step ``bank_import:X-gj-1c``).  It defaults to
+        limit: How many rows a BOUNDED tab may render, or ``None`` for the
+            whole record -- which is what that tab's own *show the other N*
+            link asks for (plan steps ``bank_import:X-gj-1c`` and
+            ``X-gj-4c-2``).  Three tabs read it: the two settled ones and
+            Skipped.  *It was "how many SETTLED acts" until the developer
+            ruled the Skipped tab bounded at **R-JW**.*  It defaults to
             :data:`~._accepted_view.REGISTER_LIMIT`, and an act that NO LONGER
             HOLDS is never subject to it whatever this says: which acts the
             bound may reach is
@@ -660,20 +645,41 @@ def reconcile_page(
     # the index was derived over 248 cards and 11 periods for a value nobody
     # read.  ``accounts.statement_reconcile_match`` builds it now, once per
     # opened tab, which is where it is looked at.
-    parked = tuple(
-        (_parked_tab(one), parked_card(review, one))
-        for one in review.parked
-    )
-    # **The two holding tabs, keyed by the tab that owns them.**  A mapping
-    # rather than two tuples threaded side by side, so a third holding state
-    # -- ``X-gj-4``'s recorded disposition is the one already ruled -- adds a
-    # key here and an arm to :func:`_parked_tab`, and no signature grows.
-    holding = {
-        where: tuple(card for tab_, card in parked if tab_ is where)
-        for where in (Tab.TRANSFERS, Tab.SKIPPED)
-    }
-    transfers = holding[Tab.TRANSFERS]
+    # **The Transfers tab's cards, as a plain tuple.**  This was a MAPPING of
+    # tab to cards while two tabs were holding states, justified as "a holding
+    # state added later adds a key here and no signature grows" -- and plan
+    # step ``bank_import:X-gj-4c-2`` left it holding exactly one key, at which
+    # point that sentence was flexibility for a caller that does not exist
+    # (``CLAUDE.md`` rule 13).  Adversarial review named it; the dict is gone
+    # rather than re-justified, and :func:`_tab_sections` takes the tuple.
+    #
+    # **WHICH TAB A BARRED LINE IS ON IS THE PASS'S ANSWER, NOT THIS
+    # FUNCTION'S** (ruling **bank_import:R-JH**, plan step
+    # ``bank_import:X-gj-4c-1``).  A private ``_parked_tab`` read one ``parked``
+    # list and answered *Transfers or Skipped*; the second answer was wrong,
+    # and moving the split into :func:`~._leftovers._creatable_lines` is what
+    # makes it unrepresentable here rather than merely unreachable -- the lines
+    # it used to send to Skipped are not in ``parked`` at all, so they cannot
+    # be counted onto the Transfers chip, whose label carries a MAGNITUDE.
+    #
+    # **``Tab.SKIPPED`` IS NO LONGER IN THIS MAPPING**, and its absence is the
+    # whole of plan step ``bank_import:X-gj-4c-2``: it held a hard-coded empty
+    # tuple, because no reader existed over ``budget.statement_line_skips``.
+    # The hazard that carried -- ``X-gj-4b`` lighting the verb while the tab
+    # could show nothing, so a skipped line left EVERY surface with no way back
+    # -- is now unrepresentable rather than held off by a blocker in
+    # ``docs/plans/steps.md``: the tab reads the store
+    # (:func:`~._skipping.skipped_acts`), so whatever a door records, the tab
+    # renders.  Named by adversarial design review 2026-09-03 and closed here.
+    transfers = tuple(parked_card(review, one) for one in review.parked)
     counts = accepted_counts(scope.owner_id, scope.account_id)
+    # **A COUNT and not a list**, on every render whichever tab is open, which
+    # is the rule the two settled tabs' counts already keep: this page builds
+    # the cards of ONE tab.  **The two reads here share one SNAPSHOT** -- a
+    # query request runs at ``REPEATABLE READ`` (:mod:`app.db_transaction`) --
+    # so this figure and the open tab's own total cannot see different sets;
+    # :func:`~._skipping.skipped_count` records both legs of that.
+    skipped = skipped_count(scope.owner_id, scope.account_id)
     # **Distinct LINES, not proposals**, which is the spelling
     # :attr:`~._reads.ReviewSet.explained_by_a_proposal` records the reason
     # for: every tier builds ``lines=(line,)`` today, so the two agree on
@@ -687,11 +693,31 @@ def reconcile_page(
         })
         + len(review.creatable)
         + len(review.recordable_inflows)
+        # **The lines a standing *never a purchase* answer bars are WORK**
+        # (ruling **bank_import:R-JH**), so the hero counts them.  They were
+        # on a holding tab and counted nowhere here until plan step
+        # ``bank_import:X-gj-4c``.
+        #
+        # **It NARROWS a standing disagreement with the grid's badge and does
+        # not close it.**  :func:`~._undisposed.awaiting_review_count` has
+        # counted these lines all along -- a bar is not one of the four
+        # predicates it splits on -- so this figure moves toward it by
+        # ``len(answered_never)``.  What still parts them is ``parked`` and the
+        # impossible-day lines, which that count admits and this one does not,
+        # because the two answer different questions: it counts every line no
+        # ACT has answered, and this counts the ones the inbox is asking
+        # about.  Recorded rather than repaired here: which of the two a badge
+        # linking to this page should render is a decision, not a defect this
+        # step may take unilaterally.
+        + len(review.answered_never)
     )
 
-    sections = _tab_sections(scope, review, tab, holding, limit)
+    kind, sections = _tab_sections(scope, review, tab, transfers, limit)
     return ReconcilePage(
         tab=tab,
+        # **The kind comes back FROM the builder**, so the page cannot claim a
+        # kind its own cards are not (**R-JX**).
+        kind=kind,
         hero=_hero(agreement, to_explain),
         # **One row read, and one COUNT where that row exists.**  The
         # provenance line the locked direction prints beside the four figures
@@ -712,7 +738,7 @@ def reconcile_page(
             TabCount(tab=Tab.EXPLAINED, count=counts.by_hand),
             TabCount(tab=Tab.FILED_BY_RULES, count=counts.by_rule),
             TabCount(tab=Tab.TRANSFERS, count=len(transfers)),
-            TabCount(tab=Tab.SKIPPED, count=len(holding[Tab.SKIPPED])),
+            TabCount(tab=Tab.SKIPPED, count=skipped),
         ),
         sections=sections,
         # **Only the inbox sweeps.**  A settled act is undone one at a time
@@ -742,27 +768,50 @@ def _tab_sections(
     scope: "ReviewScope",
     review: "ReviewSet",
     tab: Tab,
-    holding: "dict[Tab, tuple[LineCard, ...]]",
+    transfers: "tuple[LineCard, ...]",
     limit: "int | None",
-) -> "tuple[CardSection, ...]":
-    """Return the cards of the open tab, and of no other.
+) -> "tuple[CardKind, tuple[CardSection, ...]]":
+    """Return which KIND of card the open tab holds, and its cards.
 
     **A dispatch over the five, exhaustive by construction**: every member of
     :class:`Tab` has an arm, so a sixth tab added later fails loudly here
     rather than rendering an empty page.
 
+    **It returns the KIND beside the sections, and that pairing is the point**
+    (**R-JX**).  Which kind a tab holds used to be a
+    ``Tab.holds`` property over a table -- one fact in two homes, in two
+    modules, agreeing only because a test said so.  The arm that BUILDS a kind
+    of card is the only thing that knows which kind it built, so it says so,
+    and :attr:`ReconcilePage.kind` carries the answer to the template.
+    ``CLAUDE.md`` rule 14: the remedy for two homes is to delete one.
+
+    **It is LOCAL rather than impossible**, and the distinction is the honest
+    one: an arm can still be written ``CardKind.ACT, skip_sections(...)``.
+    What it cannot be any more is written in a different FILE from the cards
+    it describes.  :class:`~._cards.CardKind` carries the full argument.
+
     Args:
         scope: The pass's scope, for the two reads the settled tabs need.
         review: The pass.
         tab: Which tab is open.
-        holding: The cards of each holding tab, keyed by that tab.
-        limit: How many SETTLED acts a settled tab may render, or ``None`` for
-            all of them.  It reaches only the two settled arms: the inbox is
-            bounded by what the pass found and a holding tab renders every
-            line in its state (see :func:`_holding`).
+        transfers: The Transfers tab's cards, built by the caller because the
+            hero's own chip is derived from them and a second build would be
+            two derivations of one list.
+        limit: How many rows a bounded arm may render, or ``None`` for all of
+            them.  **THREE arms read it** -- the two settled ones and Skipped
+            (**R-JW**) -- while the inbox is bounded by what
+            the pass found and a holding tab renders every line in its state
+            (see :func:`_holding`).  *This said it "reaches only the two
+            settled arms" while the line below already passed it to the skip
+            reader*, which adversarial review caught: a docstring contradicted
+            by its own function three lines down.
 
     Returns:
-        The sections, empty where the tab has no cards.
+        ``(kind, sections)`` -- the :class:`~._cards.CardKind` this tab's cards
+        are, and the sections themselves, empty where the tab has no cards.
+        **The kind is stated even where the sections are empty**, which is why
+        it rides here rather than on a section: an empty tab still renders the
+        Apply form or withholds it, and still picks an empty state.
 
     Raises:
         ValueError: When *tab* is not one this function knows, which cannot
@@ -770,9 +819,9 @@ def _tab_sections(
             defaulted so that adding one is a failure and not a blank screen.
     """
     if tab is Tab.TO_EXPLAIN:
-        return to_explain_sections(review)
+        return CardKind.LINE, to_explain_sections(review)
     if tab is Tab.EXPLAINED:
-        return act_sections(accepted_register(
+        return CardKind.ACT, act_sections(accepted_register(
             scope.owner_id, scope.account_id, limit, applied_by_rule=False,
         ))
     if tab is Tab.FILED_BY_RULES:
@@ -782,12 +831,20 @@ def _tab_sections(
         # beside Explained has to bound the same way and float an act that has
         # stopped holding to the top.  The two surfaces ask different
         # questions of one set, so each keeps its own reader.
-        return act_sections(accepted_register(
+        return CardKind.ACT, act_sections(accepted_register(
             scope.owner_id, scope.account_id, limit, applied_by_rule=True,
         ))
-    if tab in holding:
+    if tab is Tab.SKIPPED:
+        # **The recorded skips, read from their own store** (plan step
+        # ``bank_import:X-gj-4c-2``, ruling **bank_import:R-JG**).  Built only
+        # where the tab is OPEN, which is why the count above is a separate
+        # aggregate: this is the same discipline the two settled arms keep.
+        return CardKind.SKIP, skip_sections(
+            skipped_acts(scope.owner_id, scope.account_id, limit),
+        )
+    if tab is Tab.TRANSFERS:
         # **A holding tab withholds nothing**: it renders every line in its
         # state, because a count of card payments the owner cannot act on is
         # useless if it is also truncated.
-        return _holding(holding[tab])
+        return CardKind.LINE, _holding(transfers)
     raise ValueError(f"No Reconcile tab is built for {tab!r}.")

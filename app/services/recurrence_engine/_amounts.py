@@ -11,27 +11,37 @@ existed, so "make this row match its template again" could only be spelled as
 "throw it away and build another" -- which took the owner's purchases, notes
 and flags with it (finding **N-292**).
 
-**THIS MODULE NO LONGER PRICES A PAYCHECK, and that is plan step X-au-d.**  It
-carried ``_get_salary_profile`` and ``_get_transaction_amount``: the second ran
+**THIS MODULE PRICES NOTHING AT ALL, and that is plan step X-au-e.**  X-au-d
+took the paycheck: this module carried ``_get_salary_profile`` and
+``_get_transaction_amount``, the second running
 ``paycheck_calculator.calculate_paycheck`` over the owner's whole schedule and
-stored the answer in ``estimated_amount``, which ruling **R-FI** calls a cache
+storing the answer in ``estimated_amount``, which ruling **R-FI** calls a cache
 of a derivation and finding **N-224** measured as an app holding two answers to
-one question.  A salary-linked template's row is now DECLARED derived
-(:func:`_generated_amount_ownership`) and stores no figure, so a ROW's amount
-has exactly one producer --
-:class:`app.services.income_service.SalaryPricing`, read through amount rule 2.
-(The projection itself is still spelled twice more, on the salary page and the
-cockpit: finding **N-443**.)
-**A generator that prices nothing cannot mis-price**, which is what retires the
-whole class of defect ``a3f8b1c40d92`` was written to repair: the ``$502.45``
-that a window-narrowed period list put into one stored salary row.
+one question.  What that step LEFT was a fork -- a definition that states its
+price handed its rows that figure to OWN -- and X-au-e deletes the fork rather
+than one of its arms.  Every generated row is DERIVED now, priced by its
+definition's own effective-dated series as of the row's OWN due date (amount
+rule 3, ``template_amount_service.amount_as_of``).
+
+**A generator that prices nothing cannot mis-price.**  That retires the class of
+defect migration ``a3f8b1c40d92`` was written to repair -- the ``$502.45`` a
+window-narrowed period list put into one stored salary row -- and it is what
+dissolves two findings rather than fixing them:
+
+* **N-247**, one date under two predicates: a template amount edit's sweep
+  selects rows by their pay PERIOD's end while the series answers by a row's own
+  DUE date, so an edit could rewrite a row whose due date preceded the date it
+  stated.  A sweep that writes no figure decides nothing about money.
+* **N-244**, the back-dated re-price: this module and the conflict chooser were
+  its two writers of today's price onto a past row, and neither writes one now
+  (``recurrence_engine._conflicts`` hands a row back to its definition instead
+  of to a figure).
 """
 from datetime import date
 from typing import NamedTuple
 
 from app.enums import AmountSourceEnum
 from app.models.amount_ownership import AmountOwnership
-from app.services import template_amount_service
 from app.services.amount_ownership import derived_ownership
 from app.services.recurrence_engine._plan import compute_due_date
 
@@ -77,14 +87,14 @@ class DerivedRowFields(NamedTuple):
     :class:`~app.models.amount_ownership.AmountOwnership` is ONE attribute, so
     this class states the row's whole ownership or none of it.
 
-    **What the splat can still do is hand a DERIVED row back to its owner**,
-    which is ledger row **N-437** and is X-au-e's to answer -- that step stops
-    generation pricing rows at all, at which point this class carries no amount
-    and the question has no site left to ask it at.  It is unreachable today
-    for a reason the DATABASE holds rather than a census: the maintain pass
-    selects on ``template_id``, and ``ck_transactions_one_pricing_link`` makes
-    that column exclusive with ``transfer_id``, which is the only link whose
-    rows are derived before X-au-e runs.
+    **The splat can no longer hand a DERIVED row back to its owner, and that
+    is structural rather than guarded** (plan step **X-au-e**, the condition
+    finding **N-437** was closed under).  This field held one of two values
+    while generation still priced: ``own`` over a scalar for a definition that
+    stated its price, ``derived`` for one whose price was computed.  Only the
+    second remains, so the value this class can carry is a CONSTANT and there
+    is no arm left that writes a figure onto a row -- the question has no site
+    to be asked at rather than an answer that happens to be right.
 
     Attributes:
         account_id: The account the row's money moves through, from the
@@ -101,13 +111,14 @@ class DerivedRowFields(NamedTuple):
         category_id: The template's category, or ``None``.
         transaction_type_id: Expense or income, from the template.
         amount_ownership: WHERE this row's amount comes from, as ruling
-            **R-FI**'s one attribute rather than a figure
-            (:func:`_generated_amount_ownership`).  A definition that STATES
-            its price gives the row that figure to own; one whose price is
-            COMPUTED -- a salary-linked template since plan step X-au-d -- gives
-            the row a declaration and no figure at all.  Plan step X-au-e moves
-            the remaining templates onto their own price series, after which
-            every generated row is derived and this field states one shape.
+            **R-FI**'s one attribute rather than a figure.  Since plan step
+            X-au-e it states ONE shape for every generated row -- ``derived``
+            naming :attr:`~app.enums.AmountSourceEnum.TEMPLATE` -- so the row
+            carries a declaration and no figure, and its definition's own
+            effective-dated series prices it as of its due date.  It was a
+            fork on ``template_amount_service.owns_its_amount`` until that
+            step, and the arm that fork selected is what stored the copy the
+            cutover deleted.
         due_date: Derived from the rule and the period by
             :func:`compute_due_date`.
     """
@@ -137,7 +148,7 @@ def _derive_row_fields(template, rule, period):
     the owner's whole schedule -- four of the engine's judgements read it, and
     narrowing it to a write window is what stored one salary row ``$502.45``
     low (migration ``a3f8b1c40d92``) -- so the requirement did not go away; it
-    MOVED, to :meth:`app.services.income_service.SalaryPricing._net_by_period`,
+    MOVED, to :meth:`app.services.income_service.SalaryPricing._breakdown_by_period`,
     which derives the calendar it projects over and is the amount model's one
     walk to a paycheck.  Nothing left here reads a period beyond the one it is
     dating a row in.
@@ -158,53 +169,6 @@ def _derive_row_fields(template, rule, period):
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        amount_ownership=_generated_amount_ownership(template),
+        amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
         due_date=compute_due_date(rule, period),
     )
-
-
-def _generated_amount_ownership(template):
-    """Return WHERE a row generated from *template* takes its amount from.
-
-    **Ruling R-FI's two states, asked of the DEFINITION** (plan step
-    **X-au-d**).  A definition either STATES its price or has its price
-    COMPUTED by something else, and that one question decides both halves of a
-    generated row's amount:
-
-    * a definition that states its price hands the row that figure to OWN,
-      which is what every generated row did before this step; and
-    * a definition whose price is computed hands the row a DECLARATION -- the
-      ``template`` relation -- and no figure at all, so the computation has one
-      home and the row cannot hold a stale copy of it.
-
-    **The question is ``template_amount_service.owns_its_amount``, not "is this
-    salary-linked", and the difference is rule 14.**  That predicate is already
-    the app's single eligibility test for a stated price -- the write door, the
-    backfill and every display apply it -- and for a transaction template it IS
-    "no active salary profile names this template".  Spelling the salary test
-    again here would be a second statement of one rule, which is exactly the
-    duplication this step exists to remove; and it would go stale at plan step
-    X-au-e, where the answer stops depending on salary at all.
-
-    **A salary-linked template's ``default_amount`` is vestigial and stays
-    so.**  Nothing reads it for such a template after this step: the row it
-    used to seed is declared instead, and amount rule 2 prices the row from the
-    profile.  It is still what the definition falls back to the moment the
-    profile is archived, because ``routes/salary/profiles.delete_profile``
-    opens the template's price series AT that scalar in the same unit of work
-    (plan step X-au-a) -- so an archived profile leaves rows a definition can
-    still price rather than rows nothing can.
-
-    Args:
-        template: The
-            :class:`~app.models.transaction_template.TransactionTemplate`
-            being generated from.
-
-    Returns:
-        The :class:`~app.models.amount_ownership.AmountOwnership` a row of this
-        definition takes: ``own`` over the template's ``default_amount``, or
-        ``derived`` naming :attr:`~app.enums.AmountSourceEnum.TEMPLATE`.
-    """
-    if template_amount_service.owns_its_amount(template):
-        return AmountOwnership.own(template.default_amount)
-    return derived_ownership(AmountSourceEnum.TEMPLATE)

@@ -183,7 +183,7 @@ group the same work by SUBJECT; this groups it by CAUSE.**
 |---|---|---|
 | 1 | **the anchor half** | The only remaining work that moves a figure the developer reads, and since 2026-08-13 it ABSORBS block 5: the cutover's residual is meaningless until clearing is a fact and the dates are the bank's, so the importer's first leaf runs inside this block rather than after the card arc |
 | 2 | **the pay-calendar door** | Its gate CLEARED 2026-08-05 when the X-f1 cluster reached production (`8d812662`): `accounts.current_anchor_period_id` is GONE rather than going, which is the fact X-ad's trace turned on. The "ONE PR" pairing with X-x ENDED at **R-EY** -- X-x is held behind the writer (**R-DE**) and behind the pay-calendar arc's `C3`, which owns the repair its refusals point at |
-| 3 | **the posting restructure** | `X-ai-s` is held until the cutover, which deletes the correction family it would buy attribution for; `X-d` is PARKED on **N-155**, whose fix is X-ai's own placement; `X-ak` carries **N-193**, a reproducible unhandled 500 on a money route |
+| 3 | **the posting restructure** | `X-ai-s` is held until the cutover, which deletes the correction family it would buy attribution for; `X-d` is PARKED on **N-155**, whose fix is X-ai's own placement; `X-bn` carries **N-193**, a reproducible unhandled 500 on a money route, split out of `X-ak` 2026-09-03 |
 | 4 | **the credit-card arc** (own document) | `CC1b`'s fold is specified against the reset semantics **R-EB** deletes at the cutover, and `CC3b` derives a settle from `paid_at`, which X-f1b deleted |
 | 5 | **the bank import** | ABSORBED INTO BLOCK 1 on 2026-08-13. Its 2026-08-03 position -- after the card arc, so one matching rule covers checking and card rows -- rested on the cutover not needing it; measurement refuted that, and the developer's exports carry both accounts anyway, so the one-rule argument survives inside block 1 |
 | 6 | **the read-path residue** | Nothing blocks on it and its footprint is disjoint from the write path: tag `xd-attempt-1-parked-n155`'s 30 `app/` files against tag `xx-attempt-1-held-rde`'s 26, **zero overlap**, measured. UNGATED, which is what lets `X-l` run early -- and it must, because it is block 10's `C2` and recurrence `R-F12` as well |
@@ -277,6 +277,12 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
           **ACT 4b IS OPEN AND BLOCKS THE PROCEDURE**: the developer rejected booking a `$500.00` expense that never happened (2026-09-01, "I don't like faking or hiding money"), and neither alternative offered survives the same principle -- recording nothing hides the outflow in an equity correction, and **R-HK** rejected the earlier opening on its own grounds. The movement is Checking into another account's OPENING EQUITY, a shape the app cannot record; the from-scratch design is owed before this step can run.
           **Acceptance is `$0.00` on the opening day the measurement prints SEPARATELY -- the figure act 3 exists to set -- plus ZERO mismatches on every SCORED day for the cash-fold and cutover arms**, rehearsed 14 of 14 on each. The RENDERED arm is excused at 13 of 14: its `$0.32` is **R-HM**'s one-day accrual, a standing `$20.49` over five accounts this step does not own.
           Those 14 are ELEVEN bank days above the books plus THREE the owner asserted on that the bank never names. NOT the export's 17 stated days: five fall below the books and **R-HG** puts them inside the opening equity, and the opening day is scored by no arm because nothing asserts on it -- so a predicate naming 17 is one no run can meet.
+        * [ ] **X-f3c-2b-2d** `feat(accounts): an archived account reaches the restatement door` -- closes
+          **N-430**. `X-f3c-2b-2a` gave the door two entrances (**R-IE**) and an ARCHIVED account reaches
+          neither: the archived card carried ZERO hrefs naming its account while `/accounts/2/edit` and
+          `/details` both answered 200 by URL, five link sites not two. The account-10 runbook would
+          otherwise unarchive and re-archive the twin; this leaf links *Restate* from the archived card
+          first and is ranked before the repair.
       * [ ] **X-f3c-2b-3** `feat(cash): a balance is not declared for a day the books
         did not exist on` -- the ASSERTION side of the books boundary, which is
         the one door **X-f3c-2b-1** left unbounded: `resolve_observation_day`
@@ -333,15 +339,23 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   **N-169 closed already** at `C2-d` (`3e6cd4ec`). **GATES the recurrence redesign's `R5`**, which
   edits `cash_ledger/_events.py` inside this deletion set -- a column rename in a file this step
   deletes from is avoided by ordering rather than by merge.
-* [ ] **X-bj** `feat(cash): a level is an observation, never a reset` -- ruling **R-IS**. The
-  owner's true-ups and the bank's statement closings become ONE evidence-ranked relation of
-  `(account, day, amount, source, evidence)`, so **N-314** is closed by a schema rather than by a
-  precedence rule a reader has to remember. A level moves no balance; it yields
-  `discrepancy = observed - computed`, and zero is the healthy state. `StatementBalanceEvidenceEnum`
-  and `weaker_of` already rank exactly this. **The bank half cannot move in as it stands**: an
-  assertion is append-only at the DATABASE tier (**R-HY**, **R-IC**) while `release_anchors_from`
-  releases an anchor by UPDATE, so a release becomes an APPENDED superseding row -- which keeps the
-  audit trail the update destroys. The OPENING stays a separate constitutive fact (**R-GX**).
+* [ ] **X-bj** `feat(cash): a level is an observation, never a reset` -- the DECOMPOSED parent of
+  the level relation (**R-IS**), split 2026-09-03 by ruling **R-JN**: as written it claimed *a level
+  never moves a balance* eight ranks before `X-f3c-5` stops an assertion resetting a plain account.
+  It ticks with its second leaf; it subsumed `bank_import:X-gh` and took `X-f6g`'s coverage pass.
+  * [ ] **X-bj-1** `feat(cash): one level relation` -- the first half (**R-JN**). The owner's true-ups
+    and the bank's statement closings become ONE evidence-ranked relation of `(account, day, amount,
+    source, evidence)` -- `StatementBalanceEvidenceEnum` and `weaker_of` already rank this -- a release
+    becomes an APPENDED superseding row (**R-HY**, **R-IC**), and the existing reset READS the relation
+    until `X-f3c-5` deletes it, so one observation has one home through the interval. **It defines
+    COVERAGE once**: a level row carries its source's span and a day is covered when a span reaches it,
+    the pass `bank_import:X-f6g` owed; **N-343** is answered by choosing within the RUN, and
+    **N-434**'s column half lands here (its parser half with `X-f6b`). The OPENING stays a separate
+    constitutive fact (**R-GX**). A migration.
+  * [ ] **X-bj-2** `feat(cash): a level is an observation, never a reset` -- the second half, riding
+    **X-f3c-5** (**R-JN**): once the flip stops an assertion resetting a plain account, a level moves no
+    balance and yields `discrepancy = observed - computed`, zero being healthy. It closes **N-314**: the
+    bank's daily closings are OBSERVATIONS, neither assertions that reset nor restatements.
 * [ ] **X-bi** the DECOMPOSED parent of the MOVEMENT UNIFICATION (**R-IT**), split five ways by the
   adversarial review of 2026-09-01 that refuted its first cut. **Every plan item is satisfied by
   zero or more MOVEMENTS**: a bill is the one-movement case, an envelope the many-movement case,
@@ -351,11 +365,12 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   a PLAN and a RECORD with a status column pretending one becomes the other -- 161 of 238 fold facts
   on Checking are plan rows whose status was flipped, and the movement record is `$4,270.78` from
   the bank over 155 days.
-  * [ ] **X-bi-1** `tracks_purchases` becomes a STORED column with one writer, backfilled from each
-    row's template. It is the app's own envelope predicate and it defers to the TEMPLATE, so keying
-    anything on `transactions.is_envelope` reads 4 envelopes where there are 238 -- the error a
-    first draft of this family's migration made, which would have over-minted 30 rows worth
-    `$7,680.86`.
+  * [ ] **X-bi-1** `tracks_purchases` DERIVES through ONE accessor from the template's flag and is
+    never stored (**R-JQ**, 2026-09-03; the first cut said *a STORED column backfilled from each
+    row's template*, which is the cache **R-IY** deletes: a template edit would stale every row).
+    Every `transactions.is_envelope` reader moves onto the accessor, because keying anything on
+    that column reads 4 envelopes where there are 238 -- the error a first draft of this family's
+    migration made, which would have over-minted 30 rows worth `$7,680.86`.
   * [ ] **X-bi-2** entries gain the full movement column set: a category, a type, `scenario_id` --
     which `cash_ledger/_amount_source.py` REFUSES a mismatch on -- and the settle-day basis pair.
     Additive; nothing reads them yet and the downgrade is a column drop.
@@ -469,12 +484,6 @@ would make a "derived rows have a link" CHECK refuse a definition delete. `budge
 ships that constraint, and the alternative is worse -- a persisted row with no link is unpriceable
 in SILENCE where a refused DELETE is loud.
 
-**IT BEARS ON A RANKED STEP, FLAGGED NOT RESOLVED.** `X-bi-1` makes `tracks_purchases` a STORED
-column *backfilled from each row's template*, and that value DERIVES -- the property defers to the
-TEMPLATE's `is_envelope` for a generated row. A template edit would stale every stored row, which is
-the class `R-IY` deletes. *Backfilled* is a cache word; a FREEZE would be a record, and the step
-does not claim one. **The developer has not been asked whether X-bi-1 survives R-IY**, and this
-sentence exists so nobody builds it believing the question was never raised.
 
 * [ ] **X-au** `feat(cash): a row's amount is either its own or derived` -- the DECOMPOSED parent
   (**R-FI**), carrying **N-40**, **N-224**, **N-228**, **N-238**. It ticks with the last of its
@@ -495,17 +504,12 @@ sentence exists so nobody builds it believing the question was never raised.
   **Two obligations RESTATED from leaves archived 2026-08-26**, binding the leaves that REMAIN: a
   derived row's answer must be INVARIANT under a change to its own amount column, agreement being
   blind to the resolver (X-au-b); and the basis is REQUIRED on both `settle_amount` twins, pinned once in `cash_ledger.baseline_amount_basis` (X-au-j).
-* [ ] **X-au-c** the amount model's SEAM -- the DECOMPOSED parent of three leaves (developer,
-  2026-08-12), because the census this step's own specification demanded as its first act came back
-  at ~25 code reads across 15 modules and it is not one session's work. The split puts the schema
-  where nothing can move a figure, then the readers where every change is provably byte-identical,
-  then the money. It ticks with the last of them.
-  **Three of its leaves left for `archive/x_au_c_as_built_2026-08-26.md`** under rule 5 on
-  2026-08-26. **What still binds the leaves that REMAIN**, restated because rule 5 forbids a live
-  sentence depending on an archived one: `get_payment_history` may never take the resolver and
-  nothing reachable from `loan_payment_service` may NAME `cash_ledger`, which is why the
-  producer-free arms live in `row_valuation.py`; and the amount rules read no STATUS, the basis
-  pinning `date.today()` being `X-i2`'s money rather than theirs.
+* [x] **X-au-c** `3d1379d1` -- the amount model's SEAM, the DECOMPOSED parent of three leaves
+  (developer, 2026-08-12); ticked with `X-au-c3`, its last. Records: `archive/x_au_c_as_built_2026-08-26.md`
+  and `archive/eight_shipped_steps_2026-09-01.md`. **What still binds LATER steps** (rule 5 forbids a
+  live sentence depending on an archived one): `get_payment_history` may never take the resolver;
+  nothing reachable from `loan_payment_service` may NAME `cash_ledger` (the producer-free arms live
+  in `row_valuation.py`); and the amount rules read no STATUS -- the `date.today()` basis is `X-i2`'s.
   * [x] **X-au-c3** `3d1379d1` -- a settle RECORDS what moved rather than refreshing an amount. What a later leaf must obey is in this phase's preamble, not here. Record in `archive/eight_shipped_steps_2026-09-01.md`.
 * [x] **X-au-k** `7315ecd9` -- a row's amount ownership is ONE mapped attribute over a value
   object total across ruling R-FI's two states (**R-IW**); the `_FIGURE_COLUMNS` registry is
@@ -517,12 +521,12 @@ sentence exists so nobody builds it believing the question was never raised.
   filed -- the archive re-price (**N-261**, `-$9,677.24`), a templates-form 500 (**N-253**),
   `_freshest_amount`'s conjunct, and **N-444**. Two engines, one pass, one fence fewer.
   Record in `archive/x_au_d_as_built_2026-09-03.md`.
-* [ ] **X-au-e** `refactor(recurrence): a template row reads its template's series` -- the TEMPLATE
-  cutover, onto X-au-a's series. Generation stops pricing, 511 rows go NULL, and regeneration's amount
-  arm plus the conflict chooser's keep-vs-use decision are deleted: a hand-edited month owns its
-  figure, so the collision the chooser mediates cannot occur (developer, 2026-08-11). **This is where
-  the measured `$502.45` defect class dies** -- `_get_transaction_amount` priced a third paycheck from
-  a truncated period list, and a generator that prices nothing cannot mis-price.
+* [x] **X-au-e** `c000d7f6` `b846386a` -- a template row reads its template's series. 525 rows
+  declared, generation's last pricing fork deleted, and the `$502.45` class dead with it: a
+  generator that prices nothing cannot mis-price. Closed **N-244**, **N-247**, **N-444**. **This
+  bullet's own claim that the chooser's keep-vs-use decision dies was REFUTED** -- it keeps its
+  offer and loses only its FIGURE (**R-JD**), because `_conflicts` is the one door in `app/` that
+  clears `is_override`. Record in `archive/x_au_e_as_built_2026-09-03.md`.
 * [ ] **X-au-g** the DECOMPOSED parent of the LOAN-PAYMENT cutover, split 2026-08-31 into four
   leaves: the pricing cycle's deletion, the tier move that unwinds the amount model's reach into the
   loan service, the ruling that puts a loan's terms on the installment they govern, and the cutover
@@ -583,8 +587,11 @@ sentence exists so nobody builds it believing the question was never raised.
   keeps it in one. The leg should DERIVE from the parent it already names --
   **except on a DERIVE-MODE LOAN PAYMENT, the one case where a leg's derivation is NOT its parent's
   amount**: handing that back reverted an owner's `$1,325.00` to the contract's `$1,499.10`, twice,
-  `$174.10` each. **That exception is this step's whole design question and it is UNRULED**; do not
-  assume the simple answer.
+  `$174.10` each. **That exception is RULED** (**R-JM**, 2026-09-03): a leg reads its PARENT and the
+  parent is where owner-or-contract is decided (**R-IO**), so a typed figure on a derive-mode payment
+  is the pair's OWNED amount at the parent (**R-IW**) and *derive-mode with a typed figure* is not a
+  representable state. Worked: owner types `$1,325.00`, parent and both legs `$1,325.00`; nothing
+  typed, parent reads the contract's `$1,499.10` and so do both legs.
 * [ ] **X-au-l** `refactor(cash): the LINK is the relation` -- DELETE `amount_source_id`
   (**R-IY**, **R-IZ**). The relation is derivable from which pricing link the row carries and
   `ck_transactions_one_pricing_link` already makes those exclusive, so the column, `ref.amount_sources`,
@@ -595,7 +602,10 @@ sentence exists so nobody builds it believing the question was never raised.
   today its own. Closes **N-440**.
 * [ ] **X-au-f** `refactor(transfers): a generated transfer's amount is its definition's` -- the
   PARENT half of the transfer cutover. `transfers.amount` resolves from the template series for a
-  generated transfer.
+  generated transfer. **Blocked by `X-bl`** (**R-JF**): the cutover's control must be able to fail
+  before the cutover starts. It also closes **N-450**, the two `transfer_templates.default_amount`
+  kinds of `N-243`'s dissolved census -- a derive-mode loan payment's, repaired only by a manual
+  click, and an investment contribution's, repaired by nothing -- both the parent's stored figure.
   **ITS SHADOW HALF SHIPPED AT `X-au-g-2c-2` (`1f2b98a4`, ruling R-IN)** -- a shadow resolves from
   its parent, the copy in `update_transfer` and the drift corrector in `restore_transfer` are both
   deleted, and **Transfer Invariant 3's AMOUNT clause is STRUCTURAL for a DERIVED shadow -- not for
@@ -615,30 +625,59 @@ sentence exists so nobody builds it believing the question was never raised.
   `loan_payment_service._manual_shadow_amount:660` until X-au-g-2a moved it; the line number was
   already stale before the move, so the module path is cited without one.*
 
-* [ ] **X-au-h** `refactor(transactions): is_override says one thing` -- closes **N-238**. The flag
-  carries FOUR facts, not the two the first draft named, and an adversarial review found the other
-  two. (1) the user RE-PRICED the row and (2) the user MOVED it to another period -- both written at
-  `routes/transactions/mutations.py:295`; (3) this row SURVIVES the regeneration sweep
-  (`_recurrence_common.py:375`, and `pay_period_admin.py:821` escalates it to "deleting this period
-  loses data"); and (4) this row is EXEMPT from the partial unique index, whose predicate is literally
-  `is_override = FALSE` (`models/transaction.py:199-203`, `models/transfer.py:64`) --
-  `carry_forward_service/_execute.py:352` sets the flag purely to stay index-safe. **So the naive
-  absorption is unsafe and measured so**: a moved-but-not-repriced row would carry a NULL amount, fall
-  back INSIDE `idx_transactions_template_period_scenario`, and collide with the target period's
-  canonical generated row. Meanings 3 and 4 need representation before the flag can go.
-* [ ] **X-av** `refactor(salary): the pay rate is a dated per-paycheck gross` -- closes **N-237**
-  and **N-391**. **Re-scoped 2026-08-29 by ruling R-HW(b)**, which changed its UNIT as well as its
-  dating: the stored fact becomes what ONE paycheck pays, effective-dated, and `annual_salary`
-  becomes `gross x periods_per_year` -- derived and shown beside the entry, never a second stored
-  figure. Rule 1 of R-FI still applies to the dating half: `apply_raises(base_salary, raises,
-  as_of)` resolves RAISES as-of while the base is the base for all time, so the app cannot tell "I
-  got a raise" from "I typed the wrong salary". **The unit half is where the bank evidence points**
-  -- the owner's stub states BOTH `$91,675.00` a year and `$3,526.00` a paycheck, and `26 x
-  $3,526.00 = $91,676.00`, so the source contradicts itself and the app resolves it silently. A
-  stored per-paycheck figure can hold the number that actually arrives and SHOW the annualisation,
-  which makes the contradiction visible instead. **It does not presume the gross is the culprit**:
-  N-391 records that a `$0.04` error in any of the twelve hand-entered deductions reproduces the
-  same net, so the step opens with an operator re-reading one stub.
+* [ ] **X-bl** `test(harness): a cutover's control can fail` -- ruling **R-JF**; closes **N-445**,
+  **N-432**. `verify_amount_resolver.py`'s invariance control skips every DERIVED row by construction
+  (its loop continues on a `NULL` `estimated_amount`, which the ownership check makes NULL on every
+  derived row), so two shipped as-built records quote *409* and *934 derived rows invariant* as
+  evidence of nothing. The rebuilt control perturbs the SOURCE -- a version's amount, a parent
+  transfer's figure, a salary profile -- and asserts derived rows move by exactly that while OWN rows
+  do not. **N-432 is the same class one harness over**: the loan oracle's reference is built through
+  91 production modules, 52 of them for a value it DISCARDS; it takes its inputs directly instead (a
+  literal `LoanInputs` was refuted as a hand-rolled replay). **Blocks `X-au-f`**: a control that
+  cannot fail grades nothing, and `X-au-d`'s as-built takes the correction `X-au-e`'s carries.
+* [ ] **X-bm** `perf(loaders): every batch caller applies the pricing load` -- closes **N-296**.
+  `pricing_load_options` publishes the EIGHT chains a batch pricing needs; THREE loaders apply it
+  and SEVEN batch callers do not (companion, pulse, calendar, asset contributions, projection inputs,
+  the loan payment context, the render helpers). It bit at `X-au-e`: an unguarded caller pricing 926
+  rows went **146 -> 260** statements while a guarded one stayed at **8 and 8**, per DEFINITION, live
+  on every render of those surfaces. Pure loader work; before `X-au-f`, which inherits guarded ones.
+* [ ] **X-bn** `fix(locks): the user write lock is the FIRST lock a transaction takes` -- closes
+  **N-193**, **N-202**, split out of `X-ak` because their subject is the LOCK and X-ak's is the
+  mirror. Both are deadlocks REPRODUCED on a real PostgreSQL: a settle takes row locks first and
+  reaches `lock_user_writes` afterwards while a schedule rebuild locks first and CASCADE-deletes the
+  rows the settle holds; `create_account` INSERTs before it locks while a rename locks first. The fix
+  is the invariant `user_write_lock`'s docstring states -- acquisition at the write-SERVICE entry (the
+  status seam, `update_transfer`, delete, restore, `create_account`); `X-f1c4b` moved the anchor
+  doors, this moves the rest. Own review pass: a behaviour change on every write path.
+* [ ] **X-bo** `perf(postings): a purchase CREATE re-emits only its own legs` -- closes **N-406**.
+  `sync_transaction_postings` reconciles the parent's whole purchase FAMILY on every entry change,
+  which **R-FM** needs for a re-category -- but on a CREATE no sibling changed, so filing N purchases
+  into one line is quadratic: 51 acts in one envelope, **1,326 calls, 5,919 SQL**, per act
+  **0.051s -> 0.195s**, `$0.00` of drift (clone 2026-08-31). The narrower door exists,
+  `sync_purchase_postings`; **the step's first act is the ruling** on whether a CREATE may take it for
+  the new purchase plus the parent's leg. Not `X-d`'s, which sits behind the cutover.
+* [ ] **X-bp** `refactor(templates): a template's default amount is its series` -- closes
+  **N-446**. `TransactionTemplate.default_amount` duplicates the amount SERIES with **17 Python and 6
+  template readers**, among them `obligations_aggregator.py`, which SKIPS a row when the column is
+  `None` or `0`; three live dependencies (a downgrade, `archive_profile`, the conflict chooser); and
+  for a SALARY template two routes write it as two quantities, NET and GROSS. No step deleted it and
+  `routes/templates/crud.py` claimed `X-au-e` would until PR #210. The column goes (**R-IY**), the 23
+  reader sites read the series, and the downgrade restores it from the series' opening version.
+*`X-av` (the dated per-paycheck gross) and `X-at` (the tax year) moved to the `salary` arc on
+2026-09-03 (**R-SAL1**); their specifications are `../../plans/implementation_plan_salary.md`,
+section 4, under their unchanged ids.*
+
+* [ ] **X-bq** `refactor(transactions): the flag's write set matches its meaning` -- the follow-up
+  `X-au-h` created by shipping. That step made `is_override` MEAN one thing (*this row is the
+  owner's, not the rule's*, **R-JR**) without making its WRITE SET match: `due_date`, `name` and
+  `category_id` are `DerivedRowFields` members a popover can edit, and none of them raises the
+  flag, so a row the owner has detached from its rule does not say so. The other half is
+  **N-238**'s untouched remedy -- the column still records a re-price and a period move
+  indistinguishably, and the move needs its own representation before the flag can be deleted.
+  Carries **N-238**, **F-11**, **N-245**, **N-246**, and **N-448**'s closed record.
+* [x] **X-au-h** `825fd791` -- **`is_override` says ONE thing** (*this row is the OWNER's, not the rule's*) and authorship is a fact the PAYLOAD carries (**R-JR**); migration `e7c3a1f9b482` dropped the flag from the OCCURRENCE-keyed unique index, keeping it on the undated one. Closed **N-248**, **N-436**, **N-448**; opened **N-451**, **N-452**.
+  **What a LATER step must still obey**: **N-238** stays OPEN and NARROWED -- the flag still records a re-price and a period move indistinguishably, and deleting it still needs the move represented first; **F-11**, **N-245** and **N-246** stay open here, N-246 SHARPENED because `due_date`, `name` and `category_id` are derived fields a popover edits without raising the flag.
+  The four-fact specification this entry replaced over-counted, and its safety argument named `idx_transactions_template_period_scenario`, which R17 DROPPED -- true of production (35 revisions behind) and false at HEAD, with the collision surviving for UNDATED rows only.
 * [x] **X-aw** `078077db` -- a paycheck's gross is a RATE (**R-HW**), so **N-239** died by construction. Closed its horizon half; opened **N-390** and **N-391**. Record in `archive/four_shipped_steps_2026-08-30.md`.
 * [x] **X-bh-1** `b955d0c8` -- the paycheck engine reads the owner's CALENDAR, so **D25**'s narrow context is unrepresentable rather than forbidden in prose. Opened **N-394**, **N-395**, **N-396**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
 * [x] **X-bh-2** `49fdfb91` -- the rhythm runs BACKWARD too (**R-IA**), bounded by a stored registration; **`NULL` means NOT STATED** (**R-IF**). Closed **N-390** and **N-396**; opened **N-398**, **N-399**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
@@ -837,7 +876,9 @@ sentence exists so nobody builds it believing the question was never raised.
     figure can move and the harness is the proof. **Its tier is WIDENED by N-115** (ruling **R-BU**, which SEQUENCED the residual double load here
     rather than deferring it): the dashboard tracks
     section pays twice per render for three more loaders, and the expensive one is **two full
-    `calculate_paycheck` runs (7.2 ms / 7 SQL for the second alone)**.
+    `calculate_paycheck` runs (7.2 ms / 7 SQL for the second alone)**. **`salary:C12` and this step
+    decide for each other** (that arc's document, section 0): the merged current-paycheck producer
+    is what gives `income_service`'s basis a threaded calendar.
   * [ ] **X-i2 THE CLOCK** -- the cutover. Each memoized loader takes `ctx.as_of` and `ctx.scenario`,
     and this **MOVES MONEY**: the gross measured at `$3,631.74` today against `$3,722.53` at a 2027
     read and `$0` before the first pay period, and FU-3 changes a loan's whole forward trajectory on
@@ -950,16 +991,6 @@ sentence exists so nobody builds it believing the question was never raised.
 
 ### Phase X -- the gate and vocabulary residue
 
-* [ ] **X-at** `feat(salary): a substituted tax year says so, and a new year can be entered` --
-  closes **N-235**, **N-236**. X-as makes an unconfigured year resolve to the latest configured
-  year's rules, which is the only available answer and a correct one; what it does not do is SAY so.
-  `/analytics/taxes?year=YYYY` accepts any year in `[2000, 2100]`, so a 2019 request renders its
-  refund hero, W-2 preview and Schedule A against another year's law with nothing on the page saying
-  which, and the only record is a DEBUG line. Carry the resolved year out of the resolver and render
-  it. Its second half is the door that is missing entirely: nothing in `app/` creates a
-  `TaxBracketSet` outside the signup seed, so the settings screen can write a year's state and FICA
-  rows and never its brackets -- it cannot finish the year it starts, and a user following next
-  year's IRS release has nowhere to put it.
 * [ ] **X-ag** `feat(pylint): lax digit acceptance is refused, not remembered` -- closes **N-139**.
   X-ae converted every submitted-id surface it found and the AST now finds exactly one digit-
   predicate call site in `app/` and `scripts/` (the implementation of the replacement). Nothing stops

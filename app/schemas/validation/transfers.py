@@ -16,6 +16,7 @@ from app.schemas.validation._helpers import (
     RowId,
     _NON_NEGATIVE_MONETARY,
     _normalize_empty_inputs,
+    reject_figure_without_its_rendered_companion,
 )
 from app.schemas.validation._recurrence import RecurrenceFormFieldsMixin
 
@@ -186,6 +187,42 @@ class TransferUpdateSchema(BaseSchema):
     amount = fields.Decimal(
         places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
     )
+    # WHAT THE FORM SHOWED in the Amount box, posted back beside whatever came
+    # out of it (ruling **R-JR**, plan step X-au-h).  The transfer twin of
+    # ``TransactionUpdateSchema.estimated_amount_as_rendered`` -- see it for why
+    # the field is declared rather than left to ``unknown=EXCLUDE``, and why an
+    # empty one reads as ABSENT.  ``routes._authored_figure`` states the rule
+    # both doors apply.
+    #
+    # **On this table the companion is what keeps the question answerable at
+    # all.**  Plan step X-au-f empties ``budget.transfers.amount`` for a
+    # generated transfer, and the comparison this replaces read that column --
+    # so ``submitted != stored`` would have been true for every call and every
+    # save would have claimed a human re-priced the row (findings **N-436** and
+    # **N-448**).  Comparing against what was RENDERED removes that dependency.
+    #
+    # **It does NOT make this door indifferent to X-au-f, and an earlier
+    # revision of this comment claimed it did.**  Both transfer templates render
+    # the box and its companion from ``xfer.amount`` -- the raw column -- and
+    # Jinja renders ``None`` as the literal string ``"None"``, which this field
+    # rejects.  X-au-f owes those two templates the resolved figure, the way
+    # ``routes/transactions/forms`` already hands the transaction popover a
+    # ``budgets`` map.  Until it does, this comment is a statement about a
+    # future edit and not about today's code.
+    amount_as_rendered = fields.Decimal(
+        places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False),
+    )
+
+    @validates_schema
+    def reject_a_figure_that_does_not_say_what_was_rendered(self, data, **kwargs):
+        """Refuse an ``amount`` with no rendered companion (**R-JR**).
+
+        See
+        :func:`~app.schemas.validation._helpers.reject_figure_without_its_rendered_companion`
+        for why a figure alone cannot be judged, and why refusing beats guessing
+        in either direction.
+        """
+        reject_figure_without_its_rendered_companion(data, "amount")
     status_id = RowId()
     pay_period_id = RowId()
     name = fields.String(validate=validate.Length(max=200))

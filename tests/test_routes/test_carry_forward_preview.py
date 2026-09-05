@@ -57,6 +57,8 @@ from tests._test_helpers import (
     current_pay_period,
     last_covered_day,
     make_every_period_rule,
+    resolved_amount,
+    state_template_price,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -83,6 +85,7 @@ def _make_envelope_template(
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     # The definition first, then the cadence onto it (plan step R-F6).
     rule = make_every_period_rule(db.session, template)
     return template
@@ -96,6 +99,7 @@ def _make_envelope_txn(
     status = db.session.query(Status).filter_by(name=status_name).one()
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -142,6 +146,7 @@ def _make_discrete_template(seed_user, *, name="Recurring Bill",
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     return template
 
 
@@ -152,6 +157,7 @@ def _make_discrete_txn(seed_user, period, template):
     )
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -757,5 +763,5 @@ class TestCarryForwardPreviewEndToEnd:
                     is_deleted=False,
                 ).one()
             )
-            assert target.estimated_amount == Decimal("135.00")
+            assert resolved_amount(target) == Decimal("135.00")
             assert target.is_override is True

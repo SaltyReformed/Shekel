@@ -59,10 +59,16 @@ from app.routes._recurrence_form_render import (
     create_form_default_starts_on,
 )
 from tests._test_helpers import (
+    create_loan_account,
     derived_span,
+    freeze_today,
+    insert_trueup_event,
+    loan_params_for,
+    make_loan_payment_template,
     transient_cadence_rule,
     validated_cadence,
 )
+from app.services import loan_recurrence_sync
 from tests.oracles.recurrence_baseline import (
     EVERY_N_PERIODS,
     MONTHLY,
@@ -1011,6 +1017,79 @@ class TestAnUpdateMayNotInvertTheWindow:
             ),
             calendar_for(seed_user["user"].id),
         )
+
+    def test_a_definition_whose_window_the_APP_derives_is_NOT_refused(
+        self, app, auth_client, seed_user, db, seed_periods, monkeypatch,  # pylint: disable=unused-argument
+    ):
+        """A DERIVED inverted window is the app's answer, not the owner's mistake.
+
+        The same ruling that held ``ck_recurrence_rules_valid_window`` back,
+        applied to the door that reads the identical stored pair: refusing on
+        it would make this door the constraint the ruling declined to add.
+
+        **It became reachable at plan step ``recurrence:R7d-h``.**  A retired
+        loan's closing bound used to be the read pass's own now, which drifted
+        past ``starts_on`` and healed itself; it is now the day the loan
+        actually closed.  This loan originates 2026-06-20 with a
+        ``payment_day`` of 15 -- first installment 2026-07-15 -- and is cleared
+        the day after origination, so the sync writes the permanently inverted
+        pair ``[2026-07-15, 2026-06-21]`` through its own production door.
+
+        Without the skip the owner cannot re-save the cadence of their own
+        loan payment: the refusal fires on any submission that states a
+        ``recurrence_unit`` and leaves both bound keys to the stored pair,
+        which is every edit the "Repeats" controls make.  The form locks
+        "Starts on" and the "Ends" control for a loan payment but NOT that
+        select, so the edit is offered, refused with "ends before it starts",
+        and there is no control that could correct it.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 7, 1))
+            loan = create_loan_account(
+                seed_user, db.session, name="Cleared Early",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 6, 20), payment_day=15,
+            )
+            insert_trueup_event(
+                loan_params_for(db.session, loan.id), Decimal("0.00"),
+            )
+            tpl = make_loan_payment_template(
+                db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=15,
+            )
+            loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+            db.session.commit()
+
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            db.session.commit()
+
+            rule = tpl.recurrence_rule
+            db.session.refresh(rule)
+            assert rule.end_date is not None and rule.end_date < rule.starts_on, (
+                "precondition: the sync must have written an INVERTED pair, "
+                f"got starts_on={rule.starts_on} end_date={rule.end_date}"
+            )
+            assert loan_recurrence_sync.owns_validity_window(tpl), (
+                "precondition: the app must own this definition's window"
+            )
+
+            with app.test_request_context():
+                refusal = resolve_recurrence_rule_for_update(
+                    tpl,
+                    {
+                        **validated_cadence(
+                            unit=RecurrenceUnitEnum.MONTH,
+                            states_a_start=False,
+                        ),
+                        "due_day_of_month": None,
+                    },
+                    ctx=self._ctx(None),
+                )
+
+            assert refusal is None, (
+                "an ordinary cadence edit was refused because the APP's own "
+                "derived window is inverted -- the owner has no control that "
+                "could fix it"
+            )
 
     def test_clearing_the_start_while_setting_an_earlier_end_is_refused(
         self, app, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument

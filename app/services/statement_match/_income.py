@@ -194,6 +194,7 @@ def _load_line(
     """
     line = load_lines(
         scope.account_id, frozenset({creation.line_id}), matched,
+        for_write=True,
     )[0]
     rule = view.rules.get(line.merchant_id)
     if pipeline_for(

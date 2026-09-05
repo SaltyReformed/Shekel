@@ -1527,7 +1527,7 @@ class TestTheStoredTransactionDayReachesTheScreen:
     """The DB -> screen wiring, which nothing graded.
 
     Every proposer test hand-builds a :class:`BankLine`, so the path
-    ``bank_statement_lines.transaction_on`` -> ``_as_bank_line`` ->
+    ``bank_statement_lines.transaction_on`` -> ``as_bank_line`` ->
     :attr:`MatchProposal.made_on` was exercised by nothing: deleting the copy
     in the reader left the whole suite green.  The consequence is the exact
     divergence :attr:`MatchProposal.days` says it exists to prevent -- the
@@ -2227,6 +2227,7 @@ class TestWhatAOneToOneMatchSTILLRefuses:
         )
         payback = Transaction(
             account_id=seed_user["account"].id,
+            user_id=seed_user['bootstrap_period'].user_id,
             pay_period_id=seed_user["bootstrap_period"].id,
             scenario_id=seed_user["scenario"].id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),

@@ -120,6 +120,9 @@ def _declared_row(seed_user, template, period, *, status=StatusEnum.PROJECTED):
     txn = Transaction(
         account_id=seed_user["account"].id,
         template_id=template.id,
+        # The owner, off the period the row is funded in (plan step
+        # ``pay_calendar:C13-a``).
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=ref_cache.status_id(status),
@@ -359,6 +362,7 @@ class TestArchivingFreezesWhatItWasPricing:
             owned = Transaction(
                 account_id=seed_user["account"].id,
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -391,7 +395,7 @@ class TestTheFreezeResolvesOneBasisPerScenario:
         """Six rows in one scenario, one read of the owner's pay schedule.
 
         Graded on the QUERY the projection makes rather than on elapsed time:
-        ``SalaryPricing._net_by_period`` derives the owner's calendar, which
+        ``SalaryPricing._breakdown_by_period`` derives the owner's calendar, which
         reads ``budget.pay_schedule`` exactly once per instance.  A basis per
         row makes an instance per row and this count becomes six.  The control
         was shown to fire by building the basis inside the loop, which is the

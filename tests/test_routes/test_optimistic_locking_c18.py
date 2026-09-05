@@ -123,6 +123,7 @@ def _make_transaction(seed_user, period):
     cat = seed_user["categories"]["Groceries"]
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=projected.id,
@@ -160,6 +161,7 @@ def _make_envelope_template_and_txn(seed_user, period):
 
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         template_id=template.id,
@@ -623,6 +625,7 @@ class TestTransactionStaleFormPrevention:
                 f"/transactions/{txn_id}",
                 data={
                     "estimated_amount": "75.00",
+                    "estimated_amount_as_rendered": "50.00",
                     "version_id": str(v0),
                 },
             )
@@ -660,6 +663,7 @@ class TestTransactionStaleFormPrevention:
                 f"/transactions/{txn_id}",
                 data={
                     "estimated_amount": "999.99",
+                    "estimated_amount_as_rendered": "50.00",
                     "version_id": str(stale),
                 },
             )
@@ -710,7 +714,7 @@ class TestTransactionStaleFormPrevention:
             try:
                 response = auth_client.patch(
                     f"/transactions/{txn_id}",
-                    data={"estimated_amount": "555.55"},
+                    data={"estimated_amount": "555.55", "estimated_amount_as_rendered": "50.00"},
                 )
             finally:
                 event.remove(Transaction, "before_update", make_stale)
@@ -752,9 +756,12 @@ class TestTransactionStaleFormPrevention:
         expired its ``status`` relationship -- so the refresh autoflushes.  In
         both topologies that expression sits inside the net.  Everything
         earlier reads columns or already-loaded relationships: ``txn.entries``
-        loads while the row is still clean, and ``settle_from_entries``'
-        ``txn.pay_period.user_id`` is loaded by the route's own fetch, which
-        that helper's comment already states.
+        loads while the row is still clean, and ``settle_from_entries``' owner
+        read is ``txn.user_id`` -- a COLUMN on the row already in the session,
+        which loads nothing at all.  It walked ``txn.pay_period.user_id`` until
+        plan step ``pay_calendar:C13-b``, and the conclusion is STRONGER for
+        the move rather than merely surviving it: the read that had to be
+        already-loaded is now one that cannot load.
         """
         from sqlalchemy import event  # pylint: disable=import-outside-toplevel
 
@@ -816,6 +823,7 @@ class TestTransferStaleFormPrevention:
                 f"/transfers/instance/{xfer_id}",
                 data={
                     "amount": "300.00",
+                    "amount_as_rendered": "250.00",
                     "version_id": str(v0),
                 },
             )
@@ -843,6 +851,7 @@ class TestTransferStaleFormPrevention:
                 f"/transfers/instance/{xfer_id}",
                 data={
                     "amount": "999.99",
+                    "amount_as_rendered": "250.00",
                     "version_id": str(stale),
                 },
             )
@@ -1168,6 +1177,7 @@ class TestPaycheckDeductionStaleFormPrevention:
                     "deduction_timing_id": str(timing_id),
                     "calc_method_id": str(method_id),
                     "amount": "999.99",
+                    "amount_as_rendered": "250.00",
                     "deductions_per_year": "26",
                     "version_id": str(stale),
                 },
@@ -1206,6 +1216,7 @@ class TestTransactionEntryStaleFormPrevention:
                 f"/transactions/{txn.id}/entries/{entry_id}",
                 data={
                     "amount": "30.00",
+                    "amount_as_rendered": "250.00",
                     # The edit form emits the direction beside the amount
                     # since plan step ``bank_import:X-gj-2b-3``, and the
                     # route refuses one without the other rather than
@@ -1250,6 +1261,7 @@ class TestTransactionEntryStaleFormPrevention:
                 f"/transactions/{txn.id}/entries/{entry_id}",
                 data={
                     "amount": "9999.99",
+                    "amount_as_rendered": "250.00",
                     "description": "Should Not Apply",
                     "purchased_on": entry.purchased_on.isoformat(),
                     "version_id": str(stale),

@@ -33,6 +33,58 @@ class Transaction(
 ):
     """A single income or expense entry within a pay period.
 
+    **A ROW HAS AN OWNER, AND IT IS A COLUMN** (plan step
+    ``pay_calendar:C13-a``, ruling **R-PC32**).  ``user_id`` is who this row
+    belongs to, and two COMPOSITE foreign keys hold it equal to BOTH of the
+    row's parents at once -- ``fk_transactions_owner_account`` against
+    ``budget.accounts (id, user_id)`` and ``fk_transactions_owner_period``
+    against ``budget.pay_periods (id, user_id)``.  A row whose account and
+    whose paycheck belong to different people is therefore UNCONSTRUCTIBLE
+    rather than merely unwritten.
+
+    **It is a CO-LOCATED KEY, which is the distinction CLAUDE.md rule 14 turns
+    on.**  ``user_id`` IS functionally determined by ``pay_period_id`` once
+    ``fk_transactions_owner_period`` exists, so this is a stored copy of a
+    derivable value and the rule has to be answered rather than waved at.  What
+    answers it is that the derivation and the copy CANNOT DISAGREE: the key is
+    the reconciler, it runs on every write, and it lives in the database.  A
+    stored copy the rule forbids is one whose source can move underneath it;
+    this one's cannot, because moving it is the write the key refuses.
+
+    **The maintenance contract does not vanish -- it MOVES.**  Nine writers in
+    ``app/`` now state the owner, each reading it off a different object, so
+    the honest claim is not "no writer keeps two homes in step" but "the
+    readers stopped having to".  Before this column, nothing required a
+    transaction's account and its paycheck to have the same owner, so every
+    door that refuses a foreign row stated the relationship BY HAND: nineteen
+    such comparisons in ``app/`` (finding **P75**), any one of which could
+    forget.  Now a writer that gets it wrong is an ``IntegrityError`` at flush
+    and no reader has to know -- which is rule 14's own stated preference, *an
+    invariant that cannot be violated because there is nothing to violate is
+    worth more than one a reconciler enforces.*
+
+    Measured 2026-08-27 and re-measured 2026-09-02 before the constraint was
+    written: **0 mismatched rows** of 1,028 on production and 1,057 on the dev
+    clone.  *Unconstructible by every writer that reaches the table as the
+    application*: ``SET session_replication_role = 'replica'`` suppresses
+    referential triggers and a superuser can still force the row, which
+    ``tests/test_scripts/test_integrity_check.py`` does on purpose.
+
+    **It is the OWNER, never the AUTHOR**, and the child table next door uses
+    the same column name for the other fact:
+    :attr:`app.models.transaction_entry.TransactionEntry.user_id` is *the user
+    who created the entry (owner or companion)*.  A companion acting on this
+    row does not become its owner, so when a door asks
+    ``txn.user_id == current_user.id`` it gets *is this the owner*, which is
+    what ``routes/entries.py`` asks.
+
+    **The doors read this column since plan step ``pay_calendar:C13-b``**,
+    which retired the NINETEEN hand-written ownership comparisons finding
+    **P75** counted: ELEVEN walked ``X.pay_period.user_id`` and became one
+    equality here, and the EIGHT that refetched a SUBMITTED period id went to
+    the owner's derived calendar instead -- this key answers what may be
+    STORED, and a submitted id is a question about INPUT (developer 2026-09-03).
+
     **A transaction carries TWO clocks, and the second one is not decoration.**
     ``pay_period_id`` (with ``due_date``) is the BUDGET clock -- which column
     the user planned this in -- and :attr:`settled_on` is the CASH clock, the
@@ -196,10 +248,14 @@ class Transaction(
         # Letting an undated row claim nothing was measured at 41 phantom
         # transfers / $20,500 at the unarchive door.
         #
-        # Both stay PARTIAL over ``is_deleted = FALSE AND is_override = FALSE``:
-        # an override sibling may coexist with its rule-generated parent, which
-        # carry-forward relies on so a moved unpaid item lives beside the
-        # generated row for its target period.
+        # **The two predicates DIVERGED at plan step X-au-h** (ruling
+        # **R-JR**): this one dropped ``is_override = FALSE`` and the undated
+        # one below kept it.  The exemption guarded a PAYCHECK-key collision,
+        # R17 re-keyed this index onto ``occurs_on`` which a move never
+        # changes, and X-au-h then raised the flag on a RE-PRICE -- so keeping
+        # it would have dropped merely-re-priced rows out of a guarantee they
+        # never used to lose.  Migration ``e7c3a1f9b482`` carries the full
+        # argument, the measurement and why the undated index differs.
         db.Index(
             "idx_transactions_template_scenario_occurrence",
             "template_id", "scenario_id", "occurs_on",
@@ -207,8 +263,7 @@ class Transaction(
             postgresql_where=db.text(
                 "template_id IS NOT NULL "
                 "AND occurs_on IS NOT NULL "
-                "AND is_deleted = FALSE "
-                "AND is_override = FALSE"
+                "AND is_deleted = FALSE"
             ),
         ),
         db.Index(
@@ -407,6 +462,43 @@ class Transaction(
             ondelete="RESTRICT",
         ),
         db.Index("idx_transactions_reconciled_by", "reconciled_by_id"),
+        # **THIS ROW'S OWNER IS ITS ACCOUNT'S, guaranteed rather than
+        # maintained** (plan step ``pay_calendar:C13-a``, ruling **R-PC32**).
+        # The pair keys straight onto ``uq_accounts_id_user``, the superkey
+        # ``fk_account_external_identities_owner`` and
+        # ``fk_statement_matches_owner`` already target the same way.
+        #
+        # ``ON DELETE RESTRICT`` matches the single-column ``account_id`` key
+        # beside it, which stays as the ``account`` relationship's declared
+        # join path: that key is about the ACCOUNT'S EXISTENCE and this one is
+        # about AGREEMENT, and two keys over the same column deleting
+        # differently would make an account delete's outcome depend on which
+        # PostgreSQL evaluated.  The reason RESTRICT is the right action is
+        # unchanged and is stated on ``account_id`` itself: a transaction must
+        # not silently vanish with its account.
+        db.ForeignKeyConstraint(
+            ["account_id", "user_id"],
+            ["budget.accounts.id", "budget.accounts.user_id"],
+            name="fk_transactions_owner_account",
+            ondelete="RESTRICT",
+        ),
+        # **...AND IT IS ITS PAYCHECK'S**, which is the half that makes the
+        # two-parent disagreement unrepresentable: either key alone leaves the
+        # OTHER parent free to belong to someone else.  Keyed onto
+        # ``uq_pay_periods_id_user``, added for exactly this.
+        #
+        # ``ON DELETE CASCADE`` matches the single-column ``pay_period_id`` key
+        # beside it, for the reason its sibling above states.  A pay period is
+        # the container a row is FILED in, and deleting one has always taken
+        # its rows with it.
+        db.ForeignKeyConstraint(
+            ["pay_period_id", "user_id"],
+            ["budget.pay_periods.id", "budget.pay_periods.user_id"],
+            name="fk_transactions_owner_period",
+            ondelete="CASCADE",
+        ),
+        # No index is added over ``user_id``; that argument sits on the
+        # column itself, with the rest of what the column is for.
         # A statement cannot have shown money that never moved.  The link and
         # the settle day are one fact in two columns, and every door that moves
         # or clears the day releases the link (``status_seam`` on a revert and
@@ -421,6 +513,58 @@ class Transaction(
     )
 
     id = db.Column(db.Integer, primary_key=True)
+    # WHO THIS ROW BELONGS TO (plan step ``pay_calendar:C13-a``, ruling
+    # **R-PC32**).  Held equal to BOTH parents' owner by the two composite keys
+    # above; see the class docstring for why that is a co-located key and not
+    # the cached copy CLAUDE.md rule 14 forbids.
+    #
+    # **It does NOT use :class:`~app.models.mixins.UserScopedMixin`, and the
+    # difference is the ``ondelete``** -- the mixin's is ``CASCADE`` and this
+    # one is ``RESTRICT`` (developer, 2026-09-02, on the measurement below).
+    # That is the same kind of documented exclusion the mixin already carries
+    # for the ``ref.*`` per-user override rows, and the reason is R-PC41's, one
+    # table over: deleting a user has no live source in ``app/``, so the only
+    # ways to reach it are a bug, a hand-run statement, or a future door whose
+    # author has not thought about it -- and each of those wants a loud
+    # refusal, not a silent wipe.
+    #
+    # **The mixin's CASCADE was the only candidate shape that CHANGED what a
+    # user delete does**, and it changed it into one statement that empties the
+    # database.  Migration ``d4a92f6b13c8``'s docstring carries the driven
+    # table for all four shapes; it is stated once, there, where the decision
+    # was taken.
+    #
+    # This key is not redundant with the composites, and its second reason is
+    # the stronger one.  Without it, ``user_id``'s guarantee of naming a real
+    # user is transitive through ``fk_transactions_owner_account`` and leaves
+    # with that key.  And it is what makes the refusal ORDER-INDEPENDENT: the
+    # composites-only shape refuses only while ``accounts_user_id_fkey``'s
+    # referential trigger holds a lower OID than ``pay_periods_user_id_fkey``'s,
+    # so re-creating the accounts key -- which any future migration touching it
+    # does -- makes the same delete SUCCEED and take everything.
+    #
+    # **No index over ``user_id`` alone.**  A referencing-side index is what
+    # makes a parent's delete check cheap, and every key reading this column
+    # leads with one already indexed: ``idx_transactions_account`` serves
+    # ``fk_transactions_owner_account``, ``idx_transactions_period_scenario``
+    # serves ``fk_transactions_owner_period``.  What is left is this key's own
+    # check on a user delete, which is refused rather than performed.
+    # ``budget.transaction_entries`` and ``budget.statement_matches`` carry the
+    # same column with no index of its own.  *The QUERY half was left for
+    # ``C13-b`` to re-decide with its reads in hand; it did, and the answer is
+    # STILL NO INDEX* (2026-09-03) -- all nineteen reads it moved are ATTRIBUTE
+    # reads on a row already loaded by primary key, and it added no
+    # ``WHERE transactions.user_id = ...`` anywhere for an index to serve.  The
+    # predicate for the next reader: a query in ``app/`` whose WHERE names it.
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "auth.users.id",
+            name="fk_transactions_user_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
     account_id = db.Column(
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
         nullable=False,
@@ -659,9 +803,31 @@ class Transaction(
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
-    account = db.relationship("Account", lazy="joined")
+    # ``foreign_keys`` on both, because each parent is now reached by TWO
+    # declared keys -- the single-column one and the composite that also holds
+    # the owner (plan step ``pay_calendar:C13-a``).  Without it SQLAlchemy
+    # cannot choose a join path and raises ``AmbiguousForeignKeysError`` at
+    # mapper configuration.  The SINGLE-column key is the declared path, which
+    # is the same choice ``TransactionEntry.transaction`` makes over
+    # ``fk_transaction_entries_parent_account``: the join loads a parent, and
+    # adding ``AND parent.user_id = t.user_id`` to every load would re-check in
+    # SQL what the database has already refused to store -- while making
+    # ``user_id`` a column TWO relationships wanted to write on flush.
+    #
+    # **A JOIN between these tables now needs its onclause named**, and the
+    # relationship attribute is how: ``query(Transaction).join(PayPeriod)``
+    # raises ``AmbiguousForeignKeysError`` where
+    # ``.join(Transaction.pay_period)`` does not, because a relationship
+    # carries the ``foreign_keys`` above and a bare entity has nothing to
+    # choose with.  Every join in ``app/`` already names one or goes through a
+    # relationship; two in ``tests/`` did not and were corrected with this step.
+    account = db.relationship(
+        "Account", foreign_keys=[account_id], lazy="joined",
+    )
     template = db.relationship("TransactionTemplate", back_populates="transactions")
-    pay_period = db.relationship("PayPeriod", back_populates="transactions")
+    pay_period = db.relationship(
+        "PayPeriod", foreign_keys=[pay_period_id], back_populates="transactions",
+    )
     scenario = db.relationship("Scenario")
     status = db.relationship("Status", lazy="joined")
     category = db.relationship("Category", lazy="joined")

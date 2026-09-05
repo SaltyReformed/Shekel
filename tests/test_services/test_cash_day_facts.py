@@ -68,6 +68,7 @@ def _settled(
     status_id = ref_cache.status_id(StatusEnum.DONE)
     txn = Transaction(
         account_id=(seed_user["account"] if account is None else account).id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,
@@ -89,6 +90,7 @@ def _projected(db, seed_user, period, name, amount, due_date):
     status_id = ref_cache.status_id(StatusEnum.PROJECTED)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,
@@ -182,7 +184,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
         """
         with app.app_context():
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[6],
+                db.session, seed_user["account"],
                 Decimal("1300.00"), _instant(2026, 4, 6),
             )
             db.session.commit()
@@ -316,7 +318,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
                 date(2026, 4, 9), is_income=True,
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[7],
+                db.session, seed_user["account"],
                 Decimal("2600.00"), _instant(2026, 4, 10),
             )
             _projected(
@@ -398,7 +400,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
             # clocks, and a balance typed today for a day in January is an
             # ordinary back-dated assertion.
             append_balance_assertion(
-                db.session, account, seed_periods[0],
+                db.session, account,
                 Decimal("1750.00"),
                 _instant(opening_day.year, opening_day.month,
                          opening_day.day, 18),
@@ -448,7 +450,7 @@ class TestItCannotDisagreeWithTheBalanceSeriesBesideIt:
                 date(2026, 4, 6),
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[6],
+                db.session, seed_user["account"],
                 Decimal("1300.00"), _instant(2026, 4, 8),
             )
             _projected(

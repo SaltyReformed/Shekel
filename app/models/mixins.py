@@ -24,11 +24,35 @@ class UserScopedMixin:
     Adds one column:
 
       ``user_id`` -- INTEGER NOT NULL, ``FK auth.users.id ON DELETE
-                     CASCADE``.  Identifies the user who owns the row;
-                     deleting a user cascades to every row they own.
+                     CASCADE``.  Identifies the user who owns the row.
+
+    **The CASCADE does not make a user deletable, and a first version of
+    this line said it did** ("deleting a user cascades to every row they
+    own").  A user holding transactions cannot be deleted at all:
+    ``budget.transactions.user_id`` is ``ON DELETE RESTRICT`` (see
+    :class:`app.models.transaction.Transaction` for that ruling), so the
+    statement dies there.  Driven 2026-09-02 on a clone of the
+    developer's DEV database -- 9 accounts, 63 pay periods, 1,057
+    transactions -- at plan step ``pay_calendar:C13-a``'s revision:
+    ``DELETE FROM auth.users WHERE id = 1`` raises ``violates RESTRICT
+    setting of foreign key constraint "fk_transactions_user_id"``, under
+    both referential-trigger orderings.
+
+    *Two things a first version of this paragraph got wrong, and both are
+    one mistake -- a measurement quoted without saying which side of a
+    same-day schema change it was taken on.*  It quoted the
+    ``transactions_account_id_fkey`` refusal, which is what the PRE-C13-a
+    schema raises and not this one; and it called that database "a clone
+    of production", where production holds 1,028 transactions and 1,057
+    is the dev clone.
+
+    Nothing in ``app/`` deletes a user, so this is the shape of a door
+    nobody has built rather than a live defect -- but the CASCADE here
+    describes what the column does when it is REACHED, and never a
+    guarantee about the statement.
 
     Applied to the user-owned tables whose ``user_id`` is exactly this
-    shape: a NOT NULL CASCADE FK with no ``unique`` qualifier.  Three
+    shape: a NOT NULL CASCADE FK with no ``unique`` qualifier.  Four
     ``user_id`` columns are deliberately EXCLUDED because their DDL
     differs:
 
@@ -37,9 +61,19 @@ class UserScopedMixin:
         marks a seeded, system-owned row).
       * ``auth.user_settings`` / ``auth.mfa_configs`` -- 1:1 satellite
         tables whose ``user_id`` carries ``unique=True``.
+      * ``budget.transactions`` -- the FK is ``ON DELETE RESTRICT``; see
+        below.
 
-    ``Transaction`` has NO ``user_id`` at all -- it is scoped through
-    ``pay_period_id`` / ``account_id`` -- so it does not use this mixin.
+    ``Transaction`` HAS a ``user_id`` since plan step
+    ``pay_calendar:C13-a`` (ruling **R-PC32**) -- until then it had none
+    at all and was scoped by walking ``pay_period_id`` / ``account_id``
+    -- but it is a FOURTH exclusion, on the same ground as the first:
+    its ``ondelete`` is ``RESTRICT``, not ``CASCADE`` (developer,
+    2026-09-02).  Reusing this mixin there was measured to convert
+    ``DELETE FROM auth.users`` from refused into a statement that empties
+    the database; the column comment on
+    :class:`app.models.transaction.Transaction` carries the table of
+    driven results and the ruling.
 
     DDL-ORDERING NOTE (differs from the end-positioned mixins below).
     SQLAlchemy renders mixin columns AFTER a class's own columns, so

@@ -121,10 +121,10 @@ def _opened_on(seed_user, day, balance="500.00", name="Fresh"):
     return account
 
 
-def _assert_balance(seed_user, db, period, balance, day, *, account=None):
+def _assert_balance(seed_user, db, balance, day, *, account=None):
     """Append one balance assertion on *day*, defaulting to the seeded account."""
     append_balance_assertion(
-        db.session, account or seed_user["account"], period,
+        db.session, account or seed_user["account"],
         Decimal(str(balance)), _instant(day.year, day.month, day.day),
     )
 
@@ -205,7 +205,7 @@ class TestTheFigureIsTheDeclarationLessTheBooks:
         with app.app_context():
             _settle(seed_user, db, seed_periods[4], "150.00", date(2026, 3, 3))
             _assert_balance(
-                seed_user, db, seed_periods[4], "1000.00", date(2026, 3, 3),
+                seed_user, db, "1000.00", date(2026, 3, 3),
             )
             db.session.commit()
 
@@ -228,7 +228,7 @@ class TestTheFigureIsTheDeclarationLessTheBooks:
         """
         with app.app_context():
             _assert_balance(
-                seed_user, db, seed_periods[4], "1000.00", date(2026, 3, 3),
+                seed_user, db, "1000.00", date(2026, 3, 3),
             )
             db.session.commit()
 
@@ -252,7 +252,7 @@ class TestTheFigureIsTheDeclarationLessTheBooks:
         with app.app_context():
             _settle(seed_user, db, seed_periods[4], "150.00", date(2026, 3, 3))
             _assert_balance(
-                seed_user, db, seed_periods[4], "1000.00", date(2026, 3, 3),
+                seed_user, db, "1000.00", date(2026, 3, 3),
             )
             _settle(
                 seed_user, db, seed_periods[5], "300.00", date(2026, 3, 16),
@@ -298,14 +298,14 @@ class TestItIsOneFigureAndNotThePerAssertionPlug:
         with app.app_context():
             _settle(seed_user, db, seed_periods[4], "500.00", date(2026, 3, 2))
             _assert_balance(
-                seed_user, db, seed_periods[4], "1500.00", date(2026, 3, 2),
+                seed_user, db, "1500.00", date(2026, 3, 2),
             )
             _settle(
                 seed_user, db, seed_periods[4], "200.00", date(2026, 3, 4),
                 is_income=True,
             )
             _assert_balance(
-                seed_user, db, seed_periods[4], "700.00", date(2026, 3, 4),
+                seed_user, db, "700.00", date(2026, 3, 4),
             )
             db.session.commit()
 
@@ -339,7 +339,7 @@ class TestTheBooksSideIsNotTheShippingFOLD:
         with app.app_context():
             _settle(seed_user, db, seed_periods[4], "150.00", date(2026, 3, 3))
             _assert_balance(
-                seed_user, db, seed_periods[4], "1000.00", date(2026, 3, 3),
+                seed_user, db, "1000.00", date(2026, 3, 3),
             )
             db.session.commit()
 
@@ -421,7 +421,7 @@ class TestTheFigureIsScopedToItsOwnAccount:
         with app.app_context():
             _settle(seed_user, db, seed_periods[4], "150.00", date(2026, 3, 3))
             _assert_balance(
-                seed_user, db, seed_periods[4], "1000.00", date(2026, 3, 3),
+                seed_user, db, "1000.00", date(2026, 3, 3),
             )
             other = create_account_of_type(
                 seed_user, db.session, "Checking", "Second Checking",
@@ -502,7 +502,7 @@ class TestWhetherAStatementReconcilesTheSPAN:
                 account=account,
             )
             _assert_balance(
-                seed_user, db, seed_periods[4], "425.00", date(2026, 3, 4),
+                seed_user, db, "425.00", date(2026, 3, 4),
                 account=account,
             )
             db.session.commit()
@@ -550,7 +550,7 @@ class TestWhetherAStatementReconcilesTheSPAN:
                 account=account,
             )
             _assert_balance(
-                seed_user, db, seed_periods[4], "415.00", date(2026, 3, 4),
+                seed_user, db, "415.00", date(2026, 3, 4),
                 account=account,
             )
             db.session.commit()
@@ -607,7 +607,7 @@ class TestWhetherAStatementReconcilesTheSPAN:
                     account=account,
                 )
             _assert_balance(
-                seed_user, db, seed_periods[4], "395.00", date(2026, 3, 6),
+                seed_user, db, "395.00", date(2026, 3, 6),
                 account=account,
             )
             db.session.commit()
@@ -720,7 +720,7 @@ class TestWhetherAStatementReconcilesTheSPAN:
         with app.app_context():
             _settle(seed_user, db, seed_periods[4], "150.00", date(2026, 3, 3))
             _assert_balance(
-                seed_user, db, seed_periods[4], "1000.00", date(2026, 3, 3),
+                seed_user, db, "1000.00", date(2026, 3, 3),
             )
             db.session.commit()
 
@@ -759,7 +759,7 @@ class TestTheStatesADVERSARIALReviewAskedFor:
         with app.app_context():
             account = _opened_on(seed_user, date(2026, 3, 10))
             _assert_balance(
-                seed_user, db, seed_periods[4], "600.00", date(2026, 3, 5),
+                seed_user, db, "600.00", date(2026, 3, 5),
                 account=account,
             )
             db.session.commit()
@@ -796,10 +796,10 @@ class TestTheStatesADVERSARIALReviewAskedFor:
         with app.app_context():
             _settle(seed_user, db, seed_periods[4], "150.00", date(2026, 3, 3))
             _assert_balance(
-                seed_user, db, seed_periods[4], "900.00", date(2026, 3, 3),
+                seed_user, db, "900.00", date(2026, 3, 3),
             )
             _assert_balance(
-                seed_user, db, seed_periods[4], "1000.00", date(2026, 3, 3),
+                seed_user, db, "1000.00", date(2026, 3, 3),
             )
             db.session.commit()
 
@@ -842,7 +842,7 @@ class TestTheStatesADVERSARIALReviewAskedFor:
                 account=card,
             )
             _assert_balance(
-                seed_user, db, seed_periods[5], "-300.00", date(2026, 3, 20),
+                seed_user, db, "-300.00", date(2026, 3, 20),
                 account=card,
             )
             db.session.commit()
@@ -872,7 +872,7 @@ class TestTheStatesADVERSARIALReviewAskedFor:
         """
         with app.app_context():
             _assert_balance(
-                seed_user, db, seed_periods[4], "1000.00", date(2026, 3, 3),
+                seed_user, db, "1000.00", date(2026, 3, 3),
             )
             _seed_import(
                 db, seed_user["account"], stated="1000.00",

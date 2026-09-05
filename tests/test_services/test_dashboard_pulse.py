@@ -82,6 +82,7 @@ def _add_expense(
     status_id = ref_cache.status_id(status_enum)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,
@@ -230,7 +231,7 @@ class TestPulseHero:
         """
         with app.app_context():
             _add_anchor_history(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 "1000.00", days_ago=5,
             )
             db.session.commit()
@@ -255,7 +256,7 @@ class TestPulseHero:
         with app.app_context():
             account = seed_user["account"]
             _add_anchor_history(
-                db.session, account, seed_periods[0], "1000.00", days_ago=20,
+                db.session, account, "1000.00", days_ago=20,
             )
             db.session.commit()
 
@@ -732,6 +733,7 @@ class TestPulsePeak:
             current = seed_periods[_CURRENT_IDX]
             income = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -1357,6 +1359,7 @@ class TestHeroChartIdentity:
             )
             income = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),

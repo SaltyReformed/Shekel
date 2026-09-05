@@ -67,6 +67,7 @@ def _make_txn(db, seed_user, seed_periods, status_member, *, is_deleted=False):
     rule the module under test enforces.
     """
     txn = Transaction(
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

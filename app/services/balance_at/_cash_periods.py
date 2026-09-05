@@ -300,8 +300,10 @@ def _column_for(window: PeriodWindow, day: date) -> "int | None":
     otherwise -- no nearest-period fallback, deliberately.  The FILING rule
     (:meth:`app.services.pay_calendar.PayCalendar.filing_period`) does clamp,
     to the latest period that OPENED on or before the target, which is right
-    for the question it answers (an anchor correction needs a home period, and
-    ``journal_entries.pay_period_id`` is NOT NULL) and wrong for this one: the
+    for the question it answers (every per-period reader must be able to place
+    every ledger entry, which ``journal_entries.pay_period_id``'s ``NOT NULL``
+    EXPRESSES rather than causes -- ruling **pay_calendar:R-PC53**) and wrong
+    for this one: the
     identity these columns satisfy reads a period's balance change as the steps
     inside its OWN span, so a step outside every reported span belongs to no
     column and must not be pulled into the nearest one.  The pay-calendar arc

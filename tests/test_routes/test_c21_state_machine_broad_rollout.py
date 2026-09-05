@@ -38,6 +38,7 @@ def _create_projected_expense(seed_user, seed_periods_today, period_index=0):
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     txn = Transaction(
+        user_id=seed_periods_today[period_index].user_id,
         pay_period_id=seed_periods_today[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,

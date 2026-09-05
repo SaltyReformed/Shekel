@@ -6,11 +6,14 @@ recurrence engine stops generating shadow transactions past payoff.  It used to
 run as a write on the loan-detail GET (Risk R-4); it now runs at every
 payoff-affecting mutation.
 
-Since plan step C8d the bound is DERIVED from the balance
-(``balance_at.loan_payoff_date`` -- the date the fold reaches zero) instead of
-being read off the last row of the resolver's committed schedule walk.  These
-tests pin the pure mapping (``recurrence_end_date``) and the service
-(``sync_recurring_payment_bounds``) against real loans.
+Since plan step C8d the bound is DERIVED from the balance instead of being read
+off the last row of the resolver's committed schedule walk, and since plan step
+``recurrence:R7d-h`` the whole of it -- past and future --
+is ``balance_at.loan_closing_date``, read off
+``LoanFigures.closing_date``; the ``recurrence_end_date`` mapping those tests
+used to pin is DELETED, because the ``None`` it disambiguated no longer means
+two things.  These tests pin the service (``sync_recurring_payment_bounds``)
+and the window resolver against real loans.
 
 All money is ``Decimal`` from strings.
 """
@@ -36,11 +39,9 @@ from app.services.recurrence import (
 )
 from app.services.loan_recurrence_sync import (
     loan_payment_window,
-    recurrence_end_date,
 )
 from app.services.loan_payment_service import compute_contractual_pi
 from app.services.loan_loaders import load_loan_params, load_rate_changes
-from app.models.pay_period import PayPeriod
 from app.models.transfer_template import TransferTemplate
 from tests._test_helpers import (
     create_account_of_type,
@@ -57,42 +58,31 @@ from tests._test_helpers import (
 from tests.oracles.recurrence_baseline import MONTHLY
 
 
-class TestRecurrenceEndDate:
-    """The three states of a DERIVED payoff, mapped onto the recurrence bound.
+def _window(template, ctx):
+    """Ask the resolver about *template*, the way the composed door does.
 
-    Takes the payoff and the retired predicate directly -- there is no schedule
-    to hand-build any more, which is the point: the pre-C8d function read
-    ``remaining_balance`` off stub rows, so it could only ever be tested against
-    a schedule shape rather than against a loan.
+    :func:`~app.services.loan_recurrence_sync.loan_payment_window` takes the
+    definition's RESOLVED recurrence since plan step R7d-d rather than
+    resolving the rule itself -- the door resolves it once to build the value
+    and hands that down, so the EMPTY comparison reads the walk's first
+    occurrence and never the stored column.  This is the same two-line
+    composition ``recurring_definition.resolved_definition`` makes, held here
+    so every case below asks the production question in the production shape.
+
+    Args:
+        template: A definition that carries a rule.  One that does not is the
+            door's ``None`` ("does not repeat") and never reaches the resolver;
+            ``test_recurring_definition`` holds that.
+        ctx: The read pass.
+
+    Returns:
+        The resolver's answer.
     """
-
-    def test_a_payoff_date_is_the_bound(self):
-        """A loan that pays off stops recurrence the month it reaches zero."""
-        assert recurrence_end_date(
-            date(2030, 2, 1), False, date(2026, 7, 1),
-        ) == date(2030, 2, 1)
-
-    def test_a_retired_loan_halts_at_the_as_of(self):
-        """A RETIRED loan plans no further payments, so the bound is the as-of.
-
-        ``None`` here means "no forward crossing left", not "never pays off":
-        the loan already owes nothing.  Any past-or-today bound halts future
-        generation; the as-of is the pass's own now, so there is one rule rather
-        than a per-producer fallback date.
-        """
-        assert recurrence_end_date(
-            None, True, date(2026, 7, 1),
-        ) == date(2026, 7, 1)
-
-    def test_a_loan_that_never_pays_off_stays_indefinite(self):
-        """``None`` and NOT retired leaves recurrence unbounded.
-
-        Negative amortization, or an underpayment too severe to clear even the
-        plan's post-contractual extension.  The payments must keep generating --
-        the loan still owes -- until the user raises the payment (which is what
-        C7's drift warning prompts).
-        """
-        assert recurrence_end_date(None, False, date(2026, 7, 1)) is None
+    return loan_payment_window(
+        template,
+        resolved_recurrence(template.recurrence_rule, ctx.calendar()),
+        ctx,
+    )
 
 
 class TestSyncRecurringPaymentBounds:
@@ -686,6 +676,17 @@ class TestLoanPaymentWindowResolver:
     the resolved recurrence's ``Closing`` -- so these are no longer the whole
     of its coverage; ``test_recurring_definition`` grades what a surface does
     with the answer, and this grades the answer.
+
+    **Two of the resolver's former refusals moved to the door with that step,
+    and their cases moved with them.**  The resolver now TAKES the resolved
+    recurrence, so a definition with no rule and an owner with no pay periods
+    -- the two states in which there is no resolved value to hand it -- never
+    reach it; the door answers *does not repeat* for both
+    (``test_a_definition_with_no_rule_does_not_repeat`` and
+    ``test_an_owner_with_no_pay_periods_reads_as_not_repeating`` in
+    ``test_recurring_definition``).  The ``rule.starts_on`` fallback the
+    second state used to take here is gone with it, so the stored column is
+    unreachable from the EMPTY comparison by construction.
     """
 
     @pytest.fixture(autouse=True)
@@ -726,7 +727,7 @@ class TestLoanPaymentWindowResolver:
             figures = balance_at.loan_figures(loan, ctx)
             assert figures.payoff_date == date(2028, 7, 1)
 
-            assert loan_payment_window(tpl, ctx) == ClosesOn(
+            assert _window(tpl, ctx) == ClosesOn(
                 on=date(2028, 7, 1),
             )
 
@@ -738,15 +739,18 @@ class TestLoanPaymentWindowResolver:
         Plan step R7d-b changes no behaviour precisely because the resolver
         answers what the ten call sites already write.  The window and the
         column are derived by two different code paths here -- one through
-        :func:`recurrence_end_date` into an ``EndBound``, one through it into a
-        :class:`~app.services.recurrence.DerivedStop` -- so this is the seam where they could
+        :attr:`~app.services.balance_at.LoanFigures.closing_date` into an
+        ``EndBound``, one through it into a
+        :class:`~app.services.recurrence.DerivedStop` -- so this is the seam
+        where they could
         disagree, and R7d-g deletes the writer on the strength of them not
         doing so.
 
         **It grades the WRAPPING, not the MAPPING**, and that limit is worth
         stating because this test is named as what R7d-g's deletion rests on:
-        both paths call the same :func:`recurrence_end_date`, so a wrong RULE
-        inside it would move both together and read green here. What it can see
+        both paths read the same
+        :attr:`~app.services.balance_at.LoanFigures.closing_date`, so a wrong
+        RULE inside it would move both together and read green here. What it can see
         is the two ways that one answer is dressed coming apart.
         """
         with app.app_context():
@@ -759,7 +763,7 @@ class TestLoanPaymentWindowResolver:
             db.session.refresh(rule)
             assert rule.end_date is not None
 
-            window = loan_payment_window(tpl, self._ctx(seed_user))
+            window = _window(tpl, self._ctx(seed_user))
 
             assert window == ClosesOn(on=rule.end_date)
 
@@ -824,8 +828,8 @@ class TestLoanPaymentWindowResolver:
             )
 
             ctx = self._ctx(seed_user)
-            sweep_window = loan_payment_window(sweep, ctx)
-            payment_window = loan_payment_window(payment, ctx)
+            sweep_window = _window(sweep, ctx)
+            payment_window = _window(payment, ctx)
 
             assert sweep_window == payment_window, (
                 "two recurring transfers into one loan resolved to different "
@@ -842,8 +846,8 @@ class TestLoanPaymentWindowResolver:
         level payment cannot cover $4,500 of monthly interest, so the balance
         grows and the fold never reaches zero.  The payments must keep
         generating -- the loan still owes -- which is why ``None`` from
-        :func:`recurrence_end_date` is a window shape rather than a missing
-        answer.
+        :attr:`~app.services.balance_at.LoanFigures.closing_date` is a window
+        shape rather than a missing answer.
         """
         with app.app_context():
             loan = create_loan_account(
@@ -862,42 +866,30 @@ class TestLoanPaymentWindowResolver:
             assert figures.payoff_date is None, "precondition: it never clears"
             assert figures.is_retired is False, "precondition: it still owes"
 
-            assert loan_payment_window(tpl, ctx) == INDEFINITE
+            assert _window(tpl, ctx) == INDEFINITE
 
-    def test_a_RETIRED_loan_is_ALREADY_OVER_and_names_no_closing_date(
+    def test_a_RETIRED_loan_closes_on_the_day_it_BECAME_closed(
         self, app, db, seed_user, seed_periods,
     ):
-        """A finished loan whose payment HAS already fired is over, not dated.
-
-        **This asserted ``ClosesOn(2026-07-01)`` until plan step R7d-d**, and
-        ruling **R-R50** (developer, 2026-09-02) is what changed the expected
-        answer rather than the code drifting from it.  That date is the READ
-        PASS's own now -- :func:`recurrence_end_date` substitutes it because a
-        retired loan has no forward crossing for
-        :func:`~app.services.balance_at.loan_payoff_date` to date -- so
-        spelling it ``ClosesOn`` stated a fact about when the page was loaded
-        as a fact about the loan.  Measured on a production clone with the Van
-        Loan trued to ``$0.00``: the same untouched loan answered 2026-09-02,
-        2026-09-03 and 2026-12-25 on three read dates, and once plan step
-        R7d-g NULLs the cached column nothing pins that date at all.
+        """A finished loan whose payment HAS already fired closes, not empties.
 
         The CONTROL for the EMPTY case below, and the pair is what proves the
-        two shapes are told apart rather than collapsed.  Both loans are
-        retired, so both map through :func:`recurrence_end_date` to the SAME
-        date -- 2026-07-01 -- and the ONLY difference between them is where it
-        falls relative to the rule's first occurrence.  This loan originated
-        2026-05-01 with a ``payment_day`` of 1, so its first contractual
-        installment is 2026-06-01: already past, so the definition HAS fired
-        and "never runs" would be false about it.
+        two shapes are told apart rather than collapsed.  The ONLY difference
+        between them is where the loan's closing date falls relative to the
+        rule's first occurrence.  This loan originated 2026-05-01 with a
+        ``payment_day`` of 1, so its first contractual installment is
+        2026-06-01, and it is trued to zero on 2026-06-15 -- AFTER that
+        installment -- so the window is a real closing date.
 
-        **The date this closes on is the READ PASS's own now, and that is the
-        defect plan step R7d-h deletes.**  A retired loan has no forward
-        crossing, so ``recurrence_end_date`` substitutes ``ctx.as_of`` -- which
-        means the admitted set GROWS by one occurrence per cadence period as
-        the clock moves.  R7d-h gives the loan one closing date over its past
-        as well as its future, after which this test's expected value becomes
-        the day the loan was actually cleared and stops depending on when it is
-        read.
+        **The true-up is dated explicitly, and plan step ``recurrence:R7d-h``
+        is why.**  A retired loan's bound used to be the read pass's own now
+        (2026-07-01), so this case and the EMPTY one below were separated by
+        nothing but their first occurrence and the helper's default true-up
+        date -- one day after origination -- never mattered.  The bound is now
+        the day the loan LAST became closed, a fact about the LOAN, so the
+        true-up date IS the closing date and retiring this loan the day after
+        origination would put it before the first installment and make this
+        EMPTY too, collapsing the pair.
 
         The rule's opening bound is written by ``bind_rule_to_loan``, the
         production door, rather than by a fixture day -- so the date this rests
@@ -911,6 +903,7 @@ class TestLoanPaymentWindowResolver:
             )
             insert_trueup_event(
                 loan_params_for(db.session, loan.id), Decimal("0.00"),
+                anchor_date=date(2026, 6, 15),
             )
             tpl = make_loan_payment_template(
                 db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
@@ -926,16 +919,19 @@ class TestLoanPaymentWindowResolver:
                 "precondition: the first contractual installment is one month "
                 f"after origination, got {rule.starts_on}"
             )
-            assert rule.starts_on <= date(2026, 7, 1), (
-                "precondition: this loan's payment has already fired, which is "
-                "the ONLY thing separating it from the EMPTY case below"
+            assert rule.starts_on <= date(2026, 6, 15), (
+                "precondition: this loan's payment had already fired when it "
+                "was cleared, which is the ONLY thing separating it from the "
+                "EMPTY case below"
+            )
+            assert figures.closing_date == date(2026, 6, 15), (
+                "precondition: the loan closed on the day it was trued to "
+                f"zero, got {figures.closing_date}"
             )
 
-            window = loan_payment_window(tpl, ctx)
-
-            assert window == ClosesOn(on=date(2026, 7, 1))
-            assert window.admits(date(2026, 7, 1)) is True
-            assert window.admits(date(2026, 7, 2)) is False
+            assert _window(tpl, ctx) == ClosesOn(
+                on=date(2026, 6, 15),
+            )
 
     def test_a_loan_RETIRED_before_its_payment_first_fires_is_EMPTY(
         self, app, db, seed_user, seed_periods,
@@ -944,16 +940,23 @@ class TestLoanPaymentWindowResolver:
 
         A loan originated 2026-06-20 with a ``payment_day`` of 15 owes its
         first installment 2026-07-15; true its balance to zero the day after
-        origination and it retires, so the derived window closes at the read
-        pass's now -- 2026-07-01, BEFORE the rule ever fires.  That pair is
-        ``[2026-07-15, 2026-07-01]``: correct at nought occurrences, and
-        exactly the state ``ck_recurrence_rules_valid_window`` was drafted for
-        and then HELD BACK on, because a CHECK cannot tell it from an owner's
-        mistake and would turn a true-up into an unhandled ``CheckViolation``.
+        origination and it retires on 2026-06-21, BEFORE the rule ever fires.
+        That pair is ``[2026-07-15, 2026-06-21]``: correct at nought
+        occurrences, and exactly the state
+        ``ck_recurrence_rules_valid_window`` was drafted for and then HELD
+        BACK on, because a CHECK cannot tell it from an owner's mistake and
+        would turn a true-up into an unhandled ``CheckViolation``.
 
-        The control above is the same loan one month earlier in its life and
-        reaches ``ClosesOn`` on the identical closing date, so what this pins
-        is the EMPTY test itself and not the retired mapping.
+        **The closing date is the day the loan was CLEARED, not the read
+        pass's now** (plan step ``recurrence:R7d-h``).  This case used to reach
+        EMPTY because the retired bound was ``as_of`` and ``as_of`` happened to
+        fall before the first installment; it now reaches it because the loan
+        genuinely finished before its payment ever fired -- the same verdict
+        for a reason that is a fact about the loan.
+
+        The control above clears AFTER its first installment and reaches
+        ``ClosesOn``, so what this pins is the EMPTY test itself and not the
+        retired mapping.
 
         **A loan that has not ORIGINATED cannot stand in for this**, and the
         first draft of this test used one: an unborrowed loan owes ``$0.00``
@@ -987,8 +990,12 @@ class TestLoanPaymentWindowResolver:
                 "precondition: the first contractual installment is one month "
                 f"after origination, got {rule.starts_on}"
             )
+            assert figures.closing_date == date(2026, 6, 21), (
+                "precondition: the loan closed BEFORE its first installment, "
+                f"got {figures.closing_date}"
+            )
 
-            assert loan_payment_window(tpl, ctx) == EMPTY
+            assert _window(tpl, ctx) == EMPTY
 
     def test_a_loan_RETIRING_ON_the_day_it_first_fires_is_NOT_empty(
         self, app, db, seed_user, seed_periods,
@@ -996,8 +1003,13 @@ class TestLoanPaymentWindowResolver:
         """The boundary between the two shapes above: ``[D, D]`` is ONE occurrence.
 
         A loan originated 2026-06-01 with a ``payment_day`` of 1 owes its first
-        installment 2026-07-01, which is the read pass's own now; retired, its
-        window closes on that same day.  A window whose ends coincide is not
+        installment 2026-07-01, and it is trued to zero ON that day, so its
+        window closes on the date it first fires.  (Before plan step
+        ``recurrence:R7d-h`` the retired bound was the read pass's now, which
+        landed on 2026-07-01 by coincidence of the frozen clock; it is now the
+        day the loan was cleared, so the true-up carries that date explicitly.)
+
+        A window whose ends coincide is not
         empty -- it admits exactly the occurrence on that date, because
         ``ClosesOn`` is INCLUSIVE, and here that is the boundary being pinned
         rather than a claim about which installment cleared the loan: this
@@ -1021,6 +1033,7 @@ class TestLoanPaymentWindowResolver:
             )
             insert_trueup_event(
                 loan_params_for(db.session, loan.id), Decimal("0.00"),
+                anchor_date=date(2026, 7, 1),
             )
             tpl = make_loan_payment_template(
                 db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
@@ -1031,12 +1044,19 @@ class TestLoanPaymentWindowResolver:
             ctx = self._ctx(seed_user)
             rule = tpl.recurrence_rule
             assert rule.starts_on == date(2026, 7, 1), (
-                "precondition: the first occurrence must fall ON the read "
-                f"pass's as-of for this boundary to exist, got {rule.starts_on}"
+                "precondition: the loan must CLOSE on its own first occurrence "
+                f"for this boundary to exist, got {rule.starts_on}"
             )
-            assert balance_at.loan_figures(loan, ctx).is_retired is True
+            figures = balance_at.loan_figures(loan, ctx)
+            assert figures.is_retired is True
+            assert figures.closing_date == rule.starts_on, (
+                "precondition: the closing date and the first occurrence must "
+                f"COINCIDE, got {figures.closing_date} vs {rule.starts_on}. "
+                "Without this the test passes on the frozen clock rather than "
+                "on the boundary it names -- the as-of also falls on this day"
+            )
 
-            window = loan_payment_window(tpl, ctx)
+            window = _window(tpl, ctx)
 
             assert window == ClosesOn(on=date(2026, 7, 1))
             assert window.admits(date(2026, 7, 1)) is True
@@ -1104,58 +1124,13 @@ class TestLoanPaymentWindowResolver:
             figures = balance_at.loan_figures(loan, between)
             assert figures.is_retired is True, "precondition: it owes nothing"
 
-            window = loan_payment_window(tpl, between)
+            window = _window(tpl, between)
 
-            assert window == ClosesOn(
-                on=resolved_first + timedelta(days=1),
-            ), (
+            assert window == ClosesOn(on=figures.closing_date), (
                 "the window was decided against the stored column, so a "
                 "definition with a live occurrence reads as finished"
             )
             assert window.admits(resolved_first) is True
-
-    def test_a_definition_the_app_cannot_RESOLVE_still_answers(
-        self, app, db, seed_user,
-    ):
-        """An owner with NO pay periods gets the conservative answer.
-
-        ``resolved_recurrence`` returns ``None`` for an empty schedule -- the
-        one refusal it swallows, because the Recurring surface renders every
-        definition a user has and a whole page must not 500 for it.  Nothing
-        generates for such an owner either way, so the honest answer is the one
-        that does NOT claim the definition is finished.
-
-        The loan and its definition are built while the ``seed_user``
-        bootstrap period still exists -- the account factory anchors against
-        it -- and the schedule is emptied afterwards, which is the order the
-        state actually arises in.
-        """
-        with app.app_context():
-            loan = create_loan_account(
-                seed_user, db.session, name="No Schedule Loan",
-                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
-                term=24, origination_date=date(2026, 7, 1),
-            )
-            tpl = make_loan_payment_template(
-                db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
-            )
-            db.session.flush()
-            db.session.query(PayPeriod).filter_by(
-                user_id=seed_user["user"].id,
-            ).delete(synchronize_session=False)
-            db.session.flush()
-
-            ctx = self._ctx(seed_user)
-            assert not ctx.calendar().periods, (
-                "precondition: this owner must have no pay periods"
-            )
-
-            window = loan_payment_window(tpl, ctx)
-
-            assert not isinstance(window, Empty), (
-                "an owner whose schedule does not exist yet was told their "
-                "loan payment is finished"
-            )
 
     def test_a_transfer_into_a_NON_loan_has_no_derived_window(
         self, app, db, seed_user, seed_periods,
@@ -1173,7 +1148,7 @@ class TestLoanPaymentWindowResolver:
             tpl = make_transfer_template(db.session, seed_user, savings)
             db.session.commit()
 
-            assert loan_payment_window(tpl, self._ctx(seed_user)) is None
+            assert _window(tpl, self._ctx(seed_user)) is None
 
     def test_an_amortizing_account_without_params_has_no_derived_window(
         self, app, db, seed_user, seed_periods,
@@ -1196,24 +1171,7 @@ class TestLoanPaymentWindowResolver:
             tpl = make_loan_payment_template(db.session, seed_user, acct)
             db.session.commit()
 
-            assert loan_payment_window(tpl, self._ctx(seed_user)) is None
-
-    def test_a_definition_that_does_not_repeat_has_no_derived_window(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """No rule means no occurrences to bound.
-
-        A one-time transfer into a loan is a single dated payment; there is no
-        cadence for a window to narrow, and answering a shape for it would
-        invite a reader to apply one.
-        """
-        with app.app_context():
-            loan = self._current_loan(seed_user, db.session)
-            tpl = make_loan_payment_template(db.session, seed_user, loan)
-            tpl.recurrence_rule = None
-            db.session.commit()
-
-            assert loan_payment_window(tpl, self._ctx(seed_user)) is None
+            assert _window(tpl, self._ctx(seed_user)) is None
 
     def test_a_transaction_template_has_no_derived_window(
         self, app, db, seed_user, seed_periods,
@@ -1229,7 +1187,7 @@ class TestLoanPaymentWindowResolver:
             tpl = make_expense_template(db.session, seed_user)
             db.session.commit()
 
-            assert loan_payment_window(tpl, self._ctx(seed_user)) is None
+            assert _window(tpl, self._ctx(seed_user)) is None
 
     def test_resolving_a_SECOND_definition_on_one_pass_costs_NO_queries(
         self, app, db, seed_user, seed_periods,
@@ -1291,12 +1249,25 @@ class TestLoanPaymentWindowResolver:
                 .all()
             )
             assert len(templates) == 3, "precondition: three definitions"
+            # Resolved OUTSIDE the capture too: since plan step R7d-d the
+            # resolver TAKES the resolved recurrence, so resolving the rule is
+            # the door's cost -- reading the rule's columns and the pass's
+            # memoized calendar -- and not the resolver's.
+            resolved = {
+                t.id: resolved_recurrence(t.recurrence_rule, ctx.calendar())
+                for t in templates
+            }
             # The first resolve warms the pass's loan resolution and payoff.
             first, first_statements = capture_sql_statements(
-                lambda: loan_payment_window(templates[0], ctx),
+                lambda: loan_payment_window(
+                    templates[0], resolved[templates[0].id], ctx,
+                ),
             )
             rest, rest_statements = capture_sql_statements(
-                lambda: [loan_payment_window(t, ctx) for t in templates[1:]],
+                lambda: [
+                    loan_payment_window(t, resolved[t.id], ctx)
+                    for t in templates[1:]
+                ],
             )
 
             assert isinstance(first, ClosesOn)
@@ -1323,7 +1294,7 @@ class TestLoanPaymentWindowResolver:
             db.session.commit()
             staged = db.session.get(TransferTemplate, other_tpl.id)
             other, other_statements = capture_sql_statements(
-                lambda: loan_payment_window(staged, ctx),
+                lambda: _window(staged, ctx),
             )
 
             assert isinstance(other, ClosesOn)
@@ -1354,7 +1325,7 @@ class TestLoanPaymentWindowResolver:
                 as_of=date(2026, 7, 1),
             )
             with pytest.raises(BaselineMissingError):
-                loan_payment_window(tpl, ctx)
+                _window(tpl, ctx)
 
     def test_a_NON_loan_still_resolves_without_a_baseline_scenario(
         self, app, db, seed_user, seed_periods,
@@ -1378,4 +1349,4 @@ class TestLoanPaymentWindowResolver:
                 user_id=seed_user["user"].id, scenario=None,
                 as_of=date(2026, 7, 1),
             )
-            assert loan_payment_window(tpl, ctx) is None
+            assert _window(tpl, ctx) is None

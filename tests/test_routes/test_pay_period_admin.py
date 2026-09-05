@@ -34,6 +34,7 @@ from tests._test_helpers import (
     freeze_today,
     make_expense_template,
     make_transfer_template,
+    resolved_amount,
 )
 from app.services import cash_ledger
 from app.services.pay_calendar import calendar_for
@@ -1024,7 +1025,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
                 f"{len(rows)} template rows, not 1 -- the door created the "
                 f"period and its caller did not populate it"
             )
-            assert rows[0].estimated_amount == self._AMOUNT
+            assert resolved_amount(rows[0]) == self._AMOUNT
 
     def test_the_extend_route_populates_what_it_appends(
         self, app, db, auth_client, seed_user,

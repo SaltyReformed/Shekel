@@ -498,6 +498,27 @@ EVT_STATEMENT_MATCH_LINELESS = _register(
     "named here is freed by deleting it.",
 )
 
+EVT_STATEMENT_LINE_SKIPPED = _register(
+    "statement_line_skipped", BUSINESS,
+    "An owner decided a bank line is explained by nothing they budget for, so "
+    "the Reconcile inbox stops asking about it (ruling bank_import:R-JG, plan "
+    "step bank_import:X-gj-4a).  It MOVES NO MONEY and can move none: the "
+    "bank's own record still shows the line, the app still records nothing "
+    "for it, and the books-versus-bank comparison still reports the "
+    "difference.  What it records is a decision about the WORK, which is why "
+    "it is a business event rather than a silent filter.",
+)
+
+EVT_STATEMENT_LINE_UNSKIPPED = _register(
+    "statement_line_unskipped", BUSINESS,
+    "An owner undid a skip; that bank line is waiting to be explained again.  "
+    "Its own event beside statement_line_skipped for the reason "
+    "statement_match_released is one beside statement_matched: undoing a "
+    "decision is a different act from making it, and a single event carrying "
+    "a direction would make 'how many lines did they skip' unanswerable "
+    "without reading the payload.",
+)
+
 EVT_STATEMENT_IMPORT_DELETED = _register(
     "statement_import_deleted", BUSINESS,
     "An owner deleted a recorded import: the lines it FIRST recorded are gone, "

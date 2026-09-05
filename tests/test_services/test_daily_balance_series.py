@@ -81,6 +81,7 @@ def _add_txn(
     status_id = ref_cache.status_id(status)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,
@@ -332,7 +333,7 @@ class TestDailySeriesEdges:
             # $1,000.00 -- no settled row has moved the account, so this
             # assertion books nothing.
             append_balance_assertion(
-                db.session, account, seed_periods[5], Decimal("1000.00"),
+                db.session, account, Decimal("1000.00"),
                 settle_instant_on(date(2026, 3, 19)),
             )
             mark_purchase_settled(db.session, account, entry)

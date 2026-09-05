@@ -251,6 +251,7 @@ class TestCategoryDelete:
 
             txn = Transaction(
                 template_id=None,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -360,6 +361,7 @@ class TestCategoryDelete:
                 name="Projected"
             ).one()
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -401,6 +403,7 @@ class TestCategoryDelete:
                 name="Projected"
             ).one()
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -701,6 +704,7 @@ class TestCategoryEdit:
                 name="Projected"
             ).one()
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1127,6 +1131,7 @@ class TestArchiveHelpers:
 
             txn = Transaction(
                 template_id=template.id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1161,6 +1166,7 @@ class TestArchiveHelpers:
 
             txn = Transaction(
                 template_id=template.id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1275,6 +1281,7 @@ class TestArchiveHelpers:
             projected_status = db.session.query(Status).filter_by(name="Projected").one()
 
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1546,6 +1553,7 @@ class TestCategoryArchiveDelete:
             )
 
             txn = Transaction(
+                user_id=current_period.user_id,
                 pay_period_id=current_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,

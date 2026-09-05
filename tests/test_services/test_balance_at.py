@@ -185,6 +185,11 @@ def _derived_income_row(db, seed_user, account, period, scenario, amount):
     txn = Transaction(
         account_id=account.id,
         template_id=template.id,
+        # The owner, off the period this row is funded in (plan step
+        # ``pay_calendar:C13-a``).  This helper arrived from
+        # ``balance:X-au-d``, which was written against a schema with no
+        # ``user_id``; without this the constructor meets a NOT NULL.
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -1760,6 +1765,7 @@ class TestTheSeamOwnsTheIncomeBasis:
             db.session.add(Transaction(
                 account_id=hysa.id,
                 template_id=template.id,
+                user_id=periods[5].user_id,
                 pay_period_id=periods[5].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -2201,6 +2207,7 @@ class TestOnlyALoanIsNotATransactionSum:
             for acct in (mortgage, inv, prop):
                 db.session.add(Transaction(
                     account_id=acct.id,
+                    user_id=periods[5].user_id,
                     pay_period_id=periods[5].id,
                     scenario_id=scenario.id,
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -2697,6 +2704,7 @@ class TestTheInterestChipAndTheBalanceAreOneWalk:
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             db.session.add(Transaction(
                 account_id=hysa.id,
+                user_id=periods[6].user_id,
                 pay_period_id=periods[6].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3023,6 +3031,7 @@ class TestGridBalanceView:
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             db.session.add(Transaction(
                 account_id=hysa.id,
+                user_id=periods[6].user_id,
                 pay_period_id=periods[6].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3826,6 +3835,7 @@ def _seed_grid_activity(db, seed_user, periods):
     account = seed_user["account"]
     db.session.add(Transaction(
         account_id=account.id,
+        user_id=periods[6].user_id,
         pay_period_id=periods[6].id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -3835,6 +3845,7 @@ def _seed_grid_activity(db, seed_user, periods):
     ))
     db.session.add(Transaction(
         account_id=account.id,
+        user_id=periods[7].user_id,
         pay_period_id=periods[7].id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -5766,12 +5777,12 @@ class TestCashAnchorHistory:
             typed_day = periods[3].start_date
 
             append_balance_assertion(
-                db.session, account, periods[1], Decimal("640.00"),
+                db.session, account, Decimal("640.00"),
                 settle_instant_on(back_day),
                 recorded_at=settle_instant_on(typed_day),
             )
             append_balance_assertion(
-                db.session, account, periods[2], Decimal("710.00"),
+                db.session, account, Decimal("710.00"),
                 settle_instant_on(last_covered_day(periods[2])),
             )
             db.session.commit()

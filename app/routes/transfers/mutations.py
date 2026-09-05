@@ -20,7 +20,6 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.extensions import db
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.transfer import Transfer
@@ -38,6 +37,8 @@ from app.utils.error_fragments import (
     INVALID_REFERENCE_MSG,
     flatten_schema_errors,
 )
+from app.routes._authored_figure import figure_was_authored
+from app.utils.rendered_figure import as_rendered_field
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import (
     _error_transfer_response,
@@ -172,18 +173,25 @@ def update_transfer(xfer_id):
         return _stale_transfer_response(xfer_id), 409
 
     # --- Route-boundary FK ownership (commit C-27 / F-043) ---
-    # The user-scoped FKs ``TransferUpdateSchema`` exposes are
-    # ``category_id`` and ``pay_period_id``; ``status_id`` references
-    # the ref table and needs no ownership probe.  Each is verified
-    # only when present and non-``None`` -- ``allow_none=True`` on
-    # ``category_id`` means clearing it (NULL) is legitimate and the
-    # service drops it through unchanged.  The service's
-    # ``_get_owned_*`` helpers re-check, but enforcing it here keeps
-    # the boundary visible and guards a future refactor that bypasses
-    # them.  Single-return loop so adding a future FK does not push the
-    # function past pylint's too-many-returns threshold; all failures
-    # collapse to 404 per the project security response rule.
-    for model, field in ((Category, "category_id"), (PayPeriod, "pay_period_id")):
+    # ``category_id`` is verified only when present and non-``None`` --
+    # ``allow_none=True`` on it means clearing it (NULL) is legitimate and the
+    # service drops it through unchanged.  ``status_id`` references the ref
+    # table and needs no ownership probe.  Single-return loop so adding a
+    # future FK does not push the function past pylint's too-many-returns
+    # threshold; all failures collapse to 404 per the project security
+    # response rule.
+    #
+    # **``pay_period_id`` is NOT here any more** (plan step
+    # ``pay_calendar:C13-b``, developer 2026-09-03).  This loop carried it,
+    # duplicating ``transfer_service._ownership._get_owned_period``, which
+    # ``update_transfer`` reaches unconditionally and whose ``NotFoundError``
+    # this route already turns into the identical ``"Not found", 404``.  The
+    # duplicate was F-043's deliberate defence in depth, written when the two
+    # tiers had no shared producer to point at; the service tier now asks the
+    # owner's derived CALENDAR, one answer with no comparison in it, and one
+    # walk is what this step is for.  ``category_id`` stays because no
+    # derivation owns ``budget.categories``.
+    for model, field in ((Category, "category_id"),):
         value = data.get(field)
         if value is not None and not _user_owns(model, value):
             return "Not found", 404
@@ -215,10 +223,35 @@ def update_transfer(xfer_id):
     # `$1,000.00` interest + `$300.00` escrow split.  That is finding N-219's
     # own shape surviving inside the fix for it.
     #
-    # The amount comparison is numeric (``Decimal("1.00") == Decimal("1.0")``),
-    # so re-submitting the rendered value unchanged is correctly not a move.
-    amount_changed = "amount" in data and data["amount"] != xfer.amount
-    if xfer.transfer_template_id and (amount_changed or period_changed):
+    # **It compared against the STORED COLUMN until plan step X-au-h, and that
+    # was finding N-448.**  ``data["amount"] != xfer.amount`` is right only
+    # while the column holds what the form displayed.  Plan step X-au-f empties
+    # ``budget.transfers.amount`` for a generated transfer, at which point
+    # ``!= None`` is true for EVERY save -- so every notes-only or status-only
+    # save through this door would have claimed a human re-priced the row and
+    # detached it from its definition.  It fails by always answering YES, so no
+    # test that expects the flag to be raised could have seen it.
+    #
+    # Ruling **R-JR**: the form posts the figure it RENDERED, and authorship is
+    # that comparison rather than one against the database.  See
+    # :mod:`app.routes._authored_figure` for why the payload carries it and why
+    # a figure with no companion counts as authored.
+    amount_authored = figure_was_authored(data, "amount")
+    # The companion is popped HERE because it is not a field: ``update_transfer``
+    # silently ignores unknown kwargs, so leaving it in the bag would let a key
+    # this door is responsible for vanish without anyone noticing.
+    #
+    # **The unauthored AMOUNT is dropped later, in
+    # :func:`_execute_transfer_update`, and the placement is deliberate.**
+    # ``_reject_finalised_transfer_edit`` below intersects the payload's keys
+    # against the locked-field set, so dropping the amount here would change
+    # what that lock SEES -- a crafted request naming a finalised transfer's
+    # amount would stop being refused and start being quietly ignored.  The row
+    # is unharmed either way, but a lock that silently stops speaking is how the
+    # next reader concludes it is not needed.  The gates grade what was
+    # SUBMITTED; the service is handed what was MEANT.
+    data.pop(as_rendered_field("amount"), None)
+    if xfer.transfer_template_id and (amount_authored or period_changed):
         data["is_override"] = True
 
     # The settle-day grading, the finalised-row edit lock (#26) and the service
@@ -233,7 +266,7 @@ def update_transfer(xfer_id):
     error_response = (
         _grade_submitted_settle_day(xfer, data)
         or _reject_finalised_transfer_edit(xfer, data)
-        or _execute_transfer_update(xfer, data)
+        or _execute_transfer_update(xfer, data, amount_authored=amount_authored)
     )
     if error_response is not None:
         return error_response
@@ -302,10 +335,19 @@ def create_ad_hoc():
     # single ``return`` so adding a sixth FK in the future does
     # not push the function past pylint's too-many-returns
     # threshold.
+    #
+    # **``pay_period_id`` left this tuple at plan step
+    # ``pay_calendar:C13-b``** (developer 2026-09-03): it duplicated
+    # ``transfer_service._ownership._get_owned_period``, which
+    # ``create_transfer`` reaches unconditionally and whose ``NotFoundError``
+    # the ``except`` below already answers with this same 404.  That service
+    # call asks the owner's derived calendar now -- one answer, no comparison
+    # -- and the four route-boundary copies of it collapsed into it.  The
+    # other four entries stay: no derivation owns their tables, so the route
+    # probe is still the first place the question can be asked.
     for model, pk in (
         (Account, data["from_account_id"]),
         (Account, data["to_account_id"]),
-        (PayPeriod, data["pay_period_id"]),
         (Scenario, data["scenario_id"]),
         (Category, data["category_id"]),
     ):
@@ -554,7 +596,7 @@ def _grade_submitted_settle_day(xfer, data):
     return None
 
 
-def _execute_transfer_update(xfer, data):
+def _execute_transfer_update(xfer, data, *, amount_authored):
     """Apply an inline transfer edit via the service and commit it.
 
     Runs ``transfer_service.update_transfer`` (which propagates the change to
@@ -567,14 +609,40 @@ def _execute_transfer_update(xfer, data):
     Args:
         xfer: The owned Transfer being edited.
         data: The loaded TransferUpdateSchema payload (``is_override`` may
-            already be set by the caller for template-linked moves).
+            already be set by the caller for template-linked moves, and the
+            rendered-figure companion already removed by it).  **Mutated in
+            place here**: an ``amount`` no human authored is dropped below,
+            after the caller's gates have graded the payload as submitted.
+        amount_authored: Whether the ``amount`` in *data*, if any, is a figure a
+            HUMAN typed (ruling **R-JR**).  Passed rather than re-derived
+            because the fact lives in the payload the caller already consumed,
+            and passed EXPLICITLY rather than left implicit in the presence of
+            an ``amount``: the service's rule is then its own statement instead
+            of a dependency on this door having stripped the echo, so a future
+            door that forgets is wrong in a way the service can still refuse.
 
     Returns:
         ``None`` on success -- the caller renders the updated cell -- or a
         Flask response tuple describing the failure.
     """
+    # An UNAUTHORED figure is not forwarded, the idiom
+    # ``_update._grade_submitted_figure`` already applies to an echoed
+    # ``settled_amount`` one box over: a figure nobody typed carries no
+    # information, so it is not an update.  It matters beyond tidiness -- the
+    # service's amount arm CLEARS the relation that prices the row, so
+    # forwarding an echo would un-derive a generated transfer on a save that
+    # touched only its notes.
+    #
+    # Dropped HERE rather than at the caller so the two gates above still grade
+    # the payload as SUBMITTED; see the caller for why that ordering is
+    # load-bearing.  ``data`` is the caller's dict and this mutates it, which
+    # matches ``_grade_submitted_figure``'s documented in-place contract.
+    if not amount_authored:
+        data.pop("amount", None)
     try:
-        transfer_service.update_transfer(xfer.id, current_user.id, **data)
+        transfer_service.update_transfer(
+            xfer.id, current_user.id, amount_authored=amount_authored, **data,
+        )
         db.session.commit()
     except StaleDataError:
         logger.info("Stale-data conflict on update_transfer id=%d", xfer.id)

@@ -4,8 +4,13 @@ Dumps what the ``/templates`` producer publishes for every recurring definition
 on the database this is pointed at -- the cadence phrase, the stop line, the
 next date and the monthly equivalent -- plus, for a definition paying into a
 configured loan, the stored column beside the resolver's own answer.  Run it on
-``origin/dev`` and again on the branch and diff the two files: an empty diff is
-the equality claim, measured rather than argued.
+``origin/dev`` and again on the branch and diff the two files.  An empty diff
+is the claim that no rendered character moved, measured rather than argued.
+Where it is NOT empty, the moved rows must be loan payments whose stored bound
+is NULL or LATER than the loan's closing date -- the only rows the composed
+value changes, since the stored copy still binds where it is the earlier date
+until plan step R7d-g deletes it -- and each such row is the step working; a
+moved row of any other kind is a regression.
 
 Usage (from a checkout, against a production clone)::
 
@@ -13,11 +18,12 @@ Usage (from a checkout, against a production clone)::
 
 **It must COMPILE AND RUN ON BOTH SIDES**, which is the whole point of a
 before/after harness.  ``build_view`` takes ``(calendar, as_of)`` before this
-step and a ``BalanceContext`` after, so a script written against either
+step and a ``BalanceContext`` after, and ``loan_payment_window`` gains the
+resolved recurrence as a parameter, so a script written against either
 signature measures one side and crashes on the other -- and a harness that only
-runs on the branch proves nothing about what changed.  The adaptation is a
-single :func:`inspect.signature` read in :func:`_build`, which states why the
-keyword set is computed rather than written out twice.
+runs on the branch proves nothing about what changed.  Each adaptation is a
+single :func:`inspect.signature` read (:func:`_build`, :func:`_stop`), which
+states why the call shape is computed rather than written out twice.
 
 It reads only: it opens no transaction and writes nothing.
 """
@@ -36,12 +42,48 @@ from app.services import recurring_view
 from app.services.balance_at import BalanceContext
 from app.services.loan_recurrence_sync import loan_payment_window
 from app.services.obligations_aggregator import template_rule
+from app.services.recurrence import resolved_recurrence
 
-#: Pinned so two runs on two checkouts measure the same day.  A retired loan's
-#: derived stop tracks the read pass's own now (ruling **R-R50**), so an
-#: unpinned clock would make the two sides differ for a reason unrelated to the
-#: change under test.
+#: Pinned so two runs on two checkouts measure the same day.  The surface's
+#: next date and its expired-rule filter are measured from the pass's as-of, so
+#: an unpinned clock would make the two sides differ for a reason unrelated to
+#: the change under test.
 AS_OF = date(2026, 9, 2)
+
+
+def _stop(template, ctx):
+    """Ask the resolver about *template* through whichever signature it has.
+
+    ``loan_payment_window`` takes ``(template, ctx)`` before plan step R7d-d
+    and ``(template, resolved, ctx)`` after it -- the door resolves the rule
+    once and hands the value down -- so, like :func:`_build`, the call is one
+    call through a computed shape rather than two literal calls of which one
+    cannot compile on the checked-out side.
+
+    **The keyword set is COMPUTED, for the reason :func:`_build`'s is**: a
+    literal call in either shape is an arity error against the other side's
+    signature, and ``pylint tests/manual/`` refuses it there -- including a
+    star-args list, whose length it infers.
+
+    Args:
+        template: A transfer template.
+        ctx: The read pass.
+
+    Returns:
+        The resolver's answer, or ``None`` when the definition does not repeat
+        or the owner has no pay periods (the door's own two ``None`` states,
+        answered before the resolver is asked on the after side).
+    """
+    kwargs = {"template": template, "ctx": ctx}
+    if "resolved" in inspect.signature(loan_payment_window).parameters:
+        rule = template_rule(template)
+        if rule is None:
+            return None
+        resolved = resolved_recurrence(rule, ctx.calendar())
+        if resolved is None:
+            return None
+        kwargs["resolved"] = resolved
+    return loan_payment_window(**kwargs)
 
 
 def _build(templates_by_kind, ctx):
@@ -97,6 +139,66 @@ def _rows(view):
             yield kind, row
 
 
+def _dump_user(user_id, income_id):
+    """Return every line the surface publishes for one owner, as of ``AS_OF``.
+
+    One owner per call so :func:`main` stays a loop over owners rather than a
+    function holding every per-owner local at once.
+
+    Args:
+        user_id: The owner.
+        income_id: The ``ref`` id of the INCOME transaction type, resolved once
+            by the caller.
+
+    Returns:
+        The lines for this owner, in a stable order.
+    """
+    lines = [f"### user {user_id}"]
+    ctx = BalanceContext.build(user_id, AS_OF)
+    txns = (
+        db.session.query(TransactionTemplate)
+        .filter_by(user_id=user_id, is_active=True)
+        .order_by(TransactionTemplate.id).all()
+    )
+    xfers = (
+        db.session.query(TransferTemplate)
+        .filter_by(user_id=user_id, is_active=True)
+        .order_by(TransferTemplate.id).all()
+    )
+    view = _build(
+        (
+            [t for t in txns if t.transaction_type_id == income_id],
+            [t for t in txns if t.transaction_type_id != income_id],
+            xfers,
+        ),
+        ctx,
+    )
+    for kind, row in _rows(view):
+        described = row.recurrence
+        lines.append(
+            f"{kind} tmpl={row.template.id} {row.template.name!r} "
+            f"cadence={None if described is None else described.cadence!r} "
+            f"stops={None if described is None else described.stops!r} "
+            f"next={row.next_date} monthly={row.equivalent.monthly}"
+        )
+    lines.append(
+        f"band net={view.band.net.monthly} "
+        f"income={view.band.income.monthly} "
+        f"expenses={view.band.expenses.monthly} "
+        f"transfers={view.band.transfers_out.monthly}"
+    )
+    for template in xfers:
+        stop = _stop(template, ctx)
+        if stop is None:
+            continue
+        rule = template_rule(template)
+        lines.append(
+            f"STOP tmpl={template.id} {template.name!r} "
+            f"stored_end={rule.end_date} derived={stop!r}"
+        )
+    return lines
+
+
 def main(out_path):
     """Write every Recurring-surface stop line on this database to *out_path*.
 
@@ -111,49 +213,7 @@ def main(out_path):
             row[0] for row in db.session.query(Account.user_id).distinct().all()
         ]
         for user_id in sorted(user_ids):
-            ctx = BalanceContext.build(user_id, AS_OF)
-            txns = (
-                db.session.query(TransactionTemplate)
-                .filter_by(user_id=user_id, is_active=True)
-                .order_by(TransactionTemplate.id).all()
-            )
-            xfers = (
-                db.session.query(TransferTemplate)
-                .filter_by(user_id=user_id, is_active=True)
-                .order_by(TransferTemplate.id).all()
-            )
-            lines.append(f"### user {user_id}")
-            view = _build(
-                (
-                    [t for t in txns if t.transaction_type_id == income_id],
-                    [t for t in txns if t.transaction_type_id != income_id],
-                    xfers,
-                ),
-                ctx,
-            )
-            for kind, row in _rows(view):
-                described = row.recurrence
-                lines.append(
-                    f"{kind} tmpl={row.template.id} {row.template.name!r} "
-                    f"cadence={None if described is None else described.cadence!r} "
-                    f"stops={None if described is None else described.stops!r} "
-                    f"next={row.next_date} monthly={row.equivalent.monthly}"
-                )
-            lines.append(
-                f"band net={view.band.net.monthly} "
-                f"income={view.band.income.monthly} "
-                f"expenses={view.band.expenses.monthly} "
-                f"transfers={view.band.transfers_out.monthly}"
-            )
-            for template in xfers:
-                stop = loan_payment_window(template, ctx)
-                if stop is None:
-                    continue
-                rule = template_rule(template)
-                lines.append(
-                    f"STOP tmpl={template.id} {template.name!r} "
-                    f"stored_end={rule.end_date} derived={stop!r}"
-                )
+            lines.extend(_dump_user(user_id, income_id))
     with open(out_path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     print(f"{len(lines)} lines -> {out_path}")

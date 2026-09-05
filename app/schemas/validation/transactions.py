@@ -14,6 +14,7 @@ from app.schemas.validation._helpers import (
     _NON_NEGATIVE_MONETARY,
     _normalize_empty_inputs,
     _reject_envelope_on_income,
+    reject_figure_without_its_rendered_companion,
 )
 
 
@@ -40,6 +41,36 @@ class TransactionUpdateSchema(BaseSchema):
 
     name = fields.String(validate=validate.Length(min=1, max=200))
     estimated_amount = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
+    # WHAT THE FORM SHOWED in the Estimated box, posted back beside whatever
+    # came out of it (ruling **R-JR**, plan step X-au-h).  It is not written to
+    # any column and never reaches the row: the door compares the two to decide
+    # whether a HUMAN authored this figure, which is the question
+    # ``routes._authored_figure`` states in full.
+    #
+    # **Declared here so a submission carrying one is not silently discarded.**
+    # ``Meta.unknown`` is ``EXCLUDE``, so an undeclared companion would vanish
+    # in ``load()`` -- and the rule below, seeing it absent, would then refuse
+    # every save this form makes.  Declaring it is what makes the refusal a
+    # statement about the FORM rather than about this schema.
+    #
+    # Not ``allow_none``: an empty companion means the form stated nothing
+    # about what it rendered, and ``_normalize_empty_inputs`` drops it so the
+    # payload reads as ABSENT -- which the rule below refuses, rather than
+    # letting an explicit null read as a figure nobody rendered.
+    estimated_amount_as_rendered = fields.Decimal(
+        places=2, as_string=True, validate=validate.Range(min=0),
+    )
+
+    @validates_schema
+    def reject_a_figure_that_does_not_say_what_was_rendered(self, data, **kwargs):
+        """Refuse an ``estimated_amount`` with no rendered companion (**R-JR**).
+
+        See
+        :func:`~app.schemas.validation._helpers.reject_figure_without_its_rendered_companion`
+        for why a figure alone cannot be judged, and why refusing beats guessing
+        in either direction.
+        """
+        reject_figure_without_its_rendered_companion(data, "estimated_amount")
     # WHAT MOVED, and the ONLY thing this door may do with one is hand it to a
     # SETTLE arriving in the same request (plan step X-au-c3).  A figure without
     # a settling status is refused by

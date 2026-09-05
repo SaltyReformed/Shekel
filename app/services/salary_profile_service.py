@@ -35,9 +35,10 @@ the ``-$9,677.24``.
 **Reactivation needs no counterpart, and that is a property of the existing
 code rather than an omission.**  ``reactivate_profile`` regenerates, and the
 maintain pass writes each non-override projected row's whole ownership from its
-definition (``recurrence_engine._amounts._generated_amount_ownership``) -- which
-for a template an active profile names is a DECLARATION.  So the rows go back on
-the profile by the pass that already runs.  A row the owner had re-priced by
+definition (``recurrence_engine._amounts._derive_row_fields``) -- which since
+plan step balance:X-au-e is a DECLARATION for every template, an active
+profile's included.  So the rows go back on the profile by the pass that already
+runs, and amount rule 2 prices them from the reactivated profile.  A row the owner had re-priced by
 hand carries ``is_override`` and is held back as a conflict, exactly as it is
 for any other template edit.
 

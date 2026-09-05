@@ -28,6 +28,7 @@ from marshmallow import (
 
 from app import ref_cache
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
+from app.utils.rendered_figure import as_rendered_field
 from app.utils.digit_strings import MIN_ROW_ID, is_ascii_digits, parse_row_id
 
 
@@ -432,6 +433,56 @@ def _reject_envelope_on_income(data, message):
         return
     if ref_cache.transaction_type_is_income(txn_type_id):
         raise ValidationError(message, field_name="is_envelope")
+
+
+def reject_figure_without_its_rendered_companion(data, field):
+    """Refuse a money figure that does not say what the form had RENDERED.
+
+    Ruling **R-JR** (developer, 2026-09-03, second sitting), shared by the
+    transaction and transfer update schemas so the two doors cannot come to
+    disagree about what a well-formed money payload is.
+
+    **A figure alone is not a statement about authorship.**  An HTML form posts
+    every control it renders, so a submitted amount says only that a box
+    existed.  The doors decide whether a HUMAN typed it by comparing the
+    submitted figure against the one the form rendered into that box, which the
+    form posts beside it (``app.routes._authored_figure``).  A payload carrying
+    the figure and not the companion cannot be judged, and this refuses it.
+
+    **The refusal replaces a GUESS, and the guess was measured backwards.**
+    The first implementation assumed such a figure was authored, arguing that
+    wrongly taking an echo is undone by the conflict resolver while a discarded
+    re-price is not.  Neither half held: ``is_override`` is in no schema and the
+    conflict chooser is suppressed for a salary-linked template, so a wrongly
+    taken salary row -- finding **N-248**'s own population, 51 rows /
+    `$4,897.50` -- has no in-app hand-back; while a discarded figure re-renders
+    the row's cell immediately, in front of the person who typed it.
+
+    **What the refusal buys is structural rather than tidy.**  A door that omits
+    the companion, or spells it wrongly, now fails on its FIRST save instead of
+    silently taking ownership of every row it touches while the suite stays
+    green -- three of the four templates that emit it had no case asserting they
+    do.  The cost is one 400 for a form cached across the deploy, paid once.
+
+    Args:
+        data: The deserialized schema payload.
+        field: The money field's name (``"amount"``,
+            ``"estimated_amount"``).  The companion's name is derived from it,
+            so a caller cannot pair the wrong two keys.
+
+    Raises:
+        ValidationError: When *field* is present and its companion is not.  The
+            error is attached to the COMPANION rather than to the figure,
+            because the companion is what is missing and a form fixing this
+            adds that input rather than changing the amount.
+    """
+    if field not in data:
+        return
+    if as_rendered_field(field) not in data:
+        raise ValidationError(
+            "This form is out of date. Reload the page and try again.",
+            field_name=as_rendered_field(field),
+        )
 
 
 def form_payload(form, schema):

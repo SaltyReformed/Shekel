@@ -214,7 +214,7 @@ class MerchantSection:
     purchase* answer AND the account-payment bar, which no answer lifts, and it
     is 9 of the developer's 9 parked lines -- so a link on every parked line
     would have pointed at a control refusing every change made on it.
-    :attr:`~._bars.ParkedLine.answer_door` is that condition, and the reason
+    :attr:`~._bars.BarredLine.answer_door` is that condition, and the reason
     says why no answer would open the rest.
 
     Attributes:

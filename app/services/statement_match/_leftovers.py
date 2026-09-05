@@ -17,17 +17,22 @@ review:
   whose merchant carries a spending answer** -- such a credit is a REFUND, a
   negative purchase back into that container (ruling **R-HT(a)**, plan step
   ``bank_import:X-gj-2b-2``);
-* a line whose merchant is barred becomes nothing, and is PARKED with the
-  reason (:class:`~._bars.ParkedLine`, ruling **R-GJ**).  **In BOTH
-  directions**, and this paragraph said *an inflow is never barred: both arms
-  of the bar are claims about money leaving* until plan step
-  ``bank_import:X-gj-2b-3``.  That is true of *never a purchase* and FALSE of
-  *your bank files this merchant as a payment to an account you hold*, which
-  is a claim about the MERCHANT -- so a credit from a card-payment merchant is
-  barred exactly as its debits are.  The retraction was written into
-  :func:`_creatable_lines` one commit later and this paragraph, which a reader
-  reaches FIRST, was left asserting the argument that had just been measured
-  false;
+* a line whose merchant is barred becomes nothing here, and carries the reason
+  (:class:`~._bars.BarredLine`, ruling **R-GJ**).  **In BOTH directions**, and
+  this paragraph said *an inflow is never barred: both arms of the bar are
+  claims about money leaving* until plan step ``bank_import:X-gj-2b-3``.  That
+  is true of *never a purchase* and FALSE of *your bank files this merchant as
+  a payment to an account you hold*, which is a claim about the MERCHANT -- so
+  a credit from a card-payment merchant is barred exactly as its debits are.
+  The retraction was written into :func:`_creatable_lines` one commit later and
+  this paragraph, which a reader reaches FIRST, was left asserting the argument
+  that had just been measured false.  **A barred line goes to ONE OF TWO
+  lists** since plan step ``bank_import:X-gj-4c`` (ruling
+  **bank_import:R-JH**): :attr:`Leftovers.parked` where a source files the
+  merchant as paying an account the owner holds, and
+  :attr:`Leftovers.answered_never` where the only bar is the owner's own
+  answer -- because that answer shuts the ADD door and says nothing about what
+  the line IS, so the line is still unexplained work;
 * every OTHER inflow becomes an uncategorized INCOME row
   (:class:`RecordableInflow`, ruling **bank_import:R-GW**);
 * **an outflow the bank dates MADE after it POSTED reaches none of the three.**
@@ -78,7 +83,7 @@ from typing import TYPE_CHECKING
 
 from app.services.status_seam import day_is_in_the_future
 
-from ._bars import CreationBars, MerchantAnswers, ParkedLine
+from ._bars import CreationBars, MerchantAnswers, BarredLine
 from ._creations import PurchaseDestination, envelope_answer_key
 from ._offers import BankLine
 from ._placement import (
@@ -156,7 +161,7 @@ class CreatableLine:
             partition *why is this line still here* -- a rule the pass
             withheld, or a search it did not finish -- and a template picking
             between those two with ``{% if %}``/``{% elif %}`` is the second
-            place for it to be wrong that :attr:`~._bars.ParkedLine.reason`
+            place for it to be wrong that :attr:`~._bars.BarredLine.reason`
             and :attr:`RecordableInflow.withheld` both exist to refuse.
             **A WIDER set than** :attr:`verdict`: a line no rule reaches can
             still be one the pass never finished looking at.
@@ -181,7 +186,7 @@ class RecordableInflow:
     between, and an income row is filed against nothing -- so there is no
     offer set here and a field holding an empty one would be a destination
     select one Jinja condition away from rendering beside a deposit.  That is
-    the argument :class:`~._bars.ParkedLine` already makes beside them.
+    the argument :class:`~._bars.BarredLine` already makes beside them.
 
     **It DOES carry a placement since plan step ``bank_import:X-gj-2a``, and
     this docstring said it could not.**  It read *no placement to suggest*,
@@ -207,7 +212,7 @@ class RecordableInflow:
             .placement` carries.
         withheld: Why this line may NOT be recorded, or ``None`` when it may.
             **ONE server-derived sentence rather than two Jinja conditions**,
-            which is :attr:`~._bars.ParkedLine.reason`'s argument: a template
+            which is :attr:`~._bars.BarredLine.reason`'s argument: a template
             restating a partition is a second place for it to be wrong, and
             here the two arms are *your calendar does not reach that day* and
             *your bank dates that money as moving in the future*.
@@ -230,12 +235,88 @@ class RecordableInflow:
     placement: InflowPlacement | None = None
 
 
+def _barred_line(
+    line: BankLine, bars: CreationBars,
+) -> "BarredLine | None":
+    """Return the barred value for one line, or ``None`` where none bars it.
+
+    **ONE ask of the bar per line, and its answer is what routes the line.**
+    A second ask -- once to partition and once to word the sentence -- is the
+    redundant producer call :func:`_creatable_lines` already refuses over its
+    destinations.
+
+    **BOTH facts, because both bars can hold** (plan step
+    ``bank_import:X-gf-3a``): which one the line is barred BY decides what the
+    screen says happened, and whether the OTHER also holds decides both which
+    list the line goes to (ruling **bank_import:R-JH**) and whether the owner
+    has a door -- an answer they gave can be given again, and a source's
+    filing is lifted by nothing.  Both come off the bars this pass already
+    derived; the value asks nothing for itself.
+
+    **Asked of EVERY line, in both directions**, and a bound that exempted
+    inflows is what plan step ``bank_import:X-gj-2b``'s own review measured as
+    a hole.  The argument for it -- neither arm of ruling **R-GJ**'s bar can be
+    true of money arriving -- holds for *never a purchase* and NOT for *your
+    bank files this merchant as a payment to an account you hold*, which is a
+    claim about the MERCHANT rather than about one line's direction.  See
+    :func:`~._bars.reject_barred_line`, whose docstring carries the whole
+    argument and the class it reached; this is the SCREEN's half of the same
+    refusal, so the two are graded separately and must agree.
+
+    Args:
+        line: The offerable bank line.
+        bars: Which of this account's merchants may not become purchases.
+
+    Returns:
+        The :class:`~._bars.BarredLine`, or ``None`` when this line's merchant
+        bars nothing -- in which case the caller resolves a destination for it.
+    """
+    barred_by = bars.bar_for(line.merchant_id)
+    if barred_by is None:
+        return None
+    return BarredLine(
+        line=line,
+        barred_by=barred_by,
+        also_pays_an_account=bars.pays_an_account(line.merchant_id),
+    )
+
+
+@dataclass(frozen=True)
+class _SplitLines:
+    """What :func:`_creatable_lines` made of the lines routed to PURCHASE.
+
+    **A value and not a four-tuple**, which the third and fourth positions are
+    what forces: ``parked`` and ``answered_never`` are both
+    ``tuple[BarredLine, ...]``, so a caller that transposed them would type-check,
+    run, and put the owner's own answered lines under a chip that renders a
+    money MAGNITUDE -- the exact harm ruling **bank_import:R-JH** names.  Two
+    adjacent same-typed positions are a pairing hazard this package already
+    refuses by name (:func:`~._accept._record`'s two account ids).
+
+    Attributes:
+        creatable: The offerable lines a create control may be rendered for.
+        parked: The barred lines a source files as paying an account the owner
+            holds -- a HOLDING state (**R-HQ**), never inbox work.
+        answered_never: The barred lines whose ONLY bar is the owner's own
+            *never a purchase* answer (**R-JH**).  Inbox work with its ADD
+            door shut, because that answer claims nothing about what the line
+            is.
+        impossible_day_count: How many lines were declined for being dated
+            MADE after they POSTED (finding **N-325**).
+    """
+
+    creatable: "tuple[CreatableLine, ...]"
+    parked: "tuple[BarredLine, ...]"
+    answered_never: "tuple[BarredLine, ...]"
+    impossible_day_count: int
+
+
 def _creatable_lines(
     calendar, unmatched: "list[BankLine]",
     destinations: "list[PurchaseDestination]",
     view: RuleView,
     bars: CreationBars,
-) -> "tuple[tuple[CreatableLine, ...], tuple[ParkedLine, ...], int]":
+) -> "_SplitLines":
     """Split the unmatched lines it is GIVEN into what may be recorded and what may not.
 
     *It said OUTFLOWS until plan step ``bank_import:X-gj-2b-3``*, which its own
@@ -278,11 +359,24 @@ def _creatable_lines(
             that none may, which is a refusal rather than a suggestion.
 
     Returns:
-        ``(creatable, parked, impossible_day_count)`` -- one
-        :class:`CreatableLine` per offerable LINE a create control may be
-        rendered for, one :class:`~._bars.ParkedLine` per line ruling
-        **R-GJ** bars, both in the order the lines were given, and how many
-        were declined for dating their own purchase after their own posting.
+        The :class:`_SplitLines` -- one :class:`CreatableLine` per offerable
+        LINE a create control may be rendered for, one
+        :class:`~._bars.BarredLine` per line ruling **R-GJ** bars split across
+        the two lists that ruling **bank_import:R-JH** gives them, each list in
+        the order the lines were given, and how many were declined for dating
+        their own purchase after their own posting.
+
+        **WHICH of the two a barred line goes to is decided HERE and not by
+        the screen**, and that placement is the substance of plan step
+        ``bank_import:X-gj-4c``.  It was ``_reconcile._parked_tab``, a
+        function that read one parked list and answered *Transfers or
+        Skipped*; ruling **R-JH** made the second answer wrong, and the
+        remedy is not to delete that arm but to move the decision, because a
+        line the owner has merely answered *never a purchase* for is INBOX
+        WORK.  Leaving it in ``parked`` and dropping the arm would total that
+        list on TRANSFERS, which counts a line's MAGNITUDE onto the hero's
+        *waiting for the account they paid* chip -- a rendered money figure
+        over a line no source filed as a payment.
 
         **All three counts reach the INFLOW direction since plan step
         ``bank_import:X-gj-2b-2``**, and the third is the one worth stating: a
@@ -302,7 +396,10 @@ def _creatable_lines(
     impossible = [line for line in unmatched if line.states_impossible_days]
     offerable = [line for line in unmatched if not line.states_impossible_days]
     if not offerable:
-        return (), (), len(impossible)
+        return _SplitLines(
+            creatable=(), parked=(), answered_never=(),
+            impossible_day_count=len(impossible),
+        )
     # ONE pass over the destinations, and ONE placement per line.  Both were
     # asked twice: the grouping rescanned every destination once per period,
     # and each line placed itself once for its id and again for its lookup --
@@ -314,40 +411,36 @@ def _creatable_lines(
             destination.period.period_id, [],
         ).append(destination)
     creatable: "list[CreatableLine]" = []
-    parked: "list[ParkedLine]" = []
+    parked: "list[BarredLine]" = []
+    answered_never: "list[BarredLine]" = []
     for line in offerable:
-        # ONE ask of the bar per line, and its answer is what routes the line:
-        # a second ask -- once to partition and once to word the sentence -- is
-        # the redundant producer call this module already refuses above.
-        # **Asked of EVERY line, in both directions**, and a bound that
-        # exempted inflows is what this step's own review measured as a hole
-        # (plan step ``bank_import:X-gj-2b``).  The argument for it -- neither
-        # arm of ruling **R-GJ**'s bar can be true of money arriving -- holds
-        # for *never a purchase* and NOT for *your bank files this merchant as
-        # a payment to an account you hold*, which is a claim about the
-        # MERCHANT rather than about one line's direction.  See
-        # :func:`~._bars.reject_barred_line`, whose docstring carries the whole
-        # argument and the class it reached; this is the SCREEN's half of the
-        # same refusal, so the two are graded separately and must agree.
-        barred_by = bars.bar_for(line.merchant_id)
-        if barred_by is not None:
-            # **BOTH facts, because both bars can hold** (plan step
-            # ``bank_import:X-gf-3a``): which one the line is parked BY decides
-            # what the screen says happened, and whether the OTHER also holds
-            # decides whether the owner has a door -- an answer they gave can
-            # be given again, and a source's filing is lifted by nothing.  Both
-            # come off the bars this pass already derived; the value asks
-            # nothing for itself.
-            parked.append(ParkedLine(
-                line=line,
-                barred_by=barred_by,
-                also_pays_an_account=bars.pays_an_account(line.merchant_id),
-            ))
+        barred = _barred_line(line, bars)
+        if barred is not None:
+            # **THE SOURCE'S FILING DECIDES, AND NOT THE OWNER'S ANSWER**
+            # (ruling **bank_import:R-JH**).  A line a source files as paying
+            # an account the owner holds is a HOLDING state whatever else they
+            # said about it, because the money did move between two accounts
+            # they hold; a line carrying ONLY their own *never a purchase*
+            # answer is unexplained work whose ADD door that answer shuts, and
+            # it goes back to the inbox.  That is the same predicate
+            # ``_reconcile._parked_tab`` used to ask of one list, moved to the
+            # pass so the answer decides MEMBERSHIP rather than only a tab --
+            # see this function's ``Returns`` for why the weaker remedy prints
+            # a money figure over the wrong line.
+            if barred.also_pays_an_account:
+                parked.append(barred)
+            else:
+                answered_never.append(barred)
             continue
         creatable.append(_one_creatable(
             line, _period_id_for(calendar, line.happened_on), by_period, view,
         ))
-    return _marked_joining(creatable), tuple(parked), len(impossible)
+    return _SplitLines(
+        creatable=_marked_joining(creatable),
+        parked=tuple(parked),
+        answered_never=tuple(answered_never),
+        impossible_day_count=len(impossible),
+    )
 
 
 def _recordable_inflows(
@@ -563,11 +656,18 @@ def _period_id_for(calendar, day: date) -> "int | None":
 class Leftovers:
     """What this pass could not explain, placed against the owner's rule.
 
-    Four facts one derivation produces that travel together, which is the
+    Seven facts one derivation produces that travel together, which is the
     argument :class:`~._offers.Candidates` and
     :class:`~._propose.ProposedMatches` already make in this package: a caller
     holding the offerable lines without the count of the ones declined would
-    render a list that reads as complete.
+    render a list that reads as complete.  *It said FOUR over five fields until
+    plan step ``bank_import:X-gj-4c``, and adversarial review caught the
+    off-by-one being carried forward rather than corrected* -- a count in a
+    docstring is a claim about the value below it, so it moves with the field
+    and is re-counted rather than incremented.  It was SIX until plan step
+    ``bank_import:X-gj-4b`` added :attr:`account_payments`, and that number was
+    re-counted off the field block rather than incremented, which is the same
+    discipline one step later.
 
     It leaves this module for :func:`~._reads.review_set`, which is what
     assembles it into a :class:`~._reads.ReviewSet`.
@@ -578,22 +678,73 @@ class Leftovers:
             a container answer claims as REFUNDS** (ruling
             **bank_import:R-II**), which is :func:`~._rules.pipeline_for`'s
             partition rather than the sign's.
-        parked: The offerable unexplained lines ruling **R-GJ** bars, each
-            with the reason (:class:`~._bars.ParkedLine`).  Both directions:
-            the card-payment arm is a claim about the MERCHANT, so a credit
-            from one is barred exactly as its debits are.
+        parked: The offerable unexplained lines a source files as paying an
+            account the owner holds, each with the reason
+            (:class:`~._bars.BarredLine`).  Both directions: that arm is a
+            claim about the MERCHANT, so a credit from such a merchant is
+            barred exactly as its debits are.  **It held EVERY barred line
+            until plan step ``bank_import:X-gj-4c``**; ruling
+            **bank_import:R-JH** moved the ones barred only by the owner's own
+            answer to :attr:`answered_never`, because those are unexplained
+            work and this list is a holding state.
+        answered_never: The offerable unexplained lines whose only bar is the
+            owner's own *never a purchase* answer (**R-JH**, plan step
+            ``bank_import:X-gj-4c``).  **The same value as** :attr:`parked`
+            **in a different list, and the list IS the difference**: what the
+            two hold is one fact -- the create door is shut for this line --
+            and what they are is two, because a source's OBSERVATION that the
+            money went to another account the owner holds is a disposition and
+            the owner's DECISION that a merchant is not spending is not one.
+            A line here keeps MATCH and reads *Nothing suggested*.
         recordable_inflows: The unexplained INFLOWS, each with the period
             that would hold it (ruling **bank_import:R-GW**).
         merchants: The rule control's rows and option list.
         impossible_day_count: How many outflows were declined for being dated
             MADE after they POSTED (finding **N-325**).
+        account_payments: The merchant row ids this account's sources file as a
+            payment to an account the owner holds
+            (:attr:`~._bars.CreationBars.account_payments`).
+            **Published rather than kept private, because a consumer outside
+            these lists needs it and cannot reach it any other way** (plan step
+            ``bank_import:X-gj-4b``); the argument is stated once on
+            :attr:`~._reads.ReviewSet.account_payments`, which is what this is
+            assembled into.
+            **Carried rather than re-read**, which is :func:`leftovers`' own
+            rule for the answers themselves: the bars have already read it at
+            this pass's instant, and a second read in
+            :func:`~._reads.review_set` would be the redundant producer call
+            inside one request that this package treats as a DRY violation.
     """
 
+    # Pylint: ``duplicate-code`` -- Incidental field-block similarity with
+    # :class:`~._reads.ReviewSet`, which publishes SIX of this value's seven
+    # names because it is what this value is assembled INTO -- five of them
+    # carrying the same value.  **The FENCE below is narrower than either
+    # number and deliberately so**: it covers five annotation lines and no
+    # logic, of which four carry the same value, because
+    # :attr:`account_payments` is separated from the run in BOTH classes
+    # (by ``impossible_day_count`` here and by ``bounds`` there) and so
+    # extends no similarity run.  *An earlier correction re-counted the
+    # published names and left the fence's own figures describing them,
+    # which named no set that exists.*
+    # ``ReviewSet.creatable`` is
+    # :func:`~._verdict.ruled` over this one and is a different value under
+    # the same name, and the two are separate types deliberately -- this is
+    # one producer's output and that is the whole pass.  It read four lines
+    # and stayed under the gate until plan step ``bank_import:X-gj-4c`` added
+    # ``answered_never`` to both.  A shared base would couple a private
+    # transport value to the package's published shape, which is the coupling
+    # ``app/models/transfer.py`` refuses in the same words (coding-standards
+    # rule 13).  One-sided disable: the ``ReviewSet`` block stays un-disabled.
+    # pylint: disable=duplicate-code
     creatable: "tuple[CreatableLine, ...]"
-    parked: "tuple[ParkedLine, ...]"
+    parked: "tuple[BarredLine, ...]"
+    answered_never: "tuple[BarredLine, ...]"
     recordable_inflows: "tuple[RecordableInflow, ...]"
     merchants: MerchantSection
+    # pylint: enable=duplicate-code
     impossible_day_count: int
+    account_payments: "frozenset[int]"
 
 
 def _by_pipeline(
@@ -666,23 +817,47 @@ def leftovers(
     # sign cannot decide it; :func:`~._rules.pipeline_for` is the discriminant
     # and the direction is one of its inputs.
     by_pipeline = _by_pipeline(unmatched, view)
-    creatable, parked, impossible_days = _creatable_lines(
+    split = _creatable_lines(
         scope.calendar, by_pipeline[LinePipeline.PURCHASE], destinations,
         view, bars,
     )
     return Leftovers(
-        creatable=creatable,
-        parked=parked,
+        creatable=split.creatable,
+        parked=split.parked,
+        answered_never=split.answered_never,
+        # **The bars' own set, at the instant the bars were read.**  The
+        # screen shuts SKIP on exactly the lines :func:`~._skipping.skip_line`
+        # refuses (ruling **bank_import:R-JI**), and both read
+        # :func:`~._vocabulary.account_payment_merchants` -- this one once per
+        # pass, the door once per act, which is the read-for-yourself-across-a-
+        # write-boundary rule the module header states for the rules.
+        account_payments=bars.account_payments,
         recordable_inflows=_recordable_inflows(
             scope.calendar, by_pipeline[LinePipeline.INCOME], view,
         ),
-        # **Both halves**, because a merchant is parked for want of an answer
-        # and this control is the only place one is given: counting only the
-        # creatable half would refuse the act and hide the door that permits
-        # it.
+        # **Both UNANSWERED halves**, because a merchant is barred for want of
+        # an answer and this control is the only place one is given: counting
+        # only the creatable half would refuse the act and hide the door that
+        # permits it.
+        #
+        # **``answered_never`` is NOT a third term, and it is not needed as
+        # one.**  A first draft of plan step ``bank_import:X-gj-4c`` added it
+        # on the reasoning that those lines had been inside ``parked`` and so
+        # were already counted -- which adversarial review measured FALSE: they
+        # were passed in before and produced no row THEN either.  Membership of
+        # that list requires :attr:`~._bars.CreationBar.NEVER_A_PURCHASE`,
+        # which :meth:`~._bars.CreationBars.build` reads out of ``view.rules``,
+        # and :func:`~._section.merchant_section` emits only merchants
+        # ``not in view.rules`` -- so the term could not have produced a row on
+        # any input a database can hold.  That is ruling **R-GX** holding
+        # structurally: an ANSWERED merchant is on the register, and *never a
+        # purchase* is an answer.  Stated rather than kept, because a term no
+        # input can reach is a fence, and one nothing grades is a fence that
+        # reads as coverage.
         merchants=merchant_section(
-            [item.line for item in creatable] + [item.line for item in parked],
+            [item.line for item in split.creatable]
+            + [item.line for item in split.parked],
             view, bars,
         ),
-        impossible_day_count=impossible_days,
+        impossible_day_count=split.impossible_day_count,
     )

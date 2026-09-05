@@ -96,6 +96,7 @@ def _make_txn(seed_user, period, template, *, name=None, amount=None):
         amount_ownership=AmountOwnership.own(amount or template.default_amount),
         transaction_type_id=expense_type.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        user_id=period.user_id,
         pay_period_id=period.id,
         account_id=seed_user["account"].id,
         category_id=category.id,

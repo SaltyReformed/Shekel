@@ -151,7 +151,7 @@ def get_current_gross_biweekly(
         return ZERO
 
     # Resolved for the RESOLVED PERIOD's own tax year rather than the clock's,
-    # which is the key :meth:`SalaryPricing._net_by_period` below uses for
+    # which is the key :meth:`SalaryPricing._breakdown_by_period` below uses for
     # every period it prices -- so a caller reading one period and a caller
     # reading the horizon cannot resolve the same period against different
     # rules.
@@ -164,6 +164,84 @@ def get_current_gross_biweekly(
     return breakdown.earnings.gross_biweekly
 
 
+def project_profile(
+    profile, calendar: PayCalendar,
+) -> list[paycheck_calculator.PaycheckBreakdown]:
+    """Return one salary profile's paycheck for every payday it is paid on.
+
+    **The ONE spelling of a profile's projection, and closing that it was
+    THREE is ledger row N-443** (plan step **salary:R14-a**).  This call --
+    :func:`~app.services.tax_config_service.load_tax_configs_for_periods` over
+    the calendar's saved window, then
+    :func:`paycheck_calculator.project_salary` on a
+    :class:`~app.services.payroll_basis.PayrollBasis` with the profile's
+    calibration -- was written out longhand in three places over the same
+    calendar: :meth:`SalaryPricing._breakdown_by_period` below,
+    ``routes/salary/views.py`` and ``routes/salary/cockpit.py``.
+
+    **The three could not simply call each other, and that is why moving the
+    leaf is the remedy rather than picking one.**  The two route sites keep
+    the whole :class:`~app.services.paycheck_calculator.PaycheckBreakdown` --
+    they render the anatomy, the chart and the ledger table -- while the
+    derivation kept only ``net_pay``, so the shared leaf had to be the
+    BREAKDOWN and no existing caller produced one.  Ruling **R-IZ** names
+    exactly this shape: a second walk is a cache with no column, agreement is
+    not the test, and where a layer puts the shared leaf out of reach the
+    remedy is to MOVE THE LEAF.
+
+    Two of the three already carried
+    ``matching the recurrence engine that generates the stored grid amounts``
+    as a comment, which is the maintenance contract R-IZ says to delete rather
+    than uphold: the tax-config resolution, the calibration argument and the
+    basis now reach every reader at once instead of whichever spellings an
+    author remembered, so the grid and the salary page cannot disagree about
+    one paycheck.
+
+    It reads the OWNER off the profile rather than taking a user id, because
+    the two must agree and a caller holding ``current_user.id`` beside a
+    profile is a second chance to get it wrong.
+
+    Args:
+        profile: The :class:`~app.models.salary_profile.SalaryProfile` to
+            project.  Read for its owner, its calibration, and everything the
+            engine prices a paycheck from.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
+            Its :meth:`~app.services.pay_calendar.PayCalendar.saved` window is
+            the domain.  **The whole materialised set because that is what the
+            callers want, NOT because a slice would be priced wrongly** -- a
+            first draft of this line said the latter and an adversarial review
+            measured it false.  Since plan step **balance:X-bh-1** the engine's
+            month and year context comes off ``basis.calendar``, so
+            :func:`paycheck_calculator.project_salary` states that its period
+            list "may be any subset in any order and every breakdown is the
+            same as it would be alone"; the FICA wage-base cumulative and a
+            deduction's annual cap (ledger row **N-390**, finding **D25**) are
+            correct over a slice now.  What a narrower domain would narrow is
+            the MAP :meth:`SalaryPricing._breakdown_by_period` promises, which
+            is a contract rather than an arithmetic error.  Memoized on the
+            calendar, so asking for it here and again in a caller costs one
+            read.
+
+    Returns:
+        ``list[PaycheckBreakdown]``, one per period, in the saved window's
+        payday order -- the order ``calendar.saved()`` yields, so a caller may
+        zip the two.
+    """
+    periods = calendar.saved()
+    # Tax configs resolve PER period year (DH-#30), the same per-year
+    # resolution the recurrence engine uses to GENERATE the stored amount, so
+    # the live figure and the generated one cannot disagree for want of a
+    # bracket set.
+    configs_by_year = load_tax_configs_for_periods(
+        profile.user_id, profile, periods,
+    )
+    return paycheck_calculator.project_salary(
+        PayrollBasis(profile, calendar), periods,
+        configs_by_year=configs_by_year,
+        calibration=profile.calibration,
+    )
+
+
 class SalaryPricing:
     """What the owner's active salary profiles pay, resolved per profile ASKED.
 
@@ -174,7 +252,7 @@ class SalaryPricing:
     live figure -- the owner's whole pay-period set, each profile's tax configs
     resolved per period YEAR, and ``paycheck_calculator.project_salary`` run over
     the complete set because FOUR of the engine's judgements read it (see
-    :meth:`SalaryPricing._net_by_period`) -- depends on ``(user_id,
+    :meth:`SalaryPricing._breakdown_by_period`) -- depends on ``(user_id,
     scenario_id)`` and on NOTHING about
     which rows a caller happens to have loaded.  Keying it that way is what lets
     one read pass resolve it ONCE however many row sets ask
@@ -224,7 +302,13 @@ class SalaryPricing:
         # periods, and both come off one derivation.  Memoized together so a
         # pass cannot hold periods from one read and a cadence from another.
         self._calendar: PayCalendar | None = None
-        self._net_by_profile: "dict[int, dict[int, Decimal]]" = {}
+        # The BREAKDOWN per period rather than the net alone, since plan step
+        # salary:R14-a (ledger row N-443): keeping only ``net_pay`` is what
+        # put this projection out of the two salary route sites' reach and
+        # left one call spelled three times.
+        self._breakdown_by_profile: (
+            "dict[int, dict[int, paycheck_calculator.PaycheckBreakdown]]"
+        ) = {}
 
     def net_for(
         self, template_id: int, pay_period_id: int,
@@ -244,7 +328,14 @@ class SalaryPricing:
         profile = self._profile_by_template().get(template_id)
         if profile is None:
             return None
-        return self._net_by_period(profile).get(pay_period_id)
+        breakdown = self._breakdown_by_period(profile).get(pay_period_id)
+        # A period the projection does not reach is amount rule 2's refusal,
+        # and it stays a refusal rather than becoming a zero: the map holds
+        # breakdowns since plan step salary:R14-a, so the miss is tested here
+        # instead of by ``.get`` returning ``None`` for a net.
+        if breakdown is None:
+            return None
+        return breakdown.earnings.net_pay
 
     def _profile_by_template(self) -> "dict[int, SalaryProfile]":
         """Return ``{template_id: profile}`` for this owner and scenario.
@@ -280,12 +371,14 @@ class SalaryPricing:
             self._profiles = {p.template_id: p for p in profiles}
         return self._profiles
 
-    def _net_by_period(self, profile) -> dict[int, Decimal]:
-        """Return ``{pay_period_id: net pay}`` for one profile, projecting once.
+    def _breakdown_by_period(
+        self, profile,
+    ) -> dict[int, paycheck_calculator.PaycheckBreakdown]:
+        """Return ``{pay_period_id: PaycheckBreakdown}``, projecting once.
 
         The EXPENSIVE stage, memoized per profile.  Runs
-        :func:`paycheck_calculator.project_salary` over the owner's full
-        pay-period set, which is what this map PROMISES -- a net figure for
+        :func:`project_profile` over the owner's full
+        pay-period set, which is what this map PROMISES -- a paycheck for
         every period a caller can ask about -- and, since plan step
         **balance:X-bh-1**, no longer also what the engine's month and year
         context depends on.  **Two earlier reasons for the full set are both
@@ -294,18 +387,24 @@ class SalaryPricing:
         (finding N-239), and the four judgements that read the passed list,
         moved onto the owner's calendar here (ledger row **N-390**) -- where
         narrowing the list used to reintroduce **D25**, one salary row stored
-        ``$502.45`` low, it now narrows only the map.  Tax configs resolve PER
-        period year (DH-#30), the same per-year resolution the recurrence
-        engine uses to GENERATE the stored amount, so the live figure and the
-        generated one cannot disagree for want of a bracket set.
+        ``$502.45`` low, it now narrows only the map.
+
+        **It keeps the whole breakdown rather than only ``net_pay``, and that
+        is ledger row N-443's remedy** (plan step **salary:R14-a**).  Keeping
+        the net alone is what put the shared leaf out of the two route sites'
+        reach and left this call spelled three times; the map is now the
+        BREAKDOWN, so :meth:`net_for` reads a field of it and the routes call
+        the same :func:`project_profile`.  It costs nothing: the breakdowns
+        were already computed here and discarded.
 
         Args:
             profile: The active :class:`SalaryProfile` to project.
 
         Returns:
-            ``{pay_period_id: net pay}`` for every period the projection covers.
+            ``{pay_period_id: PaycheckBreakdown}`` for every period the
+            projection covers.
         """
-        if profile.id not in self._net_by_profile:
+        if profile.id not in self._breakdown_by_profile:
             if self._calendar is None:
                 # The owner's saved schedule off the DERIVED calendar
                 # (pay-calendar plan step C2-f2d-3), so the periods this
@@ -320,19 +419,11 @@ class SalaryPricing:
                 # It is LAZY, so a pass that prices no paycheck pays nothing;
                 # ledger row **P63** carries the rest.
                 self._calendar = calendar_for(self._user_id)
-            periods = self._calendar.saved()
-            configs_by_year = load_tax_configs_for_periods(
-                self._user_id, profile, periods,
-            )
-            breakdowns = paycheck_calculator.project_salary(
-                PayrollBasis(profile, self._calendar), periods,
-                configs_by_year=configs_by_year,
-                calibration=profile.calibration,
-            )
-            self._net_by_profile[profile.id] = {
-                bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
+            self._breakdown_by_profile[profile.id] = {
+                bd.period.period_id: bd
+                for bd in project_profile(profile, self._calendar)
             }
-        return self._net_by_profile[profile.id]
+        return self._breakdown_by_profile[profile.id]
 
 
 def salary_pricing(user_id: int, scenario_id: int) -> SalaryPricing:
@@ -364,11 +455,23 @@ def salary_net_for(txn, pricing: SalaryPricing) -> "Decimal | None":
     supersede and the repair was deleted rather than left as a second walk to
     one answer (``CLAUDE.md`` rule 14, rulings **R-IZ** / **R-JA**).
 
-    *It is not the only spelling of the paycheck DERIVATION, and an adversarial
-    review of X-au-d corrected a claim here that said it was*:
-    ``routes/salary/views`` and ``routes/salary/cockpit`` each build the same
+    *It became the only spelling of the CALENDAR-WIDE projection at plan
+    step* **salary:R14-a**, *which is finding* **N-443** *closed.*  The
+    qualifier is load bearing and a second adversarial review put it back:
+    ``tax_withholding_service`` and ``tax_report_service`` still run
+    ``project_salary`` themselves over a single tax YEAR with
+    ``tax_configs=``, which is a different question and not a fourth
+    spelling -- the arch test's own predicate says so, and prose that
+    claims more than the test enforces is the wider claim this paragraph
+    was already corrected for once.
+    ``routes/salary/views`` and ``routes/salary/cockpit`` each built the same
     ``project_salary`` call over the same calendar, because they render the
-    whole breakdown rather than the net.  Finding **N-443**.
+    whole breakdown rather than the net -- so the shared leaf had to BE the
+    breakdown, which is what :func:`project_profile` is and what
+    :meth:`SalaryPricing._breakdown_by_period` now memoizes.  All three call
+    it, and ``tests/test_arch/
+    test_the_calendar_wide_projection_has_one_spelling.py`` is what keeps a
+    fourth from appearing.
 
     It asks only what a paycheck IS worth, so it reads nothing about whether
     the row still counts: not ``is_projected``, not ``is_override``, not

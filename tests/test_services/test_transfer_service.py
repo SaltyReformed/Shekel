@@ -488,7 +488,7 @@ class TestUpdateTransfer:
             xfer = _create_basic_transfer(td)
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, amount=Decimal("400.00")
+                xfer.id, td["user"].id, amount=Decimal("400.00"), amount_authored=True
             )
 
             assert xfer.amount == Decimal("400.00")
@@ -620,7 +620,7 @@ class TestUpdateTransfer:
 
             with pytest.raises(NotFoundError):
                 transfer_service.update_transfer(
-                    xfer.id, second_user["user"].id, amount=Decimal("100")
+                    xfer.id, second_user["user"].id, amount=Decimal("100"), amount_authored=True
                 )
 
     def test_nonexistent_rejected(self, app, db, transfer_data):
@@ -628,7 +628,7 @@ class TestUpdateTransfer:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 transfer_service.update_transfer(
-                    99999, transfer_data["user"].id, amount=Decimal("100")
+                    99999, transfer_data["user"].id, amount=Decimal("100"), amount_authored=True
                 )
 
     def test_validates_positive_amount(self, app, db, transfer_data):
@@ -639,7 +639,7 @@ class TestUpdateTransfer:
 
             with pytest.raises(ValidationError, match="positive"):
                 transfer_service.update_transfer(
-                    xfer.id, td["user"].id, amount=Decimal("0")
+                    xfer.id, td["user"].id, amount=Decimal("0"), amount_authored=True
                 )
 
     def test_validates_period_ownership(self, app, db, transfer_data, second_user):
@@ -1016,7 +1016,7 @@ class TestInvariants:
             xfer = _create_basic_transfer(td)
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, amount=Decimal("777.77")
+                xfer.id, td["user"].id, amount=Decimal("777.77"), amount_authored=True
             )
 
             assert xfer.amount == Decimal("777.77")
@@ -1065,7 +1065,7 @@ class TestInvariants:
             done = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.update_transfer(
                 xfer.id, td["user"].id,
-                amount=Decimal("999.99"),
+                amount=Decimal("999.99"), amount_authored=True,
                 status_id=done.id,
                 pay_period_id=td["periods"][4].id,
             )
@@ -1103,7 +1103,7 @@ class TestSoftDeleteHandling:
 
             with pytest.raises(NotFoundError, match="not found"):
                 transfer_service.update_transfer(
-                    xfer_id, td["user"].id, amount=Decimal("500.00")
+                    xfer_id, td["user"].id, amount=Decimal("500.00"), amount_authored=True
                 )
 
     def test_delete_soft_deleted_transfer_is_idempotent(self, app, db, transfer_data):
@@ -2372,7 +2372,7 @@ class TestTheFigureCorrectionDoorOnAPair:
                 transfer_service.update_transfer(
                     xfer.id, td["user"].id,
                     is_override=True,
-                    amount=Decimal("999.00"),
+                    amount=Decimal("999.00"), amount_authored=True,
                     settled_amount=Decimal("50.00"),
                 )
 
@@ -2588,7 +2588,7 @@ class TestMovingATransferBetweenAccounts:
             db.session.flush()
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, amount=Decimal("300.00"),
+                xfer.id, td["user"].id, amount=Decimal("300.00"), amount_authored=True,
             )
             db.session.flush()
 
@@ -2794,7 +2794,7 @@ class TestMovingATransferBetweenAccounts:
                 transfer_service.update_transfer(
                     xfer.id, td["user"].id,
                     to_account_id=elsewhere.id,
-                    amount=Decimal("-5.00"),
+                    amount=Decimal("-5.00"), amount_authored=True,
                 )
 
             expense, income = self._legs(xfer)
@@ -2826,7 +2826,7 @@ class TestMovingATransferBetweenAccounts:
             with pytest.raises(ValidationError, match="must be different"):
                 transfer_service.update_transfer(
                     xfer.id, td["user"].id,
-                    amount=Decimal("999.00"),
+                    amount=Decimal("999.00"), amount_authored=True,
                     to_account_id=td["account"].id,
                 )
 
@@ -3066,7 +3066,7 @@ class TestMovingATransferBetweenAccounts:
             )
             db.session.flush()
             add_anchor_history(
-                db.session, savings, td["periods"][0], Decimal("900.00"),
+                db.session, savings, Decimal("900.00"),
             )
             account_posting_service.sync_account_anchor_postings(
                 savings.id, td["scenario"].id,

@@ -176,9 +176,14 @@ class RecurrenceDescription:
             copy of the loan's derived payoff written into the authored
             bound's own column by ten call sites -- so the sentence named
             whichever value a chokepoint had most recently written.  It now
-            words the whole :class:`~app.services.recurrence.Closing`, which
-            is the same value the occurrence walk reads, so the cell cannot
-            describe a rule the generator does not follow.
+            words the whole :class:`~app.services.recurrence.Closing` -- the
+            same value the occurrence walk reads, so the cell and the walk
+            cannot disagree with each other.  Two limits stand while the R7d
+            leaves land: generation walks the rule's own bound until plan step
+            R7d-c-2 takes the same door, and until R7d-g deletes the cached
+            column that column IS the authored half for a loan payment, so
+            what this names is the earlier of the cached date and the derived
+            one.
 
             **It was two fields, ``until`` and ``after_occurrences``, with a
             ``__post_init__`` refusing the pair, until plan step R7b-3.**  That
@@ -514,8 +519,8 @@ def _derived_never_narrows(
     says exactly what it said before the definition had a destination worth
     asking about.
 
-    Takes the shape it will not read, because the four narrowing functions are
-    dispatched over one table and must share a signature.
+    Takes the shape it will not read, because the three narrowing functions
+    are dispatched over one table and must share a signature.
 
     Args:
         authored: The bound the owner stated.
@@ -537,7 +542,7 @@ def _derived_never_runs(_derived: Empty, _authored: EndBound) -> str:
 
     Both parameters go unread: an empty window covers no date to name, and
     nothing the owner stated can make the definition run.  They are taken
-    because the four narrowing functions share one dispatch signature.
+    because the three narrowing functions share one dispatch signature.
 
     Returns:
         The phrase.

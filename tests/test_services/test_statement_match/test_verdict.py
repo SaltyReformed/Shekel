@@ -390,8 +390,14 @@ def _review(creatable):
     than reading the one the line carries would withhold nothing.
     """
     return ReviewSet(
+        # **No default on the dataclass, so every construction states it**
+        # (plan step ``bank_import:X-gj-4b``): an empty set means *nothing is
+        # barred*, and that is the value that reads as safe.  This helper
+        # exercises no SKIP and no card-payment merchant, so empty is honest.
+        account_payments=frozenset(),
         proposals=(), unmatched=(), unmatched_rows=(),
-        creatable=creatable, parked=(), recordable_inflows=(),
+        creatable=creatable, parked=(), answered_never=(),
+        recordable_inflows=(),
         merchants=MerchantSection(merchants=(), templates=()),
         bounds=_bounds(),
     )
