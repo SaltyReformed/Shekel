@@ -27,6 +27,7 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    rhythm_of,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -5245,7 +5246,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -5271,7 +5272,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=27, cadence_days=14,
+                num_periods=27, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -5339,7 +5340,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=27, cadence_days=14,
+                num_periods=27, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -5426,7 +5427,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=27, cadence_days=14,
+                num_periods=27, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -5445,7 +5446,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -5474,7 +5475,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -5529,7 +5530,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -5947,7 +5948,7 @@ class TestCheckingDetailCanonicalProducer:
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
 
             checking_type = db.session.query(AccountType).filter_by(
@@ -6088,7 +6089,7 @@ class TestCheckingDashboardLink:
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -6117,7 +6118,7 @@ class TestCheckingDashboardLink:
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
 
             # Create a savings account.
@@ -6219,7 +6220,7 @@ class TestCashDetailContext:
         periods = pay_period_write.record_paydays(
             user_id=seed_user["user"].id,
             first_payday=display_today(),
-            num_periods=num_periods, cadence_days=cadence_days,
+            num_periods=num_periods, rhythm=rhythm_of(cadence_days),
         )
         checking_type = db.session.query(AccountType).filter_by(
             name="Checking",
@@ -6641,7 +6642,7 @@ class TestCashDetailContext:
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=30, cadence_days=14,
+                num_periods=30, rhythm=rhythm_of(14),
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
             acct = account_service.create_account(
@@ -6684,7 +6685,7 @@ class TestCashDetailContext:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=33, cadence_days=14,
+                num_periods=33, rhythm=rhythm_of(14),
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
             acct = account_service.create_account(
@@ -6757,7 +6758,7 @@ class TestCashDetailContext:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=60, cadence_days=7,
+                num_periods=60, rhythm=rhythm_of(7),
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
             acct = account_service.create_account(
@@ -7810,7 +7811,7 @@ class TestCashDetailClickToEditHero:
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             checking_type = db.session.query(AccountType).filter_by(
                 name="Checking",

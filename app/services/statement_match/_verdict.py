@@ -135,7 +135,7 @@ _LOOK_FIRST = (
 #: ruling bank_import:R-HC forbids** and which the note on :data:`_LOOK_FIRST`
 #: directly above records eight sentences breaking on.  It read *"Check it on
 #: the reconcile screen."* -- and :attr:`~._leftovers.CreatableLine.warning` is
-#: rendered ON the reconcile screen (:func:`~._cards._creatable_card`), so the
+#: rendered ON the reconcile screen (:func:`~._cards.creatable_card`), so the
 #: owner was told to go where they already were.  It names the act now, and
 #: *those rows* rather than *rows you already hold* because the sentence it
 #: follows has just named them.

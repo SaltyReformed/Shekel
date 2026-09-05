@@ -58,6 +58,8 @@ from app.services.statement_match._sentence import (
 )
 from app.services.statement_match._verbs import (
     MATCH_SHUT_NO_ROWS,
+    SKIP_SHUT_PAYS_AN_ACCOUNT,
+    TRANSFER_WAITS,
     Verb,
     VerbOffer,
     offers_for,
@@ -130,25 +132,61 @@ class TestEveryLineIsOfferedAllFourVerbs:
 
     def test_all_four_appear_in_the_enum_s_own_order(self):
         """The tab order is the enum's, whatever this build can act on."""
-        offers = offers_for(add_waits=None, has_rows_to_match=True)
+        offers = offers_for(
+                add_waits=None, has_rows_to_match=True,
+                skip_waits=None,
+            )
         assert tuple(offer.verb for offer in offers) == tuple(Verb)
 
-    def test_transfer_and_skip_are_shut_and_say_what_they_wait_for(self):
-        """Neither has a door in the app, and neither pretends otherwise."""
+    def test_transfer_is_shut_and_says_what_it_waits_for(self):
+        """TRANSFER has no door in the app, and does not pretend otherwise.
+
+        *This graded SKIP too until plan step ``bank_import:X-gj-4b``*, which
+        LIT that verb -- so *neither has a door* stopped being true of the
+        pair.  What replaces the SKIP half is the case below, which is a
+        sharper question than the one this asked: the verb is open unless the
+        CALLER states a refusal, and it carries exactly the caller's words.
+        """
         offers = {
             offer.verb: offer
-            for offer in offers_for(add_waits=None, has_rows_to_match=True)
+            for offer in offers_for(
+                add_waits=None, has_rows_to_match=True,
+                skip_waits=None,
+            )
         }
-        for verb in (Verb.TRANSFER, Verb.SKIP):
-            assert not offers[verb].is_open
-            assert offers[verb].waiting_for
+        assert not offers[Verb.TRANSFER].is_open
+        assert offers[Verb.TRANSFER].waiting_for == TRANSFER_WAITS
+        assert offers[Verb.SKIP].is_open, (
+            "SKIP has a door since X-gj-4b and must not be shut by default"
+        )
+
+    def test_skip_carries_exactly_the_refusal_the_caller_stated(self):
+        """Ruling **bank_import:R-JI**, and the same shape ADD is graded on.
+
+        The refusal is the CALLER's fact, never inferred here: the one class
+        of line it is set for is a merchant a source files as paying an
+        account the owner holds, which no argument of this function could
+        derive.
+        """
+        offers = {
+            offer.verb: offer
+            for offer in offers_for(
+                add_waits=None, has_rows_to_match=True,
+                skip_waits=SKIP_SHUT_PAYS_AN_ACCOUNT,
+            )
+        }
+        assert not offers[Verb.SKIP].is_open
+        assert offers[Verb.SKIP].waiting_for == SKIP_SHUT_PAYS_AN_ACCOUNT
 
     def test_add_carries_exactly_the_refusal_the_caller_stated(self):
         """The mechanism's own value is what says whether ADD is open."""
         barred = "You have said Capital One is never a purchase."
         shut = {
             offer.verb: offer
-            for offer in offers_for(add_waits=barred, has_rows_to_match=True)
+            for offer in offers_for(
+                add_waits=barred, has_rows_to_match=True,
+                skip_waits=None,
+            )
         }[Verb.ADD]
         assert shut.waiting_for == barred
         assert not shut.is_open
@@ -157,7 +195,10 @@ class TestEveryLineIsOfferedAllFourVerbs:
         """An account whose every row is explained has nothing left to pair."""
         offers = {
             offer.verb: offer
-            for offer in offers_for(add_waits=None, has_rows_to_match=False)
+            for offer in offers_for(
+                add_waits=None, has_rows_to_match=False,
+                skip_waits=None,
+            )
         }
         assert offers[Verb.MATCH].waiting_for == MATCH_SHUT_NO_ROWS
 
@@ -420,21 +461,30 @@ class TestTheOKControlFollowsTheDOORAndNotTheSentence:
         a working-looking OK on every one of them.
         """
         card = self._card(
-            Verb.TRANSFER, offers_for(add_waits="barred", has_rows_to_match=True),
+            Verb.TRANSFER, offers_for(
+                add_waits="barred", has_rows_to_match=True,
+                skip_waits=None,
+            ),
         )
         assert not card.offers_ok
 
     def test_a_card_whose_verb_HAS_a_door_offers_it(self):
         """The ordinary case still works."""
         card = self._card(
-            Verb.ADD, offers_for(add_waits=None, has_rows_to_match=True),
+            Verb.ADD, offers_for(
+                add_waits=None, has_rows_to_match=True,
+                skip_waits=None,
+            ),
         )
         assert card.offers_ok
 
     def test_a_card_with_no_suggestion_offers_none(self):
         """*Choose* opens the panel; the two controls are exclusive."""
         card = self._card(
-            None, offers_for(add_waits=None, has_rows_to_match=True),
+            None, offers_for(
+                add_waits=None, has_rows_to_match=True,
+                skip_waits=None,
+            ),
         )
         assert not card.offers_ok
 
@@ -463,7 +513,10 @@ class TestNoSweptCardCarriesASentenceOrMoneyAtRisk:
             sentence=choose(), arrivals_already_held=arrivals_already_held,
             risk_class=risk,
             panel=VerbPanel(
-                offers=offers_for(add_waits=None, has_rows_to_match=True),
+                offers=offers_for(
+                add_waits=None, has_rows_to_match=True,
+                skip_waits=None,
+            ),
                 notes=notes, answer_door=None,
                 add=AddTab(
                     act=AddAct.PURCHASE,
@@ -500,6 +553,7 @@ class TestNoSweptCardCarriesASentenceOrMoneyAtRisk:
             panel=VerbPanel(
                 offers=offers_for(
                     add_waits="barred", has_rows_to_match=True,
+                    skip_waits=None,
                 ),
                 notes=(), answer_door=None, add=None,
                 proposal=None,

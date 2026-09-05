@@ -34,11 +34,16 @@ ppy``).
 Next dates are engine-backed, and the cadence phrase comes from the same read
 -----------------------------------------------------------------------------
 The next occurrence is the date the recurrence engine itself would assign
-to the next generated instance: ``recurrence.read_rule`` walks the
-rule's cadence and places each occurrence on a pay period -- the SAME
-composition the generation seam makes since plan step R4b-2 -- and
-``recurrence_engine.compute_due_date`` gives the instance's due date, so a
-row's "next date" cannot disagree with the grid cell it points at.  This
+to the next generated instance: the composed read door
+(``recurring_definition.read_definition``) walks the rule's cadence and places
+each occurrence on a pay period -- the SAME composition the generation seam
+makes since plan step R4b-2 -- and ``recurrence_engine.compute_due_date``
+gives the instance's due date, so a row's "next date" is the date the grid
+cell it points at would carry.  **One divergence stands until plan step
+R7d-c-2**: generation still walks the rule's own bound
+(``recurrence_engine/_plan.py``) while this surface reads the composed one, so
+a loan payment whose derived stop precedes its stored bound shows no next date
+here while the grid may still hold generated rows up to the stored one.  This
 retires the ``/obligations`` approximation (``_next_occurrence``) the audit
 flagged.
 
@@ -46,17 +51,61 @@ flagged.
 Jinja branches over the closed ``pattern_id`` set until then;
 ``recurrence.describe`` words it from the two-axis meaning instead, so the
 column survives plan step R7c dropping the columns those branches read.  Each
-rule is read ONCE per render -- ``read_rule`` returns the meaning and the
-placements together -- because the phrase and the next date are two questions
-about one reading, and resolving twice would be a second resolution point in
-one request.
+rule is read ONCE per render THROUGH THE DOOR -- ``read_definition`` returns
+the meaning and the placements together -- because the phrase and the next
+date are two questions about one reading, and resolving twice would be a second
+resolution point in one request.  The monthly-equivalent producer beside it
+(``template_monthly_or_none`` -> ``has_ended``) still makes a resolution of its
+own for a rule whose date bound lies in the future; plan step R7d-e moves it
+onto the door.
 
-**It takes the owner's whole schedule as a ``PayCalendar``**, not a list
-of pay periods (plan step R4b-1).  A recurrence's first occurrence is measured
-against the owner's schedule, so the value this surface passes has to BE that
-schedule; taking ORM rows and rebuilding the calendar per row would be a second
-producer of one answer, and taking a subset would date a row from a schedule
-its owner does not have.
+**The reading is the COMPOSED one since plan step R7d-d**: what the rule says
+AND what its destination allows, held in one
+:class:`~app.services.recurrence.Closing` on the resolved value.  A recurring
+transfer that pays a loan stops when the debt does, and until that step the
+only way that fact reached this surface was a CACHED copy of the loan's derived
+payoff written into ``budget.recurrence_rules.end_date`` by ten call sites --
+so the cadence sentence and the next date named whichever value a chokepoint
+had most recently written (plan ledger row **D35**).
+
+**An ACTIVE loan payment's row now names the loan's derived closing date**,
+because the door reads the stored copy as the cache it is (ruling **R-R56**,
+2026-09-04): for the loan payment the app itself bounds, the ``end_date``
+column is the chokepoints' cached payoff and not the owner's word, so the door
+composes no authored bound for it and the derived stop is the whole answer --
+where the cache is EARLIER than the closing date (ledger row D35's measured
+shape, ``2029-01-22`` stored against ``2029-02-22`` derived) the row names
+``2029-02-22``.  A second transfer into the same loan keeps whatever its owner
+authored while an older active transfer is the loan's payment.  The phrase and
+the next date read ONE value, so they cannot disagree with each other.
+
+Three limits stand, each named rather than denied.  The ARCHIVED drawer: an
+archived loan payment is no longer the account's active transfer, so the
+predicate that names the app-written bound does not name it and the column the
+app wrote while it was active is read as its owner's bound -- a cache earlier
+than the derived stop binds that drawer row until R7d-g NULLs it, and R7d-g
+must decide archived loan payments rather than sweep them (ledger row D56).
+The MONTHLY EQUIVALENT: ``template_monthly_or_none`` -> ``has_ended`` reads the
+rule's own columns, so on D35's shape the row shows the derived stop and a next
+date beside a BLANK monthly figure for the one installment the derived stop
+adds past the cached date; plan step R7d-e moves that reader onto the door.
+The CREATE form: ``POST /transfers`` cannot lock the Ends control, so a closing
+bound an owner authors there on a loan-destination transfer sits in the column
+until the first chokepoint overwrites it, and the door reads it as the cache
+from the start -- the row names the payoff while generation honours the
+owner's date for that window.  R7d-g deletes the stored copy and the door's
+arm with it.
+
+**It takes the READ PASS** (:class:`~app.services.balance_at.BalanceContext`),
+which carries the owner's whole schedule as a ``PayCalendar`` (plan step
+R4b-1) and the ``as_of`` and scenario the destination's stop is folded in --
+one pass, so the calendar a rule is resolved against and the pass its derived
+stop is measured in cannot be two values that disagree.  Only a route builds
+one (the 2026-08-16 ruling); this producer takes it.  A recurrence's first
+occurrence is measured against the owner's schedule, so the value this surface
+reads has to BE that schedule; taking ORM rows and rebuilding the calendar per
+row would be a second producer of one answer, and taking a subset would date a
+row from a schedule its owner does not have.
 
 What appears vs what totals
 ---------------------------
@@ -70,10 +119,9 @@ total (matching the retired /obligations kernel exactly).
 
 Boundary discipline (``CLAUDE.md`` Architecture): no Flask imports; inputs
 are already-loaded ORM template lists (or any duck-typed equivalent, as the
-tests build with ``types.SimpleNamespace``) plus the user's pay-period
-schedule as a ``PayCalendar`` and an ``as_of`` date; output is a frozen
-dataclass tree of ``Decimal`` / ``date``.  All money math is ``Decimal``; the
-route/template only display.
+tests build with ``types.SimpleNamespace``) plus the read pass; output is a
+frozen dataclass tree of ``Decimal`` / ``date``.  All money math is
+``Decimal``; the route/template only display.
 """
 
 from dataclasses import dataclass
@@ -81,12 +129,13 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from app.models.recurrence_rule import RecurrenceRule
+from app.services.balance_at import BalanceContext
 from app.services.obligations_aggregator import (
     RecurringTemplate,
     template_monthly_or_none,
     template_rule,
 )
-from app.services.pay_calendar import PayCadence, PayCalendar
+from app.services.pay_calendar import PayCadence
 from app.services.recurrence import (
     RecurrenceDescription,
     RecurrenceResolutionError,
@@ -94,10 +143,12 @@ from app.services.recurrence import (
     RuleReading,
     describe,
     placed_periods,
-    read_rule,
-    resolved_recurrence,
 )
 from app.services.recurrence_engine import compute_due_date
+from app.services.recurring_definition import (
+    read_definition,
+    resolved_definition,
+)
 from app.utils.money import round_money
 
 _HUNDRED = Decimal("100")
@@ -280,7 +331,8 @@ def _next_occurrence(
 ) -> date | None:
     """Engine-backed date of the next occurrence on or after ``as_of``.
 
-    Reads the placements :func:`~app.services.recurrence.read_rule` already
+    Reads the placements
+    :func:`~app.services.recurring_definition.read_definition` already
     produced for this row -- the same walk that generates the grid instances --
     and ``compute_due_date`` gives the due date the generated instance would
     carry.  Returns the first such due date on or after ``as_of`` (the current
@@ -302,11 +354,11 @@ def _next_occurrence(
 
     Args:
         rule: The definition's recurrence rule, for the due-date derivation.
-        reading: What :func:`~app.services.recurrence.read_rule` already
-            resolved and placed for this row.  Taken rather than re-walked so
-            the page resolves each rule ONCE: the description and this date
-            are two questions about one reading.
-        as_of: The surface's display boundary.
+        reading: What :func:`~app.services.recurring_definition.read_definition`
+            already resolved and placed for this row.  Taken rather than
+            re-walked so the page resolves each rule ONCE: the description and
+            this date are two questions about one reading.
+        as_of: The surface's display boundary -- the read pass's ``as_of``.
 
     Returns:
         The next occurrence's due date, or ``None``.
@@ -336,10 +388,10 @@ class _PreparedRow:
             is not a recurring commitment.
         rule: Its recurrence rule, or ``None`` when the definition does not
             repeat.
-        reading: That rule read against the owner's schedule, or ``None``
-            exactly when *rule* is -- the two are set and cleared together, so
-            a row cannot be described from a reading of a rule it does not
-            have.
+        reading: That rule read through the composed door against the read
+            pass, or ``None`` exactly when *rule* is -- the two are set and
+            cleared together, so a row cannot be described from a reading of a
+            rule it does not have.
     """
 
     template: RecurringTemplate
@@ -381,14 +433,15 @@ def _described(
 
     **The ONE place this surface words a cadence.**  Both row kinds reach it:
     the active sections from the reading they already hold, the Archived
-    drawer from a meaning-only resolve.  Written once because the two differ
-    in how they OBTAIN the resolved value and not at all in what they do with
-    it -- and a display contract expressed twice is one a later change updates
-    once.
+    drawer from a meaning-only resolve -- both through the composed door, so
+    the drawer and the list beside it narrow a loan payment the same way.
+    Written once because the two differ in how they OBTAIN the resolved value
+    and not at all in what they do with it -- and a display contract expressed
+    twice is one a later change updates once.
 
     **``None`` out means "does not repeat" and nothing else**, which is why
     the RULE is the discriminator rather than the resolved value.  They are
-    not the same question: ``resolved_recurrence`` also answers ``None`` for
+    not the same question: the door also answers ``None`` for
     an owner with no pay periods, and mapping that onto the same ``None``
     would render a quarterly bill as "One-time" -- a repeating commitment
     reported as a one-off, on the surface whose job is to say how things
@@ -431,37 +484,8 @@ def _described(
     return describe(resolved)
 
 
-def _resolved_meaning(
-    rule: RecurrenceRule | None, calendar: PayCalendar,
-) -> ResolvedRecurrence | None:
-    """Resolve *rule*'s cadence without walking a single occurrence.
-
-    The Archived drawer's read: it shows how a definition repeated and never
-    where its rows land.
-
-    Takes the RULE rather than the template so the drawer reads it once, the
-    way :func:`_build_section` does -- asking the same question from two frames
-    is the shape this step spent the rest of its diff removing.
-
-    Args:
-        rule: The definition's recurrence rule, or ``None``.
-        calendar: The owner's whole pay-period schedule.
-
-    Returns:
-        The resolved meaning, or ``None`` when the definition has no rule.
-
-    Raises:
-        RecurrenceResolutionError: When the rule names a cadence this
-            application cannot derive.  See :func:`_build_section` for why this
-            surface fails loud.
-    """
-    if rule is None:
-        return None
-    return resolved_recurrence(rule, calendar)
-
-
 def _build_section(
-    templates: list[RecurringTemplate], calendar: PayCalendar, as_of: date,
+    templates: list[RecurringTemplate], ctx: BalanceContext,
 ) -> RecurringSection:
     """Build one kind-grouped section: its rows and both-units subtotal.
 
@@ -476,8 +500,13 @@ def _build_section(
 
     **Each rule is READ once** (plan step R7a).  A row's cadence phrase and its
     next date are two questions about one reading, so the first pass takes
-    :func:`~app.services.recurrence.read_rule` -- the single resolve-then-place
-    composition -- and the second pass derives both from what it returned.
+    :func:`~app.services.recurring_definition.read_definition` -- the single
+    resolve-then-narrow-then-place composition -- and the second pass derives
+    both from what it returned.  That door is where the destination's own stop
+    joins the rule's (plan step R7d-d): a loan payment's row stops where the
+    loan's derived closing date says, because the door reads the cached column
+    as a cache and not as the owner's bound (ruling **R-R56**; see the module
+    docstring).
 
     **This is a fail-CLOSED read**, and plan step R4a is what changed it.  The
     retired matcher used to log a warning and answer ``[]`` for a rule it could
@@ -499,17 +528,24 @@ def _build_section(
     ``pay_calendar:C4-d`` (ruling **R-PC45**) and is DELETED rather than
     reworded.  It named an owner with no resolvable pay cadence, which
     :attr:`~app.services.pay_calendar.PayCalendar.cadence` refused on the read
-    further down.  This function takes a calendar it did not build, and a
-    calendar now carries a cadence or does not exist --
+    further down.  This function reads a calendar off a pass it did not build,
+    and a calendar now carries a cadence or does not exist --
     ``pay_calendar.calendar_for`` refuses that owner at the door -- so the
     refusal is the CALLER's (``routes/templates/surface.list_templates`` builds
-    the calendar) and claiming it here would be claiming a raise this function
-    can no longer make.*
+    the pass) and claiming it here would be claiming a raise this function can
+    no longer make.*
 
     Raises:
         RecurrenceResolutionError: When a rule names a cadence this application
             cannot derive.
+        BaselineMissingError: When a definition pays into a configured loan
+            and *ctx* has no baseline scenario (ruling **R-R30**): the loan's
+            stop is a fold over its forward plan, and a producer that needs a
+            scenario REFUSES to the single application-level handler rather
+            than rendering a bound nothing derived.  Every definition with no
+            loan behind it still renders for such an owner.
     """
+    calendar = ctx.calendar()
     # ONE cadence for the section, off the schedule this surface already
     # holds: every row belongs to the calendar's owner, so asking per row
     # would resolve one fact many times.  Derived here rather than taken as a
@@ -521,13 +557,13 @@ def _build_section(
     prepared: list[_PreparedRow] = []
     section_total_full = Decimal("0")
     for template in templates:
-        monthly_full = template_monthly_or_none(template, as_of, calendar)
+        monthly_full = template_monthly_or_none(template, ctx.as_of, calendar)
         rule = template_rule(template)
         prepared.append(_PreparedRow(
             template=template,
             monthly_full=monthly_full,
             rule=rule,
-            reading=None if rule is None else read_rule(rule, calendar),
+            reading=None if rule is None else read_definition(template, ctx),
         ))
         if monthly_full is not None:
             section_total_full += monthly_full
@@ -539,7 +575,7 @@ def _build_section(
             recurrence=_described(item.rule, item.resolved),
             next_date=(
                 None if item.reading is None
-                else _next_occurrence(item.rule, item.reading, as_of)
+                else _next_occurrence(item.rule, item.reading, ctx.as_of)
             ),
             share_pct=_share_pct(item.monthly_full, section_total_full),
         )
@@ -600,8 +636,7 @@ def build_view(
     income_templates: list[RecurringTemplate],
     expense_templates: list[RecurringTemplate],
     transfer_templates: list[RecurringTemplate],
-    calendar: PayCalendar,
-    as_of: date,
+    ctx: BalanceContext,
 ) -> RecurringView:
     """Produce the unified Recurring surface's full display model.
 
@@ -612,11 +647,12 @@ def build_view(
             ``TransactionTemplate`` rows.
         transfer_templates: The user's active recurring ``TransferTemplate``
             rows.
-        calendar: The owner's whole pay-period schedule
-            (:class:`~app.services.pay_calendar.PayCalendar`), which the
-            engine-backed next dates are measured against.
-        as_of: Reference date -- "now" for the expired-rule filter and the
-            next-occurrence search.  Callers pass ``date.today()``.
+        ctx: The read pass (:class:`~app.services.balance_at.BalanceContext`),
+            built by the route.  Its ``calendar()`` is the owner's whole
+            pay-period schedule the engine-backed next dates are measured
+            against; its ``as_of`` is the surface's "now" for the expired-rule
+            filter and the next-occurrence search; its scenario scopes the
+            fold that decides where a loan payment stops.
 
     Returns:
         A :class:`RecurringView`: the summary band plus income, expenses,
@@ -624,19 +660,21 @@ def build_view(
         both-units subtotal.  Every figure is a ``Decimal`` rounded to
         cents; the caller only displays.
 
-    *The ``PayCalendarError`` arm that stood beside the one below is DELETED at
-    plan step ``pay_calendar:C4-d``, for the reason :func:`_build_section`
-    states: a calendar this function is HANDED carries a cadence, so the owner
-    it named is refused by whoever built the calendar.*
+    *The ``PayCalendarError`` arm that stood beside the ones below is DELETED
+    at plan step ``pay_calendar:C4-d``, for the reason :func:`_build_section`
+    states: a calendar this function reads off the pass carries a cadence, so
+    the owner it named is refused by whoever built the calendar.*
 
     Raises:
         RecurrenceResolutionError: When a rule names a cadence this application
             cannot derive -- the fail-closed read :func:`_build_section`
             documents.
+        BaselineMissingError: When a loan payment is read for an owner with no
+            baseline scenario; see :func:`_build_section`.
     """
-    income_section = _build_section(income_templates, calendar, as_of)
-    expense_section = _build_section(expense_templates, calendar, as_of)
-    transfer_section = _build_section(transfer_templates, calendar, as_of)
+    income_section = _build_section(income_templates, ctx)
+    expense_section = _build_section(expense_templates, ctx)
+    transfer_section = _build_section(transfer_templates, ctx)
     band = _build_band(
         income_section.subtotal,
         expense_section.subtotal,
@@ -651,7 +689,7 @@ def build_view(
 
 
 def build_archived_rows(
-    templates: list[RecurringTemplate], calendar: PayCalendar,
+    templates: list[RecurringTemplate], ctx: BalanceContext,
 ) -> tuple[ArchivedRow, ...]:
     """Shape the Archived drawer's rows for one template kind.
 
@@ -668,12 +706,22 @@ def build_archived_rows(
     the active sections have.
 
     Only the description is resolved: an archived definition generates nothing,
-    so its occurrences are never walked.
+    so its occurrences are never walked.  It is the COMPOSED description
+    (:func:`~app.services.recurring_definition.resolved_definition`, plan step
+    R7d-d), through the same door the active list takes.  **One limit until
+    plan step R7d-g**: the door reads an app-written column as the cache only
+    for the account's ACTIVE payment (ruling **R-R56**), and an archived loan
+    payment is no longer that, so the column the chokepoints wrote while it was
+    active is read here as its owner's bound and a cache earlier than the
+    derived stop still binds the drawer row.  The schema records who wrote a
+    bound nowhere; deleting the stored copy is the remedy, and R7d-g must
+    decide archived loan payments rather than sweep them (ledger row D56).
 
     Args:
         templates: The user's archived templates of one kind, in the order the
             drawer shows them.
-        calendar: The owner's whole pay-period schedule.
+        ctx: The read pass, shared with :func:`build_view` by the route so the
+            drawer and the active sections read one schedule and one scenario.
 
     Returns:
         One :class:`ArchivedRow` per template, in the given order.
@@ -683,12 +731,17 @@ def build_archived_rows(
             cannot derive -- the same fail-closed disposition the active
             sections have carried since plan step R4a; see
             :func:`_build_section`.
+        BaselineMissingError: When an archived loan payment is read for an
+            owner with no baseline scenario; see :func:`_build_section`.
     """
     rows = []
     for template in templates:
+        # The RULE stays the discriminator for "does not repeat"
+        # (:func:`_described`); the door answers ``None`` for that state too,
+        # but also for an owner with no pay periods, which must raise.
         rule = template_rule(template)
         rows.append(ArchivedRow(
             template=template,
-            recurrence=_described(rule, _resolved_meaning(rule, calendar)),
+            recurrence=_described(rule, resolved_definition(template, ctx)),
         ))
     return tuple(rows)

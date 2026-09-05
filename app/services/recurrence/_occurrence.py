@@ -97,8 +97,11 @@ the first row's date.
 Bounds are OCCURRENCE bounds (ruling R-R6)
 ------------------------------------------
 
-The closing bound (:class:`~app.services.recurrence.EndBound`) is applied to
-the occurrence, not to the period it lands in.  The reverse matcher bounded
+The closing (:class:`~app.services.recurrence.Closing`) is applied to
+the occurrence, not to the period it lands in.  It holds the bound the owner
+AUTHORED and, since plan step R7d-d, any stop DERIVED from the definition's
+destination -- a recurring transfer into a loan stops when the debt does -- and
+both are applied here because both bound an occurrence.  The reverse matcher bounded
 PERIODS -- the end date was tested against a period's START -- so it generated
 rows dated outside the window the user stated: measured on the R1 baseline, a
 monthly-15th rule ending 2025-06-05 generated a row due 2025-06-15.  That was
@@ -503,9 +506,19 @@ def _bounded(
     :meth:`~app.services.recurrence.EndBound.admits`, and this function does
     not change for it.
 
+    **It asks the whole CLOSING since plan step R7d-d, and gained no
+    parameter doing it.**  A definition can be stopped by something it did not
+    author -- a recurring transfer into a loan stops when the debt does -- and
+    that stop is now carried by the value this function already reads
+    (:class:`~app.services.recurrence.Closing`) rather than threaded past it.
+    The alternative considered and refused was an optional ``narrowed_by=``
+    argument here: it would have left every walking caller one forgotten
+    keyword away from a plausible answer that admits occurrences the loan does
+    not, with nothing to raise on.  A value cannot be forgotten.
+
     Args:
         raw: The rule's unbounded occurrence sequence, ascending.
-        resolved: The recurrence's two-axis meaning, carrying the bound.
+        resolved: The recurrence's two-axis meaning, carrying the closing.
         through: The last day the caller asked about.
 
     Yields:
@@ -515,7 +528,7 @@ def _bounded(
     for occurrence in raw:
         if occurrence > through:
             return
-        if not resolved.end_bound.admits(
+        if not resolved.closing.admits(
             emitted=emitted, occurrence=occurrence,
         ):
             return
@@ -611,9 +624,10 @@ def occurrences(
     """Return the dates this recurrence fires on, ascending, through *through*.
 
     The forward half of the redesign's generation model.  Walks the rule's own
-    cadence from :attr:`ResolvedRecurrence.starts_on`, applying the rule's
-    closing bound and the caller's window.  See the module docstring for what
-    an occurrence IS under each unit.
+    cadence from :attr:`ResolvedRecurrence.starts_on`, applying the value's
+    whole :attr:`~ResolvedRecurrence.closing` -- the bound its owner authored
+    AND any stop derived from its destination -- and the caller's window.  See
+    the module docstring for what an occurrence IS under each unit.
 
     **"Nothing before ``starts_on``" holds for EVERY unit, since plan step
     R7c-b.**  It held for the calendar units only while the ``PERIOD`` unit
@@ -654,7 +668,7 @@ def occurrences(
 
     Returns:
         An ascending iterator of occurrence dates.  Empty when *through*
-        precedes the anchor, when the rule's closing bound admits none of
+        precedes the anchor, when the value's closing admits none of
         them, or -- for the ``PERIOD`` unit -- when the owner has no payday at
         all.  **It is COMPLETE through *through* since plan step R16-b-1**, up to
         :data:`~app.utils.dates.CALENDAR_DATE_MAX`, past which this application

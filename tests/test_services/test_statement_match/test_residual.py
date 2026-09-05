@@ -1625,6 +1625,7 @@ class TestTheReceiptNamesIt:
 
         outcome = statement_match.apply_reviewed(
             statement_match.ReviewedBatch(
+                skips=(),
                 consent=statement_match.Consent.TICKED,
                 incomes=(),
                 matches=(a_submission(
@@ -1678,6 +1679,7 @@ class TestTheReceiptNamesIt:
 
         outcome = statement_match.apply_reviewed(
             statement_match.ReviewedBatch(
+                skips=(),
                 consent=statement_match.Consent.TICKED,
                 incomes=(),
                 matches=(

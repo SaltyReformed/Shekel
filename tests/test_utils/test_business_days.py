@@ -32,6 +32,7 @@ from app.utils.business_days import (
     federal_holidays,
     is_business_day,
     shift_to_business_day,
+    shortest_collision_free_cadence,
 )
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
@@ -397,3 +398,112 @@ class TestAnUnrecognisedConventionIsRefused:
         reader who assumes otherwise would write the wrong guard upstream.
         """
         assert shift_to_business_day(date(2026, 1, 2), None) == date(2026, 1, 2)
+
+
+class TestTheShortestCollisionFreeCadence:
+    """Plan step ``pay_calendar:C14-b``: the floor a displacing rhythm needs.
+
+    **These tests grade the CALENDAR, not the number.**  The floor is derived
+    rather than written down precisely because the holiday set can change, so
+    an assertion spelling ``== 4`` would pass forever while the thing it stands
+    for moved.  Each case below re-establishes the property from
+    :func:`~app.utils.business_days.is_business_day` and
+    :func:`~app.utils.business_days.shift_to_business_day` -- the same two
+    functions a caller relies on -- so a holiday change moves the expectation
+    and the subject together, and a WRONG derivation still fails.
+    """
+
+    def test_it_is_the_longest_closed_run_plus_one(self):
+        """The identity the function claims, measured independently of it.
+
+        The run is counted here with a plain loop over
+        ``is_business_day`` rather than by calling the subject a second time,
+        so the two sides do not share a producer -- the failure mode
+        ``feedback_a_green_gate_can_be_measuring_nothing`` names.
+        """
+        longest = run = 0
+        day = CALENDAR_DATE_MIN
+        while day <= CALENDAR_DATE_MAX:
+            run = 0 if is_business_day(day) else run + 1
+            longest = max(longest, run)
+            day += timedelta(days=1)
+
+        assert longest >= 1, (
+            "the calendar holds no closed day at all, which would mean "
+            "is_business_day is broken rather than that the floor is 1"
+        )
+        assert shortest_collision_free_cadence() == longest + 1
+
+    @pytest.mark.parametrize(
+        "shift", [BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT],
+    )
+    def test_no_pair_collides_at_the_floor_or_above(self, shift):
+        """AT the floor the displacement is injective on every nominal pair.
+
+        Swept over every day the application's calendar admits, at the floor
+        and at the two cadences above it -- the band a wrong-by-one derivation
+        would land in.  A cadence longer than the floor cannot collide either,
+        since a collision needs a closed run at least that long, but the sweep
+        asserts it rather than arguing it.
+        """
+        floor = shortest_collision_free_cadence()
+        for cadence in (floor, floor + 1, floor + 2):
+            day = CALENDAR_DATE_MIN
+            while day + timedelta(days=cadence) <= CALENDAR_DATE_MAX:
+                landing = shift_to_business_day(day, shift)
+                nxt = shift_to_business_day(day + timedelta(days=cadence), shift)
+                assert nxt > landing, (
+                    f"cadence {cadence} under {shift.value} maps {day} and "
+                    f"{day + timedelta(days=cadence)} to {landing} and {nxt}, "
+                    f"so the floor of {floor} is too low"
+                )
+                day += timedelta(days=1)
+
+    @pytest.mark.parametrize(
+        "shift", [BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT],
+    )
+    def test_every_cadence_below_the_floor_really_does_collide(self, shift):
+        """The floor is TIGHT, which is the half a safe over-estimate hides.
+
+        Without this, a derivation answering 40 would pass the case above and
+        refuse every weekly and fortnightly schedule in the application.  Each
+        cadence below the floor must produce at least one colliding pair, and
+        the assertion names the pair it found so a failure is diagnosable.
+        """
+        floor = shortest_collision_free_cadence()
+        for cadence in range(1, floor):
+            collision = None
+            day = CALENDAR_DATE_MIN
+            while day + timedelta(days=cadence) <= CALENDAR_DATE_MAX:
+                later = day + timedelta(days=cadence)
+                if shift_to_business_day(day, shift) == shift_to_business_day(
+                    later, shift,
+                ):
+                    collision = (day, later)
+                    break
+                day += timedelta(days=1)
+            assert collision is not None, (
+                f"cadence {cadence} under {shift.value} never collides, so "
+                f"the floor of {floor} refuses a rhythm that is actually safe"
+            )
+
+    def test_none_is_safe_at_every_cadence_below_the_floor(self):
+        """The convention the floor does NOT apply to, pinned.
+
+        ``NONE`` displaces nothing, so a one-day cadence is as injective under
+        it as a fortnight -- which is why
+        ``pay_schedule_service.reject_shift_on_short_cadence`` returns before
+        it asks for the floor, and why a one-day schedule (finding **P9**,
+        deliberately legal since plan step ``pay_calendar:C4-c``) is untouched
+        by any of this.
+        """
+        for cadence in range(1, shortest_collision_free_cadence()):
+            day = CALENDAR_DATE_MIN
+            while day + timedelta(days=cadence) <= CALENDAR_DATE_MIN + timedelta(
+                days=400,
+            ):
+                later = day + timedelta(days=cadence)
+                assert shift_to_business_day(
+                    later, BusinessDayShiftEnum.NONE,
+                ) > shift_to_business_day(day, BusinessDayShiftEnum.NONE)
+                day += timedelta(days=1)

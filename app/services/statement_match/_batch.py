@@ -37,9 +37,26 @@ DESIGNED refusal, never a failure.
 invariant is broken, which is a fact about the account rather than about the
 item, so it fails the whole request loud (``CLAUDE.md`` rule 4).
 
-**Order: every match, then every create, each in the order it was submitted**
--- which is the order the screen renders them, so the receipt reads down the
-page.  It is a real decision rather than an arbitrary one: two ticked items can
+**Order: every match, then every create, then every income, then every skip,
+each in the order it was submitted** -- which is the order the screen renders
+them, so the receipt reads down the page.  *This named two arms until plan
+step ``bank_import:X-gj-4b``, and the income arm had been missing from it
+since ``X-gf-1``* -- checkable: ``a4db019f`` adds the income loop and does not
+touch this paragraph.  A sentence enumerating the loops is a claim about the code
+below it, so it is re-counted off them rather than appended to.
+
+**SKIP runs LAST, and that is the ruled precedence rather than an arbitrary
+tail.**  A line can carry at most one verb (ruling **bank_import:R-HP**), and
+:func:`~._skipping.skip_line` refuses a line an accepted match already answers
+-- reading the database, so it sees what THIS pass has already flushed.  Put
+the skips first and the same collision refuses the MATCH instead, through
+:func:`~._resolve.load_lines`.  The developer's 2026-08-19 ruling on the
+create-versus-match collision is that the act explaining money the records
+already hold WINS, and this is that ruling one verb over: a skip records that
+nothing explains the line, so it may not beat a match that does.  No browser
+can submit the pair -- :func:`~app.schemas.validation.statement_reconcile
+.reconcile_payload` keys one verb per line -- so this decides only what a
+crafted body gets.  It is a real decision rather than an arbitrary one: two ticked items can
 collide, because an envelope a match names may also be the destination a
 recorded line was aimed at, and the guard against counting one purchase twice
 (:func:`~._accept._reject_parent_and_its_own_purchase`) has to refuse one of
@@ -83,7 +100,14 @@ from ._bars import MerchantAnswers
 from ._create import MintedEnvelopes, create_purchase_from_line
 from ._creations import IncomeCreation, PurchaseCreation
 from ._income import record_income_from_line
+from ._receipt_sentences import (
+    created_summary,
+    income_summary,
+    match_summary,
+    skip_summary,
+)
 from ._scope import ReviewScope
+from ._skipping import SkipRequest, skip_line
 from ._submission import MatchSubmission
 
 
@@ -149,6 +173,13 @@ class ReviewedBatch:
             and names only its line.  One list discriminated by the sign of a
             figure the submission does not carry would have to read the
             database to know which door an item meant.
+        skips: The bank lines the owner decided are explained by NOTHING
+            (ruling **bank_import:R-JG**, plan step ``bank_import:X-gj-4b``).
+            **Its own list beside the three above, because it reaches a door
+            that writes a different TABLE and no money**:
+            ``budget.statement_line_skips`` holds no figure, so a skip records
+            a decision rather than a movement.  It is the only act class here
+            whose door takes no argument at all.
         consent: Who agreed to these acts (:class:`Consent`, ruling **R-GH**).
             **Required, with no default**, for the reason
             :func:`~._accept.record_match` gives its own keyword-only flag: the
@@ -160,6 +191,7 @@ class ReviewedBatch:
     matches: "tuple[MatchSubmission, ...]"
     creations: "tuple[PurchaseCreation, ...]"
     incomes: "tuple[IncomeCreation, ...]"
+    skips: "tuple[SkipRequest, ...]"
     consent: Consent
 
     def __post_init__(self) -> None:
@@ -190,12 +222,40 @@ class ReviewedBatch:
         same fact at the tier where a caller could assemble the batch that
         contradicts it, exactly as the match arm is.
 
+        **A rule pass may not carry a SKIP either** (plan step
+        ``bank_import:X-gj-4b``), and this arm is about the STORE rather than
+        about the act class -- which is why it is a third sentence and not a
+        widening of the first.  Ruling **R-GH** would permit it on its own
+        terms: a skip creates a decision and modifies no row the owner made by
+        hand.  What refuses it is that ``budget.statement_line_skips`` carries
+        no ``applied_by_rule`` column, so nothing could record that a rule
+        performed the act -- and three surfaces then state something false.
+        The Skipped tab's Undo says *the record that YOU decided this bank
+        line is explained by nothing*; :func:`~._filing.rule_filed_acts`
+        selects on ``StatementMatch.applied_by_rule``, so a skip reaches no
+        receipt item and no one-click undo, which is exactly what rulings
+        **R-GH** and **R-GG** promise; and
+        :attr:`~._filing.RuleFiling.filed_total` sums
+        :attr:`AppliedItem.amount` over what landed, under the caption *what
+        the bank moved on the lines a rule filed*, so a skipped line's figure
+        would be reported as money a rule filed when a skip files nothing.
+
+        **It is also true that no ANSWER means skip today**: ruling
+        **bank_import:R-JH** holds that *never a purchase* states no
+        disposition, and :class:`~._rules.RuleAnswer`'s five members contain no
+        other candidate.  That is the reason this refusal is a CHECKLIST rather
+        than a boundary -- the step that mints a sixth answer lifts it, exactly
+        as ``bank_import:X-gj-2a`` lifted the income arm, and the design that
+        makes it lift-able is ``docs/design/statement_disposition_model.md``
+        (ruling **bank_import:R-JY**), where authorship is one column over all
+        four verbs.
+
         Raises:
             ValueError: When a :attr:`Consent.STANDING_RULE` batch names a
-                MATCH.  **A programming error rather than a designed refusal**,
-                so it is not a ``ValidationError``: no wire value reaches this
-                field, the route states it as a literal, and there is no
-                sentence to write for an owner who cannot have caused it.
+                MATCH or a SKIP.  **A programming error rather than a designed
+                refusal**, so it is not a ``ValidationError``: no wire value
+                reaches this field, the route states it as a literal, and there
+                is no sentence to write for an owner who cannot have caused it.
         """
         if self.consent is not Consent.STANDING_RULE:
             return
@@ -204,6 +264,16 @@ class ReviewedBatch:
                 "A standing rule may create a row from a new bank swipe and "
                 "may not modify a row the owner made by hand (R-GH), so a "
                 "rule-consented batch cannot carry a match."
+            )
+        if self.skips:
+            raise ValueError(
+                "budget.statement_line_skips has no applied_by_rule column "
+                "recording that a rule performed the act (R-GT), so a "
+                "rule-consented batch "
+                "cannot carry a skip: the Skipped tab would render the app's "
+                "decision as the owner's own, the import receipt could "
+                "neither itemise nor undo it, and RuleFiling.filed_total "
+                "would report its line as money a rule filed."
             )
         # **A rule-consented batch MAY carry an income since plan step
         # ``bank_import:X-gj-2a``**, where this refused one.  The refusal read
@@ -222,8 +292,17 @@ class ReviewedBatch:
 
     @property
     def item_count(self) -> int:
-        """Return how many acts this batch asks for."""
-        return len(self.matches) + len(self.creations) + len(self.incomes)
+        """Return how many acts this batch asks for.
+
+        **Every kind, and the count moves with the field block above it.**  A
+        count naming three of the four would under-report every pass carrying
+        a skip, which is the shape :func:`~app.routes.accounts._statement_doors
+        .submitted_item_count` records having shipped once.
+        """
+        return (
+            len(self.matches) + len(self.creations) + len(self.incomes)
+            + len(self.skips)
+        )
 
 
 @dataclass(frozen=True)
@@ -286,10 +365,18 @@ class RefusedItem:
 class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     """What a whole reviewed pass did.
 
-    Pylint: too-many-instance-attributes (12/7) -- **twelve because a pass
-    receipt has twelve things to say.**  ``refunded_count`` is the newest
-    (ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``) and it
-    is here for exactly ``deposited_count``'s reason one sentence down: a
+    Pylint: too-many-instance-attributes (14/7) -- **fourteen because a pass
+    receipt has fourteen things to say.**  ``skipped_count`` and
+    ``already_skipped_count`` are the newest
+    (ruling **bank_import:R-JG**, plan step ``bank_import:X-gj-4b``) and it is
+    here for the reason every count below it is: a skip is the one act on this
+    receipt that moves NO money, so folding it into any existing count would
+    put it under a caption that names a movement -- and leaving it out
+    altogether would render *"Nothing moved."* over a pass that emptied four
+    cards out of the inbox.  ``refunded_count`` (ruling
+    **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``) was the newest
+    until then, and it is here for exactly ``deposited_count``'s reason one
+    sentence down: a
     merchant credit a rule files as a NEGATIVE purchase reported through
     ``recorded_count``, whose caption says *as a purchase your records did not
     have, dated the day your bank took it* -- which the bank did not do.
@@ -300,14 +387,16 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     ``repriced_count`` is what stopped this
     panel rendering *"Nothing moved."* over a rewritten figure (2026-08-22),
     and dropping a count to satisfy a limit is how that sentence came to be
-    false.  The last two are the residual pair, which names money this pass
-    RECORDED that the app did not hold at all -- the one effect here that no
+    false.  ``residual_count`` and ``residual_total`` are the residual pair,
+    which names money this pass RECORDED that the app did not hold at all -- the one effect here
+    that no
     other field can be read as covering.
     :class:`~._accept.AcceptedMatch` carries the same disable for the same
     reason.  *(This paragraph called ``repriced_count`` "the eighth" until
-    2026-08-23; it is the sixth field declared.  An ordinal nobody can check
-    against the list beside it is exactly the kind of claim this codebase
-    keeps measuring wrong, so it is gone rather than corrected.)*
+    2026-08-23; it is declared in the field block below, where an ordinal can
+    be READ OFF rather than asserted.  An ordinal nobody can check against the
+    list beside it is exactly the kind of claim this codebase keeps measuring
+    wrong, so it is gone rather than corrected.)*
 
     Attributes:
         applied: The acts that landed, in the order they were applied.
@@ -317,6 +406,8 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             has still done everything it could.
         settled_count: How many rows the pass marked as having happened.
         corrected_count: How many settled rows had a day moved onto the bank's.
+        redated_count: How many purchases had their PURCHASE day corrected
+            (ruling **R-FW**).
         repriced_count: How many rows had their FIGURE moved onto the bank's
             (:attr:`~._accept.AcceptedMatch.repriced_count`).  **Without it
             :attr:`moved_nothing` was FALSE rather than merely quiet**: a
@@ -324,8 +415,6 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             ``unchanged`` on every day count, so a pass that rewrote what a
             payment cost rendered *"Nothing moved."*  Found by adversarial
             design review 2026-08-22.
-        redated_count: How many purchases had their PURCHASE day corrected
-            (ruling **R-FW**).
         recorded_count: How many bank lines became a CHARGE the app did not
             have -- a purchase the bank took money for.  **Charges only since
             plan step ``bank_import:X-gj-2b-3``**; see :attr:`refunded_count`.
@@ -372,6 +461,35 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             total of nothing would be true and useless.  The count says how
             many rows the owner now has to categorise; the total says how much
             money reached the Uncategorized bucket.
+        skipped_count: How many bank lines the owner recorded as explained by
+            NOTHING (ruling **bank_import:R-JG**).  **It counts what was
+            WRITTEN and not what was pressed**: a repeat press finds the
+            decision already standing and writes nothing
+            (:attr:`~._skipping.SkippedLine.was_already_skipped`), so it is an
+            applied item with its own sentence and it does NOT increment this
+            -- a count that included it would claim a record changed when none
+            did, and the reader that would then state it falsely is the
+            RECEIPT's own caption (*recorded as explained by nothing*) and
+            the audit field beside it.  **Not** :attr:`moved_nothing`, which
+            ORs both counts and would answer identically either way; that
+            predicate's reason to exist lives on
+            :attr:`already_skipped_count`, where it is true.
+        already_skipped_count: How many skips this pass found ALREADY
+            standing and wrote nothing for
+            (:attr:`~._skipping.SkippedLine.was_already_skipped`).  **Its own
+            count beside :attr:`skipped_count` rather than folded into it**,
+            because the two answer different questions and one integer cannot
+            answer both: that count says how many decisions were RECORDED, so
+            counting a repeat would claim a record changed when none did,
+            while :attr:`moved_nothing` has to know the pass has something to
+            report or it renders *"Nothing moved"* over an act that confirmed
+            no day.  Reachable from a stale or duplicated tab, and from
+            two submits of one page.  *An earlier draft said a stale tab was
+            the ONLY place a repeat comes from*, which is the
+            one-writer-from-wrong shape.  What IS exclusive is that no single
+            PRESS can produce one: ``reconcile_payload`` dedupes on
+            ``set(form.getlist("ok"))``, so one body yields one item a line.  Named by
+            adversarial review 2026-09-04.
     """
 
     applied: "tuple[AppliedItem, ...]"
@@ -386,6 +504,8 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     deposited_count: int
     residual_count: int
     residual_total: Decimal
+    skipped_count: int
+    already_skipped_count: int
 
     @classmethod
     def nothing(cls) -> "BatchOutcome":
@@ -405,6 +525,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             envelopes_created=0,
             deposited_count=0,
             residual_count=0, residual_total=Decimal("0.00"),
+            skipped_count=0, already_skipped_count=0,
         )
 
     @property
@@ -419,7 +540,16 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
 
     @property
     def moved_nothing(self) -> bool:
-        """Return whether the pass changed no record at all.
+        """Return whether every act that LANDED did nothing but confirm.
+
+        **It is NOT "changed no record at all", and that sentence stood here
+        until plan step ``bank_import:X-gj-4b``** (adversarial review
+        2026-09-04).  A repeat press changes no record -- that is exactly why
+        it increments ``already_skipped_count`` and not ``skipped_count`` --
+        and this answers ``False`` for it, because the receipt still owes the
+        owner a sentence about the press they made.  The question this asks is
+        whether the alternative arm's wording (*everything that was applied
+        confirmed a day you already had*) would be TRUE of the pass.
 
         The screen's own question.  An applied item can still move nothing --
         a match that only confirms the day the app already held changes no
@@ -449,159 +579,35 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             # test has to name every effect, which is why the class is stated
             # rather than left to whoever adds the next count.
             or self.deposited_count
+            # **A skip changes a RECORD, which is what this predicate asks**
+            # -- and it is not a money effect (plan step
+            # ``bank_import:X-gj-4b``).  ``budget.statement_line_skips`` holds
+            # no figure and a skip closes no difference between the books and
+            # the bank, so nothing MOVED; what changed is that the skipped
+            # lines left the inbox and the Skipped tab now holds them.  Without this arm
+            # a skip-only pass rendered *"Nothing moved.  Everything that was
+            # applied confirmed a day you already had"*, whose second sentence
+            # is false of an act that confirms no day at all.
+            or self.skipped_count
+            # **A REPEAT wrote nothing and still has something to report**,
+            # which is why it is a second counter rather than a second reason
+            # to increment the first (adversarial review 2026-09-04).
+            # ``skipped_count`` answers *how many decisions were recorded* and
+            # must not count a press that recorded none; this predicate asks
+            # *has the pass anything to say beyond confirming days*, and a
+            # repeat-only pass does -- without this arm it rendered *"Nothing
+            # moved.  Everything that was applied confirmed a day you already
+            # had"* over an act that confirms no day at all, which is the very
+            # sentence the arm above was added to stop printing.
+            or self.already_skipped_count
         )
-
-
-def _match_summary(accepted) -> str:
-    """Return the sentence describing what one accepted match did.
-
-    **It names the three effects separately**, because they are different acts
-    with different consequences: settling a row books money the projection was
-    still holding forward, correcting a settle day moves money already booked
-    from one day to another, and correcting a PURCHASE day moves no money at
-    all but rewrites when the owner says they bought something.  A single
-    "2 rows updated" would hide which -- and the third was folded into the
-    first until adversarial review 2026-08-18 measured that the case it was
-    built for (an unsettled purchase, re-dated by up to 59 days) reported only
-    "marked 1 row(s) as having happened".
-
-    Args:
-        accepted: The :class:`~._accept.AcceptedMatch`.
-
-    Returns:
-        The sentence.
-    """
-    did = []
-    if accepted.settled_count:
-        did.append(
-            f"marked {accepted.settled_count} row(s) as having happened"
-        )
-    if accepted.corrected_count:
-        did.append(
-            f"moved {accepted.corrected_count} row(s) onto the bank's day"
-        )
-    if accepted.redated_count:
-        did.append(
-            f"corrected the purchase date on {accepted.redated_count} row(s)"
-        )
-    # **The AMOUNT, and it is named LAST because it is the one thing here that
-    # changes what money was SPENT** rather than when it moved.  Without it a
-    # repricing on a row already carrying the bank's day fell through to
-    # "confirmed what you already had" -- a sentence that was not merely silent
-    # but false.
-    if accepted.repriced_count:
-        did.append(
-            f"corrected the amount on {accepted.repriced_count} row(s)"
-        )
-    # **After it, because it is the only clause naming a row that did not
-    # exist before this act** (plan step bank_import:X-f6d-4).  It says
-    # "recorded" rather than "corrected" for that reason: nothing of the
-    # owner's was changed to produce it.
-    if accepted.residual is not None:
-        did.append(
-            f"recorded the {accepted.residual:+,.2f} difference as a row "
-            f"with no category"
-        )
-    what = " and ".join(did) if did else "confirmed what you already had"
-    return (
-        f"Matched {accepted.line_count} statement line(s) worth "
-        f"{accepted.amount:+,.2f} on {accepted.posts_on}: {what}."
-    )
-
-
-def _created_summary(recorded) -> str:
-    """Return the sentence describing what recording one line did.
-
-    **It names the container and whether it was created**, because those are
-    different acts: filing a purchase under an envelope the owner already
-    budgeted changes what that envelope RECORDS as its cost, while creating one
-    adds a budget line to a period that did not have it.
-
-    **It names both days only when they differ.**  A purchase carries the day
-    it was MADE beside the day the bank TOOK it (ruling **R-FW**), and on 179
-    of the developer's 361 lines the source states no separate made-day at all
-    -- so printing "made on" unconditionally would report the clearing day as a
-    swipe day on half of every statement, which is the exact substitution R-FW
-    rejected.
-
-    **The FIGURE is negated once; the VERB reads the field the door stated**
-    (ruling **R-II**).  ``CreatedPurchase.amount`` is the purchase's own signed
-    figure, so a refund is negative and the statement states the same movement
-    the other way round -- one negation, so this sentence and the
-    ``AppliedItem.amount`` beside it cannot disagree about which way the money
-    went.  **The verb asks** :attr:`~._creations.CreatedPurchase.records_a_refund`
-    **rather than the sign of that figure** (plan step
-    ``bank_import:X-gj-2b-3``): that field exists so nothing downstream
-    re-derives a direction, and this function was the first consumer written
-    after it and re-derived one anyway.  The two agree by construction today --
-    ``_born_purchase`` sets both from one line -- which is exactly why a second
-    spelling here would be invisible until it was not.
-
-    Args:
-        recorded: The :class:`~._create.CreatedPurchase`.
-
-    Returns:
-        The sentence.
-    """
-    where = (
-        f"a new envelope, {recorded.envelope_label}"
-        if recorded.envelope_created
-        else recorded.envelope_label
-    )
-    made = (
-        f", made {recorded.made_on}" if recorded.made_on != recorded.posts_on
-        else ""
-    )
-    # **The BANK's convention** (plan step ``bank_import:X-gj-2b``, ruling
-    # **R-II**).  A refund is a NEGATIVE purchase, and this sentence printed
-    # ``$-42.00 your bank took`` -- the wrong sign AND the wrong direction, in
-    # the one notice the owner gets for money a rule moved without a press
-    # (**R-GH**).  It also contradicted ``AppliedItem.amount`` on the same
-    # item, which negates onto the bank's convention; the negation is done
-    # ONCE here so the two cannot disagree.
-    on_the_statement = -recorded.amount
-    # **The VERB is the DOOR's answer, not this figure's sign** (plan step
-    # ``bank_import:X-gj-2b-3``): ``records_a_refund`` is set by
-    # ``_born_purchase`` from ``_rules.is_inflow``, which is this package's one
-    # statement of the bank's sign convention.
-    took_or_gave = "gave back" if recorded.records_a_refund else "took"
-    return (
-        f"Recorded ${abs(on_the_statement):,.2f} your bank {took_or_gave} on "
-        f"{recorded.posts_on}{made} as a purchase in {where}."
-    )
-
-
-def _income_summary(recorded) -> str:
-    """Return the sentence describing what recording one deposit did.
-
-    **It names no container and no second day, because the row has neither**
-    (ruling **bank_import:R-GW**).  ``_created_summary`` beside it names both because a
-    purchase is filed against something that reserves for it and carries a
-    budget clock of its own; an income row IS the movement, so the day the bank
-    credited it is the only day there is.
-
-    **It says the row has no category**, which is the one thing about it the
-    owner has to act on later: the money is recorded correctly and filed
-    nowhere, and a receipt that did not say so would leave the owner to find
-    out from the grid.
-
-    Args:
-        recorded: The :class:`~._creations.RecordedIncome`.
-
-    Returns:
-        The sentence.
-    """
-    return (
-        f"Recorded ${recorded.amount:,.2f} your bank paid in on "
-        f"{recorded.posts_on} as {recorded.label}, with no category yet."
-    )
 
 
 @dataclass
 class _Tally:  # pylint: disable=too-many-instance-attributes
     """The running receipt one pass builds.
 
-    Pylint: too-many-instance-attributes (12/7) -- it accumulates exactly
+    Pylint: too-many-instance-attributes (14/7) -- it accumulates exactly
     the counters :class:`BatchOutcome` publishes, so it carries that
     class's disable for that class's reason.
 
@@ -621,6 +627,8 @@ class _Tally:  # pylint: disable=too-many-instance-attributes
     deposited: int = 0
     residuals: int = 0
     residual_total: Decimal = Decimal("0.00")
+    skipped: int = 0
+    already_skipped: int = 0
 
 
 def _run(tally: _Tally, line_ids: "tuple[int, ...]", act) -> object:
@@ -678,6 +686,192 @@ def _run(tally: _Tally, line_ids: "tuple[int, ...]", act) -> object:
         return None
     savepoint.commit()
     return result
+
+
+# **FOUR ARMS, ONE PER ACT CLASS, and the split is what the fourth forced.**
+# ``apply_reviewed`` ran all four loops inline until plan step
+# ``bank_import:X-gj-4b``, at which point it was over pylint's locals limit
+# of 15 and its branch limit of 12 -- both of which `.pylintrc` leaves at the
+# default, so both are checkable.  Neither figure it exceeded them BY is
+# stated: those are measurements on an intermediate no commit holds.  The
+# honest answer to a function over the limit is to DECOMPOSE it rather than to
+# widen the limit
+# (``docs/coding-standards.md``), and the seam is the one the value already
+# draws: :class:`ReviewedBatch` carries one list per act class, each reaching
+# its own door and writing its own shape, so one arm per list restates no
+# partition.  Each is private and takes the shared accumulator, because what
+# leaves this module is the frozen :class:`BatchOutcome` built from it.
+
+
+def _apply_matches(tally, batch: ReviewedBatch, scope: ReviewScope) -> None:
+    """Accept every ticked match, in the order it was submitted.
+
+    Args:
+        tally: The running receipt.
+        batch: What the owner ticked.
+        scope: The pass's derived offer set.
+    """
+    for submission in batch.matches:
+        line_ids = tuple(sorted(submission.line_ids))
+        accepted = _run(
+            tally, line_ids, lambda s=submission: accept_match(s, scope),
+        )
+        if accepted is None:
+            continue
+        tally.settled += accepted.settled_count
+        tally.corrected += accepted.corrected_count
+        tally.redated += accepted.redated_count
+        tally.repriced += accepted.repriced_count
+        if accepted.residual is not None:
+            tally.residuals += 1
+            tally.residual_total += accepted.residual
+        tally.applied.append(AppliedItem(
+            line_ids=line_ids, summary=match_summary(accepted),
+            # Already the BANK's own signed figure over the lines this act
+            # names, which is this field's stated convention.
+            amount=accepted.amount,
+        ))
+
+
+def _apply_creations(tally, batch: ReviewedBatch, scope: ReviewScope, minted, answers) -> None:
+    """File every ticked line as a purchase, in the order it was submitted.
+
+    Args:
+        tally: The running receipt.
+        batch: What the owner ticked.
+        scope: The pass's derived offer set.
+        minted: The per-request envelope registry, so a sweep mints one
+            envelope per answer per pay period rather than one per line.
+        answers: What the owner has said about this account's merchants, read
+            ONCE for the whole door.
+    """
+    for creation in batch.creations:
+        line_ids = (creation.line_id,)
+        recorded = _run(
+            tally, line_ids,
+            lambda c=creation: create_purchase_from_line(
+                c, scope, minted, answers,
+                # **The PASS's consent, not the item's** (ruling **R-GT**,
+                # plan step ``bank_import:X-ge``).  Which rule fired is
+                # derivable from the matched line; that a rule fired at all is
+                # not, and it is a fact about how this whole batch was
+                # assembled rather than about any one line in it.
+                applied_by_rule=batch.consent.applied_by_rule,
+            ),
+        )
+        if recorded is None:
+            continue
+        # **AFTER the act returned**, never inside the door that creates: an
+        # item refused by ``create_entry`` rolls its whole SAVEPOINT back, and
+        # a registry written one line above that refusal hands the NEXT line an
+        # id the rollback has already taken.  Measured -- the sweep died on
+        # ``NoneType`` -- which is why the remembering lives out here.
+        if recorded.envelope_created:
+            minted.remember(creation.new_envelope, recorded)
+        # **Counted by DIRECTION, off the field the door stated** (ruling
+        # **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``).  One
+        # count reported both, and the receipt's caption for it -- *recorded as
+        # a purchase your records did not have, dated the day your bank took
+        # it* -- is false of a refund in both halves.  The direction is
+        # ``CreatedPurchase.records_a_refund``, which the create door resolved
+        # through ``_rules.is_inflow`` while it held the line, so nothing here
+        # tests a sign.
+        if recorded.records_a_refund:
+            tally.refunded += 1
+        else:
+            tally.recorded += 1
+        tally.envelopes += 1 if recorded.envelope_created else 0
+        tally.applied.append(AppliedItem(
+            line_ids=line_ids, summary=created_summary(recorded),
+            # **NEGATED, onto the bank's convention.**
+            # ``CreatedPurchase.amount`` is the purchase's own figure and the
+            # bank states the same movement with the opposite sign, so the
+            # receipt negates it back.  **Sign-general by construction**: the
+            # negation is what the bank's convention is, not an assumption that
+            # the purchase is positive, so a refund recorded at ``-28.29``
+            # reports the ``+28.29`` the statement shows (ruling
+            # **bank_import:R-II**).  Refunds DO reach this door since plan
+            # step ``bank_import:X-gj-2b-2``, so the general case is the
+            # ordinary one rather than a future one.
+            amount=-recorded.amount,
+        ))
+
+
+def _apply_incomes(tally, batch: ReviewedBatch, scope: ReviewScope, view) -> None:
+    """Record every ticked deposit, in the order it was submitted.
+
+    Args:
+        tally: The running receipt.
+        batch: What the owner ticked.
+        scope: The pass's derived offer set.
+        view: The rule view the creation arm already read.
+    """
+    for income in batch.incomes:
+        line_ids = (income.line_id,)
+        deposited = _run(
+            tally, line_ids,
+            lambda i=income: record_income_from_line(
+                i, scope, view,
+                # **The PASS's consent, not the item's** (ruling **R-GT**),
+                # which is the same threading the creation arm above does: the
+                # act records whether a RULE performed it, and only the batch
+                # knows that.
+                applied_by_rule=batch.consent.applied_by_rule,
+            ),
+        )
+        if deposited is None:
+            continue
+        tally.deposited += 1
+        tally.applied.append(AppliedItem(
+            line_ids=line_ids, summary=income_summary(deposited),
+            # **Already the BANK's own direction.**  An income row's cash
+            # effect is POSITIVE and so is the line it was built from
+            # (``_income._load_line`` refuses anything else by name), so unlike
+            # the purchase arm above there is no sign to flip -- and flipping
+            # one here would report a deposit as a withdrawal.
+            amount=deposited.amount,
+        ))
+
+
+def _apply_skips(tally, batch: ReviewedBatch, scope: ReviewScope) -> None:
+    """Record every ticked line as explained by nothing.
+
+    **Called LAST**, and :mod:`._batch`'s header carries the reason: a line a
+    match in this same pass has just answered must lose the SKIP rather than
+    the match, which is the developer's 2026-08-19 precedence ruling one verb
+    over.
+
+    Args:
+        tally: The running receipt.
+        batch: What the owner ticked.
+        scope: The pass's derived offer set.
+    """
+    for skip in batch.skips:
+        line_ids = (skip.line_id,)
+        recorded_skip = _run(
+            tally, line_ids,
+            lambda s=skip: skip_line(
+                s.line_id, scope.owner_id, scope.account_id,
+            ),
+        )
+        if recorded_skip is None:
+            continue
+        # **A repeat wrote NOTHING, so it counts as nothing** -- see
+        # :attr:`BatchOutcome.skipped_count`.  It is still an APPLIED item: the
+        # door did not refuse it, the decision the owner asked for stands, and
+        # its own sentence says which of the two happened.
+        if recorded_skip.was_already_skipped:
+            tally.already_skipped += 1
+        else:
+            tally.skipped += 1
+        tally.applied.append(AppliedItem(
+            line_ids=line_ids, summary=skip_summary(recorded_skip),
+            # **Already the BANK's own signed figure**, straight off the line
+            # the door held, so there is no sign to flip: a skip has no
+            # app-side figure of its own to convert FROM, which is the whole
+            # difference between this arm and the creation arm above.
+            amount=recorded_skip.line.amount,
+        ))
 
 
 def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
@@ -747,103 +941,13 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
     answers = MerchantAnswers.build(scope.owner_id, scope.account_id)
     view = answers.view
 
-    for submission in batch.matches:
-        line_ids = tuple(sorted(submission.line_ids))
-        accepted = _run(
-            tally, line_ids, lambda s=submission: accept_match(s, scope),
-        )
-        if accepted is None:
-            continue
-        tally.settled += accepted.settled_count
-        tally.corrected += accepted.corrected_count
-        tally.redated += accepted.redated_count
-        tally.repriced += accepted.repriced_count
-        if accepted.residual is not None:
-            tally.residuals += 1
-            tally.residual_total += accepted.residual
-        tally.applied.append(AppliedItem(
-            line_ids=line_ids, summary=_match_summary(accepted),
-            # Already the BANK's own signed figure over the lines this act
-            # names, which is this field's stated convention.
-            amount=accepted.amount,
-        ))
-
-    for creation in batch.creations:
-        line_ids = (creation.line_id,)
-        recorded = _run(
-            tally, line_ids,
-            lambda c=creation: create_purchase_from_line(
-                c, scope, minted, answers,
-                # **The PASS's consent, not the item's** (ruling **R-GT**,
-                # plan step ``bank_import:X-ge``).  Which rule fired is
-                # derivable from the matched line; that a rule fired at all is
-                # not, and it is a fact about how this whole batch was
-                # assembled rather than about any one line in it.
-                applied_by_rule=batch.consent.applied_by_rule,
-            ),
-        )
-        if recorded is None:
-            continue
-        # **AFTER the act returned**, never inside the door that creates: an
-        # item refused by ``create_entry`` rolls its whole SAVEPOINT back, and
-        # a registry written one line above that refusal hands the NEXT line an
-        # id the rollback has already taken.  Measured -- the sweep died on
-        # ``NoneType`` -- which is why the remembering lives out here.
-        if recorded.envelope_created:
-            minted.remember(creation.new_envelope, recorded)
-        # **Counted by DIRECTION, off the field the door stated** (ruling
-        # **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``).  One
-        # count reported both, and the receipt's caption for it -- *recorded as
-        # a purchase your records did not have, dated the day your bank took
-        # it* -- is false of a refund in both halves.  The direction is
-        # ``CreatedPurchase.records_a_refund``, which the create door resolved
-        # through ``_rules.is_inflow`` while it held the line, so nothing here
-        # tests a sign.
-        if recorded.records_a_refund:
-            tally.refunded += 1
-        else:
-            tally.recorded += 1
-        tally.envelopes += 1 if recorded.envelope_created else 0
-        tally.applied.append(AppliedItem(
-            line_ids=line_ids, summary=_created_summary(recorded),
-            # **NEGATED, onto the bank's convention.**
-            # ``CreatedPurchase.amount`` is the purchase's own figure and the
-            # bank states the same movement with the opposite sign, so the
-            # receipt negates it back.  **Sign-general by construction**: the
-            # negation is what the bank's convention is, not an assumption that
-            # the purchase is positive, so a refund recorded at ``-28.29``
-            # reports the ``+28.29`` the statement shows (ruling
-            # **bank_import:R-II**).  Refunds DO reach this door since plan
-            # step ``bank_import:X-gj-2b-2``, so the general case is the
-            # ordinary one rather than a future one.
-            amount=-recorded.amount,
-        ))
-
-    for income in batch.incomes:
-        line_ids = (income.line_id,)
-        deposited = _run(
-            tally, line_ids,
-            lambda i=income: record_income_from_line(
-                i, scope, view,
-                # **The PASS's consent, not the item's** (ruling **R-GT**),
-                # which is the same threading the creation arm above does: the
-                # act records whether a RULE performed it, and only the batch
-                # knows that.
-                applied_by_rule=batch.consent.applied_by_rule,
-            ),
-        )
-        if deposited is None:
-            continue
-        tally.deposited += 1
-        tally.applied.append(AppliedItem(
-            line_ids=line_ids, summary=_income_summary(deposited),
-            # **Already the BANK's own direction.**  An income row's cash
-            # effect is POSITIVE and so is the line it was built from
-            # (``_income._load_line`` refuses anything else by name), so unlike
-            # the purchase arm above there is no sign to flip -- and flipping
-            # one here would report a deposit as a withdrawal.
-            amount=deposited.amount,
-        ))
+    _apply_matches(tally, batch, scope)
+    _apply_creations(tally, batch, scope, minted, answers)
+    _apply_incomes(tally, batch, scope, view)
+    # **LAST, and the module header says why**: a line a match in this
+    # same pass has just answered must lose the skip rather than the
+    # match, which is the 2026-08-19 precedence ruling one verb over.
+    _apply_skips(tally, batch, scope)
 
     outcome = BatchOutcome(
         applied=tuple(tally.applied),
@@ -858,5 +962,7 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         deposited_count=tally.deposited,
         residual_count=tally.residuals,
         residual_total=tally.residual_total,
+        skipped_count=tally.skipped,
+        already_skipped_count=tally.already_skipped,
     )
     return outcome

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_form_macros.html" import render_select %}
 {% block title %}Register - Shekel{% endblock title %}
 
 {% block content %}
@@ -107,6 +108,23 @@
                    value="{{ request.form.get('cadence_days') or config['DEFAULT_PAY_CADENCE_DAYS'] }}">
             <div class="form-text">14 for every other week, 7 for weekly.</div>
           </div>
+          {# What payroll does when one of those paydays lands on a weekend or
+             a federal holiday (plan step pay_calendar:C14-b, ruling R-PC56:
+             the question is asked wherever a cadence is).  Rendered through
+             `render_select`, which this page uses for no other control: the
+             hand-written markup it replaced could not be parsed by djlint
+             (H025, an orphan `</option>`), and reaching for the shared macro
+             was a better answer than appeasing the linter -- all FOUR doors
+             now emit this control through ONE macro from ONE option list, so
+             neither the markup nor the wording can drift between the door
+             that sets a convention and the door that corrects it.  ``none``
+             is preselected because a new owner has stated nothing and Shekel
+             must not move a payday nobody asked it to (R-PC56 refused
+             defaulting this to "pay early" for exactly that reason). #}
+          {{ render_select("shift", PAYDAY_SHIFT_LABEL, PAYDAY_SHIFT_OPTIONS,
+                           selected_value=(request.form.get('shift')
+                                           or SHIFT_NONE),
+                           required=true, help_text=PAYDAY_SHIFT_HELP) }}
           {# When these paychecks started (plan step balance:X-bh-2, ruling
              balance:R-IA as amended 2026-08-31).  OPTIONAL, and blank means
              NOT STATED: Shekel then counts only the paychecks it records,

@@ -7,13 +7,15 @@ continue an existing schedule from, the day the owner's paychecks
 began, and the rolling-window configuration the continuous top-up
 consumes.
 
-**The row holds two facts about the RHYTHM and two about a WRITE**, and
-the doors here are split on that line.  ``cadence_days`` and
-``history_opens_on`` are what a pay CALENDAR is derived from, and
-:func:`resolve_schedule` answers both in one read as
-:class:`ScheduleFacts`; ``rolling_enabled`` and
-``rolling_target_periods`` configure the on-request top-up and are read
-off the row itself by the caller that is about to write.
+**The row holds three facts about the RHYTHM and two about a WRITE**, and
+the doors here are split on that line.  ``cadence_days``,
+``history_opens_on`` and ``shift_id`` are what a pay CALENDAR is derived
+from; :func:`resolve_schedule` answers the first two in one read as
+:class:`ScheduleFacts`, and the third has its own reader
+(:func:`resolve_shift`) until plan step ``C14-e`` gives the calendar a
+reason to carry it.  ``rolling_enabled`` and ``rolling_target_periods``
+configure the on-request top-up and are read off the row itself by the
+caller that is about to write.
 
 **It no longer owns the advisory lock that serializes the structural
 pay-period mutations** (plan step X-f1c3c).  That lock moved, unchanged
@@ -37,6 +39,8 @@ from datetime import date
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app import ref_cache
+from app.enums import BusinessDayShiftEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.pay_period import PayPeriod
@@ -45,9 +49,53 @@ from app.models.pay_schedule import (
     CADENCE_DAYS_MIN,
     PaySchedule,
 )
+from app.utils.business_days import shortest_collision_free_cadence
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Rhythm:
+    """How often an owner is paid, and what payroll does on a closed day.
+
+    Plan step **C14-b**.  The pair ``budget.pay_schedule`` stores as
+    ``cadence_days`` and ``shift_id``, and a TYPE rather than two arguments
+    because they carry a JOINT rule: a convention that displaces a payday is
+    legal only on a cadence longer than the longest run of consecutive closed
+    days (:func:`reject_shift_on_short_cadence`).  Written through two
+    statements the row passes through a state neither statement means, and
+    either order refuses a legal request -- so :func:`upsert_schedule` takes
+    the pair, judges the pair, and writes the pair, and no caller is able to
+    hand it half of one.
+
+    **It is not :class:`ScheduleFacts` under another name.**  That value is
+    what a pay CALENDAR is DERIVED from and pairs the cadence with
+    ``history_opens_on``; this is what a payday batch WRITES.  The two overlap
+    on the cadence because one column serves both questions, which is the
+    row's shape rather than a second home for the value: neither type stores
+    anything, and both read the same column.
+
+    Attributes:
+        cadence_days: Days between consecutive paydays.  Bounded by
+            :func:`reject_out_of_range_cadence`, not by this type -- a range
+            is the column's own rule and belongs where its one writer asks it.
+        shift: What payroll does when a payday lands on a day no money moves
+            on, as the :class:`~app.enums.BusinessDayShiftEnum` member rather
+            than the ``ref.business_day_shifts`` id that spells it on the
+            wire.  The id is what crosses a form and what the column holds, so
+            :class:`~app.schemas.validation.pay_periods.BusinessDayShiftField`
+            converts on the way in and :func:`upsert_schedule` converts on the
+            way out; between them the value is a member, which is what
+            :func:`~app.utils.business_days.shift_to_business_day` requires --
+            it REFUSES an integer rather than defaulting, so a rhythm carrying
+            an id would hand plan step ``C14-e`` a raise instead of a payday.
+            This is IDs-for-logic as the project means it: no ``name`` string
+            is ever compared.
+    """
+
+    cadence_days: int
+    shift: BusinessDayShiftEnum
 
 
 @dataclass(frozen=True)
@@ -248,6 +296,92 @@ def reject_out_of_range_cadence(cadence_days: int) -> None:
         )
 
 
+def reject_shift_on_short_cadence(rhythm: Rhythm) -> None:
+    """Refuse a displacing convention a cadence is too short to carry.
+
+    **The pairing is what is refused, and it is refused HERE rather than by a
+    CHECK constraint** (plan step **C14-b**, ruling **R-PC59**,
+    developer 2026-09-05).
+    A convention that moves a payday off a closed day is not injective: two
+    nominal paydays closer together than the longest run of consecutive closed
+    days displace onto ONE day, and
+    ``pay_calendar._derive.derive_periods`` refuses a repeated payday outright,
+    so the owner's whole calendar would raise rather than render.
+
+    **Two reasons, and an earlier draft of this docstring claimed three.**
+    An adversarial review of 2026-09-05 struck the third and corrected the
+    premise of the second; the count is restated here rather than left to
+    decay.
+
+    1. **The floor is DERIVED.**  It is the longest closed run plus one, proved
+       and computed by
+       :func:`~app.utils.business_days.shortest_collision_free_cadence`, and it
+       moves with the holiday set -- which is not fixed
+       (``business_days.JUNETEENTH_FIRST_YEAR`` records the set changing once
+       inside the window this application admits).  A CHECK expression must be
+       IMMUTABLE, so a constraint could only freeze a copy where nothing can
+       recompute it.
+    2. **A constraint cannot name a FIELD.**  It arrives as an
+       ``IntegrityError`` carrying a constraint name, where a form needs the
+       message on the control the owner chose -- which is what
+       :func:`~app.schemas.validation.pay_periods.validate_derivable_rhythm`
+       supplies, and the same reason plan step X-ad-a moved the cadence bound
+       out from behind ``ck_pay_schedule_cadence_range``.
+
+    *The struck reason was "which id means ``none`` is seed data, so a CHECK
+    would hard-code a ``ref`` id".  True of the naive spelling and defeasible:
+    a pinned id verified by a migration-time assertion, or NULL standing for
+    "no convention", both dodge it.  Each has its own cost -- and the first two
+    reasons stand on their own -- but a defeasible reason is not a structural
+    one and stating it as such overclaimed.*
+
+    **What this placement does NOT buy, and a CHECK would not have bought
+    either.**  The refusal is asked on WRITE, so neither it nor a frozen
+    constraint sees a STORED row that a later holiday change made illegal --
+    ``ADD CONSTRAINT`` does scan existing rows, but only when some migration
+    re-adds it.  Nothing reconciles ``budget.pay_schedule`` today.
+
+    **And a floor RISE would surface badly, which is worth knowing before
+    anyone raises one.**  The continue path re-judges the STORED pair --
+    ``pay_period_admin.extend_pay_periods`` hands it back through
+    :func:`upsert_schedule` -- and the rolling top-up reaches that path from
+    ``routes/grid`` and ``routes/dashboard`` with no ``except
+    ValidationError`` and no error handler registered for this exception.  So
+    an owner whose stored pair became illegal would meet a 500 on the two
+    screens they use most, with no door offering the repair.  Unreachable
+    today: every stored pair was written through this refusal and the
+    backfill seeds ``none``, which is legal at every cadence.  Both gaps are
+    findings the 2026-09-05 review raised and this step REPORTS rather than
+    claims away; neither is C14-b's to fix.
+
+    ``none`` displaces nothing, so it is legal at every cadence and returns
+    before the floor is computed -- which is also why the walk behind that
+    floor is paid only by an owner who actually chooses a convention.
+
+    Args:
+        rhythm: The :class:`Rhythm` the operation will LEAVE BEHIND, which is
+            not necessarily the stored one -- a request that shortens the
+            cadence and switches the convention off in one submission leaves a
+            legal pair, and judging either half against the stored other half
+            would refuse it.
+
+    Raises:
+        ValidationError: The cadence is below the floor and the convention is
+            not ``none``.  The message names the floor, the offending cadence
+            and the consequence, so a surface can render it verbatim.
+    """
+    if rhythm.shift is BusinessDayShiftEnum.NONE:
+        return
+    floor = shortest_collision_free_cadence()
+    if rhythm.cadence_days < floor:
+        raise ValidationError(
+            f"Days between paydays must be at least {floor} when payroll "
+            f"moves a payday off a weekend or holiday; got "
+            f"{rhythm.cadence_days}.  A shorter cadence would land two "
+            f"paychecks on one day."
+        )
+
+
 def reject_out_of_range_history_opening(history_opens_on: date | None) -> None:
     """Refuse an opening ``ck_pay_schedule_history_opens_range`` would refuse.
 
@@ -394,18 +528,19 @@ def set_history_opening(
     return schedule
 
 
-def upsert_schedule(user_id: int, cadence_days: int) -> PaySchedule:
-    """Create or update the user's persisted cadence, race-safe.
+def upsert_schedule(user_id: int, rhythm: Rhythm) -> PaySchedule:
+    """Create or update the user's persisted RHYTHM, race-safe.
 
-    Called when a schedule's cadence is established (first generation)
+    Called when a schedule's rhythm is established (first generation)
     or changed (regenerate).  Uses a single PostgreSQL
     ``INSERT ... ON CONFLICT (uq_pay_schedule_user) DO UPDATE`` so a
     concurrent first-generation double-submit can never raise an
     ``IntegrityError`` 500: whichever request inserts second cleanly
     updates the existing row instead of colliding on the unique
-    constraint.  Only ``cadence_days`` is in the conflict-update set, so
-    capturing a new cadence never disturbs an existing row's
-    rolling-window configuration (or its ``created_at``).
+    constraint.  The conflict-update set is the RHYTHM alone --
+    ``cadence_days`` and ``shift_id`` -- so capturing a new one never
+    disturbs an existing row's rolling-window configuration, its stated pay
+    history, or its ``created_at``.
 
     **The cadence bound is checked HERE, and that placement is plan step
     X-ad-a's** (finding **N-123**'s neighbourhood, not the finding itself).
@@ -420,9 +555,26 @@ def upsert_schedule(user_id: int, cadence_days: int) -> PaySchedule:
     write door, where a fifth caller inherits it without its author
     remembering.
 
+    **It writes the RHYTHM as a PAIR, since plan step C14-b**, and the pairing
+    is why rather than tidiness.  ``shift_id`` -- what payroll does when a
+    payday lands on a closed day -- is legal only on a cadence longer than the
+    longest run of closed days (:func:`reject_shift_on_short_cadence`), so the
+    two columns carry a joint rule.  Written by two doors in sequence, the row
+    passes through an intermediate state that is not the one the request
+    means, and EITHER order refuses a legal request: writing the cadence first
+    judges a shortened cadence against a convention the same request is
+    turning OFF, and writing the convention first judges it against a cadence
+    the same request is lengthening.  One statement judged against the state
+    the operation LEAVES BEHIND has neither hole -- the same principle
+    ``pay_period_write._PaydayChange`` exists for one module over.
+
     Args:
         user_id: The owning user's id.
-        cadence_days: Days between paydays to persist.
+        rhythm: The :class:`Rhythm` to persist.  A caller CONTINUING a
+            schedule rather than stating one reads the stored convention
+            (:func:`resolve_shift`) and passes it back; there is deliberately
+            no "leave this half alone" argument, because a batch that cannot
+            say what the rhythm is cannot be judged against it.
 
     Returns:
         The created or updated :class:`PaySchedule` row.
@@ -431,17 +583,25 @@ def upsert_schedule(user_id: int, cadence_days: int) -> PaySchedule:
         ValidationError: *cadence_days* falls outside
             :data:`~app.models.pay_schedule.CADENCE_DAYS_MIN` ..
             :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`, the bound
-            ``ck_pay_schedule_cadence_range`` enforces in the database.  A
-            400 rather than a 500: every door in front of this one takes the
-            value from a form.
+            ``ck_pay_schedule_cadence_range`` enforces in the database, or the
+            pair is one no calendar can derive
+            (:func:`reject_shift_on_short_cadence`).  A 400 rather than a 500:
+            every door in front of this one takes the values from a form.
     """
-    reject_out_of_range_cadence(cadence_days)
+    reject_out_of_range_cadence(rhythm.cadence_days)
+    reject_shift_on_short_cadence(rhythm)
+    # The one place a rhythm's convention becomes an id, which is the storage
+    # boundary and nowhere else -- ``recurrence._authoring`` resolves the same
+    # vocabulary at the same moment for the same reason.
+    shift_id = ref_cache.business_day_shift_id(rhythm.shift)
     insert_stmt = pg_insert(PaySchedule.__table__).values(
-        user_id=user_id, cadence_days=cadence_days,
+        user_id=user_id,
+        cadence_days=rhythm.cadence_days,
+        shift_id=shift_id,
     )
     upsert_stmt = insert_stmt.on_conflict_do_update(
         constraint="uq_pay_schedule_user",
-        set_={"cadence_days": cadence_days},
+        set_={"cadence_days": rhythm.cadence_days, "shift_id": shift_id},
     )
     db.session.execute(upsert_stmt)
     # Reload through the ORM with populate_existing so any instance the
@@ -608,3 +768,70 @@ def resolve_cadence(user_id: int) -> int | None:
     """
     facts = resolve_schedule(user_id)
     return None if facts is None else facts.cadence_days
+
+
+def resolve_shift(user_id: int) -> BusinessDayShiftEnum:
+    """Resolve the convention to continue the user's schedule under.
+
+    :func:`resolve_cadence`'s sibling for the second half of the rhythm, and
+    it exists for ONE caller: ``pay_period_admin.extend_pay_periods``, the one
+    door that records paydays without asking what the rhythm is.  Every other
+    caller of :func:`upsert_schedule` is a door that STATES a convention
+    (**R-PC56**: the question is asked wherever a cadence is), and hands that
+    answer down.
+
+    **It is a KNOWINGLY ACCEPTED second read of a row the same request already
+    resolved**, and calling it anything softer would be the overclaim an
+    adversarial review of 2026-09-05 struck from this paragraph.  The extend
+    path builds a :class:`~app.services.pay_calendar.PayCalendar` first, which
+    reads ``budget.pay_schedule`` through :func:`resolve_schedule`; this is a
+    second scalar query against the same row, and it is the per-request
+    duplicate-read class ledger rows **P68** and **P69** record.
+
+    The alternative -- widening :class:`ScheduleFacts` and threading the value
+    through ``PayCalendar`` -- is what plan step ``C14-e`` does, because that
+    is the step where the PURE pay-calendar package acquires a reader for it.
+    Doing it here would put a field on the derivation that nothing in it uses,
+    which is the same trade from the other side.  So the cost is one indexed
+    lookup on a form POST until C14-e, when this function and its query are
+    deleted rather than kept.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        The stored convention as its
+        :class:`~app.enums.BusinessDayShiftEnum` member, ready to travel in a
+        :class:`Rhythm`.
+
+    Raises:
+        ValidationError: The user has no ``budget.pay_schedule`` row, or the
+            row names a convention this application does not model.  Refused
+            rather than answered with a fallback, for
+            :func:`reread_schedule`'s reason: the one caller has already built
+            a :class:`~app.services.pay_calendar.PayCalendar` for this owner,
+            which refuses an owner without a schedule, so absence here is a
+            row removed outside the application rather than a state to branch
+            on.  A fallback would have to INVENT a convention, and inventing
+            one is how a payday moves for an owner who was never asked.  The
+            second arm is ``fk_pay_schedule_shift_id`` failing at the same
+            time as the seed, which no application path reaches; it is refused
+            rather than silently read as ``none`` for the same reason.
+    """
+    shift_id = (
+        db.session.query(PaySchedule.shift_id)
+        .filter(PaySchedule.user_id == user_id)
+        .scalar()
+    )
+    if shift_id is None:
+        raise ValidationError(
+            f"user {user_id} has no budget.pay_schedule row, so there is no "
+            f"payday convention to continue their schedule under."
+        )
+    shift = ref_cache.business_day_shift_member(shift_id)
+    if shift is None:
+        raise ValidationError(
+            f"user {user_id}'s pay schedule names business-day shift "
+            f"{shift_id}, which this application does not model."
+        )
+    return shift

@@ -44,6 +44,7 @@ from app.services.pay_calendar import (
 from app.services import pay_schedule_service
 from app.utils.dates import add_months
 from app.utils.money import MONTHS_PER_YEAR, round_money
+from tests._test_helpers import rhythm_of
 
 
 class TestThePaycheckCountIsDerivedFromTheCadence:
@@ -523,7 +524,7 @@ class TestBothDoorsReachOneDerivation:
             user_id = seed_user["user"].id
             assert cadence_for(user_id).periods_per_year == Decimal("26")
 
-            pay_schedule_service.upsert_schedule(user_id, 7)
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(7))
             db.session.flush()
 
             assert cadence_for(user_id).periods_per_year == Decimal("52")

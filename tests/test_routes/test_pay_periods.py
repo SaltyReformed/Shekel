@@ -16,6 +16,8 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import pay_period_write
 from tests._test_helpers import (
+    shift_form_value,
+    rhythm_of,
     add_txn,
     freeze_today,
     last_covered_day,
@@ -54,6 +56,7 @@ class TestPayPeriodGenerate:
                 "start_date": "2026-03-01",
                 "num_periods": "10",
                 "cadence_days": "14",
+                "shift": shift_form_value(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -81,6 +84,7 @@ class TestPayPeriodGenerate:
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-03-01",
                 "cadence_days": "0",
+                "shift": shift_form_value(),
             })
 
             assert resp.status_code == 422
@@ -94,6 +98,7 @@ class TestPayPeriodGenerate:
                 "start_date": "2026-04-01",
                 "num_periods": "1",
                 "cadence_days": "14",
+                "shift": shift_form_value(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -111,6 +116,7 @@ class TestPayPeriodGenerate:
                 "start_date": "2026-05-01",
                 "num_periods": "5",
                 "cadence_days": "14",
+                "shift": shift_form_value(),
             }
 
             # First submit.
@@ -147,6 +153,7 @@ class TestPayPeriodGenerate:
             bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-06-01", "num_periods": "5",
                 "cadence_days": "14",
+                "shift": shift_form_value(),
             }, follow_redirects=True)
             assert db.session.query(PayPeriod).filter_by(
                 user_id=user_id,
@@ -159,6 +166,7 @@ class TestPayPeriodGenerate:
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-06-08", "num_periods": "5",
                 "cadence_days": "14",
+                "shift": shift_form_value(),
             })
             assert resp.status_code == 422
             # The message names the FLOOR and the payday it is measured
@@ -185,6 +193,7 @@ class TestPayPeriodNegativePaths:
                 "start_date": "not-a-date",
                 "num_periods": "10",
                 "cadence_days": "14",
+                "shift": shift_form_value(),
             })
             assert resp.status_code == 422
             assert b"Start Date" in resp.data
@@ -201,6 +210,7 @@ class TestPayPeriodNegativePaths:
                 "start_date": "2026-01-02",
                 "num_periods": "-5",
                 "cadence_days": "14",
+                "shift": shift_form_value(),
             })
             assert resp.status_code == 422
 
@@ -216,6 +226,7 @@ class TestPayPeriodNegativePaths:
                 "start_date": "2026-01-02",
                 "num_periods": "0",
                 "cadence_days": "14",
+                "shift": shift_form_value(),
             })
             assert resp.status_code == 422
 
@@ -231,6 +242,7 @@ class TestPayPeriodNegativePaths:
                 "start_date": "2026-01-02",
                 "num_periods": "999999",
                 "cadence_days": "14",
+                "shift": shift_form_value(),
             })
             # PayPeriodGenerateSchema has Range(min=1, max=260) on num_periods.
             assert resp.status_code == 422
@@ -247,6 +259,7 @@ class TestPayPeriodNegativePaths:
                 "start_date": "2026-01-02",
                 "num_periods": "10",
                 "cadence_days": "-1",
+                "shift": shift_form_value(),
             })
             assert resp.status_code == 422
 
@@ -275,6 +288,7 @@ class TestPayPeriodNegativePaths:
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-03-01",
                 "cadence_days": "0",
+                "shift": shift_form_value(),
             })
             assert resp.status_code == 422
             assert b"Cadence Days" in resp.data
@@ -332,7 +346,7 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
             row_id = row.id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 1),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
             before = db.session.query(PayPeriod).filter_by(
@@ -388,7 +402,7 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
             user_id = seed_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 1),
-                num_periods=1, cadence_days=180,
+                num_periods=1, rhythm=rhythm_of(180),
             )
             db.session.commit()
             before_horizon = max(end for _start, end in _spans(db.session, user_id))
@@ -400,6 +414,7 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
             resp = auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-12-28", "num_periods": "1",
                 "cadence_days": "1",
+                "shift": shift_form_value(),
             })
 
             assert resp.status_code == 302

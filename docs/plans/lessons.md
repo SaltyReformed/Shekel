@@ -171,5 +171,7 @@ rationale, where a reader meets it at the moment it fires.
 - **A TABLE THAT NAMES ITS OWN `HEAD` IS FALSE THE MOMENT IT LANDS**, because the commit that writes
   it moves `HEAD` past the hash it just wrote. Record the last CODE commit and the remote, which are
   stable, and tell the reader to re-measure the rest.
+- **A WITHDRAWN HAZARD IS THE SENTENCE NOBODY RE-CHECKS**: it closes the question a stated one keeps
+  open. The withdrawer owns the correction -- say what a SHA touches, not what you do not.
 - **Documents rot in days here.** This file is the only one allowed to rot, and every edit re-dates
   it.

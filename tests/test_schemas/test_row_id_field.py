@@ -21,6 +21,7 @@ from decimal import Decimal
 import pytest
 from marshmallow import ValidationError, fields
 
+from app.enums import BusinessDayShiftEnum
 from app.schemas.validation import _helpers, _recurrence
 from app.schemas.validation._helpers import RowId
 from app.schemas.validation.transactions import TransactionCreateSchema
@@ -242,6 +243,33 @@ _LAX_INTEGER_SPELLINGS = frozenset({"Integer", "Int"})
 #: proves what it builds.  Add a name here when you add a builder; the
 #: stale-entry arm below then holds it to being real.
 _LAX_INTEGER_FACTORIES = frozenset({"cadence_days_field", "num_periods_field"})
+
+#: Field builders in the package that return a STRICT row-id field -- the
+#: fourth category, added at plan step ``pay_calendar:C14-b`` because that step
+#: built the first one.
+#:
+#: **It is a category the gate did not have, and inventing it was the honest
+#: repair rather than filing the new builder under an existing set.**
+#: ``shift_field`` builds a ``BusinessDayShiftField``, which derives from
+#: ``_RefEnumField`` and so from :class:`RowId`: registering it as a LAX
+#: factory would state the opposite of what it does, and registering it as a
+#: NON-INTEGER one would be false twice over -- a ``RowId`` IS an integer
+#: field, and :meth:`TestNoIdFieldWasMissed
+#: ::test_every_non_integer_factory_really_builds_a_non_integer` would refuse
+#: the claim.  Either would have been the "cheapest way past the gate" every
+#: other registry's docstring here names.
+#:
+#: The class itself is deliberately NOT in :data:`_STRICT_ROW_ID_SPELLINGS`:
+#: no schema body declares ``BusinessDayShiftField(...)`` directly -- all four
+#: doors go through this factory, because ruling **R-PC56** pairs the question
+#: with the cadence beside it and that is a factory too.  Listing the class
+#: would pre-authorise a token nothing writes, which is what that set's own
+#: docstring refuses for ``_RefEnumField``.
+#:
+#: Held to being real by
+#: :meth:`TestNoIdFieldWasMissed
+#: ::test_every_strict_factory_really_builds_a_row_id`.
+_STRICT_ROW_ID_FACTORIES = frozenset({"shift_field"})
 
 #: What the AST scan treats as "declared lax": the two marshmallow spellings
 #: plus every registered factory.
@@ -567,6 +595,7 @@ class TestNoIdFieldWasMissed:
         known = (
             _LAX_DECLARATIONS
             | _STRICT_ROW_ID_SPELLINGS
+            | _STRICT_ROW_ID_FACTORIES
             | _NON_INTEGER_FIELD_SPELLINGS
             | _NON_INTEGER_FIELD_FACTORIES
         )
@@ -579,7 +608,9 @@ class TestNoIdFieldWasMissed:
             "these schema attributes are built by a call this gate cannot "
             "classify, so they are outside the row-id sweep.  Register the "
             "callee: _LAX_INTEGER_FACTORIES if it builds a lax Integer, "
-            "_STRICT_ROW_ID_SPELLINGS if it builds a RowId, "
+            "_STRICT_ROW_ID_SPELLINGS if it IS a RowId subclass a schema "
+            "declares directly, _STRICT_ROW_ID_FACTORIES if it is a builder "
+            "that returns one, "
             f"_NON_INTEGER_FIELD_FACTORIES if it builds neither: {unknown}"
         )
 
@@ -797,6 +828,40 @@ class TestNoIdFieldWasMissed:
                 "integer field -- it belongs in _LAX_INTEGER_FACTORIES or "
                 "_STRICT_ROW_ID_SPELLINGS, not here"
             )
+
+    def test_every_strict_factory_really_builds_a_row_id(self):
+        """The strict FACTORY registry cannot be padded either.
+
+        :data:`_STRICT_ROW_ID_FACTORIES` widens what the scan accepts exactly
+        as its three siblings do, so it gets the same treatment: each name is
+        resolved and the field it builds is asserted to be a real
+        :class:`RowId` -- strict by inheritance rather than by listing.  A
+        builder that started returning a plain ``Integer`` would belong on the
+        lax side, and registering it here would otherwise be the cheapest way
+        past the sweep.
+
+        It is built with the two declarations its four doors actually use --
+        required, and defaulted -- because a factory could in principle branch
+        on its keywords and return a lax field for one of them.
+        """
+        from app.schemas.validation import (  # pylint: disable=import-outside-toplevel
+            pay_periods,
+        )
+
+        for factory_name in _STRICT_ROW_ID_FACTORIES:
+            factory = getattr(pay_periods, factory_name, None)
+            assert factory is not None, (
+                f"{factory_name} is registered as a strict row-id factory but "
+                "does not exist in app.schemas.validation.pay_periods"
+            )
+            for built in (
+                factory(required=True),
+                factory(load_default=BusinessDayShiftEnum.NONE),
+            ):
+                assert isinstance(built, RowId), (
+                    f"{factory_name} is registered as a strict row-id factory "
+                    f"but built {type(built).__name__}, which is not a RowId"
+                )
 
     def test_every_strict_spelling_really_derives_from_row_id(self):
         """The strict allowlist cannot be padded with a lax field class.

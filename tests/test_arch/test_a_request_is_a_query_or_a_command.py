@@ -58,6 +58,7 @@ from app import db_transaction
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.user import UserSettings
+from tests._test_helpers import shift_id_of
 
 #: The statement that tells the audit triggers who is acting.  Matched as a
 #: FRAGMENT of the SQL rather than by patching
@@ -384,6 +385,7 @@ class TestWriteTransaction:
         if schedule is None:
             schedule = PaySchedule(
                 user_id=seed_user["user"].id, cadence_days=14,
+                shift_id=shift_id_of(),
             )
             db.session.add(schedule)
         schedule.rolling_enabled = True
@@ -435,7 +437,10 @@ class TestWriteTransaction:
             user_id=seed_user["user"].id,
         ).one_or_none()
         if schedule is None:
-            schedule = PaySchedule(user_id=seed_user["user"].id, cadence_days=14)
+            schedule = PaySchedule(
+                user_id=seed_user["user"].id, cadence_days=14,
+                shift_id=shift_id_of(),
+            )
             db.session.add(schedule)
         schedule.rolling_enabled = True
         schedule.rolling_target_periods = len(seed_periods) + 4
@@ -487,7 +492,10 @@ class TestWriteTransaction:
             user_id=seed_user["user"].id,
         ).one_or_none()
         if schedule is None:
-            schedule = PaySchedule(user_id=seed_user["user"].id, cadence_days=14)
+            schedule = PaySchedule(
+                user_id=seed_user["user"].id, cadence_days=14,
+                shift_id=shift_id_of(),
+            )
             db.session.add(schedule)
         schedule.rolling_enabled = True
         schedule.rolling_target_periods = target

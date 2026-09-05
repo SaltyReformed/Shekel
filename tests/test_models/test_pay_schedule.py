@@ -37,7 +37,12 @@ from app.models.pay_schedule import (
 )
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.services import pay_calendar, pay_period_write
-from tests._test_helpers import restore_pay_period_derived_columns
+from tests._test_helpers import (
+    restore_pay_period_derived_columns,
+    rhythm_of,
+    shift_id_of,
+    relax_pay_schedule_shift_not_null,
+)
 
 
 _MIGRATIONS_DIR = (
@@ -291,14 +296,14 @@ class TestConstraintBehaviour:
         """uq_pay_schedule_user forbids two schedule rows for one user."""
         user_id = bare_user["user"].id
         with app.app_context():
-            db.session.add(PaySchedule(user_id=user_id, cadence_days=14))
+            db.session.add(PaySchedule(user_id=user_id, cadence_days=14, shift_id=shift_id_of()))
             db.session.flush()
             try:
                 with pytest.raises(
                     IntegrityError, match="uq_pay_schedule_user",
                 ):
                     db.session.add(
-                        PaySchedule(user_id=user_id, cadence_days=7)
+                        PaySchedule(user_id=user_id, cadence_days=7, shift_id=shift_id_of())
                     )
                     db.session.flush()
             finally:
@@ -313,7 +318,7 @@ class TestConstraintBehaviour:
                     IntegrityError, match="ck_pay_schedule_cadence_range",
                 ):
                     db.session.add(
-                        PaySchedule(user_id=user_id, cadence_days=0)
+                        PaySchedule(user_id=user_id, cadence_days=0, shift_id=shift_id_of())
                     )
                     db.session.flush()
             finally:
@@ -328,7 +333,7 @@ class TestConstraintBehaviour:
                     IntegrityError, match="ck_pay_schedule_cadence_range",
                 ):
                     db.session.add(
-                        PaySchedule(user_id=user_id, cadence_days=366)
+                        PaySchedule(user_id=user_id, cadence_days=366, shift_id=shift_id_of())
                     )
                     db.session.flush()
             finally:
@@ -344,6 +349,7 @@ class TestConstraintBehaviour:
                 ):
                     db.session.add(PaySchedule(
                         user_id=user_id, cadence_days=14,
+                        shift_id=shift_id_of(),
                         rolling_target_periods=0,
                     ))
                     db.session.flush()
@@ -367,7 +373,7 @@ class TestTheHistoryOpeningColumn:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            db.session.add(PaySchedule(user_id=user_id, cadence_days=14))
+            db.session.add(PaySchedule(user_id=user_id, cadence_days=14, shift_id=shift_id_of()))
             db.session.flush()
 
             assert db.session.query(PaySchedule).filter_by(
@@ -383,6 +389,7 @@ class TestTheHistoryOpeningColumn:
         with app.app_context():
             db.session.add(PaySchedule(
                 user_id=user_id, cadence_days=14,
+                shift_id=shift_id_of(),
                 history_opens_on=date(2026, 1, 5),
             ))
             db.session.flush()
@@ -407,6 +414,7 @@ class TestTheHistoryOpeningColumn:
                 ):
                     db.session.add(PaySchedule(
                         user_id=user_id, cadence_days=14,
+                        shift_id=shift_id_of(),
                         history_opens_on=day,
                     ))
                     db.session.flush()
@@ -425,8 +433,22 @@ class TestBackfill:
     the columns are there;
     :func:`~tests._test_helpers.restore_pay_period_derived_columns` puts them
     back through C4-c's own ``downgrade()`` -- values included -- rather than
-    through hand-written DDL that could drift from it.  What it does not do is
-    place the database at this revision, which is 87 steps back; the statement
+    through hand-written DDL that could drift from it.
+
+    **Every case also undoes plan step ``pay_calendar:C14-b``**, which is the
+    same problem met from the other side:  that step ADDED a ``NOT NULL``
+    ``shift_id``, and this backfill's ``INSERT`` names two columns and predates
+    it by 95 revisions, so at head PostgreSQL refuses the row outright.
+    :func:`~tests._test_helpers.relax_pay_schedule_shift_not_null` drops that
+    one constraint for the length of the case.  Between the two helpers, the
+    "head is a superset" assumption below is made true rather than assumed:  it
+    holds for READS and not for an insert into a table that has since gained a
+    required column.  What it does not do is
+    place the database at this revision, which is 95 steps back (the figure
+    read 87 until 2026-09-05: it was written when it was true and copied
+    forward by every later edit, which is how an undated count decays where
+    nothing depends on it -- re-derived by walking ``down_revision`` from the
+    head this change adds); the statement
     under test reads these two columns and ``budget.pay_schedule``, and head is
     a superset for both.  Ledger row **P79** owns the general shape.
     """
@@ -448,10 +470,11 @@ class TestBackfill:
                 user_id=user_id,
                 first_payday=date(2026, 4, 1),
                 num_periods=5,
-                cadence_days=10,
+                rhythm=rhythm_of(10),
             )
             db.session.flush()
             restore_pay_period_derived_columns(db.session)
+            relax_pay_schedule_shift_not_null(db.session)
 
             db.session.execute(text(_BACKFILL_SQL))
             db.session.flush()
@@ -477,6 +500,7 @@ class TestBackfill:
         has_periods = seed_user["user"].id
         with app.app_context():
             restore_pay_period_derived_columns(db.session)
+            relax_pay_schedule_shift_not_null(db.session)
             db.session.execute(text(_BACKFILL_SQL))
             db.session.flush()
 
@@ -503,10 +527,11 @@ class TestBackfill:
                 user_id=user_id,
                 first_payday=date(2026, 5, 1),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
             restore_pay_period_derived_columns(db.session)
+            relax_pay_schedule_shift_not_null(db.session)
 
             db.session.execute(text(_BACKFILL_SQL))
             db.session.execute(text(_BACKFILL_SQL))

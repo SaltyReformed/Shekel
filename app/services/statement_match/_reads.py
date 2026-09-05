@@ -190,10 +190,19 @@ class CardSubject:
 class ReviewSet:  # pylint: disable=too-many-instance-attributes
     """Everything the review screen needs, in one value.
 
-    Pylint: too-many-instance-attributes (9/7) -- **nine because the screen
-    renders nine distinct things**, not because the value wants splitting.
-    Eight are cards the owner reads and acts in; the ninth is
-    :attr:`declined_lines`, which annotates two of them.  It was TEN until
+    Pylint: too-many-instance-attributes (11/7) -- **eleven because the
+    screen renders eleven distinct things**, not because the value wants
+    splitting.  Nine are cards the owner reads and acts in;
+    :attr:`declined_lines` annotates two of them; and
+    :attr:`account_payments` is neither -- it is a pass-level MERCHANT set,
+    carried here because the question it answers is asked of every CARD and
+    cannot be answered from any of the lists (its own entry below argues the
+    placement).  *This said NINE over eight cards, and was already wrong by
+    one at plan step ``bank_import:X-gj-4c``, which added ``answered_never``
+    without re-counting; ``X-gj-4b`` added the eleventh.*  Re-counted off the
+    field block rather than incremented, which is the discipline
+    :class:`~._leftovers.Leftovers` states for its own count and this file did
+    not keep.  Named by adversarial review 2026-09-04.  It was TEN until
     plan step ``bank_import:X-gf-2`` took the accepted matches off this screen
     (ruling **bank_import:R-GX**): they are not a decision anyone is making,
     and folding them cost this pass a valuation of all 221 acts on the
@@ -330,6 +339,44 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             this control silently.  An ANSWERED merchant is on the register
             instead (ruling **bank_import:R-GX**).
         bounds: What this pass did NOT look at (:class:`ReviewBounds`).
+        account_payments: The merchant row ids this account's sources file as a
+            payment to an account the owner holds, carried up from
+            :attr:`~._leftovers.Leftovers.account_payments` verbatim (plan step
+            ``bank_import:X-gj-4b``).  **It is the only fact here that is about
+            every card rather than about one of the lists**, and that is why it
+            is a set on the pass instead of a field on a line value: ruling
+            **bank_import:R-JI** shuts SKIP for these merchants, and the lines
+            it has to shut it for include the ones a tier PROPOSED a match for,
+            which are in :attr:`proposals` and in none of the barred lists.
+            :func:`~._cards._offers` is the one reader, and this is the one
+            statement of the argument it points at.
+            **The obvious narrower spelling is wrong**:
+            :attr:`~._bars.BarredLine.also_pays_an_account` answers this for
+            the two BARRED lists only, and a line a tier has proposed a match
+            for never meets :meth:`~._bars.CreationBars.bar_for` at all.
+            **That the gap is REACHABLE is established by construction rather
+            than by a census**
+            (``test_panel.TestTheSKIPVerbIsLitAndShutWhereTheDoorWouldRefuse
+            .test_a_PROPOSED_card_payment_line_is_shut_TOO``, which asserts
+            its own premise): an earlier draft of this paragraph cited
+            :mod:`._bars`' seven Van Loan lines as the populated case and that
+            was the WRONG SET -- that module records four of them as already
+            MATCHED and three as falling before the pay calendar opens, and
+            neither is a line in ``proposals``.  A matched line is out of the
+            pass altogether.  Named by adversarial review 2026-09-04.
+            Shutting the verb anywhere
+            but on this set renders a control the door refuses, which is ruling
+            **R-GJ**'s `$7,412.94` shape one verb over.
+            **A line naming NO merchant is never shut**, and that is
+            :meth:`~._bars.CreationBars.bar_for`'s own totality rather than a
+            guard restated by a reader:
+            :func:`~._vocabulary.account_payment_merchants` filters
+            ``merchant_id.isnot(None)``, so ``None`` is absent from this set
+            and falls through to the same answer a branch for it would give.
+            The DOOR asks the same question the same way.
+            **No default**, for :attr:`~._bars.BarredLine.also_pays_an_account`'s
+            own reason: an empty set means *nothing is barred*, which is the
+            value that reads as safe and would open a verb the door refuses.
         declined_lines: WHAT THIS PASS CONSIDERED and would not conclude
             about, by line id, in the words of the tier that declined
             (:attr:`~._propose.ProposedMatches.declined_lines`).  It carried
@@ -358,6 +405,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     recordable_inflows: "tuple[RecordableInflow, ...]"
     merchants: MerchantSection
     bounds: ReviewBounds
+    account_payments: "frozenset[int]"
     declined_lines: "dict[int, str]" = field(default_factory=dict)
 
     def card_subject(self, line_id: int) -> "CardSubject | None":
@@ -852,6 +900,12 @@ def review_set(scope: ReviewScope) -> ReviewSet:
     return ReviewSet(
         proposals=proposals,
         unmatched=tuple(unmatched),
+        # **The bars' own set, carried rather than re-read** (plan step
+        # ``bank_import:X-gj-4b``): ``leftovers`` has already asked
+        # ``account_payment_merchants`` at this pass's instant, and asking
+        # again here would be the redundant producer call inside one request
+        # this package refuses.
+        account_payments=parts.account_payments,
         unmatched_rows=never_shown,
         # **What the owner's own rules came to for this pass** (finding
         # **N-359**), attached to the LINES rather than derived inside ruling

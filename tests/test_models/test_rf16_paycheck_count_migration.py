@@ -51,7 +51,7 @@ from sqlalchemy import text
 
 from app.extensions import db as _db
 from app.models.pay_schedule import PaySchedule
-from tests._test_helpers import restore_pay_period_derived_columns
+from tests._test_helpers import restore_pay_period_derived_columns, shift_id_of
 from app.models.salary_profile import SalaryProfile
 
 _MIGRATIONS_DIR = (
@@ -197,7 +197,10 @@ def _set_cadence(db, user_id, cadence_days):
         db.session.query(PaySchedule).filter_by(user_id=user_id).first()
     )
     if schedule is None:
-        schedule = PaySchedule(user_id=user_id, cadence_days=cadence_days)
+        schedule = PaySchedule(
+            user_id=user_id, cadence_days=cadence_days,
+            shift_id=shift_id_of(),
+        )
         db.session.add(schedule)
     else:
         schedule.cadence_days = cadence_days

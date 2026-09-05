@@ -1277,25 +1277,61 @@ class TestAVerbWithNoDoorRendersNoControl:
         for word in ("MATCH", "ADD", "TRANSFER", "SKIP"):
             assert word in page
 
-    def test_the_shut_verbs_say_what_they_wait_for(
+    def test_the_shut_verb_says_what_it_waits_for(
         self, auth_client, db, seed_user,
     ):
         """A disabled tab carrying its reason is a disclosure.
 
         **And it must TEACH THE WORD, not only report the wait** (**R-HW**:
-        the panel is where the vocabulary is taught). SKIP said only that
-        skipping is not recorded yet, which tells a first-time reader nothing
-        about what SKIP would MEAN -- so both halves are asserted.
+        the panel is where the vocabulary is taught).
+
+        *This graded SKIP as a second shut verb until plan step
+        ``bank_import:X-gj-4b``*, which lit it: the sentence it asserted --
+        *explains nothing you budget for*, plus *not recorded yet* -- was
+        deleted with the constant that held it, because a lit verb saying it
+        is not recorded yet would be false. TRANSFER is the one verb left with
+        no door, and what the OPEN SKIP tab teaches is asserted below.
         """
         _a_swipe_a_rule_files(seed_user, db)
         page = _page(auth_client, seed_user)
 
         assert "pair a bank line with another of your own accounts" in page
-        assert "explains nothing you budget for" in page, (
+        # **EXACTLY ONE shut tab on this card, and it is TRANSFER.**  A
+        # `"not recorded yet" not in page` assertion stood here and could not
+        # fail: that string died with `SKIP_WAITS` and exists nowhere in
+        # `app/`, so it graded nothing this step could regress (adversarial
+        # review 2026-09-04).  Counting the shut class is falsifiable in the
+        # direction that matters -- shut SKIP again and this reads 2.
+        #
+        # **It also pins EXACTLY ONE CARD, and that is load-bearing rather than
+        # incidental**: `rec-verb-shut` is emitted once per shut verb, and
+        # TRANSFER is shut on every card (`offers_for` passes TRANSFER_WAITS as
+        # a literal), so a second card would make this 2 on its own.  The
+        # assertion naming "pair a bank line with another of your own
+        # accounts" above proves the one shut verb is TRANSFER, since
+        # `waiting_for` renders only on the shut arm.
+        assert page.count("rec-verb-shut") == 1, (
+            "exactly one verb should render shut on this card (TRANSFER); "
+            "SKIP has had a door since X-gj-4b"
+        )
+
+    def test_the_OPEN_skip_tab_teaches_the_word(
+        self, auth_client, db, seed_user,
+    ):
+        """**R-HW**'s other half: an open verb still teaches its vocabulary.
+
+        A shut tab taught SKIP by explaining what it waits for; a lit one has
+        to teach the same word by saying what the act does -- and what it does
+        NOT do, which is the half this act is misread without.
+        """
+        _a_swipe_a_rule_files(seed_user, db)
+        page = _page(auth_client, seed_user)
+
+        assert "explained by nothing" in page, (
             "the SKIP tab does not say what skipping MEANS"
         )
-        assert "not recorded yet" in page, (
-            "the SKIP tab does not say why it cannot be pressed"
+        assert "closes no difference between your books and your bank" in page, (
+            "the SKIP tab does not say what skipping does NOT do"
         )
 
     def test_a_parked_card_offers_no_ONE_CLICK_OK(
@@ -3033,3 +3069,92 @@ class TestTheSkippedBoundIsWiredToThePage:
         assert page.count('name="skip_id"') == 2
         assert "skip(s)</a>" not in page
         assert "Every skip on this tab is listed." not in page
+
+
+class TestTheSKIPVerbIsPressableFromTheRenderedPage:
+    """Plan step ``bank_import:X-gj-4b``, rulings **R-HW** and **R-JG**.
+
+    The loop the service tests cannot close: a card's SKIP radio, the schema's
+    ``skips`` list and ``skip_line``'s door have no compile-time relationship,
+    so this scrapes the page and posts exactly what a browser would.
+
+    **The verb radio is the act**, which is what makes the scrape meaningful
+    here: the four tabs are one radio group per card, so leaving a card on
+    SKIP and ticking OK is the whole submission -- there is no destination and
+    no row list to pick, because a skip takes no argument.
+    """
+
+    def test_the_page_RENDERS_a_selectable_skip_radio(
+        self, auth_client, db, seed_user,
+    ):
+        """FIRING CONTROL for the two cases below.
+
+        Both post ``verb-<line>=skip`` through :func:`_choosing`, which is what
+        clicking the SKIP tab does; if the template stopped rendering that
+        radio they would be hand-picked payloads no browser could produce --
+        the defect ``_post`` exists to refuse, and the one that left a primary
+        control dead on 31 of 248 cards.
+
+        **It asserts on the DOCUMENT and not on the scrape**, and the
+        distinction is the whole reason this control is written down: a
+        browser submits only the CHECKED member of a radio group, so ``skip``
+        is legitimately absent from a scrape of a card that opens on ADD.  A
+        first draft asserted the pair was in the scraped fields and failed
+        against a page that renders the tab perfectly well.
+        """
+        _, line = _a_swipe_a_rule_files(seed_user, db)
+
+        page = _page(auth_client, seed_user)
+
+        assert f'id="verb-{line.id}-skip"' in page, (
+            "the card renders no SKIP tab, so nothing below posts what a "
+            "browser would"
+        )
+        assert (f"verb-{line.id}", "add") in reconcile_form_fields(page), (
+            "the card does not open on ADD, so switching to SKIP is not what "
+            "the two cases below are simulating"
+        )
+
+    def test_OK_ING_a_card_on_SKIP_records_the_decision(
+        self, auth_client, db, seed_user,
+    ):
+        """The press, end to end, and it writes exactly one table."""
+        _, line = _a_swipe_a_rule_files(seed_user, db)
+        transactions_before = db.session.query(Transaction).count()
+        page = _page(auth_client, seed_user)
+        fields = _choosing(
+            reconcile_form_fields(page), f"verb-{line.id}", "skip",
+        )
+
+        response = _post(
+            auth_client, seed_user, fields + [("ok", str(line.id))], page,
+        )
+
+        assert response.status_code == 200
+        skip = db.session.query(StatementLineSkip).one()
+        assert skip.bank_statement_line_id == line.id
+        # **It moved no money**, which is the whole of what makes this act
+        # safe: no purchase, no match, no row of any kind.
+        assert db.session.query(StatementMatch).count() == 0
+        assert db.session.query(Transaction).count() == transactions_before
+
+    def test_the_line_LEAVES_the_inbox_and_arrives_on_the_Skipped_tab(
+        self, auth_client, db, seed_user,
+    ):
+        """The consequence the owner sees, asserted on both surfaces.
+
+        A skip nothing reads is a line that comes back on the next visit,
+        which is what the store was built to stop.
+        """
+        _, line = _a_swipe_a_rule_files(seed_user, db)
+        page = _page(auth_client, seed_user)
+        fields = _choosing(
+            reconcile_form_fields(page), f"verb-{line.id}", "skip",
+        )
+        _post(auth_client, seed_user, fields + [("ok", str(line.id))], page)
+
+        inbox = _page(auth_client, seed_user)
+        assert f"verb-{line.id}" not in inbox, (
+            "the skipped line is still being asked about on the inbox"
+        )
+        assert _skipped_tab_count(inbox) == 1

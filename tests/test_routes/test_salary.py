@@ -37,6 +37,7 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    rhythm_of,
     all_periods,
     create_loan_account,
     freeze_today,
@@ -229,7 +230,7 @@ def _respace_paydays(db, user_id, cadence_days):
         user_id=user_id,
         first_payday=date(2026, 1, 2),
         num_periods=10,
-        cadence_days=cadence_days,
+        rhythm=rhythm_of(cadence_days),
         retiring_ids={
             pid for (pid,) in db.session.query(PayPeriod.id)
             .filter_by(user_id=user_id)

@@ -172,7 +172,7 @@ docker compose -f docker-compose.dev.yml up -d && docker logs -f shekel-dev-app
 flask run
 
 # Tests -- the full suite takes MINUTES; see the Tests section and docs/testing-standards.md
-./scripts/test.sh                             # full suite (restarts test-db first)
+./scripts/test.sh                             # full suite (no restart; see RESTART_TEST_DB below)
 ./scripts/test.sh tests/path/test_file.py::test_name -v  # single test (fast feedback)
 python scripts/build_test_template.py         # first-time setup; rebuild after migrations
 
@@ -266,8 +266,9 @@ suite-slot protocol for concurrent worktrees is `.claude/rules/testing.md`. **Th
 to `-m "not docker"`, which DESELECTS the container-spawning `tests/test_deploy` tests** -- they
 vanish from the report rather than appearing as skips, so a green local run is not a claim about
 them; CI runs bare `pytest` and executes them all. Single test:
-`./scripts/test.sh tests/path/test_file.py::test_name -v`; `SKIP_DB_RESTART=1` skips the restart on
-chained runs. Rebuild the template after migrations: `python scripts/build_test_template.py`.
+`./scripts/test.sh tests/path/test_file.py::test_name -v`. The wrapper does NOT restart the shared
+test-db container unless you ask: `RESTART_TEST_DB=1 ./scripts/test.sh` before a gating full-suite
+run. Rebuild the template after migrations: `python scripts/build_test_template.py`.
 
 ## Deployment
 

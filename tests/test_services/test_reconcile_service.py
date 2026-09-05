@@ -48,6 +48,7 @@ from app.utils.log_events import (
     EVT_TRANSFERS_RECONCILED,
 )
 from tests._test_helpers import (
+    rhythm_of,
     an_entered_day,
     count_amount_bases,
     last_covered_day,
@@ -465,7 +466,7 @@ class TestTheOutstandingSet:
         with app.app_context():
             other_period = pay_period_write.record_paydays(
                 user_id=seed_second_user["user"].id,
-                first_payday=date(2026, 1, 2), num_periods=1, cadence_days=14,
+                first_payday=date(2026, 1, 2), num_periods=1, rhythm=rhythm_of(14),
             )[0]
             other_txn = Transaction(
                 user_id=other_period.user_id,

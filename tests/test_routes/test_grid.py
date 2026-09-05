@@ -48,6 +48,7 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    rhythm_of,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -2006,7 +2007,7 @@ class TestTransactionNegativePaths:
                 user_id=other_user.id,
                 first_payday=date(2026, 1, 2),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -3451,7 +3452,7 @@ class TestPeriodHeaderDateFormat:
             user_id=seed_user["user"].id,
             first_payday=start_date,
             num_periods=num_periods,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         db.session.flush()
         db.session.commit()

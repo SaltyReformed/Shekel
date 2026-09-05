@@ -32,6 +32,7 @@ from app.services import (
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    rhythm_of,
     account_never_asserted,
     an_entered_day,
     reassert_balance_on,
@@ -599,7 +600,7 @@ class TestCompanionAccess:
                 user_id=seed_second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 

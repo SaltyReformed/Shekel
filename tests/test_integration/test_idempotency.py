@@ -28,6 +28,7 @@ from app.models.salary_raise import SalaryRaise
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from tests._test_helpers import (
+    rhythm_of,
     last_covered_day,
     make_every_period_rule,
 )
@@ -427,7 +428,7 @@ class TestPayPeriodGenerationIdempotency:
                 user_id=user_id,
                 first_payday=dt_date(2026, 6, 1),
                 num_periods=10,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert len(periods1) == 10
@@ -437,7 +438,7 @@ class TestPayPeriodGenerationIdempotency:
                 user_id=user_id,
                 first_payday=dt_date(2026, 6, 1),
                 num_periods=10,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             # All 10 start_dates already exist → 0 new periods.
@@ -484,7 +485,7 @@ class TestPayPeriodGenerationIdempotency:
                 user_id=user_id,
                 first_payday=dt_date(2026, 6, 1),
                 num_periods=10,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert len(periods1) == 10
@@ -501,7 +502,7 @@ class TestPayPeriodGenerationIdempotency:
                 user_id=user_id,
                 first_payday=dt_date(2026, 8, 10),
                 num_periods=10,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert len(periods2) == expected_new

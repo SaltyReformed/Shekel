@@ -340,7 +340,7 @@ def apply_hand_match(account_id):
         split one audit trail in two and make "how many matches were recorded
         on this account" a question needing a union.  The counts come from the
         one statement of them (:func:`~._statement_doors.outcome_counts`),
-        including the three this door cannot produce -- an audit trail whose
+        including the six this door cannot produce -- an audit trail whose
         FIELDS depend on which door wrote the row cannot be queried across the
         two.
 
@@ -370,6 +370,12 @@ def apply_hand_match(account_id):
                 matches=(submitted_match(submitted),),
                 creations=(),
                 incomes=(),
+                # **This surface builds ONE match and nothing else**, which is
+                # what the three empty tuples say: the hand-build form has no
+                # create control, no income control and no skip control, and
+                # a door that defaulted them would let a fourth act class
+                # reach it the day one was added without anyone deciding.
+                skips=(),
             ),
             scope,
         ),

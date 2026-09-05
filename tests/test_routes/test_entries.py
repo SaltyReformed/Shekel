@@ -27,6 +27,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
+    rhythm_of,
     an_asserted_day,
     an_entered_day,
     append_balance_assertion,
@@ -230,7 +231,7 @@ def _create_other_user_txn():
         user_id=other_user.id,
         first_payday=date(2026, 1, 2),
         num_periods=3,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
 

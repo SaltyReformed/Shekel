@@ -40,6 +40,7 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    rhythm_of,
     an_entered_day,
     create_account_of_type,
     last_covered_day,
@@ -364,7 +365,7 @@ class TestTransferGenerationSharesTheOccurrencePairs:
                 user_id=seed_user["user"].id,
                 first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=4,
-                cadence_days=90,
+                rhythm=rhythm_of(90),
             )
             db.session.flush()
             template = TestTransferGeneration()._make_template_with_rule(
@@ -452,7 +453,7 @@ class TestTransferGenerationSharesTheOccurrencePairs:
                 user_id=seed_user["user"].id,
                 first_payday=later_start,
                 num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             gap_start = last_covered + timedelta(days=1)
             gap_end = later_start - timedelta(days=1)
@@ -940,7 +941,7 @@ class TestTransferResolveConflicts:
             periods_b = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
                 first_payday=seed_periods[0].start_date,
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             template_b = self._make_template_with_rule(
                 second_user, EVERY_PERIOD

@@ -43,6 +43,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    rhythm_of,
     assert_pay_period_invariants,
     create_savings_account,
     derived_span,
@@ -61,7 +62,7 @@ def _future_periods(db_session, seed_user, count=4, start=date(2026, 7, 3)):
         user_id=seed_user["user"].id,
         first_payday=start,
         num_periods=count,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db_session.commit()
     return periods
@@ -246,7 +247,7 @@ class TestExtendPayPeriods:
         with app.app_context():
             _future_periods(db.session, seed_user, count=2)
             pay_schedule_service.upsert_schedule(
-                seed_user["user"].id, cadence_days=7,
+                seed_user["user"].id, rhythm=rhythm_of(7),
             )
             db.session.commit()
             new_periods = pay_period_admin.extend_pay_periods(

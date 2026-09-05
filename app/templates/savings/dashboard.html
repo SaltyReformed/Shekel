@@ -264,11 +264,82 @@
                     <i class="bi bi-arrow-counterclockwise"></i>
                   </button>
                 </form>
-                {# Archived accounts have no cell kebab or edit-form reach in the
-                   cockpit, so hard-delete is a direct affordance here (P4).  It
-                   is the same route the active cells' Danger Zone uses: confirm
+                {# THE ARCHIVED CARD'S REACH TO THE EDIT PAGE (plan step
+                   balance:X-f3c-2b-2d, closing finding N-430).  Ruling R-IE
+                   gives the books-opening restatement door two entrances -- the
+                   form on the shared account edit page, and the balance-history
+                   card's link to it on the cash detail page -- and an ARCHIVED
+                   account reached NEITHER by clicking: this card emitted no
+                   href naming its account at all, while /accounts/<id>/edit and
+                   /accounts/<id>/details both answered 200 by URL.  The doors
+                   were open and there was no handle on them, so the account-10
+                   repair runbook had to unarchive the twin and re-archive it to
+                   restate books it could otherwise reach.  This link is the
+                   handle.
+
+                   IT IS THE KEBAB'S OWN Edit ITEM, promoted to a direct
+                   affordance by the SAME rule that put hard-delete beside it
+                   (P4): an archived card has no cell kebab, so the ITEM an
+                   archived account still has a use for sits on the card face.
+                   Not everything the kebab offers -- it also offers Transfer
+                   and Archive, and neither means anything for an account that
+                   is already archived.  Same destination, wording and icon as
+                   savings/_cockpit.html's dropdown item -- one account edit
+                   page, reached the same way from both states of an account.
+
+                   UNGATED, AND CARRYING NO #books-opening FRAGMENT, WHICH ARE
+                   THE SAME DECISION.  The fragment would name an anchor a
+                   loan's edit page does not render, so a link carrying it would
+                   have to ask whether this account has a books-opening card and
+                   be withheld where it does not -- a second answer to a
+                   question the edit page already answers by rendering that card
+                   or not, and one that would deny an archived LOAN the only
+                   page that can rename or re-type it, on a cockpit that badges
+                   a paid-off loan and offers Archive on every live cell's
+                   kebab.  The plain Edit link is a dead end for no kind:
+                   rename, RE-TYPE and hard-delete are on that page for every
+                   account there is.
+
+                   ARCHIVE IS NOT ON THAT PAGE, and the omission is the one
+                   thing this link cannot fix.  accounts/form.html renders name,
+                   type, Update, Cancel and the hard-delete Danger Zone -- no
+                   is_active control -- and accounts.archive_account is
+                   referenced by exactly ONE template in the repository, the
+                   live cell's kebab.  So clicking Edit on an archived account
+                   reaches a page that cannot return it to active, and saving a
+                   rename redirects to a cockpit whose archived drawer is
+                   collapsed by default, leaving the account just renamed off
+                   screen.  routes/accounts/opening.py states the same wrong
+                   enumeration of this page and is reported rather than fixed,
+                   being outside this step (finding N-454).
+
+                   NAMED FOR ITS ACCOUNT, as both sibling controls are: the
+                   drawer renders one card per archived account, so N bare
+                   "Edit" links are N identical entries in a screen reader's
+                   link list with nothing to tell them apart.  The visible word
+                   LEADS the accessible name (WCAG 2.5.3 Label in Name), so a
+                   voice-control user saying "click Edit" still matches. #}
+                <a class="btn btn-sm btn-outline-secondary"
+                   href="{{ url_for('accounts.edit_account', account_id=archived.account.id) }}"
+                   title="Edit {{ archived.account.name }}"
+                   aria-label="Edit {{ archived.account.name }}">
+                  <i class="bi bi-pencil"></i> Edit
+                </a>
+                {# Hard-delete is a direct affordance here for the reason
+                   above -- no kebab, so the card face carries it (P4).  It is
+                   the same route the active cells' Danger Zone uses: confirm
                    modal + fresh-login gated, and an account that still has
-                   transaction history is archived-not-deleted by the guard. #}
+                   transaction history is archived-not-deleted by the guard.
+
+                   IT STAYS, THOUGH THE Edit LINK NOW REACHES THE SAME ROUTE
+                   two clicks away in that page's Danger Zone, and the reason
+                   this is a decision rather than an oversight: the sentence
+                   above used to read "no cell kebab OR EDIT-FORM REACH", and
+                   the second clause is what the Edit link just made false.
+                   What is left of the argument is enough on its own -- the
+                   drawer is where an owner disposes of an account, and routing
+                   that through a page whose subject is renaming it would be
+                   the longer path to the more destructive act. #}
                 <form method="POST" action="{{ url_for('accounts.hard_delete_account', account_id=archived.account.id) }}"
                       class="d-inline"
                       data-confirm="Permanently delete this account and all associated data? This cannot be undone.">

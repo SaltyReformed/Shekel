@@ -46,7 +46,9 @@ class TestNothingIsAnActWithoutItsOwnOK:
             ("category_id-7", "3"),
         ]))
 
-        assert payload == {"matches": [], "creations": [], "incomes": []}
+        assert payload == {
+            "matches": [], "creations": [], "incomes": [], "skips": [],
+        }
         assert silent == ()
 
     def test_an_OK_D_add_card_becomes_a_creation(self):
@@ -105,21 +107,30 @@ class TestAPressIsNeverLeftUnanswered:
             ("ok", "7"), ("verb-7", "add"), ("destination-7", ""),
         ]))
 
-        assert payload == {"matches": [], "creations": [], "incomes": []}
+        assert payload == {
+            "matches": [], "creations": [], "incomes": [], "skips": [],
+        }
         assert silent == ("7",)
 
     def test_an_OK_on_a_verb_with_no_door_is_named(self):
-        """TRANSFER and SKIP have no door in this build (**R-HW**).
+        """TRANSFER has no door in this build (**R-HW**).
 
-        Their tabs render an explanation and no submitting control, so a body
-        naming one is crafted or stale -- and it still gets an answer rather
+        Its tab renders an explanation and no submitting control, so a body
+        naming it is crafted or stale -- and it still gets an answer rather
         than silence.
+
+        *This named SKIP too until plan step ``bank_import:X-gj-4b``*, which
+        lit that verb: a card OK'd on SKIP is an ACT now, so it is graded by
+        ``TestTheSKIPVerbReachesTheSchema`` rather than here.  TRANSFER is the
+        one verb left that this case is about.
         """
         payload, silent = reconcile_payload(_form([
             ("ok", "7"), ("verb-7", "transfer"),
         ]))
 
-        assert payload == {"matches": [], "creations": [], "incomes": []}
+        assert payload == {
+            "matches": [], "creations": [], "incomes": [], "skips": [],
+        }
         assert silent == ("7",)
 
     def test_an_OK_naming_no_verb_at_all_is_named(self):
@@ -157,7 +168,9 @@ class TestTheOrderIsTheBankLinesAndNotTheFieldNames:
         """The same tolerance ``order_token_key`` gives every other reader."""
         payload, silent = reconcile_payload(_form([("ok", "²")]))
 
-        assert payload == {"matches": [], "creations": [], "incomes": []}
+        assert payload == {
+            "matches": [], "creations": [], "incomes": [], "skips": [],
+        }
         assert silent == ("²",)
 
 
@@ -217,3 +230,134 @@ class TestTheMatchReaderIsSharedByThePassAndThePanel:
         assert reconcile_payload(body)[0]["matches"] == [
             reconcile_match_payload(body, "7"),
         ]
+
+
+class TestTheSKIPVerbReachesTheSchema:
+    """Plan step ``bank_import:X-gj-4b``, ruling **bank_import:R-JG**.
+
+    The fourth act class on the wire.  A card left on the SKIP tab and OK'd
+    submits its verb and nothing else, because a skip is filed against no
+    container and no row -- so what these cases grade is that the reader turns
+    that into an ITEM rather than into a silent drop.
+    """
+
+    def test_an_OK_D_card_on_SKIP_becomes_a_skip_item(self):
+        """The tab a card is left on IS the verb it is OK'd with."""
+        payload, silent = reconcile_payload(_form([
+            ("ok", "7"),
+            ("verb-7", "skip"),
+        ]))
+
+        assert payload["skips"] == [{"line_id": "7"}]
+        assert payload["matches"] == []
+        assert payload["creations"] == []
+        assert payload["incomes"] == []
+        assert silent == ()
+
+    def test_an_UNTICKED_card_on_SKIP_submits_nothing(self):
+        """Ruling **R-HS**: OK is the consent, and the verb radio is not.
+
+        Every card renders all four tabs, so a body carrying ``verb-7=skip``
+        without ``ok=7`` is what an owner who opened a card, looked at the
+        SKIP tab and left it alone actually sends.
+        """
+        payload, silent = reconcile_payload(_form([("verb-7", "skip")]))
+
+        assert payload["skips"] == []
+        assert silent == ()
+
+    def test_a_skip_is_NOT_reported_as_a_press_with_no_act(self):
+        """FIRING CONTROL against the arm this verb used to fall through to.
+
+        Before the verb was lit, a card OK'd on SKIP produced no item and was
+        reported through ``ok_with_no_act``, whose sentence reads *without
+        choosing what to do with them* -- false of an owner who chose.
+        """
+        _, silent = reconcile_payload(_form([
+            ("ok", "7"),
+            ("verb-7", "skip"),
+        ]))
+
+        assert silent == (), (
+            "a card OK'd on SKIP was reported as naming no act, which is the "
+            "sentence that is false of an owner who chose the verb"
+        )
+
+    def test_the_batch_schema_LOADS_what_this_reader_produced(self):
+        """The loop neither half closes alone: a Jinja field name, this
+        reader's key and a Marshmallow field name have no compile-time
+        relationship."""
+        payload, _ = reconcile_payload(_form([
+            ("ok", "7"),
+            ("verb-7", "skip"),
+        ]))
+
+        loaded = StatementBatchSchema().load(payload)
+
+        assert loaded["skips"] == [{"line_id": 7}]
+
+    def test_a_forged_line_id_is_REFUSED_by_the_schema(self):
+        """The one thing :class:`StatementSkipSchema` exists for: the door
+        never sees an id ``RowId`` would not take."""
+        payload, _ = reconcile_payload(_form([
+            ("ok", "-3"),
+            ("verb--3", "skip"),
+        ]))
+
+        errors = StatementBatchSchema().validate(payload)
+
+        assert "skips" in errors
+
+
+class TestTheBOUNDCountsSkipsToo:
+    """The ceiling is on the SUM over every act class, stated ONCE.
+
+    Plan step ``bank_import:X-gj-4b``.  Four lists each carrying their own
+    ceiling would admit FOUR TIMES what the bound says, which is the defect
+    ``StatementBatchSchema`` records a per-list ``Length`` having been.  *An
+    earlier draft of this paragraph said "twice again" and contradicted the
+    comment it mirrors.*
+    Built through :func:`reconcile_payload` rather than by hand, so what is
+    graded is what the page can actually submit.
+    """
+
+    def test_a_skip_only_pass_over_the_ceiling_is_refused(self):
+        """FIRING CONTROL: drop ``skips`` from the sum and this passes."""
+        pairs = []
+        for line_id in range(1, 502):
+            pairs += [("ok", str(line_id)), (f"verb-{line_id}", "skip")]
+        payload, _ = reconcile_payload(_form(pairs))
+
+        errors = StatementBatchSchema().validate(payload)
+
+        assert "501 things to apply" in str(errors)
+
+    def test_skips_and_deposits_are_bounded_TOGETHER(self):
+        """The sum, across two act classes that reach different doors."""
+        pairs = []
+        for line_id in range(1, 301):
+            pairs += [("ok", str(line_id)), (f"verb-{line_id}", "skip")]
+        for line_id in range(1000, 1300):
+            pairs += [
+                ("ok", str(line_id)),
+                (f"verb-{line_id}", "add"),
+                (f"destination-{line_id}", "income"),
+            ]
+        payload, _ = reconcile_payload(_form(pairs))
+
+        errors = StatementBatchSchema().validate(payload)
+
+        assert len(payload["skips"]) == 300
+        assert len(payload["incomes"]) == 300
+        assert "600 things to apply" in str(errors)
+
+    def test_a_pass_AT_the_ceiling_still_loads(self):
+        """The bound is a ceiling, not an off-by-one."""
+        pairs = []
+        for line_id in range(1, 501):
+            pairs += [("ok", str(line_id)), (f"verb-{line_id}", "skip")]
+        payload, _ = reconcile_payload(_form(pairs))
+
+        loaded = StatementBatchSchema().load(payload)
+
+        assert len(loaded["skips"]) == 500

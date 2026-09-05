@@ -23,18 +23,25 @@ discipline* :data:`app.utils.dates.CALENDAR_DATE_MIN`'s *own comment follows.*
 
 
 from marshmallow import (
+    ValidationError,
     fields,
     pre_load,
     validate,
+    validates_schema,
 )
 
+from app import ref_cache
 from app.config import BaseConfig
+from app.enums import BusinessDayShiftEnum
+from app.exceptions import ValidationError as AppValidationError
 from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
 from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
+    _RefEnumField,
     _normalize_empty_inputs,
 )
+from app.services import pay_schedule_service
 from app.services.pay_period_write import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
@@ -85,6 +92,130 @@ def cadence_days_field(**kwargs) -> fields.Integer:
         The field, carrying the shared range validator.
     """
     return fields.Integer(validate=_CADENCE_DAYS_RANGE, **kwargs)
+
+
+class BusinessDayShiftField(_RefEnumField):
+    """A submitted ``ref.business_day_shifts`` id, as its enum member.
+
+    What payroll does when a payday lands on a day no money moves on (plan
+    step **pay_calendar:C14-b**, ruling **R-PC56**).  The vocabulary is the
+    one ``budget.recurrence_rules.shift_id`` already keys to, seeded at
+    ``recurrence:R2``, so a bill's cash date and a payday ask one question of
+    one table (**R-PC47**).
+
+    Returning the MEMBER rather than the id is
+    :class:`~app.schemas.validation._helpers._RefEnumField`'s standing reason
+    plus one this axis has of its own:
+    :func:`~app.utils.business_days.shift_to_business_day` REFUSES anything
+    that is not a member rather than defaulting to a direction, and every
+    other reference comparison in this application is an integer id -- so an
+    id travelling under the name ``shift`` is the natural mistake, and it is
+    one that would move a money date.  The conversion happens once here and
+    once in
+    :func:`~app.services.pay_schedule_service.upsert_schedule`, at the two
+    edges of the wire.
+
+    Whether the cadence beside it can CARRY the chosen convention is a
+    property of the pair rather than of this field, so it is refused by
+    :func:`~app.services.pay_schedule_service.reject_shift_on_short_cadence`
+    at the write door -- where the pair is known and where the floor can be
+    re-derived from the holiday calendar, which a schema-level bound could
+    only freeze.
+    """
+
+    _invalid_message = "Invalid payday adjustment."
+
+    def _member_for(self, row_id):
+        """Return the :class:`~app.enums.BusinessDayShiftEnum` member, or ``None``.
+
+        Args:
+            row_id: A validated ``ref.business_day_shifts`` id.
+
+        Returns:
+            The member, or ``None`` when unmodelled.
+        """
+        return ref_cache.business_day_shift_member(row_id)
+
+
+def shift_field(**kwargs) -> BusinessDayShiftField:
+    """Return a payday-adjustment field for a door that asks for a cadence.
+
+    Declared beside :func:`cadence_days_field` because **R-PC56** pairs them:
+    the convention is asked wherever a cadence is, which is all four doors
+    that state a rhythm.  A factory rather than a bare field for the reason
+    that one has -- the per-schema half of the declaration differs by door --
+    and so that a fifth door inherits the type rather than choosing one.
+
+    Args:
+        **kwargs: Forwarded to :class:`BusinessDayShiftField`.  Generate and
+            registration default it to ``none`` exactly as they default the
+            cadence beside it; regenerate and reset require it, exactly as
+            they require the cadence.  The pairing is deliberate: a door where
+            a missing cadence would silently restate the rhythm is a door
+            where a missing convention would too, so the two fields answer a
+            missing input the same way rather than differently.
+
+    Returns:
+        The field.
+    """
+    return BusinessDayShiftField(**kwargs)
+
+
+def validate_derivable_rhythm(data):
+    """Refuse a cadence and convention no pay calendar can derive from.
+
+    The cross-field half of every schedule form's validation, shared by the
+    four doors that state a rhythm so the rule is worded once -- the same
+    placement, and the same reason, as
+    :func:`~app.schemas.validation._recurrence.validate_authorable_cadence`.
+    Whether a convention can be carried is a property of the PAIR and of
+    neither field alone: a two-day cadence is ordinary, ``prior`` is ordinary,
+    and together they displace two paydays onto one day that
+    ``pay_calendar.derive_periods`` refuses outright.
+
+    **The import is top-level, and a first draft deferred it on a rationale
+    that measured false.**  That draft said deferring kept "the service layer"
+    out of this module's import, which the auth schema pulls in at startup.
+    It was already there: line 44 imports ``pay_period_write``, and that module
+    imports ``pay_schedule_service`` itself, so
+    ``app.services.pay_schedule_service`` is in ``sys.modules`` the moment this
+    module finishes importing -- measured, not argued.  A ``pylint`` disable
+    whose stated reason is false is worse than none, because
+    ``shekel-disable-rationale`` then certifies a sentence nobody re-checked.
+
+    **It does not restate the rule, it ASKS it.**  The floor is derived from
+    the federal holiday calendar and the refusal belongs to the column's write
+    door, so this calls that door's own predicate and converts its refusal into
+    a field error.  Two spellings of a bound are two chances to disagree, which
+    is what the cadence range's own history in this module records.
+
+    **The field it names is the point of the function.**  Without it the
+    refusal reaches ``routes/pay_periods.py``'s ``except ValidationError``
+    handler, which renders every message it catches under ``start_date`` -- a
+    cadence-and-convention complaint appearing beneath "First Payday".  That
+    handler's comment predicted this exact failure in advance ("Widen either
+    field and this line starts rendering a cadence message under the date
+    box"); answering here is what keeps its attribution provable.
+
+    Args:
+        data: The deserialized form payload.  A door that omits either key
+            (extend, truncate) has no pair to judge and is skipped.
+
+    Raises:
+        ValidationError: Marshmallow's, attributed to ``shift`` -- the control
+            the owner would have to change, since the cadence is usually the
+            fact and the convention usually the choice.
+    """
+    cadence_days = data.get("cadence_days")
+    shift = data.get("shift")
+    if cadence_days is None or shift is None:
+        return
+    try:
+        pay_schedule_service.reject_shift_on_short_cadence(
+            pay_schedule_service.Rhythm(cadence_days=cadence_days, shift=shift),
+        )
+    except AppValidationError as exc:
+        raise ValidationError(str(exc), "shift") from exc
 
 
 def num_periods_field(**kwargs) -> fields.Integer:
@@ -140,6 +271,12 @@ class PayPeriodGenerateSchema(BaseSchema):
     cadence_days = cadence_days_field(
         load_default=BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
     )
+    shift = shift_field(load_default=BusinessDayShiftEnum.NONE)
+
+    @validates_schema
+    def validate_rhythm(self, data, **kwargs):
+        """Refuse a pair no calendar can derive (**R-PC54**)."""
+        validate_derivable_rhythm(data)
 
 
 class PayPeriodExtendSchema(BaseSchema):
@@ -192,14 +329,21 @@ class PayPeriodRegenerateSchema(BaseSchema):
     """Validates POST data for regenerating the future tail.
 
     Mirrors the generate fields plus ``confirm_discard``; ``cadence_days``
-    is required because regenerate establishes (and persists) the new
-    cadence.
+    and ``shift`` are required because regenerate establishes (and persists)
+    the new rhythm, and a door that would silently restate one half on a
+    missing input must not.
     """
 
     new_start_date = fields.Date(required=True)
     num_periods = num_periods_field(required=True)
     cadence_days = cadence_days_field(required=True)
+    shift = shift_field(required=True)
     confirm_discard = fields.Boolean(load_default=False)
+
+    @validates_schema
+    def validate_rhythm(self, data, **kwargs):
+        """Refuse a pair no calendar can derive (**R-PC54**)."""
+        validate_derivable_rhythm(data)
 
 
 class PayPeriodResetSchema(BaseSchema):
@@ -216,7 +360,13 @@ class PayPeriodResetSchema(BaseSchema):
     new_start_date = fields.Date(required=True)
     num_periods = num_periods_field(required=True)
     cadence_days = cadence_days_field(required=True)
+    shift = shift_field(required=True)
     confirm = fields.Boolean(load_default=False)
+
+    @validates_schema
+    def validate_rhythm(self, data, **kwargs):
+        """Refuse a pair no calendar can derive (**R-PC54**)."""
+        validate_derivable_rhythm(data)
 
 
 class PayHistorySchema(BaseSchema):

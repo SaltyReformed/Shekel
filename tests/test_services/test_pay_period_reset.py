@@ -77,6 +77,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    rhythm_of,
     add_txn,
     all_periods,
     assert_pay_period_invariants,
@@ -153,7 +154,7 @@ def _seed_old_schedule(db_session, seed_user, count=5):
         user_id=seed_user["user"].id,
         first_payday=date(2026, 1, 2),
         num_periods=count,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db_session.commit()
 
@@ -247,7 +248,7 @@ class TestResetHappyPath:
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -306,7 +307,7 @@ class TestResetHappyPath:
 
             pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -362,7 +363,7 @@ class TestResetHappyPath:
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -400,7 +401,7 @@ class TestResetHappyPath:
 
             new_periods = _reset_and_populate(
                 user_id, new_start_date=_NEW_START, num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -436,7 +437,7 @@ class TestResetHappyPath:
 
             new_periods = _reset_and_populate(
                 user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -502,7 +503,7 @@ class TestResetHappyPath:
 
             pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -540,7 +541,7 @@ class TestResetHappyPath:
 
             new_periods = _reset_and_populate(
                 user_id, new_start_date=_NEW_START, num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -573,7 +574,7 @@ class TestResetHappyPath:
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -595,13 +596,13 @@ class TestResetHappyPath:
         with app.app_context():
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
-                user_id, date(2026, 1, 2), num_periods=4, cadence_days=14,
+                user_id, date(2026, 1, 2), num_periods=4, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -617,7 +618,7 @@ class TestResetHappyPath:
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=3,
-                cadence_days=7,
+                rhythm=rhythm_of(7),
             )
             db.session.commit()
 
@@ -656,7 +657,7 @@ class TestResetRefusals:
             with pytest.raises(PayPeriodResetBlocked) as exc_info:
                 pay_period_admin.reset_pay_periods(
                     user_id, new_start_date=_NEW_START, num_periods=4,
-                    cadence_days=14,
+                    rhythm=rhythm_of(14),
                 )
             db.session.rollback()
 
@@ -687,7 +688,7 @@ class TestResetRefusals:
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert [derived_span(p).period_index for p in new_periods] == [0, 1, 2]
@@ -710,7 +711,7 @@ class TestResetRefusals:
             with pytest.raises(ValidationError):
                 pay_period_admin.reset_pay_periods(
                     user_id, new_start_date=_NEW_START, num_periods=4,
-                    cadence_days=0,  # generate_pay_periods rejects < 1
+                    rhythm=rhythm_of(0),  # generate_pay_periods rejects < 1
                 )
             db.session.rollback()
 
@@ -771,7 +772,7 @@ class TestResetResyncsLoanGenesis:
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -837,7 +838,7 @@ class TestResetResyncsLoanGenesis:
 
             new_periods = _reset_and_populate(
                 user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -935,7 +936,7 @@ class TestResetResyncsAccountOpenings:
 
             pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 

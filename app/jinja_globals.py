@@ -42,6 +42,7 @@ from app import ref_cache
 from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
+    BusinessDayShiftEnum,
     CalcMethodEnum,
     DeductionTimingEnum,
     EmployerContributionTypeEnum,
@@ -137,6 +138,41 @@ _REF_ID_GLOBALS: tuple[tuple[Callable[[Enum], int], dict[str, Enum]], ...] = (
 )
 
 
+#: What each payday convention is CALLED on a form, in the order the four
+#: schedule forms offer them (plan step ``pay_calendar:C14-b``, ruling
+#: **R-PC56**: the question is asked wherever a cadence is).  Declared once
+#: here rather than spelled in each template, because four copies of an option
+#: list are four places for the wording to drift -- and the wording is the
+#: whole of what an owner has to go on.
+#:
+#: **No option is described as usual or recommended**, and that is the
+#: ruling's own wording rather than terseness: R-PC56 REFUSED defaulting to
+#: ``prior`` on the reasoning that real payroll usually pays early, because
+#: that states as fact what no owner was asked.  A help text saying the same
+#: thing would reintroduce the claim one layer up.
+_PAYDAY_SHIFT_LABELS: dict[Enum, str] = {
+    BusinessDayShiftEnum.NONE: "Pay on that day anyway",
+    BusinessDayShiftEnum.PRIOR: "Pay the business day before",
+    BusinessDayShiftEnum.NEXT: "Pay the business day after",
+}
+
+#: The QUESTION those options answer, and what it tells an owner.
+#:
+#: **Here for the same reason the options are, and an adversarial review of
+#: 2026-09-05 is why they are here too.**  The first form of this step
+#: centralised the three option labels and left the question spelled in FOUR
+#: templates and the help text in TWO -- absent from regenerate and reset,
+#: which are precisely the doors where an owner CHANGES a stored convention
+#: and most needs to know what the choices mean.  A wording that drifts
+#: between the door that sets a value and the door that corrects it is worse
+#: than one that is merely repeated.
+PAYDAY_SHIFT_LABEL = "If a payday falls on a weekend or holiday"
+PAYDAY_SHIFT_HELP = (
+    "Your employer's rule. Shekel keeps every payday on its scheduled day "
+    "until you say otherwise."
+)
+
+
 def register_ref_id_globals(app: Flask) -> None:
     """Register every ID-derived Jinja global on the given Flask app.
 
@@ -161,6 +197,20 @@ def register_ref_id_globals(app: Flask) -> None:
     for accessor, members in _REF_ID_GLOBALS:
         for name, member in members.items():
             globals_map[name] = accessor(member)
+    # The payday-convention picker's options, as ``(id, label)`` pairs the
+    # ``render_select`` macro consumes directly.  Built here rather than in
+    # ``_REF_ID_GLOBALS`` because that table maps ONE name to ONE id and this
+    # is an ordered list; built at all because four forms render the same
+    # three choices (**R-PC56**).  ``SHIFT_NONE`` rides along as the selected
+    # value a form falls back to when it has no schedule row to read a stored
+    # answer off -- registration, and the standalone generate page.
+    globals_map["PAYDAY_SHIFT_OPTIONS"] = tuple(
+        (ref_cache.business_day_shift_id(member), label)
+        for member, label in _PAYDAY_SHIFT_LABELS.items()
+    )
+    globals_map["SHIFT_NONE"] = ref_cache.business_day_shift_id(
+        BusinessDayShiftEnum.NONE,
+    )
 
 
 def register_pay_calendar_bound_globals(app: Flask) -> None:
@@ -191,6 +241,13 @@ def register_pay_calendar_bound_globals(app: Flask) -> None:
         app: The Flask application whose ``jinja_env.globals`` to populate.
     """
     app.jinja_env.globals.update({
+        # The payday-convention control's wording (plan step
+        # pay_calendar:C14-b).  Registered UNCONDITIONALLY beside the bounds
+        # rather than with the OPTIONS, because these two are module constants
+        # with no ``ref_cache`` precondition -- the same split this function's
+        # docstring draws.
+        "PAYDAY_SHIFT_LABEL": PAYDAY_SHIFT_LABEL,
+        "PAYDAY_SHIFT_HELP": PAYDAY_SHIFT_HELP,
         "CADENCE_DAYS_MIN": CADENCE_DAYS_MIN,
         "CADENCE_DAYS_MAX": CADENCE_DAYS_MAX,
         "PERIOD_BATCH_MIN": PERIOD_BATCH_MIN,

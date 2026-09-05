@@ -658,6 +658,19 @@ def file_new_swipes(scope: ReviewScope, import_id: int) -> RuleFiling:
             # MATCH tuple above stays empty because R-HT(b)'s group rule
             # modifies rows the owner made and so keeps its tick.
             incomes=tuple(incomes),
+            # **A rule may not SKIP, and the refusal is the STORE's rather
+            # than R-GH's** (plan step ``bank_import:X-gj-4b``).  R-GH would
+            # permit one on its own terms -- a skip creates a decision and
+            # modifies no row the owner made by hand -- but
+            # ``budget.statement_line_skips`` has no ``applied_by_rule``
+            # column, so nothing could record that a rule did it and three
+            # surfaces would then state something false.  ``__post_init__``
+            # refuses the batch that contradicts this, and the whole argument
+            # is there.  It is also moot today: ruling **bank_import:R-JH**
+            # holds that *never a purchase* states no disposition, so no
+            # ``RuleAnswer`` member means skip and there is nothing for this
+            # tuple to hold.
+            skips=(),
             # **A rule is the consent** (**R-GH**), which is what
             # ``ReviewedBatch.__post_init__`` holds the empty match tuple above
             # to: the acts a rule may not perform are exactly the acts that

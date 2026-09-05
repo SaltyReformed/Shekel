@@ -161,6 +161,7 @@ from app.utils.money import accrue_monthly_interest
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
+    rhythm_of,
     SPLIT_LOAN,
     amount_basis_for_scenario,
     create_account_of_type,
@@ -382,7 +383,7 @@ def _seed_boundary_loan(bare_user):
     user_id = bare_user["user"].id
     periods = pay_period_write.record_paydays(
         user_id=user_id, first_payday=date(2025, 12, 25),
-        num_periods=6, cadence_days=14,
+        num_periods=6, rhythm=rhythm_of(14),
     )
     _db.session.flush()
     scenario = Scenario(user_id=user_id, name="Baseline", is_baseline=True)
@@ -3091,7 +3092,7 @@ class TestLatePaidPaymentDating:
             # mis-derived 2026-06-05 date -- the window the rise appears in.
             future_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                first_payday=date(2026, 5, 22), num_periods=2, cadence_days=14,
+                first_payday=date(2026, 5, 22), num_periods=2, rhythm=rhythm_of(14),
             )
             db.session.flush()
             periods = list(seed_periods) + list(future_periods)

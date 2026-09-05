@@ -209,7 +209,7 @@ def record_paydays(
     user_id: int,
     first_payday: date,
     num_periods: int,
-    cadence_days: int,
+    rhythm: pay_schedule_service.Rhythm,
     retiring_ids: "set[int] | None" = None,
 ) -> "list[PayPeriod]":
     """Record a batch of paydays.
@@ -267,9 +267,16 @@ def record_paydays(
             a period boundary computed from one.
         num_periods: How many paydays the batch covers, including any that
             already exist.
-        cadence_days: Days between the batch's paydays.  Persisted as the
-            owner's forecast cadence when the batch records at least one new
-            payday; ignored otherwise.
+        rhythm: How often this owner is paid and what payroll does when a
+            payday lands on a closed day
+            (:class:`~app.services.pay_schedule_service.Rhythm`).  The batch's
+            paydays are spaced by its cadence, and the whole pair is persisted
+            in one statement when the batch records at least one new payday;
+            ignored otherwise.  It arrives as a PAIR rather than two arguments
+            because the two carry a joint rule -- plan step **C14-b**, rulings
+            **R-PC54** and **R-PC56**.  Four of this door's five callers are
+            forms that state a rhythm; the fifth continues the stored one
+            (``pay_schedule_service.resolve_shift``).
         retiring_ids: ``budget.pay_periods.id`` values to DELETE as part of the
             same operation, for the two doors that replace a span rather than
             extend one.  The caller has already run whatever gates decide they
@@ -287,23 +294,28 @@ def record_paydays(
     Raises:
         ValidationError: *first_payday* is not a plain ``date``; *num_periods*
             is outside :data:`PERIOD_BATCH_MIN` .. :data:`PERIOD_BATCH_MAX`
-            (:func:`reject_out_of_range_batch_size`); *cadence_days* falls
-            outside ``ck_pay_schedule_cadence_range``
+            (:func:`reject_out_of_range_batch_size`); *rhythm*'s cadence
+            falls outside ``ck_pay_schedule_cadence_range``
             (:func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`);
+            *rhythm* pairs a displacing convention with a cadence too short
+            to carry it
+            (:func:`~app.services.pay_schedule_service.reject_shift_on_short_cadence`);
             or the batch's earliest new payday falls before the forward-only
             floor (:func:`_reject_backward_payday`).  **Every one of them is
             asked before a statement is issued**, which is what lets
             :func:`_apply` promise that a refused batch deletes nothing and
-            leaves the stored cadence alone.
+            leaves the stored rhythm alone.
     """
-    # The door's three preconditions, together and ahead of every statement --
+    # The door's four preconditions, together and ahead of every statement --
     # including ahead of the arithmetic below, which turns *cadence_days* into
-    # dates.  The cadence bound is asked through the column's own owner rather
-    # than restated here: two copies of a range are two chances for the schema
-    # tier, the service tier and the CHECK to disagree.
+    # dates.  The cadence bound and the cadence-convention pairing are asked
+    # through the column's own owner rather than restated here: two copies of a
+    # rule are two chances for the schema tier, the service tier and the
+    # database to disagree.
     _reject_undatable_payday(first_payday)
     reject_out_of_range_batch_size(num_periods)
-    pay_schedule_service.reject_out_of_range_cadence(cadence_days)
+    pay_schedule_service.reject_out_of_range_cadence(rhythm.cadence_days)
+    pay_schedule_service.reject_shift_on_short_cadence(rhythm)
 
     current = _owner_paydays(user_id)
     doomed = retiring_ids or frozenset()
@@ -314,7 +326,9 @@ def record_paydays(
 
     new_paydays = [
         payday
-        for payday in _requested_paydays(first_payday, num_periods, cadence_days)
+        for payday in _requested_paydays(
+            first_payday, num_periods, rhythm.cadence_days,
+        )
         if payday not in surviving_paydays
     ]
     # The floor reads the cadence the owner's LAST SURVIVING PAYCHECK currently
@@ -333,7 +347,7 @@ def record_paydays(
             user_id=user_id,
             retiring=retiring,
             recording=new_paydays,
-            cadence_days=cadence_days,
+            rhythm=rhythm,
         ),
     )
     log_event(
@@ -343,7 +357,8 @@ def record_paydays(
         count=len(created),
         retired=len(retiring),
         start_date=first_payday.isoformat(),
-        cadence_days=cadence_days,
+        cadence_days=rhythm.cadence_days,
+        shift=rhythm.shift.value,
     )
     return created
 
@@ -423,7 +438,7 @@ def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
             user_id=user_id,
             retiring=retiring,
             recording=[],
-            cadence_days=None,
+            rhythm=None,
         ),
     )
     return len(retiring)
@@ -456,14 +471,18 @@ class _PaydayChange:
             :func:`_owner_paydays` read, so the OWNER scoping is structural
             rather than a property of the two callers.
         recording: The paydays to create, already filtered of any that exist.
-        cadence_days: The cadence to persist, iff *recording* is non-empty.
-            ``None`` when nothing is recorded, where the stored value stands.
+        rhythm: The cadence and payday convention to persist, iff *recording*
+            is non-empty.  ``None`` when nothing is recorded, where the stored
+            pair stands.  One value rather than two nullable columns because
+            the two carry a joint rule and a row written through two
+            statements passes through a state neither statement means (see
+            :func:`~app.services.pay_schedule_service.upsert_schedule`).
     """
 
     user_id: int
     retiring: "list[int]"
     recording: "list[date]"
-    cadence_days: "int | None"
+    rhythm: "pay_schedule_service.Rhythm | None"
 
 
 def _apply(change: _PaydayChange) -> "list[PayPeriod]":
@@ -484,7 +503,8 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
        payday being retired and re-recorded in the same operation -- which is
        what regenerate and reset do -- cannot collide on
        ``uq_pay_periods_user_start``.
-    2. Persist the cadence (the rule: only a batch that RECORDS a payday).
+    2. Persist the rhythm -- the cadence and the payday convention, in one
+       statement (the rule: only a batch that RECORDS a payday).
     3. INSERT one row per recorded payday.
 
     ``expire_all`` runs LAST, and only when something was deleted: the bulk
@@ -510,9 +530,7 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
             PayPeriod.id.in_(change.retiring),
         ).delete(synchronize_session=False)
     if change.recording:
-        pay_schedule_service.upsert_schedule(
-            change.user_id, change.cadence_days,
-        )
+        pay_schedule_service.upsert_schedule(change.user_id, change.rhythm)
     created = _create_periods(change.user_id, change.recording)
     if change.retiring:
         db.session.expire_all()

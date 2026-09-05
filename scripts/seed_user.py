@@ -80,10 +80,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # pylint: disable=wrong-import-position
 from app import create_app
 from app.config import BaseConfig
+from app.enums import BusinessDayShiftEnum
 from app.exceptions import ConflictError, ValidationError
 from app.extensions import db
 from app.models.user import User
-from app.services import auth_service
+from app.services import auth_service, pay_schedule_service
 # pylint: enable=wrong-import-position
 
 
@@ -249,10 +250,19 @@ def seed_user():
             password=password,
             display_name=display_name,
             first_payday=_read_last_payday(),
-            cadence_days=_read_int_env(
-                "SEED_USER_CADENCE_DAYS",
-                BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
-                unit="days",
+            # ``none`` with no env var, and that is the answer rather than an
+            # omission (plan step pay_calendar:C14-b, ruling R-PC56): every
+            # schedule starts with the payday convention OFF, and a seeded
+            # owner is one nobody has asked, so stating anything else would be
+            # a claim made on their behalf.  The owner answers on the
+            # pay-periods settings card.
+            rhythm=pay_schedule_service.Rhythm(
+                cadence_days=_read_int_env(
+                    "SEED_USER_CADENCE_DAYS",
+                    BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
+                    unit="days",
+                ),
+                shift=BusinessDayShiftEnum.NONE,
             ),
             num_periods=_read_int_env(
                 "SEED_USER_NUM_PERIODS",

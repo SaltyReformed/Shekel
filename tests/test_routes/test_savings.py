@@ -36,6 +36,7 @@ from app.services import balance_at, pay_period_write, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
+    rhythm_of,
     create_account_of_type,
     create_hysa_account,
     create_loan_account,
@@ -416,7 +417,7 @@ class TestDashboard:
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -464,7 +465,7 @@ class TestDashboard:
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -513,7 +514,7 @@ class TestDashboard:
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -2416,6 +2417,106 @@ class TestAccountArchivalDashboard:
             archived_section = html.split('id="archivedAccounts"')[1]
             assert "Closed Savings" in archived_section
             assert "unarchive" in archived_section
+
+    def test_each_archived_card_links_to_its_OWN_edit_page(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Finding **N-430**, closed by plan step ``balance:X-f3c-2b-2d``.
+
+        The archived card emitted no ``href`` naming its account at all, so the
+        account edit page -- the surface carrying rename, re-type, hard-delete
+        and the books-opening restatement form, but NOT archive, which lives
+        only on the live cell's kebab -- was reachable for an archived account
+        only by typing its URL.  It carries the live cell's kebab *Edit*
+        item now, promoted to the card face by the same rule that put
+        hard-delete there.
+
+        **TWO accounts, because one cannot grade a per-card link.**  The drawer
+        is a loop, and every other case in this class archives a single account
+        -- so a template emitting the FIRST row's id and name on every card
+        would pass all of them.  That is also the whole content of the
+        accessible name: N cards otherwise give a screen reader N identical
+        "Edit" entries with nothing to tell them apart, and the visible word
+        leads the label (WCAG 2.5.3 Label in Name) so voice control still
+        matches it.
+
+        The ``href`` is matched WHOLE, closing quote included: a
+        ``#books-opening`` fragment on this link would name an anchor a loan's
+        edit page does not render, and a substring match on the path would pass
+        with it there.
+        """
+        with app.app_context():
+            first = create_account_of_type(
+                seed_user, db.session, "Savings", "Closed Alpha",
+            )
+            second = create_account_of_type(
+                seed_user, db.session, "Savings", "Closed Beta",
+            )
+            first.is_active = False
+            second.is_active = False
+            db.session.commit()
+            first_id, second_id = first.id, second.id
+            # The ids must DIFFER, or the two assertions below are one.
+            assert first_id != second_id
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            archived_section = resp.data.decode().split(
+                'id="archivedAccounts"',
+            )[1]
+
+            assert f'href="/accounts/{first_id}/edit"' in archived_section
+            assert f'href="/accounts/{second_id}/edit"' in archived_section
+            assert 'aria-label="Edit Closed Alpha"' in archived_section
+            assert 'aria-label="Edit Closed Beta"' in archived_section
+            # The VISIBLE word, which is the half of WCAG 2.5.3 the two
+            # assertions above cannot see: they pin the accessible name, and an
+            # icon-only link with no text node at all satisfies both while
+            # voiding the claim that the visible label LEADS that name.  The
+            # docstring above and the template's own comment each state it; this
+            # is what grades it.
+            assert archived_section.count("</i> Edit") == 2
+
+    def test_an_archived_LOANS_card_links_to_its_edit_page_TOO(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The link is UNGATED, and a loan is the kind that proves it.
+
+        A version of this link that carried the ``#books-opening`` fragment
+        would have to ask whether the account has a books-opening card and be
+        withheld from an amortizing one, whose edit page renders none -- and
+        that gate would take an archived loan's ONLY reach to the page that can
+        rename or re-type it, on a cockpit that badges a paid-off loan and
+        offers Archive on every live cell's kebab.  The plain *Edit* link needs
+        no such question, so this case asserts the loan is offered it.
+
+        Its destination is graded where it belongs: that a loan's edit page
+        carries no books-opening card is
+        ``test_books_opening.py::TestTheCardIsRendered::
+        test_a_LOAN_edit_page_carries_no_card``, and that the page itself
+        answers is asserted here.
+        """
+        with app.app_context():
+            loan = create_account_of_type(
+                seed_user, db.session, "Mortgage", "Closed Mortgage",
+                anchor_balance=Decimal("-1000.00"),
+            )
+            loan.is_active = False
+            db.session.commit()
+            loan_id = loan.id
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            archived_section = resp.data.decode().split(
+                'id="archivedAccounts"',
+            )[1]
+
+            assert "Closed Mortgage" in archived_section
+            assert f'href="/accounts/{loan_id}/edit"' in archived_section
+            assert 'aria-label="Edit Closed Mortgage"' in archived_section
+
+            landed = auth_client.get(f"/accounts/{loan_id}/edit")
+            assert landed.status_code == 200
 
     def test_unarchive_from_dashboard(
         self, app, auth_client, seed_user, seed_periods,

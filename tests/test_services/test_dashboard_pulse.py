@@ -42,6 +42,7 @@ from app.services import transfer_service
 from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    rhythm_of,
     last_covered_day,
     account_never_asserted,
     add_anchor_history as _add_anchor_history,
@@ -209,7 +210,7 @@ class TestPulseHero:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -353,7 +354,7 @@ class TestPulseChart:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=40,
-                cadence_days=7,
+                rhythm=rhythm_of(7),
             )
             db.session.commit()
             forward, balances = self._periods_and_balances(periods)
@@ -383,7 +384,7 @@ class TestPulseChart:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=4,
-                cadence_days=300,
+                rhythm=rhythm_of(300),
             )
             db.session.commit()
             forward, balances = self._periods_and_balances(periods)
@@ -412,7 +413,7 @@ class TestPulseChart:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=20,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             forward, balances = self._periods_and_balances(periods)
@@ -532,7 +533,7 @@ class TestPulseTrough:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=15,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -659,7 +660,7 @@ class TestPulsePeak:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=15,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -979,7 +980,7 @@ class TestPulseStillDue:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 

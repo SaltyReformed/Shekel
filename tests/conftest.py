@@ -733,6 +733,7 @@ from app.services import (
 from app.services.auth_service import hash_password
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    rhythm_of,
     amount_basis_for_scenario,
     bind_db_clock_rewriter,
     create_loan_account,
@@ -1657,7 +1658,7 @@ def bare_user_with_cadence(db, bare_user):
         in for ``bare_user`` without touching anything else it reads.
     """
     pay_schedule_service.upsert_schedule(
-        bare_user["user"].id, cadence_days=14,
+        bare_user["user"].id, rhythm=rhythm_of(14),
     )
     db.session.commit()
     return bare_user
@@ -1681,7 +1682,7 @@ def bare_periods(app, db, bare_user):
         user_id=bare_user["user"].id,
         first_payday=date(2026, 1, 2),
         num_periods=10,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.commit()
     return periods
@@ -2223,7 +2224,7 @@ def _build_cross_page_calendar_periods(db, user):
     # period's projected end.  Every other end is the day before the next
     # payday, which is what makes these rows a real calendar-monthly schedule
     # rather than a stored claim to be one.
-    pay_schedule_service.upsert_schedule(user.id, 31)
+    pay_schedule_service.upsert_schedule(user.id, rhythm_of(31))
 
     all_periods = (
         db.session.query(PayPeriod)

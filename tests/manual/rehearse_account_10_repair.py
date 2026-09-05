@@ -1431,15 +1431,38 @@ def _consolidate_twin(op: _Operator) -> None:
     """Delete the absorbed transfer, re-record its Checking leg, zero the twin.
 
     **The twin is UNARCHIVED for its own two acts and archived again after,
-    because while it is archived neither door has a click path** (finding
-    **N-430**, measured 2026-08-31).  The cockpit's archived region offers
-    Unarchive and Delete and nothing else -- its own template says "archived
-    accounts have no cell kebab or edit-form reach in the cockpit" -- and no
-    other surface links the edit page or the detail page for one.  Both doors
-    ACCEPT the write when reached directly, so this is reach and not
-    capability; the runbook prescribes the round trip rather than a typed URL
-    because every other act in it is a click, and the round trip moves no money
-    (measured: a byte-identical postings fingerprint either side).
+    and HALF of the reason this docstring used to give is now false.**  It read
+    that while an account is archived NEITHER door has a click path -- the
+    cockpit's archived region offering Unarchive and Delete and nothing else.
+    That was finding **N-430**, and plan step ``balance:X-f3c-2b-2d`` closed it:
+    the archived card carries the same *Edit* link the live cell's kebab does,
+    so the restatement's own act -- Account 2 -> Edit -> Books opening -- is
+    clickable while the twin is still archived.  **The BALANCE editor is
+    still not reachable BY CLICKING**, which is the honest form of the claim.
+    FIVE templates open the shared anchor editor, and the runbook names which
+    two of them an archived account can never reach rather than describing the
+    remainder by subtraction; the three that are left are detail-page heroes,
+    and the archived card's own figure is static text.  ``/accounts/<id>/
+    details`` typed directly answers 200 with a working editor (**N-453**,
+    ruled to ``balance:X-f4``).  The runbook is a click procedure, so the round
+    trip stays.
+
+    **The restatement stays INSIDE the window deliberately, and this order is
+    the one the runbook prescribes -- but NOT because it opens the double
+    count.**  That window opens at the act BEFORE this one, which puts the money
+    inside account 10's opening while the twin still asserts its own; the
+    restatement neither opens nor closes it.  What the restatement opens is
+    smaller and separate: it zeroes the twin's opening while the 2026-04-06
+    assertion stands, so the gap books a correction that ruling **R-FO** reports
+    as INTEREST on an interest-bearing account -- a gain that never happened,
+    running until the assertion that follows clears it.  Taking it early from
+    the archived card would run that for however long separates the two
+    sittings, to save a click before an unarchive the next act forces anyway.
+    (An earlier draft of this docstring said it opened the double count.
+    Corrected by adversarial review, 2026-09-04.)  Both doors ACCEPT the write
+    when reached directly,
+    so this was always reach and not capability, and the round trip moves no
+    money (measured: a byte-identical postings fingerprint either side).
 
     Args:
         op: The owner's session.
