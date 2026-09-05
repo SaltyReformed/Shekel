@@ -28,7 +28,7 @@
 #      fail-closed against the redis service -- starting db alone
 #      would 500 every non-exempt request)
 #
-# Test database only (scripts/test.sh manages its restarts):
+# Test database only (scripts/test.sh restarts it only on RESTART_TEST_DB=1):
 #   docker compose -f docker-compose.dev.yml up -d test-db
 
 name: shekel-dev

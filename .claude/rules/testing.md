@@ -13,8 +13,19 @@ change here updates that mirror in the same commit.
 
 ## Running
 
-- Invoke via `./scripts/test.sh`, never bare `pytest` -- the wrapper restarts the
-  `shekel-dev-test-db` container first. `SKIP_DB_RESTART=1` on chained follow-ups.
+- Invoke via `./scripts/test.sh`, never bare `pytest` -- it resolves the test DSNs out of
+  `.env` and defaults the marker expression. **It does NOT restart the shared
+  `shekel-dev-test-db` container unless `RESTART_TEST_DB` is set to `1`/`true`/`yes`/`on`**
+  (inverted 2026-09-04; the old opt-out spelling `SKIP_DB_RESTART` is gone, not merely
+  redundant). `0`/`false`/`no`/`off` mean no restart and anything else is REFUSED with exit
+  2 -- deliberately not a bare presence flag, because the spelling this replaced was
+  opt-OUT, so a careless `=0` used to land on "skip" and must not now land on "restart the
+  shared container". The restart is fragmentation hygiene, not a correctness gate: ask for
+  it before a gating full-suite run. A run that skips the restart reports the container's
+  state -- its uptime when it is up, and which of docker-absent / container-absent /
+  container-stopped it found when it is not. That is the only drift signal there is:
+  `docs/testing-standards.md` withdraws the `~15 ms` CREATE/DROP cutoff that once served as
+  the trigger, as self-refuting.
 - **It also defaults to `-m "not docker"`, which DESELECTS 28 container-spawning
   `tests/test_deploy` tests** -- deselected, not skipped, so they leave NO line in the
   report and a green run says nothing about them; CI runs bare `pytest` and executes all
@@ -25,18 +36,20 @@ change here updates that mirror in the same commit.
   `./scripts/test.sh tests/path/test_file.py::test_name -v`.
 - **Concurrent worktrees: take the slot first.** `./scripts/suite_slot.sh acquire <name>`,
   then `./scripts/test.sh`, then `release <name>`. The template and the worker databases
-  are isolated per worktree, but the POSTMASTER is shared: `test.sh` ATTEMPTS a hygiene
-  restart first, and its live-backend probe skips it when another run's connections are
-  visible -- but the probe is a race, it is blind to a run whose only connections sit on
-  the excluded admin database, and a probe is not a lock, so an unslotted gating run can
-  still kill an in-flight run. Contention measured 859 s against 304 s alone, both results
-  void. `acquire` exits 2 and releases what it took when a pytest is
-  already live -- it guards the START of a run, so one in flight can only be coordinated,
-  not protected. `release` frees the lock even on a name mismatch, so copy your name
-  exactly. **Only the HOLDER releases** -- a lock held 600 s with nothing running looks
-  identical to one whose holder is slow to start, so `status` calls a lock possibly-stale
-  only past 900 s AND with no pytest anywhere, and says to ask the holder even then.
-  `--collect-only` is exempt both directions.
+  are isolated per worktree, but the POSTMASTER is shared, in two separate ways. **The
+  restart** kills every backend on the container: `RESTART_TEST_DB=1` attempts one, and the
+  live-backend probe skips it when another run's connections are visible -- but the probe is
+  a race, it is blind to a run whose only connections sit on the excluded admin database,
+  and a probe is not a lock, so a slotless `RESTART_TEST_DB=1` run can still kill an in-flight
+  one. **Contention** needs no restart at all to void both runs: measured 859 s against 304
+  s alone. So the default (no restart) removes one hazard and leaves the other, and the slot
+  stays mandatory whatever `RESTART_TEST_DB` says. `acquire` exits 2 and releases what it took
+  when a pytest is already live -- it guards the START of a run, so one in flight can only
+  be coordinated, not protected. `release` frees the lock even on a name mismatch, so copy
+  your name exactly. **Only the HOLDER releases** -- a lock held 600 s with nothing running
+  looks identical to one whose holder is slow to start, so `status` calls a lock
+  possibly-stale only past 900 s AND with no pytest anywhere, and says to ask the holder
+  even then. `--collect-only` is exempt both directions.
 - **Zero tolerance:** every batch must end in `<N> passed`. Any `failed`,
   `errors`, or unexpected `xfailed` blocks a "done" report -- investigate, do not
   dismiss as "pre-existing" (rule 4). Show the actual pass/fail summary as evidence.
