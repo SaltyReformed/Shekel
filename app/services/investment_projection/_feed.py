@@ -142,32 +142,17 @@ class AccountPayrollFeed:
              self.gross_by_payday[max(self.gross_by_payday)])
             if self.gross_by_payday else None,
         )
-        # The EMPLOYEE amount holds at a whole priced YEAR's average per
-        # payday, NOT at any single payday's figure, and the reason is the
-        # ANNUAL CAP.
+        # The EMPLOYEE amount holds at a COMPLETE priced year's average per
+        # payday, not at any single payday's figure, and the reason is the
+        # ANNUAL CAP: the engine clamps a capped deduction the moment the
+        # calendar-year total reaches it and resets each January, so any
+        # single payday is either a full payment, a clamped remainder or a
+        # cadence skip, and none of the three is the rate.
         #
-        # **An adversarial review of this step's own fix found the single-day
-        # rule wrong by 10.4x.**  A capped deduction's priced year runs
-        # ``$600, $400, $0, $0 ... $0`` -- ``cap_period_amount`` clamps it the
-        # moment the calendar-year total reaches ``annual_cap``, and the
-        # engine resets it each January -- so holding "the last payday that
-        # PAID something" picks the ``$400`` and applies it forever with no
-        # cap and no year reset.  ``_annual_cap_averaged``, which this step
-        # deletes, existed for exactly that and its docstring said so.
-        #
-        # A year's average reproduces that answer from the ENGINE's own priced
-        # amounts rather than from a second formula: the year's total is the
-        # cap (or the uncapped run rate), so the average is
-        # ``min(amount x ppy, cap) / ppy`` without this module dividing
-        # anything.  It also subsumes the cadence case the single-day rule was
-        # reaching for -- a 24-per-year deduction's skipped paydays are inside
-        # the year being averaged, so a schedule that happens to END on a skip
-        # no longer holds ``$0.00`` for the whole projection.
-        #
-        # Only a COMPLETE year is averaged: the saved window's first and last
-        # calendar years are usually partial (the developer's runs 2026-03 to
-        # 2028-08), and a partial year's average overstates a capped
-        # deduction by the fraction of the year missing.
+        # Only a COMPLETE year is averaged, because a partial year's average
+        # is wrong in EITHER direction -- measured on a $600/$400 year
+        # against a $1,000 cap, the first half averages $76.92 against a true
+        # $38.46 and the second half averages $0.00.
         object.__setattr__(
             self, "_held_employee", self._year_averages(),
         )
@@ -197,34 +182,47 @@ class AccountPayrollFeed:
         the question is asked of the WINDOW and never of the cadence, is
         :meth:`_complete_years`.
 
-        **A window with no complete year falls back to the last PRICED
-        payday.**  Exact for an uncapped deduction.  For a CAPPED one it can
-        OVERSTATE, whenever that payday's own amount exceeds
-        ``annual_cap / periods_per_year``: measured at cadence 14, ``$600`` a
+        **A window with no complete year falls back to a single priced
+        payday -- the last one forward, the first one backward -- and that
+        is wrong in both directions.**  It is exact only for
+        a FLAT feed.
+
+        It can UNDERSTATE TO ZERO on an UNCAPPED deduction: a 24-per-year
+        line skips one payday a month, and a window ending on a skip holds
+        ``$0.00`` for the whole tail.  Measured at cadence 14, ``$211.56`` a
+        payday, window ``2027-01-19..2028-02-29``: ``$5,712.12`` of real
+        in-window deductions, :attr:`models_employee` ``True``, and
+        ``$0.00`` held against a true ``$195.29``.  13 of 365 anchors do this
+        at 40 paydays, 2 of 365 at 49, none at 51 or above.
+
+        It can OVERSTATE on a CAPPED one: measured at cadence 14, ``$600`` a
         payday against a ``$1,000`` cap over ``2027-01-15..2028-01-14``, it
-        holds ``$600``, which annualises to ``$15,600``.  The multiple is an
-        instance, not a bound; it scales with the amount and the cadence.
+        holds ``$600``, annualising to ``$15,600``.  A payday whose amount
+        exceeds ``annual_cap / periods_per_year`` always over-reads, but that
+        is a SUFFICIENT condition and not the trigger -- it misses a
+        27-payday year, where the real divisor is 27 (measured 354 misses in
+        19,008 shapes).
 
         **The bound is a SPAN.**  A year qualifies only if the window plus
         one interval at each end covers it, so the fallback can run below 52
-        biweekly paydays or 104 weekly (both measured exactly), and above
-        that it cannot.  Whether it over-reads there depends on the
-        deduction, not on the window alone.
+        biweekly paydays or 104 weekly and cannot run at 52 or 104 and above
+        (both boundaries measured exactly).  Below them, whether it reads
+        wrong depends on the deduction, not on the window alone.
 
         A rule that never over-reads DOES exist -- per observed calendar
         year, that year's priced total over the paydays the year really
         holds, minimum across years -- and it is not free: on this module's
         own uncapped fixture it answers ``$250`` where the truth is ``$500``.
         The developer declined it on 2026-09-04, and the salary-path step
-        deletes this method rather than replacing it.  The measurements and
-        the six rules tried before this one are in the ledger, not here.
+        deletes this method rather than replacing it.
 
         Returns:
             ``(earliest, latest)`` -- the per-payday average of the earliest
             and latest COMPLETE calendar years; the first and last priced
             paydays where no year is complete; ``(ZERO, ZERO)`` when nothing
-            was priced.  The two coincide for
-            any account whose feed is flat, which is every uncapped one.
+            was priced.  The two coincide only for a FLAT feed -- not for
+            every uncapped one, since a raise or an inflation escalation
+            moves an uncapped amount between years.
         """
         if not self.employee_by_payday:
             return (ZERO, ZERO)
