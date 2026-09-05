@@ -281,12 +281,11 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `BusinessDayShiftEnum` seeded at `recurrence:R2`. **What a later step must obey**: the
       displacement may answer OUTSIDE `CALENDAR_DATE_MIN`..`MAX` and bounding it is the CALLER's,
       and it REFUSES a non-member convention rather than defaulting one forward.
-- [ ] **C14-b -- the convention column.** Keyed to `ref.business_day_shifts`, defaulting to `none`
-      and asked on all four templates that already ask for a cadence (**R-PC56**), with a non-`none`
-      convention refused on a cadence no longer than the longest run of closed days -- at the
-      column's one WRITE DOOR rather than by a CHECK (**R-PC59**), because that floor is a theorem
-      about a holiday set that MOVES and a CHECK expression must be immutable. Behaviour stays off
-      and no figure moves.
+- [x] **C14-b -- the convention column.** `229f0e23` -- gave the schedule its payday convention,
+      defaulting to `none` and asked on the four cadence templates (**R-PC56**), with NO CHECK
+      constraint (**R-PC59**): the floor is derived from a holiday set that MOVES and a CHECK
+      expression must be immutable, so the pair is refused at the column's one write door. Opened
+      **N-493** and **N-494**.
 - [ ] **C14-c -- the boundary arithmetic.** A projected period ends the day before the NEXT payday,
       deleting the `start + cadence - 1` special case; `project_period_after` probes the
       neighbouring nominal index so a moved boundary cannot escape its O(1) jump. `$0.00`.
