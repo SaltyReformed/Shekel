@@ -243,6 +243,69 @@ class TestTestRunnerContainerStates:
         )
 
     @pytest.mark.parametrize("restart", ["", "1"])
+    def test_a_docker_that_cannot_answer_is_never_called_missing(
+        self, tmp_path: Path, restart: str
+    ) -> None:
+        """Deterministic twin of the probe below: no real docker needed.
+
+        The sibling test drives a dead ``DOCKER_HOST`` and therefore skips
+        wherever the docker CLI is absent.  A skip is invisible in a green
+        run -- the point the regex-matching case had to be rewritten for --
+        so the property is graded here against a stub instead, and the
+        real-docker version stays as the integration check.
+
+        Both ``RESTART_TEST_DB`` values are exercised because this fix
+        landed on the no-restart path first and the restart path -- the one
+        a gating run takes -- went on announcing a missing container on
+        evidence that never established one.
+
+        Args:
+            tmp_path: pytest-provided directory for the stub.
+            restart: The RESTART_TEST_DB value to run under.
+        """
+        stub = tmp_path / "docker"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "# A docker whose daemon cannot be reached: every subcommand\n"
+            "# fails the way the real CLI fails, with the reason on stderr.\n"
+            "echo 'Cannot connect to the Docker daemon at "
+            "unix:///var/run/docker.sock. Is the docker daemon running?' >&2\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+        result = subprocess.run(
+            [str(_TEST_RUNNER), "--version"],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "PATH": f"{tmp_path}:{os.environ['PATH']}",
+                "TEST_DB_CONTAINER": "shekel-stub-probe",
+                "RESTART_TEST_DB": restart,
+            },
+            cwd=str(_REPO_ROOT),
+            check=False,
+        )
+
+        assert "UNKNOWN" in result.stderr, (
+            f"RESTART_TEST_DB={restart!r}, docker failing: "
+            f"{result.stderr.strip()!r}"
+        )
+        for wrong in ("does not exist", "no such container"):
+            assert wrong not in result.stderr, (
+                f"a docker that cannot answer does not establish {wrong!r}: "
+                f"{result.stderr.strip()!r}"
+            )
+        if not restart:
+            assert "docker daemon" in result.stderr, (
+                "the no-restart path must pass docker's own words through, "
+                "or it cannot distinguish a dead daemon from a "
+                f"misconfigured DOCKER_HOST: {result.stderr.strip()!r}"
+            )
+
+    @pytest.mark.parametrize("restart", ["", "1"])
     def test_an_unreachable_daemon_is_not_called_a_missing_container(
         self, restart: str
     ) -> None:
@@ -322,6 +385,89 @@ class TestTestRunnerContainerStates:
         assert "not restarting" in bodies["Up*"], (
             "the Up* arm no longer says 'not restarting', so this test is "
             "asserting the absence of a phrase nothing uses"
+        )
+
+    @pytest.mark.parametrize(
+        ("listed_name", "expected", "unexpected"),
+        [
+            # The regex form of ``rev8.test.db`` matches ``rev8-test-db``;
+            # the exact form cannot.  So the wrapper must say the name is
+            # absent even though the filter returned a row.
+            ("rev8-test-db", "no such container", "Up 3 hours"),
+            # The control.  Same probe name, and now the row IS that name,
+            # so the status must come through.  Without this case the one
+            # above would pass just as well if the shim were never consulted
+            # or the wrapper stopped asking docker at all.
+            ("rev8.test.db", "Up 3 hours", "no such container"),
+        ],
+    )
+    def test_the_container_name_is_matched_exactly_not_as_a_regex(
+        self,
+        tmp_path: Path,
+        listed_name: str,
+        expected: str,
+        unexpected: str,
+    ) -> None:
+        """``--filter name=`` is a REGEX; the name must be compared exactly.
+
+        ``^NAME$`` looks anchored and is not: with
+        ``TEST_DB_CONTAINER=rev8.test.db`` the dots matched a real
+        ``rev8-test-db``, so the wrapper printed a DIFFERENT container's
+        uptime for a name that does not exist, while the restart path --
+        exact-name ``docker inspect`` -- said it did not exist.  ``.``,
+        ``-`` and ``_`` are all legal in docker names.
+
+        This drives a stub ``docker`` on PATH rather than a real daemon, so
+        it is deterministic and runs everywhere.  The sibling probe below
+        exercises the same property against real docker and SKIPS when the
+        host offers nothing suitable -- which is what CI does, since the
+        runner's only container is a service with a random hex name and no
+        separator.  A skip is invisible in a green run, so the property
+        needs this case to be graded at all.
+
+        Args:
+            tmp_path: pytest-provided directory for the stub.
+            listed_name: The container name the stub reports.
+            expected: Fragment that must appear in stderr.
+            unexpected: Fragment that must not.
+        """
+        stub = tmp_path / "docker"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "# Minimal docker stand-in: answers only the one query the\n"
+            "# wrapper's no-restart path makes, and answers it the way a\n"
+            "# REGEX filter would -- returning a row whose name may differ\n"
+            "# from the one asked for.\n"
+            'if [ "${1:-}" = "ps" ]; then\n'
+            f"    printf '%s|Up 3 hours\\n' '{listed_name}'\n"
+            "    exit 0\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+        result = subprocess.run(
+            [str(_TEST_RUNNER), "--version"],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "PATH": f"{tmp_path}:{os.environ['PATH']}",
+                "TEST_DB_CONTAINER": "rev8.test.db",
+                "RESTART_TEST_DB": "",
+            },
+            cwd=str(_REPO_ROOT),
+            check=False,
+        )
+
+        assert expected in result.stderr, (
+            f"stub listed {listed_name!r} for probe 'rev8.test.db'; expected "
+            f"{expected!r} in: {result.stderr.strip()!r}"
+        )
+        assert unexpected not in result.stderr, (
+            f"stub listed {listed_name!r} for probe 'rev8.test.db'; "
+            f"{unexpected!r} must not appear in: {result.stderr.strip()!r}"
         )
 
     def test_a_name_with_regex_metacharacters_matches_nothing_else(
