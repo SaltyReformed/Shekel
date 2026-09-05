@@ -3724,8 +3724,9 @@ class TestALoanPaymentsOpeningBoundIsDerived:
     is erased by the fold while the cash side still debits it, measured at
     ``$3,220.92`` of phantom payments on a mortgage closing one month out.
 
-    **Which definitions lock is ``owns_validity_window``, not
-    ``is_loan_payment``** (plan step R7b-4), and the difference is not
+    **Which definitions lock is ``is_standing_loan_payment``, not
+    ``is_loan_payment``** (plan step R7b-4; read off the pass since R7d-f),
+    and the difference is not
     academic: neither of the developer's real loan payments carries a
     ``loan_payment_settings`` row, so the older predicate answered False for
     both and the sibling class above was passing on a fixture that is not
@@ -3851,7 +3852,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
     ``LoanPaymentSettings`` -- and on a 2026-08-14 production clone NEITHER of
     the developer's real loan payments carries that row, so both mortgages were
     clearable. The guard now asks the UNION with
-    ``loan_recurrence_sync.owns_validity_window``, and the second case below is
+    ``loan_recurrence_sync.is_standing_loan_payment``, and the second case below is
     the one that was live: it is the production shape, and it FAILS against the
     predicate this step replaced.
     """
@@ -4146,7 +4147,7 @@ class TestTheServerRendersTheEndsControlAlreadyCorrect:
     ):
         """A count-bounded rule prefills the count box and disables the date.
 
-        The prefill comes from ``edit_form_end_bound``, which reads the two
+        The prefill comes from ``edit_form_end``, which reads the two
         columns through the one seam rather than letting the template decide
         which shape a row holds.
         """

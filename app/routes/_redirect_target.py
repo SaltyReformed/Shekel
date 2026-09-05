@@ -11,7 +11,7 @@ loose ``redirect_endpoint`` / ``redirect_endpoint_kwargs`` (or
 ``redirect_kwargs`` -- the naming had drifted) pair.  Bundling the pair
 here lets the larger context objects
 (:class:`app.routes._commit_helpers.StaleConflictContext`,
-:class:`app.routes._recurrence_form_helpers.RecurrenceFormContext`)
+:class:`app.routes._recurrence_form_refusals.RecurrenceFormContext`)
 compose one redirect target instead of re-declaring the two fields, and
 collapses the per-call argument count that tripped pylint's
 ``too-many-arguments`` across the helper layer.

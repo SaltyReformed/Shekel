@@ -37,6 +37,7 @@ the balance to compute it.
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.models.account import Account
 from ._context import BalanceContext
@@ -47,6 +48,9 @@ from ._fold import fold_from_walk, last_closed_on
 # seam's internal graph stays a DAG.
 from ._positions import memoized_payoff
 from ._resolution import ResolvedLoan, resolved_loan
+
+if TYPE_CHECKING:  # pragma: no cover -- typing only; the value is read, never built here
+    from app.services.recurring_transfer_query import StandingPayment
 
 ZERO_MONEY = Decimal("0.00")
 
@@ -238,6 +242,47 @@ def loan_terms(
     if resolved is None:
         return None
     return _terms_from(resolved, ctx.as_of)
+
+
+def loan_standing_payment(
+    account: Account, ctx: BalanceContext,
+) -> "StandingPayment | None":
+    """Return the recurring payment this pass resolved *account* with, or ``None``.
+
+    The seam's ONE public reading of a loan's STANDING payment -- the active
+    recurring transfer paying into it, tie-broken oldest-first by
+    :func:`~app.services.recurring_transfer_query.standing_payment` -- off the
+    read pass's memoized resolution
+    (:func:`~app.services.balance_at._resolution.resolved_loan`), which loads
+    it once per pass to price the loan's uncovered installments (plan step
+    R7d-a).  Added at plan step ``recurrence:R7d-f`` for
+    :func:`app.services.loan_recurrence_sync.is_standing_loan_payment`, which
+    until then re-ran the same lookup beside a pass that already held it
+    (plan ledger row **N-511**), and which cannot reach the resolution itself:
+    ``_resolution`` is re-exported nowhere by design, so the identity a
+    definition's form locks on is read HERE or spelled a second time.
+
+    Scenario-INDEPENDENT, like :func:`loan_terms`: the standing payment is a
+    fact about the loan's definitions and is loaded before any fold, so it
+    resolves for an owner with no baseline scenario (plan step C8e's rule).
+
+    Args:
+        account: The account to read.  Must belong to ``ctx.user_id`` -- the
+            caller owns the ownership check, and the pass refuses a foreign
+            account when it memoizes (``ForeignAccountError``).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+
+    Returns:
+        The :class:`~app.services.recurring_transfer_query.StandingPayment`,
+        or ``None`` when *account* is not a configured loan OR is one with no
+        active recurring payment.  The two are one answer for every caller so
+        far -- "there is no standing payment here to be" -- and a caller that
+        needs them apart takes :func:`loan_terms` for the first question.
+    """
+    resolved = resolved_loan(account, ctx)
+    if resolved is None:
+        return None
+    return resolved.standing
 
 
 def _terms_from(resolved: ResolvedLoan, as_of: date) -> LoanTerms:

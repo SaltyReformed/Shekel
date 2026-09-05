@@ -321,11 +321,11 @@ class TestTemplateList:
     ):
         """An EDIT form locks server-side and must not ship a second rule.
 
-        ``recurrence.bounds_are_derived`` already answers "is this template a
-        loan payment" from the row itself, so a client-side set would be a
-        SECOND answer to the same question -- and two answers is how they come
-        to disagree, which is the defect ``owns_validity_window`` was made the
-        one predicate to close.
+        ``recurrence.selected_start.locked`` already answers "is this template
+        the loan's standing payment" from the read pass, so a client-side set
+        would be a SECOND answer to the same question -- and two answers is how
+        they come to disagree, which is the defect
+        ``is_standing_loan_payment`` was made the one predicate to close.
         """
         with app.app_context():
             savings = create_account_of_type(
