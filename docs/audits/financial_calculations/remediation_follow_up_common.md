@@ -32,8 +32,9 @@ union holds.
 5. **Targeted pytest during edits; pylint clean; full pytest green as
    the per-commit final gate.**
    - Run targeted tests via `./scripts/test.sh tests/path/test_file.py -v`
-     (the wrapper restarts the test-db container; see
-     `docs/testing-standards.md` "Catalog fragmentation" for why).
+     (the wrapper does NOT restart the test-db container unless
+     `RESTART_TEST_DB=1` is set; see `docs/testing-standards.md` "Catalog
+     fragmentation" for what the restart buys).
    - `pylint app/ --fail-on=E,F` clean -- no new warnings vs baseline.
    - Full pytest via `./scripts/test.sh` (`-n 12 default`); ends in
      `N passed`, zero failed/errors/xfailed.
@@ -91,17 +92,20 @@ M. Ask: "Ready to commit and push to dev?"
 ## Test-run conventions
 
 - **Always invoke `./scripts/test.sh`** rather than bare `pytest`.
-  The wrapper restarts `shekel-dev-test-db` before each invocation
-  to defeat the catalog-fragmentation drift documented in
-  `docs/testing-standards.md`.
-- **Tight iteration loop:** prefix follow-up runs with
-  `SKIP_DB_RESTART=1` to skip the ~3 s restart between commands.
+  The wrapper resolves the test DSNs out of `.env` and defaults the
+  marker expression.
+- **Hygiene restart is opt-in:** `RESTART_TEST_DB=1 ./scripts/test.sh`
+  restarts `shekel-dev-test-db` to defeat the catalog-fragmentation
+  drift documented in `docs/testing-standards.md`. Ask for it on the
+  final full-suite gate, not on every command in an iteration loop.
 - **Single file or test:**
   - `./scripts/test.sh tests/path/test_file.py -v`
   - `./scripts/test.sh tests/path/test_file.py::test_name -v`
 - **Full suite (per-commit final gate):** `./scripts/test.sh` (uses
-  `-n 12` from `pytest.ini` `addopts`). ~65 s wall-clock on a fresh
-  test-db container.
+  `-n 12` from `pytest.ini` `addopts`). The dated wall-clock figure
+  lives in `docs/testing-standards.md` (Test Run Guidelines); the
+  ~65 s once quoted here was measured against a far smaller suite and
+  is not a current number.
 - **Test template rebuild after migrations or after edits to
   `app/ref_seeds.py` / `app/audit_infrastructure.py`:**
   `python scripts/build_test_template.py`.

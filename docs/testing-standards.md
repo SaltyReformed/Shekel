@@ -22,10 +22,13 @@ must-knows; a fact lives in one tier and the other tiers point at it.
 
 ## Test Run Guidelines
 
-- **Invoke via `./scripts/test.sh`, not bare `pytest`.** The wrapper restarts `shekel-dev-test-db`
-  before pytest runs (see "Catalog fragmentation and the test-runner wrapper" below for the reason),
-  forwards all arguments verbatim, and falls through to plain pytest when the container is absent
-  (CI, fresh checkout). `SKIP_DB_RESTART=1` skips the restart for chained follow-up invocations.
+- **Invoke via `./scripts/test.sh`, not bare `pytest`.** The wrapper resolves the test DSNs out of
+  `.env`, defaults the marker expression, and forwards all arguments verbatim.
+  **It restarts `shekel-dev-test-db` only when `RESTART_TEST_DB` is truthy** --
+  `1`/`true`/`yes`/`on` restart, `0`/`false`/`no`/`off` and unset do not, and anything else exits 2
+  rather than being guessed at. See "Catalog fragmentation and the test-runner wrapper" below for
+  what the restart buys and why it is opt-in. The wrapper falls through to plain pytest when the
+  container is absent (CI, fresh checkout).
 - **Container-spawning deploy tests are excluded by default.** The `tests/test_deploy` integration
   tests that drive a real `docker` daemon are marked `@pytest.mark.docker`, and `./scripts/test.sh`
   defaults to `-m "not docker"` so a routine local run never spawns containers on the host's
@@ -34,24 +37,30 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   bare `pytest` reaches the system daemon outside CI. Opt in locally with
   `SHEKEL_ALLOW_HOST_DOCKER=1 PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/...`.
   Full rationale and the daemon-isolation plan: `docs/test-harness-isolation.md`.
-- **Full suite:** ~11,800 tests, ~4.5-5 min at the default `-n 12` parallelism (set in `pytest.ini`
-  `addopts`). Measured 2026-08-30: 11,788 passed in 278-296 s over four runs, ~18 s run-to-run
-  variance. Do not quote these figures without their date; the wrapper's own output is the current
-  measurement.
+- **Full suite:** ~13,000 tests, roughly 5-8 min at the default `-n 12` parallelism (set in
+  `pytest.ini` `addopts`). Measured 2026-08-30: 11,788 passed in 278-296 s over four runs, ~18 s
+  run-to-run variance. Measured 2026-09-04 on `chore/test-restart-default`, all three under the
+  suite slot with `RESTART_TEST_DB=1`: 13,019 passed in 477 s, 13,019 in 370 s, and 13,020 in 325 s.
+  **Do not quote any of these without their date** -- seven runs across six days spread from 278 s
+  to 477 s, so a bare number is not evidence, and the count moves with the branch (the third figure
+  differs because the commit that produced it adds a test). Contention explains none of the three:
+  each held the slot alone. The wrapper's own output is the current measurement.
 - **Concurrent invocations are serialized by the suite slot** (`scripts/suite_slot.sh`, PR #199,
   2026-09-02): `acquire <name>` before a gating run, `release <name>` after, `status` to inspect.
-  The postmaster is SHARED. `test.sh` attempts a hygiene restart first, and its live-backend probe
-  skips the restart when another run's connections are visible -- but the probe is a race (probe,
-  then restart), it is blind to a run whose only connections sit on the excluded admin database, and
-  even a correctly skipped restart leaves two suites contending (the slot script's header carries
-  the measurement: 859 s against 304 s alone, both results void). A probe is not a lock, which is
-  why the slot is mandatory rather than advisory. Semantics, exemptions and the staleness rules live
-  in `.claude/rules/testing.md` and the script's own header. What the slot does not cover, the
-  worker databases do: the per-worker DB name is the stable form `shekel_test_{worker_id}` (no PID
-  suffix), so two unslotted invocations against one cluster collide with a clear "database already
-  exists" failure rather than silent corruption -- isolate a second checkout with `TEST_DB_PREFIX`
-  and `TEST_TEMPLATE_DATABASE` ("Two checkouts against one cluster" below). Orphan cleanup at
-  session start drops any leftover DB from a previous crashed run.
+  The postmaster is SHARED. A `RESTART_TEST_DB=1` run attempts a hygiene restart first, and its
+  live-backend probe skips the restart when another run's connections are visible -- but the probe
+  is a race (probe, then restart), it is blind to a run whose only connections sit on the excluded
+  admin database (observed 2026-09-04: it read ZERO backends while a 756 s full-suite run was live,
+  and the restart that followed voided that run with 155 setup errors), and even a correctly skipped
+  restart leaves two suites contending (the slot script's header carries the measurement: 859 s
+  against 304 s alone, both results void). A probe is not a lock, which is why the slot is mandatory
+  rather than advisory. Semantics, exemptions and the staleness rules live in
+  `.claude/rules/testing.md` and the script's own header. What the slot does not cover, the worker
+  databases do: the per-worker DB name is the stable form `shekel_test_{worker_id}` (no PID suffix),
+  so two unslotted invocations against one cluster collide with a clear "database already exists"
+  failure rather than silent corruption -- isolate a second checkout with `TEST_DB_PREFIX` and
+  `TEST_TEMPLATE_DATABASE` ("Two checkouts against one cluster" below). Orphan cleanup at session
+  start drops any leftover DB from a previous crashed run.
 - **First-time setup:** build the template once with `python scripts/build_test_template.py`; see
   "Building the test template" below for when to rebuild.
 - **Before reporting done:** every batch (or the single full- suite invocation) must end in
@@ -108,26 +117,62 @@ Verified by the negative: 5,000 CREATE/DROP cycles through fresh `psql` connecti
 exits, no long-lived backend) does **not** fragment -- DROP stays at ~3 ms. Only the workload
 pattern of "many long-lived backends + heavy DDL" triggers the drift.
 
-**Fix.** `./scripts/test.sh` restarts `shekel-dev-test-db` before every pytest invocation, waits for
-`pg_isready`, then execs into pytest with whatever arguments were passed. Cost is ~3 s, invisible
-compared to the variance it eliminates.
+**Fix.** `RESTART_TEST_DB=1 ./scripts/test.sh` restarts `shekel-dev-test-db`, waits for
+`pg_isready`, then execs into pytest with whatever arguments were passed. It was unconditional until
+2026-09-04; the "Escape hatches" list below carries why it is now opt-in and what replaced the
+always-on reset as the drift signal.
 
 Escape hatches:
 
-- `SKIP_DB_RESTART=1 ./scripts/test.sh ...` -- skip the restart for follow-up invocations in a tight
-  iteration loop. First invocation pays the restart; subsequent ones reuse the warm cluster.
-  Re-restart manually (or just call the wrapper without `SKIP_DB_RESTART`) once degradation becomes
-  noticeable -- a single `CREATE / DROP DATABASE` round-trip at the admin DSN past ~15 ms is the
-  rule-of-thumb cutoff.
-- `DB_CONTAINER=other-container-name ./scripts/test.sh` -- point at a different test-db container
-  (e.g. when running against a staging cluster on a different port).
+- **The restart is OPT-IN: `RESTART_TEST_DB=1 ./scripts/test.sh ...`** (inverted 2026-09-04; the
+  previous opt-out spelling `SKIP_DB_RESTART` was deleted rather than kept as a second way to say
+  the same thing). Ask for it before a gating full-suite run. Two reasons the default is no-restart,
+  and only the second is a shared-cluster artifact: the cost is fixed while the benefit is
+  proportional to how much DDL the run does, so a targeted run paid the whole restart for drift it
+  did not cause; and the restart terminates every backend on a container every worktree shares,
+  which made an ordinary targeted run a hazard to a peer's in-flight suite.
+- **What tells you when to ask.** A run that skips the restart reports the container's state,
+  because with the restart opt-in there is otherwise no instrument for the drift anywhere in the
+  repo. When the container is up that is its uptime, observed:
+
+  ```text
+  [test.sh] not restarting shekel-dev-test-db (Up 14 minutes (healthy)) -- set RESTART_TEST_DB=1 to force the hygiene restart
+  ```
+
+  It is not printed on every run. There are **five** states and the wrapper names which one it
+  found: docker absent, container absent, container paused, container up, or container present but
+  not running. Paused is split out of **up**, not out of not-running: docker reports a paused
+  container as `Up 5 minutes (Paused)`, so it would otherwise read as healthy. The two failure modes
+  differ and the messages say which -- a not-running container makes pytest fail to connect, while a
+  PAUSED one makes it HANG against a SIGSTOPped postmaster. Neither is started for you; the old
+  opt-out default used to start a stopped one silently. The classifier is held to real docker status
+  strings, arm ORDER included, by `tests/test_scripts/test_test_runner_container_states.py` -- that
+  order is the whole of the paused fix, and nothing else would catch its reversal.
+  **The `~15 ms` CREATE/DROP cutoff this section named as the trigger is WITHDRAWN, not moved**: the
+  table above reads 14.6 ms on a FRESHLY restarted container and 15.6 ms after ONE run, so the
+  threshold fired after a single run and meant "restart every time" in the clothes of a
+  measurement -- and those figures were taken under `STRATEGY FILE_COPY`, which the clone no longer
+  uses. No replacement threshold is offered here, because re-deriving one under `WAL_LOG` belongs to
+  the work that removes the shared cluster rather than to this wrapper: until then uptime is the
+  signal and a gating run is the occasion.
+- `TEST_DB_CONTAINER=other-container-name ./scripts/test.sh` -- point at a different test-db
+  container (e.g. when running against a staging cluster on a different port). The wrapper answered
+  to the bare `DB_CONTAINER` until 2026-09-04, which is the same environment variable
+  `scripts/backup.sh`, `restore.sh` and `verify_backup.sh` read to name the PRODUCTION container --
+  so one export aimed a hygiene restart at production, or a `restore.sh` DROP at a test container.
+  `deploy/shekel-deploy.sh` had already avoided the clash with `SHEKEL_DB_CONTAINER`; the test
+  runner now follows it. `DB_CONTAINER` is no longer read by the test runner at all.
 - Wrapper is a no-op when the container does not exist, so CI (which spins up its own postgres
   service) is unaffected.
-- **The restart is SKIPPED, loudly, when another run is using the container.** It terminates every
-  backend, so performing it while a second checkout's suite is live kills that run with
-  `server closed the connection unexpectedly` -- measured 2026-08-08 as 208 setup errors, which read
-  exactly like a code regression at the point where they surface. The wrapper asks
-  `pg_stat_activity` for live `%test%` connections first. The restart is shared-memory hygiene, not
+- **A requested restart is still SKIPPED, loudly, when another run is using the container.** It
+  terminates every backend, so performing it while a second checkout's suite is live kills that run
+  with `server closed the connection unexpectedly` -- measured 2026-08-08 as 208 setup errors, which
+  read exactly like a code regression at the point where they surface. The wrapper first counts
+  backends in `pg_stat_activity` on any database other than `postgres` / `template0` / `template1`.
+  It does NOT match on the name `%test%`: plan step R7b-2 measured that predicate blind to exactly
+  the runs it existed to protect, because the per-worker databases are named from `TEST_DB_PREFIX`
+  (values like `r7a2`, `xf2c3`) and not from the word "test". This container is dedicated to the
+  suite, so any non-admin database on it belongs to a run. The restart is shared-memory hygiene, not
   a correctness gate, so skipping it costs drift and nothing else.
 
 ### Two checkouts against one cluster
@@ -154,7 +199,8 @@ See "Cause" above. The fragmentation is in PG shared memory, not on-disk pages.
 **Why not switch back to TRUNCATE-based reset?** The Phase 3b move to drop+reclone was driven by
 audit-trigger and DDL-state isolation requirements (see
 `docs/audits/test_improvements/per-worker-database-plan.md`). Reverting would re-introduce the bugs
-Phase 3b fixed. The restart-per-suite cost is a better tradeoff than test isolation gaps.
+Phase 3b fixed. Paying for the occasional hygiene restart is a better tradeoff than test isolation
+gaps.
 
 ### Optional per-directory batching (historical)
 

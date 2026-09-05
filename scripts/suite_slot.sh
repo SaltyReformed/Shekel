@@ -6,12 +6,16 @@
 #              honoured by scripts/build_test_template.py:150 and
 #              tests/conftest.py:89. Do NOT build a private one on top.
 #   WORKER DBs are ISOLATED by TEST_DB_PREFIX.
-#   POSTMASTER is SHARED, and this is the real hazard: scripts/test.sh:159
-#              runs `docker restart "$DB_CONTAINER"` as its FIRST act, which
-#              KILLS any in-flight run in any worktree. One-directional: a
-#              gating run destroys a targeted one, not the reverse.
-#   CONTENTION is real and measured: 859s contended vs 304s alone (2.8x), and
-#              both results are void.
+#   POSTMASTER is SHARED, in two independent ways:
+#     RESTART    `RESTART_TEST_DB=1 ./scripts/test.sh` runs `docker restart` before
+#              pytest, which KILLS any in-flight run in any worktree.  Since
+#              2026-09-04 that is OPT-IN, so an ordinary invocation no longer
+#              carries this hazard -- but a gating run, which is exactly the
+#              one that should ask for the restart, still does.
+#     CONTENTION is real and measured: 859s contended vs 304s alone (2.8x), and
+#              both results are void.  This one needs NO restart to bite, which
+#              is why inverting the restart default did not make the slot
+#              optional.
 # A /proc PROBE is not a LOCK -- two sessions can both probe clear and both
 # start. `mkdir` is atomic, so exactly one wins.
 #
@@ -21,13 +25,18 @@
 #   scripts/suite_slot.sh release <name>  -> frees it
 #   scripts/suite_slot.sh status          -> holder + LIVE probe
 #
-# THE EXEMPTION IS ONE-DIRECTIONAL. A targeted run is exempt from the ROLE
-# hazard (it never touches cluster-scoped shekel_app) but NOT from the RESTART
-# hazard: `./scripts/test.sh` without SKIP_DB_RESTART=1 restarts the shared
-# postmaster as its FIRST act, killing any in-flight run whatever prefix either
-# side uses. So a targeted run does not endanger a gating run; a gating run
-# DESTROYS a targeted one. "Targeted runs are not gated" reads as symmetric and
-# is not -- always acquire before a gating run, whatever else is running.
+# THE EXEMPTION WAS ONE-DIRECTIONAL, AND THE INVERT MADE IT PARTLY SYMMETRIC.
+# A targeted run is exempt from the ROLE hazard (it never touches cluster-
+# scoped shekel_app) and, since the restart went opt-in, it no longer restarts
+# the postmaster by accident. What survives:
+#   * A gating run that sets RESTART_TEST_DB=1 still DESTROYS an in-flight
+#     targeted run, whatever prefix either side uses. That direction is
+#     unchanged, and it is the reason to acquire before a gating run.
+#   * WITHOUT the flag the two are SYMMETRIC: neither kills the other, and
+#     CONTENTION voids both results equally (859s vs 304s). That is not an
+#     exemption for either side, it is a shared loss.
+# So: always acquire before a gating run, whatever else is running -- but do
+# not read "targeted runs are not gated" as "targeted runs are free".
 # (--collect-only is genuinely exempt both ways: no DB writes, no template.)
 #
 # ACQUIRE CANNOT PROTECT A RUN ALREADY IN FLIGHT. It probes AFTER taking the
