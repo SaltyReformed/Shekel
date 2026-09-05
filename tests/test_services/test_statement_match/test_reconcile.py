@@ -168,6 +168,106 @@ class TestALineWithNoAvailableActNeverEntersTheInbox:
         assert any("Capital One" in note for note in card.panel.notes)
 
 
+class TestALineTheBankDatesImpossiblyIsSTILLInboxWork:
+    """Plan step ``bank_import:X-gm``, finding **N-325**.
+
+    **The class this step exists for, graded where it was invisible.**  Such a
+    line reached NO CARD on this page at all: ``_creatable_lines`` dropped it
+    into ``ReviewBounds.impossible_day_count`` before the split, so it was on
+    no tab, in no count, and reachable only from the workbench plan step
+    ``bank_import:X-gi-2`` deletes.  Its ADD really is refused, so what it gets
+    is a card with the ADD shut -- ruling **R-JH**'s answer for a standing
+    *never a purchase* answer, on the one other class whose door is shut and
+    whose line is still unexplained.
+    """
+
+    @staticmethod
+    def _an_impossible_line(seed_user):
+        """Stage one line the bank dates made a day AFTER it took the money."""
+        day = seed_user["bootstrap_period"].start_date + timedelta(days=3)
+        a_bank_line(
+            seed_user, an_import(seed_user), amount="-31.41", posted_on=day,
+            transaction_on=day + timedelta(days=1), merchant="Amazon",
+        )
+
+    def test_it_is_ON_the_inbox_and_counted_there(self, app, db, seed_user):
+        """One card, on To explain, and the caption says one.
+
+        The count and the cards are asserted together: a page that counted it
+        and rendered nothing would be the caption-over-an-empty-tab shape, and
+        one that rendered it uncounted would under-report the work.
+        """
+        an_envelope(seed_user)
+        self._an_impossible_line(seed_user)
+        db.session.commit()
+
+        page = _page(seed_user, Tab.TO_EXPLAIN)
+
+        assert _counts(page)[Tab.TO_EXPLAIN] == 1
+        assert page.hero.to_explain == 1
+        assert len(_cards(page)) == 1
+
+    def test_its_ADD_is_SHUT_and_its_MATCH_is_not(self, app, db, seed_user):
+        """The card is work with one door closed, not a disposition.
+
+        MATCH staying open is the whole reason this is inbox work rather than a
+        holding state: the owner can still pair the line with a row they hold,
+        which is the only act the app can honour for it.
+        """
+        an_envelope(seed_user)
+        # **An unexplained row this line cannot be, so MATCH has a pool and no
+        # proposal claims the line.**  A row of the line's own figure would be
+        # matched by the proposer, and the card's ADD would then be shut by
+        # ``ADD_SHUT_BY_A_PROPOSAL`` -- a green-looking case grading the wrong
+        # refusal.  The premise is asserted below rather than assumed.
+        a_purchase(seed_user, an_envelope(seed_user), amount="812.55")
+        self._an_impossible_line(seed_user)
+        db.session.commit()
+
+        assert statement_match.review_set(a_scope(seed_user)).proposals == ()
+        card = _cards(_page(seed_user, Tab.TO_EXPLAIN))[0]
+
+        add = card.panel.offer_for(Verb.ADD)
+        assert add.is_open is False
+        assert "before it was spent" in add.waiting_for
+        assert card.panel.offer_for(Verb.MATCH).is_open is True
+
+    def test_it_is_on_NO_other_tab(self, app, db, seed_user):
+        """Exactly one tab holds it, which is what *no card anywhere* was.
+
+        Asserted over every tab rather than over the two holding ones: the
+        defect this step closed was a line on NONE of them, so a case naming a
+        subset would be a claim about that subset.
+        """
+        an_envelope(seed_user)
+        self._an_impossible_line(seed_user)
+        db.session.commit()
+
+        counts = _counts(_page(seed_user, Tab.TO_EXPLAIN))
+
+        assert counts[Tab.TO_EXPLAIN] == 1
+        assert counts[Tab.TRANSFERS] == 0
+        assert counts[Tab.SKIPPED] == 0
+        assert counts[Tab.EXPLAINED] == 0
+        assert counts[Tab.FILED_BY_RULES] == 0
+
+    def test_the_page_reports_it_as_no_UNEXAMINED_bound(
+        self, app, db, seed_user,
+    ):
+        """The bound is deleted, not reworded.
+
+        A sentence in *what this page did not look at* would now be announcing
+        work the page is showing on the tab beside it.
+        """
+        an_envelope(seed_user)
+        self._an_impossible_line(seed_user)
+        db.session.commit()
+
+        page = _page(seed_user, Tab.TO_EXPLAIN)
+
+        assert page.unexamined == ()
+
+
 class TestAStandingNeverAnswerIsNotADisposition:
     """Ruling **bank_import:R-JH**, plan step ``bank_import:X-gj-4c``.
 

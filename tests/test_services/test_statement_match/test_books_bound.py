@@ -503,7 +503,9 @@ class TestTheGridBadgeAgreesWithTheScreen:
         day = _the_calendars_first_day(db, seed_user)
         a_bank_line(seed_user, an_import(seed_user), posted_on=day)
 
-        assert awaiting_review_count(seed_user["account"].id, day) == 0
+        assert awaiting_review_count(
+            seed_user["user"].id, seed_user["account"].id, day,
+        ) == 0
 
     def test_it_still_equals_proposals_plus_unmatched(
         self, app, db, seed_user,
@@ -534,7 +536,9 @@ class TestTheGridBadgeAgreesWithTheScreen:
         db.session.flush()
 
         review = review_set(a_scope(seed_user))
-        counted = awaiting_review_count(seed_user["account"].id, day)
+        counted = awaiting_review_count(
+            seed_user["user"].id, seed_user["account"].id, day,
+        )
         proposed_lines = {
             line.line_id
             for proposal in review.proposals for line in proposal.lines
@@ -544,6 +548,10 @@ class TestTheGridBadgeAgreesWithTheScreen:
             "this case is about proposals PLUS unmatched; with none staged "
             "the equality below has only one term"
         )
+        # ``unmatched`` holds the PARKED lines too since plan step
+        # ``bank_import:X-gm``, so this union is the inbox only where none is
+        # parked -- which this fixture stages.  Adding one here would fail
+        # loudly rather than pass for the wrong reason.
         assert counted == len(proposed_lines) + len(review.unmatched)
         assert counted == 1
 

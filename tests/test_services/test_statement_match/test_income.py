@@ -363,13 +363,13 @@ class TestTheLineStopsBeingUnexplained:
         line = _a_deposit(seed_user)
         opens = a_scope(seed_user).calendar.opening_bound()
         before = statement_match.awaiting_review_count(
-            seed_user["account"].id, opens,
+            seed_user["user"].id, seed_user["account"].id, opens,
         )
 
         _record(seed_user, line)
 
         after = statement_match.awaiting_review_count(
-            seed_user["account"].id, opens,
+            seed_user["user"].id, seed_user["account"].id, opens,
         )
         assert (before, after) == (1, 0)
 
@@ -974,19 +974,23 @@ class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
 
 
 class TestWhichLinesGetAnActAndWhichSTILLDoNot:
-    """The gap this step closed, and the one it does NOT -- both measured.
+    """Every unexplained line reaches exactly one list -- measured both ways.
 
     ``ck_bank_statement_lines_amount_real_nonzero`` declares ``amount <> 0``,
     and :func:`~._rules.pipeline_for` is total over both directions and every
     answer -- so every line is a candidate for exactly one ACT.  (It was the
     two lists reading the SIGN directly, ``amount < 0`` here and ``amount > 0``
     there, until plan step ``bank_import:X-gj-2b-2`` made the dispatcher the
-    partition; the totality argument is the same one, moved.)  They are not
-    total as LISTS, and a first draft of this class asserted that they were:
-    ``_creatable_lines`` drops an outflow the bank dates MADE after it POSTED
-    before the split (finding **N-325**), and that line reaches none of the
-    three lists while still being counted by ``awaiting_review_count``.  Named
-    by this step's own adversarial review 2026-08-27.
+    partition; the totality argument is the same one, moved.)
+
+    **The LISTS were not total either, and plan step ``bank_import:X-gm``
+    is what made them so.**  A first draft of this class asserted totality and
+    was wrong: ``_creatable_lines`` dropped an outflow the bank dates MADE
+    after it POSTED before the split (finding **N-325**), and that line reached
+    none of the lists while still being counted by ``awaiting_review_count``.
+    Named by this step's own adversarial review 2026-08-27, and closed by
+    deleting the drop rather than the claim -- the class name is kept because
+    the second case below is still the one that grades it.
     """
 
     @pytest.mark.parametrize("amount", ["-180.00", "0.15"])
@@ -1015,21 +1019,23 @@ class TestWhichLinesGetAnActAndWhichSTILLDoNot:
         )
         assert offered == [line.id]
 
-    def test_an_IMPOSSIBLE_DAY_outflow_still_reaches_NO_list(
+    def test_an_IMPOSSIBLE_DAY_outflow_NOW_reaches_a_list(
         self, app, db, seed_user,
     ):
-        """The class bank_import:R-GW did NOT close, pinned so it cannot be forgotten.
+        """The class bank_import:R-GW did not close, closed by X-gm.
 
         An outflow the bank dates as MADE after it POSTED has no day a
-        purchase could happen on, so ``_creatable_lines`` declines it and
-        counts it on ``ReviewBounds`` instead -- finding **N-325**, ruled
-        *reported rather than repaired* 2026-08-19 because the alternative
-        decides which day the app believes when the bank contradicts itself.
+        purchase could happen on -- finding **N-325**, ruled 2026-08-19 -- and
+        ``_creatable_lines`` used to answer that by declining the line and
+        counting it on ``ReviewBounds``, which left it in ``unmatched`` and in
+        the grid's awaiting count with no control anywhere.  *This case was
+        written to fail if a later step gave the class an act, and plan step
+        ``bank_import:X-gm`` is that step.*
 
-        It is therefore in ``unmatched`` -- and in the grid's awaiting count --
-        with no control anywhere, which is the SAME shape this step closed for
-        inflows.  This case exists so that claim stays honest: if a later step
-        gives the class an act, this fails and says so.
+        The line is in ``creatable`` now, carrying the create door's own
+        refusal and no placement, so it reaches a CARD while the control that
+        could never succeed is still withheld.  Exactly one list holds it,
+        which is the same claim the deposit case above makes.
         """
         day = seed_user["bootstrap_period"].start_date
         line = _a_deposit(
@@ -1039,17 +1045,16 @@ class TestWhichLinesGetAnActAndWhichSTILLDoNot:
 
         review = review_set(a_scope(seed_user))
 
-        assert review.creatable == ()
+        # **All four lists are enumerated**, because "exactly one holds it" is
+        # a claim about every one of them: the other three are SUBSETS of
+        # ``unmatched``, so an enumeration missing one is a claim about three.
+        assert [item.line.line_id for item in review.creatable] == [line.id]
         assert review.parked == ()
-        # **The fourth list, added by plan step ``bank_import:X-gj-4c``.**
-        # ``unmatched`` holding the line does not exclude it: the other three
-        # are all SUBSETS of ``unmatched``, so "no control anywhere" is a claim
-        # about every one of them and an enumeration missing one is a claim
-        # about three.
         assert review.answered_never == ()
         assert review.recordable_inflows == ()
         assert [item.line_id for item in review.unmatched] == [line.id]
-        assert review.bounds.impossible_day_count == 1
+        assert review.creatable[0].withheld is not None
+        assert review.creatable[0].placement is None
 
     def test_a_ZERO_line_cannot_EXIST(self, app, db, seed_user):
         """The constraint the two doors' totality rests on, graded directly.

@@ -645,24 +645,30 @@ class TestTheSKIPVerbIsLitAndShutWhereTheDoorWouldRefuse:
         assert not offer.is_open
         assert "another account you hold" in offer.waiting_for
 
-    def test_a_PROPOSED_card_payment_line_is_shut_TOO(
+    def test_a_card_payment_line_is_never_PROPOSED_at_all(
         self, app, db, seed_user,
     ):
-        """The line the barred lists cannot see, driven through BOTH paths.
+        """Ruling **R-HQ** made structural, plan step ``bank_import:X-gm``.
 
-        A tier proposes a match for this line, so it is in ``proposals`` and
-        in neither barred list -- and the panel must still shut SKIP, because
-        :func:`~._skipping.skip_line` still refuses it.  The two halves are
-        asserted from two independent paths: the rendered card, and the door
-        itself.
+        **The fixture is the one that used to produce a proposal**: an
+        envelope holding a `$793.23` purchase named for the card, and a card
+        payment of the same figure on the same days.  A tier paired them, so
+        the line was in ``proposals`` and in neither barred list, and this case
+        existed to prove the panel still shut SKIP for it through the
+        pass-level merchant set.
 
-        **This is the case a narrower implementation gets wrong**, and this
-        case is what establishes that it is reachable -- by CONSTRUCTION,
-        asserting its own premise, rather than by citing a census.  *An
-        earlier draft cited :mod:`._bars`' seven Van Loan lines as the
-        populated case, and adversarial review measured that the wrong set*:
-        four of those are already MATCHED and three fall before the pay
-        calendar opens, and a matched line is out of the pass entirely.
+        It cannot happen now.  :func:`~._undisposed.inbox_partition` takes the
+        holding states out BEFORE the proposer is given anything, which is what
+        makes *a holding state is not a task* a fact about the pass rather than
+        a rule each surface keeps -- and is what lets the grid's badge count
+        the same set the inbox renders.  So what this case grades is the
+        absence: the pairing is not proposed, the line is parked, and the door
+        still refuses SKIP in the words the card shows.
+
+        *A matched line is out of the pass entirely, which is why an earlier
+        draft citing :mod:`._bars`' seven Van Loan lines as the populated case
+        was the WRONG SET -- four are already matched and three fall before the
+        pay calendar opens.  Named by adversarial review 2026-09-04.*
         """
         envelope = an_envelope(seed_user)
         a_purchase(
@@ -677,16 +683,33 @@ class TestTheSKIPVerbIsLitAndShutWhereTheDoorWouldRefuse:
 
         scope = a_scope(seed_user)
         review = review_set(scope)
-        # The premise: this line is PROPOSED, so neither barred list holds it.
+        # **The premise, asserted on the ROW and by its FIGURE.**  "Not
+        # proposed" is trivially true when there is nothing to propose
+        # against, so this case is worthless unless the counterpart the tier
+        # would have paired is demonstrably in the pass.  *A first version
+        # wrote ``review.unmatched_rows or review.parked``, which
+        # short-circuits on the parked list asserted three lines down and so
+        # graded nothing about the row at all.*  Named by adversarial review
+        # 2026-09-05.
         assert any(
-            one.lines[0].line_id == line.id for one in review.proposals
-        ), "the tier did not propose the pairing this case is about"
+            row.cash_amount == Decimal("-793.23")
+            for row in review.unmatched_rows
+        ), "the purchase row the tier would have paired is not in the pass"
         assert not any(
-            one.line.line_id == line.id
-            for one in review.parked + review.answered_never
-        )
+            one.lines[0].line_id == line.id for one in review.proposals
+        ), "a holding state was offered to the proposer"
+        assert any(
+            one.line.line_id == line.id for one in review.parked
+        ), "the card payment is not parked"
 
-        offer = self._skip_offer(seed_user, line.id)
+        # **Off the PARKED card, not the inbox.**  ``_skip_offer`` looks in
+        # ``to_explain_sections``, which is where this line used to be found
+        # because a proposal put it there; it is a holding state now, so
+        # reading the inbox would raise ``StopIteration`` rather than fail.
+        parked = next(
+            one for one in review.parked if one.line.line_id == line.id
+        )
+        offer = parked_card(review, parked).panel.offer_for(Verb.SKIP)
         assert not offer.is_open, (
             "SKIP was offered on a line the door refuses, which is the shut "
             "tab over an open door ruling R-GJ closed for the ADD verb"

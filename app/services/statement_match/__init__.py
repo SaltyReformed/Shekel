@@ -129,10 +129,14 @@ The public surface, and what each piece is for:
   :func:`reconcile_page` -- so the reader is not exported either, for the
   reason nothing else on that page is: only the route imports, and it imports
   the page.
-* :func:`awaiting_review_count` -- how many of an account's recorded lines
-  still have no answer, which is the figure the GRID's bank control renders.
-  It applies the review pass's own four predicates and no others, so a badge
-  and the screen it links to cannot disagree.
+* :func:`awaiting_review_count` -- how many bank lines the review is still
+  asking the owner about, which is the figure the GRID's bank control renders.
+  Since plan step ``bank_import:X-gm`` it is ``len`` over
+  :func:`~._undisposed.inbox_partition`, the SAME walk the Reconcile page draws
+  its inbox cards from -- so a badge and the screen it links to cannot answer
+  different questions.  It applied four predicates of its own until then, two
+  of them SQL restatements of the pass's Python and one the pass did not have,
+  and it read **27** where the page read **18**.
 * :func:`release_match` -- the undo.  It restores the QUESTION rather than
   the days, and removes what the act CREATED: the purchase a bank line became,
   a group's recorded difference, and the budget line minted to hold a purchase

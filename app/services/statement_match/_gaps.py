@@ -209,21 +209,6 @@ class ReviewBounds:
         unpriceable_count: How many of the account's rows the amount model
             could not price, so they could not be offered
             (:class:`~._offers.Candidates`).
-        impossible_day_count: How many unexplained OUTFLOWS the bank dates as
-            MADE after it POSTED them, so no day exists that a purchase could
-            be made on (finding **N-325**, developer ruling 2026-08-19).
-            ``entry_service.create_entry`` refuses a purchase whose money left
-            before it was spent, correctly, so offering these a destination
-            chooser renders a control whose submission can never succeed --
-            the *chooser whose submission always fails* shape this package has
-            now named four times.  **Reported rather than repaired**: the
-            other remedy was to clamp the purchase day to the earlier of the
-            two, which decides which day the app believes when the bank
-            contradicts itself, and ruling **R-FW** refused exactly that
-            substitution one clock over.  0 of the developer's own 378
-            recorded lines are this shape (re-measured 2026-08-31; the
-            figure read 361, one export behind); the OFX adapter's own measurement
-            found 2 of 361, so a second source makes it live.
 
     **The near tier's bound is NOT here, and that is plan step
     ``bank_import:X-f6d-3``'s one deliberate exception to the paragraph above.**
@@ -234,6 +219,19 @@ class ReviewBounds:
     (:attr:`ReviewSet.declined_lines`), where the act it should prompt is
     already offered -- and the panel keeps the four limits that genuinely
     belong to the PASS rather than to any one line.
+
+    **``impossible_day_count`` is GONE, and plan step ``bank_import:X-gm``
+    deleting it is the point rather than a tidy-up.**  It counted the lines the
+    bank dates MADE after they POSTED, which
+    :func:`~._leftovers._creatable_lines` dropped out of every list to produce
+    it -- so the number named no line, and the lines it named reached no card
+    on the Reconcile page at all.  That is the paragraph above applied to the
+    one member that had outlived it: a bound is only a bound if it can be acted
+    on, so this one moved onto the LINE as
+    :attr:`~._leftovers.CreatableLine.withheld`, where the act it withholds is
+    already offered.  Finding **N-325**'s rule is untouched -- the app still
+    refuses to choose between the bank's two days -- and
+    :func:`~._scope.impossible_days_refusal` is the one sentence that says so.
     """
 
     calendar_opens: "date | None"
@@ -241,7 +239,6 @@ class ReviewBounds:
     before_calendar_last_day: "date | None"
     crowded_days: "tuple[date, ...]"
     unpriceable_count: int
-    impossible_day_count: int = 0
     books: "BooksBound | None" = None
 
     @property
@@ -249,17 +246,17 @@ class ReviewBounds:
         """Return whether this pass left anything unexamined.
 
         The one question the QUEUE's template asks, answered here rather than
-        as five ``or``-ed truth tests in a Jinja condition -- where a sixth
+        as four ``or``-ed truth tests in a Jinja condition -- where a fifth
         limit added later would silently not appear.  ``X-f3c-2b-2b`` added
-        the fifth and this is the property that made that one edit rather than
-        an edit per template.
+        one and this is the property that made that one edit rather than
+        an edit per template; ``X-gm`` deleted one and this is where that was
+        one edit too.
         """
         return bool(
             self.before_calendar_count
             or self.books is not None
             or self.crowded_days
             or self.unpriceable_count
-            or self.impossible_day_count
         )
 
     @property
@@ -271,10 +268,10 @@ class ReviewBounds:
         that are each SHORTER than the fact they are captioned as: so it owes
         the same *no silent caps* sentence :attr:`any_limit` owes the queue.
 
-        **Three of the five limits, and the partition is decided HERE rather
+        **Three of the four limits, and the partition is decided HERE rather
         than by the template picking three** -- which would be this package's
         own *a template restating a partition is a second place for it to be
-        wrong* stated a sixth time.  Each of the five was traced to the list it
+        wrong* stated a sixth time.  Each of the four was traced to the list it
         does or does not bound:
 
         * :attr:`before_calendar_count` bounds the LINE list.
@@ -291,10 +288,6 @@ class ReviewBounds:
         * :attr:`unpriceable_count` bounds the ROW list.
           :class:`~._offers.Candidates` keeps unpriceable ids OUT of ``rows``,
           so they never reach ``unmatched_rows`` either.
-        * :attr:`impossible_day_count` bounds NEITHER.
-          ``_leftovers._creatable_lines`` drops those lines from ``creatable``
-          only; they stay in ``unmatched`` and the line list renders them, so
-          naming them here would claim an absence that is not one.
         * :attr:`crowded_days` bounds NEITHER, and it is the one worth stating
           why.  A crowded day means the GROUP search did not run, which leaves
           MORE lines unexplained rather than fewer -- every one of them in the
