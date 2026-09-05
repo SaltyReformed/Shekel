@@ -51,8 +51,11 @@ What the extractor matches, and which way it errs
     optional and this repo's ``.shellcheckrc`` does not enable it, and
     ``scripts/test.sh`` itself expands ``"$TEST_DB_CONTAINER"`` unbraced
     throughout while shellcheck exits clean; count them with
-    ``grep -c '\$TEST_DB_CONTAINER' scripts/test.sh`` rather than trusting a
-    number here.  This sentence carried a literal count twice and was wrong
+    ``grep -o '\$TEST_DB_CONTAINER' scripts/test.sh | wc -l`` rather than
+    trusting a number here (``grep -c`` counts matching LINES, so it
+    undercounts any line carrying two expansions -- the first instrument
+    written to replace an untrustworthy number was itself the wrong tool).
+    This sentence carried a literal count twice and was wrong
     both times -- "seven", then "nine" against an actual twelve, each written
     just after editing the very file being counted.  A figure that must be
     re-derived on every edit of its own subject does not belong in prose, and

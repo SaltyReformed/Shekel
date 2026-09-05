@@ -26,11 +26,15 @@
 #     TREAT THOSE FIGURES AS A SHAPE, NOT A SCALE.  They were
 #     measured at ``c1e9c775`` (2026-05-20) against ~5,504 tests,
 #     when the clone used ``STRATEGY FILE_COPY``; this branch's own
-#     gate collected 13,019 on 2026-09-04, about 2.4x, and the clone
-#     uses ``WAL_LOG`` (tests/conftest.py).  Re-derive the ratio from
-#     the run in front of you rather than trusting this sentence --
-#     its first draft said "a fifth", its second quoted a count older
-#     than the gate in the same commit.  The DRIFT is real; every absolute number
+#     gate collected ~13,000 on 2026-09-04, about 2.4x, and the clone
+#     uses ``WAL_LOG`` (tests/conftest.py).  The EXACT dated counts
+#     live in ``docs/testing-standards.md``, which is the one home
+#     for them; no precise figure is repeated here on purpose.  Three
+#     drafts of this sentence carried three wrong numbers -- "a
+#     fifth", then a count older than the gate in the same commit,
+#     then one the same commit made stale by adding a test -- because
+#     a count written into the file it counts is wrong the moment it
+#     is written.  The DRIFT is real; every absolute number
 #     describing it is from a different suite on a different clone
 #     strategy, and re-measuring it belongs to the work that removes
 #     the shared cluster entirely.
@@ -68,8 +72,10 @@
 #
 #     So: reach for ``RESTART_TEST_DB=1`` before a gating full-suite
 #     run, and otherwise read the container state this wrapper prints
-#     when it skips the restart -- uptime when the container is up,
-#     and the exit status when it is not.
+#     when it skips the restart.  It names which of five states it
+#     found: docker absent, container absent, container paused,
+#     container up (with its uptime), or container present but not
+#     running (with docker's own status string).
 #
 # Restarts ONLY when ``RESTART_TEST_DB`` is truthy -- ``1``/``true``/
 # ``yes``/``on``; the falsy words do not restart and an unrecognised value
@@ -121,6 +127,8 @@
 #                        restart; unset, empty, ``0``/``false``/
 #                        ``no``/``off`` do not; anything else is
 #                        REFUSED with exit 2 rather than guessed.
+#                        Matching is CASE-INSENSITIVE, so ``TRUE``
+#                        and ``Off`` work as written.
 #                        Deliberately not a bare presence flag: the
 #                        spelling it replaced was opt-OUT, so a
 #                        careless ``=0`` used to land on "skip" and
@@ -270,16 +278,25 @@ if [ -z "$_restart_requested" ]; then
         _db_status="$(docker ps -a --filter "name=^${TEST_DB_CONTAINER}$" \
             --format '{{.Status}}' 2>/dev/null | head -n1 || true)"
     fi
-    # FOUR states, not three.  An earlier version collapsed "docker is not
-    # installed" and "the container does not exist" into one message while
-    # two documents claimed the wrapper told them apart -- so either the
-    # code or the docs had to move, and the code already knows the answer.
+    # FIVE states.  An earlier version collapsed "docker is not installed"
+    # and "the container does not exist" into one message while two documents
+    # claimed the wrapper told them apart -- so either the code or the docs
+    # had to move, and the code already knows the answer.  Counting them was
+    # then wrong twice in a row, "three" and then "four", which is why
+    # tests/test_scripts/test_test_runner_container_states.py now enumerates
+    # them against real docker output instead of a comment doing it.
     #
     # ``*'(Paused)'*`` MUST precede ``Up*``: docker renders a paused
     # container as ``Up 5 minutes (Paused)``, so it matches ``Up*`` and was
-    # reported as healthy while its postmaster is SIGSTOPped -- pytest then
-    # HANGS rather than failing, which is the worst of the four outcomes and
-    # exactly what this branch exists to prevent.
+    # reported as healthy while its postmaster is SIGSTOPped -- and pytest
+    # then HANGS rather than failing.
+    #
+    # Be exact about what this fixes: the REPORT, not the hang.  The wrapper
+    # still execs pytest afterwards, so a paused container still hangs the
+    # run; what changed is that the operator is told why instead of being
+    # shown an everything-is-fine line.  Whether this state should exit 2
+    # like the other two bootstrap failures is a question for the developer,
+    # not a change to make on the way past.
     if [ -z "$_have_docker" ]; then
         echo "[test.sh] not restarting $TEST_DB_CONTAINER (docker is not on" \
             "PATH) -- set RESTART_TEST_DB=1 to force the hygiene restart" >&2

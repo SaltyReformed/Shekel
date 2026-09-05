@@ -37,13 +37,14 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   bare `pytest` reaches the system daemon outside CI. Opt in locally with
   `SHEKEL_ALLOW_HOST_DOCKER=1 PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/...`.
   Full rationale and the daemon-isolation plan: `docs/test-harness-isolation.md`.
-- **Full suite:** ~13,000 tests, ~6-8 min at the default `-n 12` parallelism (set in `pytest.ini`
-  `addopts`). Measured 2026-08-30: 11,788 passed in 278-296 s over four runs, ~18 s run-to-run
-  variance. Measured 2026-09-04 on `chore/test-restart-default`: 13,019 passed in 370 s and 477 s,
-  both under the suite slot with `RESTART_TEST_DB=1`, so contention explains neither.
-  **Do not quote any of these without their date** -- the spread across five runs in six days is
-  wide enough that a bare number is not evidence, and the count moves with the branch. The wrapper's
-  own output is the current measurement.
+- **Full suite:** ~13,000 tests, roughly 5-8 min at the default `-n 12` parallelism (set in
+  `pytest.ini` `addopts`). Measured 2026-08-30: 11,788 passed in 278-296 s over four runs, ~18 s
+  run-to-run variance. Measured 2026-09-04 on `chore/test-restart-default`, all three under the
+  suite slot with `RESTART_TEST_DB=1`: 13,019 passed in 477 s, 13,019 in 370 s, and 13,020 in 325 s.
+  **Do not quote any of these without their date** -- seven runs across six days spread from 278 s
+  to 477 s, so a bare number is not evidence, and the count moves with the branch (the third figure
+  differs because the commit that produced it adds a test). Contention explains none of the three:
+  each held the slot alone. The wrapper's own output is the current measurement.
 - **Concurrent invocations are serialized by the suite slot** (`scripts/suite_slot.sh`, PR #199,
   2026-09-02): `acquire <name>` before a gating run, `release <name>` after, `status` to inspect.
   The postmaster is SHARED. A `RESTART_TEST_DB=1` run attempts a hygiene restart first, and its
@@ -138,11 +139,15 @@ Escape hatches:
   [test.sh] not restarting shekel-dev-test-db (Up 14 minutes (healthy)) -- set RESTART_TEST_DB=1 to force the hygiene restart
   ```
 
-  It is not printed on every run. There are four states and the wrapper names which one it found:
-  docker absent, container absent, container up, or container not up -- and the last splits again,
-  because a PAUSED container reports as `Up 5 minutes (Paused)` and would otherwise read as healthy
-  while pytest HANGS against a stopped postmaster. The not-running cases are said loudly: pytest is
-  about to fail to connect, and unlike the old opt-out default nothing starts the container for you.
+  It is not printed on every run. There are **five** states and the wrapper names which one it
+  found: docker absent, container absent, container paused, container up, or container present but
+  not running. Paused is split out of **up**, not out of not-running: docker reports a paused
+  container as `Up 5 minutes (Paused)`, so it would otherwise read as healthy. The two failure modes
+  differ and the messages say which -- a not-running container makes pytest fail to connect, while a
+  PAUSED one makes it HANG against a SIGSTOPped postmaster. Neither is started for you; the old
+  opt-out default used to start a stopped one silently. The classifier is held to real docker status
+  strings, arm ORDER included, by `tests/test_scripts/test_test_runner_container_states.py` -- that
+  order is the whole of the paused fix, and nothing else would catch its reversal.
   **The `~15 ms` CREATE/DROP cutoff this section named as the trigger is WITHDRAWN, not moved**: the
   table above reads 14.6 ms on a FRESHLY restarted container and 15.6 ms after ONE run, so the
   threshold fired after a single run and meant "restart every time" in the clothes of a
