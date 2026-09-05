@@ -17,9 +17,10 @@ pylint's 1000-line ceiling.  The split falls to whoever breaks it, per ruling
 ``balance:R-IR``.  Nothing outside the package imports this module: the
 package re-exports every public name under its original path, so imports and
 ``:class:`` references written before the split resolve unchanged.  The
-PRIVATE names moved with their code, and every reference to one names
-``._inputs``; three successive adversarial passes each found one this
-sentence had missed, so it states the property rather than a count.
+PRIVATE names moved with their code and are referenced as ``._inputs``.
+Four successive adversarial passes each found a reference an earlier sweep
+had missed, so treat this sentence as a claim about intent and grep the bare
+name, not the dotted path, if you need the current set.
 """
 
 from collections.abc import Mapping
@@ -197,29 +198,26 @@ class AccountPayrollFeed:
         :meth:`_complete_years`.
 
         **A window with no complete year falls back to the last PRICED
-        payday.**  A sub-year window has thrown the cap away -- a
-        ``$500``-a-payday deduction and a ``$1,000``-capped one price
-        IDENTICALLY for their first two paydays -- so no rule can be right
-        for both from the fold alone, and three tried here were each measured
-        wrong on exactly that shape (``docs/plans/lessons.md``, the R14-b
-        entry, holds the three and their figures).  The fallback is exact for
-        an uncapped deduction, which is every live one on the developer's
-        data.  **For a capped one it can OVERSTATE**: it reads one payday,
-        and that payday over-reads whenever the cap has not yet bound in its
-        own calendar year.  Measured at cadence 14, ``$600`` a payday against
-        a ``$1,000`` cap, window ``2027-01-15..2028-01-14``: holds ``$600``,
-        annualising to ``$15,600``, **15.6x**.  See the fallback branch for
-        the bound and for what was declined.
+        payday.**  Exact for an uncapped deduction.  For a CAPPED one it can
+        OVERSTATE, whenever that payday's own amount exceeds
+        ``annual_cap / periods_per_year``: measured at cadence 14, ``$600`` a
+        payday against a ``$1,000`` cap over ``2027-01-15..2028-01-14``, it
+        holds ``$600``, which annualises to ``$15,600``.  The multiple is an
+        instance, not a bound; it scales with the amount and the cadence.
 
-        The residue is the window's SPAN.  A window plus one interval at each
-        end must cover a whole calendar year for any year to qualify, which
-        is 52 biweekly paydays or 104 weekly; below that the fallback runs
-        and the over-read depends on the deduction, not only on the window.
+        **The bound is a SPAN.**  A year qualifies only if the window plus
+        one interval at each end covers it, so the fallback can run below 52
+        biweekly paydays or 104 weekly (both measured exactly), and above
+        that it cannot.  Whether it over-reads there depends on the
+        deduction, not on the window alone.
 
-        What would make it exact for EVERYONE is the
-        ENGINE pricing the tail rather than this extrapolating it -- the
-        salary-path step the developer ruled on 2026-09-04 to follow this
-        one, which deletes this method and its fallback entirely.
+        A rule that never over-reads DOES exist -- per observed calendar
+        year, that year's priced total over the paydays the year really
+        holds, minimum across years -- and it is not free: on this module's
+        own uncapped fixture it answers ``$250`` where the truth is ``$500``.
+        The developer declined it on 2026-09-04, and the salary-path step
+        deletes this method rather than replacing it.  The measurements and
+        the six rules tried before this one are in the ledger, not here.
 
         Returns:
             ``(earliest, latest)`` -- the per-payday average of the earliest
@@ -235,38 +233,10 @@ class AccountPayrollFeed:
             by_year.setdefault(payday.year, []).append(amount)
         complete = sorted(self._complete_years())
         if not complete:
-            # No complete year, so no annual total to divide, and the LAST
-            # PRICED payday is the fallback.  **It is the weakest thing in
-            # this module.**  Exact for an uncapped deduction; for a capped
-            # one it OVER-READS whenever the cap has not yet bound in that
-            # payday's own calendar year.
-            #
-            # Measured (cadence 14, $1,000 cap, 730 anchors from 2026-01-01,
-            # "over-reads" = held x periods_per_year > cap):
-            #   $600/payday, window 2027-01-15..2028-01-14 -> holds $600,
-            #     annualises to $15,600, 15.6x
-            #   $50/payday,  40-payday windows -> 170/730 over-read
-            #   $40/payday,  40-payday windows -> 310/730 over-read
-            #   any amount,  63-payday windows -> 0/3650 over-read, and
-            #     0/3650 reach this branch at all
-            # The multiples are instances, not bounds; the ratio scales with
-            # cadence and with amount/cap.
-            #
-            # **A SAFE RULE EXISTS and was declined, which is not the same as
-            # impossible.**  An earlier revision of this comment asserted no
-            # rule over this fold could be safe; an adversarial pass refuted
-            # it by building one -- per observed calendar year, that year's
-            # priced total over the paydays that year really holds, minimum
-            # across years -- which cannot exceed the cap, because the priced
-            # amounts are already clamped.  Measured 0 over-reads against
-            # this branch's 24.5% over 8,820 shapes.  The developer declined
-            # it on 2026-09-04 (ledger row N-541) after the alternatives were
-            # put to him: it is the seventh rule over a fold that has had six,
-            # each safe until measured against a shape nobody had considered,
-            # and the salary-path step deletes the whole branch rather than
-            # adding to it.  Reverting to the count test is not an escape
-            # either (730 anchors, 27 paydays: this rule over-reads 30, the
-            # count test 28).
+            # No complete year, so no annual total to divide.  The last
+            # priced payday is the fallback and it is the weakest thing in
+            # this module; :meth:`_year_averages` states what it costs and
+            # what was declined instead.
             last = self.employee_by_payday[max(self.employee_by_payday)]
             first = self.employee_by_payday[min(self.employee_by_payday)]
             return (first, last)
@@ -295,10 +265,11 @@ class AccountPayrollFeed:
         mismatches.  It REFUSES rather than over-accepts where it cannot
         prove coverage -- a window of one payday, which establishes no
         interval, and an irregular rhythm, whose smallest observed gap
-        understates the real one.  The two
-        shapes are pinned by ``test_a_27_PAYDAY_year_is_divided_by_27`` and
+        understates the real one.  The 27-payday DIVISOR and the 26-of-27
+        COUNT are pinned by ``test_a_27_PAYDAY_year_is_divided_by_27`` and
         ``test_a_27_PAYDAY_year_seen_26_times_is_NOT_complete`` in
-        ``TestBuildContributionTimeline``.
+        ``TestBuildContributionTimeline``; neither refusal shape above has a
+        case of its own.
 
         The window is a contiguous run of one owner's paydays, so a year is
         covered exactly when the run reaches past both its edges.  A payday

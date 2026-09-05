@@ -1112,7 +1112,8 @@ class TestShadowContributionBoundary:
         The ``status_contributes_to_balance`` screen the projection module used
         to apply four times now runs once, here.  Dropping and zeroing are NOT
         interchangeable and this is the case that proves it:
-        ``_average_transfer_contribution`` divides by the number of DISTINCT
+        ``_inputs._average_transfer_contribution`` divides by the number of
+        DISTINCT
         pay periods it sees, so a Cancelled contribution carried through at
         ``$0.00`` in its own period would make the denominator 2 and halve the
         average -- $400 / 2 periods = $200 against the correct $400.

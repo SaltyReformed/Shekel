@@ -245,9 +245,9 @@ class TestAccountPayrollFeed:
         years held 26 paydays; 2027 holds 27 here (2027-01-01 through
         2027-12-31), so that window saw 26 of 27 and the rule of the day
         graded it complete on the count.  An adversarial pass measured what
-        that costs a front-loaded capped deduction -- 60% understated,
-        permanently -- so covering a year now means reaching past both its
-        edges, and this fixture does.
+        that costs a front-loaded capped deduction -- 58% understated
+        against that year's own ``$1,000/27``, permanently -- so covering a
+        year now means reaching past both its edges, and this fixture does.
         """
         paydays = [date(2026, 1, 2) + timedelta(days=14 * i) for i in range(54)]
         periods = _periods(*paydays)
@@ -819,10 +819,11 @@ class TestBuildContributionTimeline:
         IDENTICALLY for their first two paydays, and their true tails are
         ``$500`` and ``$38.46``.  With no complete calendar year there is no
         annual figure to derive, so the hold falls back to the last PRICED
-        payday -- exact for an uncapped deduction, and for a capped one that
-        payday's clamped figure, which can read either way: this fixture's
-        trailing ``$0.00`` understates, while a window ending on the ``$400``
-        of a ``$600``/``$1,000`` pair annualises to ``$10,400``, 10.4x.
+        payday -- exact for an uncapped deduction, which is what this
+        fixture is (a flat ``$500``, held exactly).  For a CAPPED one that
+        payday's clamped figure can read either way: the sibling case below
+        holds a trailing ``$0.00`` and understates, while a window ending on
+        the ``$400`` of a ``$600``/``$1,000`` pair annualises to ``$10,400``.
 
         13 paydays of ``$500``, half a year: the tail holds ``$500``, the
         rate every priced payday shows.
@@ -910,9 +911,12 @@ class TestBuildContributionTimeline:
         wrong about WHICH years it could average, and this rule is not.  It
         is NOT the case that refusing only ever lowers the figure: extend
         this window by one payday, to 2028-01-14, and the fallback reads that
-        payday and holds ``$600`` where the count test holds ``$38.46``.  An
-        earlier revision of this docstring claimed the opposite and used it
-        as a warrant; an adversarial pass measured it false.  The salary-path
+        payday and holds ``$600`` where the count test holds ``$15.38`` --
+        the figure named above, since the cut payday took ``$600`` of the cap
+        outside the window and left ``$400`` inside it.  An earlier revision
+        of this docstring claimed the opposite and used it as a warrant, and
+        a later one put ``$38.46`` here, which belongs to a different window
+        of the same DATES priced from its own first payday.  The salary-path
         step removes the branch rather than bounding it.
         """
         full_year = [
