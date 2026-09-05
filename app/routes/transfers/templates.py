@@ -52,6 +52,7 @@ from app.routes._amount_version_actions import (
     AmountVersionAction,
     withdraw_amount_version,
 )
+from app.services.balance_at import BalanceContext
 from app.services.cash_ledger import resolve_transfer_amount
 from app.routes._recurrence_conflict_chooser import (
     PreEditTemplateState,
@@ -59,12 +60,15 @@ from app.routes._recurrence_conflict_chooser import (
     regenerate_or_conflict_chooser,
 )
 from app.routes._recurrence_form_helpers import (
-    RecurrenceFormContext,
     author_recurrence_for_create,
     recurrence_spec_for_create,
     resolve_recurrence_rule_for_update,
 )
-from app.routes._recurrence_form_render import recurrence_form_state
+from app.routes._recurrence_form_refusals import RecurrenceFormContext
+from app.routes._recurrence_form_render import (
+    create_form_recurrence_state,
+    edit_form_recurrence_state,
+)
 from app.routes._form_errors import load_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import RECURRENCE_END_BOUND_KEY
@@ -166,14 +170,14 @@ def new_transfer_template():
         categories=categories,
         # One value for every recurrence control (see the transaction-template
         # twin).  A CREATE form locks nothing on the SERVER -- there is no
-        # template yet to ask ``owns_validity_window`` about -- but this form
-        # offers every active account as a destination, so the definition it
-        # is about to create may be a loan payment.  Which accounts those are
-        # rides to the browser below and ``recurrence_form.js`` locks the
+        # template yet to ask ``is_standing_loan_payment`` about -- but this
+        # form offers every active account as a destination, so the definition
+        # it is about to create may be a loan payment.  Which accounts those
+        # are rides to the browser below and ``recurrence_form.js`` locks the
         # "Starts on" row when one is chosen; the derivation itself is the
         # route's (``settle_first_occurrence``), so the lock is an affordance
         # rather than the enforcement.
-        recurrence=recurrence_form_state(None),
+        recurrence=create_form_recurrence_state(),
         loan_account_ids=loan_loaders.load_loan_account_ids_for_user(
             current_user.id,
         ),
@@ -395,11 +399,12 @@ def edit_transfer_template(template_id):
         # repeat" option the transaction form does, and it is FIRST -- so a
         # cadence left unselected would default to the DESTRUCTIVE clear, not
         # to a wrong cadence.  ``edit_form_cadence`` is what selects it.
-        recurrence=recurrence_form_state(template),
-        # A LOAN PAYMENT's stop is the loan's projected payoff, rewritten by
-        # ``loan_recurrence_sync`` on every payoff-affecting edit -- so the
-        # control renders disabled and states where the value comes from,
-        # rather than accepting one the next loan edit discards.
+        # The pass is the form's one read pass (plan step R7d-f).
+        recurrence=edit_form_recurrence_state(
+            template, BalanceContext.build(current_user.id),
+        ),
+        # A LOAN PAYMENT's stop is the loan's payoff, resolved through the
+        # composed door: its control renders disabled and displays that.
         periods=[],
         current_period=None,
         # The amount's dated history (plan step X-au-a), precomputed into
@@ -519,7 +524,8 @@ def update_transfer_template(template_id):
     # (F-24).  The helper dispatches the existing-rule (mutate in place)
     # vs no-existing-rule (build + link) branches and pops every
     # recurrence key from ``data``.  ``include_due_day_of_month=False``
-    # because the transfer-template schemas do not expose the field.
+    # because the transfer-template schemas do not expose the field.  The pass
+    # is the PRE-WRITE one the refusals read (plan step R7d-f).
     redirect_response = resolve_recurrence_rule_for_update(
         template,
         data,
@@ -531,6 +537,7 @@ def update_transfer_template(template_id):
             ),
             include_due_day_of_month=False,
         ),
+        pass_ctx=BalanceContext.build(current_user.id),
     )
     if redirect_response is not None:
         return redirect_response

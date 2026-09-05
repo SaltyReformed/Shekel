@@ -60,8 +60,9 @@ arrive before the next one runs.
 :func:`loan_payment_window` answers the same question by ASKING the loan, and
 plan step R7d decomposes into one leaf per surface that reads it: R7d-b built
 the resolver, R7d-d moved its ANSWER SHAPES into the recurrence package and put
-the Recurring surface on it, R7d-c-2 / R7d-e / R7d-f move the remaining
-readers, and R7d-g stops the write and lands
+the Recurring surface on it, R7d-e moved the monthly totals and R7d-f the
+recurrence form's locked "Ends" control and its inverted-window refusal,
+R7d-c-2 moves generation, and R7d-g stops the write and lands
 ``ck_recurrence_rules_valid_window`` true by construction.
 
 **Since R7d-d a reader does not ask this function directly.**  The composed
@@ -130,6 +131,46 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only; these are ORM row types
     from app.models.recurrence_rule import RecurrenceRule
 
 logger = logging.getLogger(__name__)
+
+
+def _destination_account(template: RecurrenceOwner) -> Account | None:
+    """Return the account *template* pays into, or ``None`` when it pays into none.
+
+    **The COLUMN, then a lookup -- never ``template.to_account``**, and an
+    adversarial review of plan step R7d-b measured why.  That relationship is
+    ``lazy="joined"``, which loads it with the template and then does NOT
+    refresh it when the FK column is written: measured on SQLAlchemy 2.0.49,
+    a ``setattr(template, "to_account_id", other)`` leaves ``to_account``
+    pointing at the OLD account through the following ``flush()`` and only
+    re-loads at ``commit()``.  ``routes/transfers/templates.py`` writes
+    exactly that -- ``to_account_id`` is in ``_TEMPLATE_UPDATE_FIELDS`` and
+    is assigned by ``setattr`` -- and then REGENERATES before committing, so
+    a resolver reading the relationship would bound the new destination's
+    rows by the OLD loan's payoff.  A pending template is the second state:
+    its ``to_account_id`` is set and its ``to_account`` is still ``None``.
+    ``db.session.get`` costs nothing when the row is already in the identity
+    map, which is the case the joined load creates anyway.
+
+    ONE spelling, shared by :func:`loan_payment_window` and
+    :func:`is_standing_loan_payment` (plan step R7d-f; the first cut carried
+    the read twice in this module and an adversarial review named it).
+
+    Args:
+        template: A ``TransferTemplate``, or a ``TransactionTemplate``, which
+            carries no ``to_account_id`` at all -- ``getattr`` on the FK
+            column is what keeps both readers kind-agnostic.
+
+    Returns:
+        The destination :class:`~app.models.account.Account`, or ``None`` when
+        the template pays into no account or names one not yet flushed.  The
+        second is unreachable for a persisted definition -- ``to_account_id``
+        is NOT NULL under an ``ON DELETE RESTRICT`` foreign key -- and a
+        pending one generates nothing either way.
+    """
+    account_id = getattr(template, "to_account_id", None)
+    if account_id is None:
+        return None
+    return db.session.get(Account, account_id)
 
 
 def loan_payment_window(
@@ -210,7 +251,7 @@ def loan_payment_window(
     door :func:`app.services.recurring_definition.resolved_definition` -- the
     Recurring surface's cadence sentence and next date read this answer
     through it, and the door reads the stored copy as the cache it is for the
-    definition :func:`owns_validity_window` names (ruling **R-R56**), so that
+    definition :func:`is_standing_loan_payment` names (ruling **R-R56**), so that
     row's stop line and next date come from this answer and not the column.
     The column is still read on that surface by the archived drawer (an
     archived payment is not the one the predicate names); the monthly
@@ -218,9 +259,11 @@ def loan_payment_window(
     ``obligations_aggregator`` took the door and ``has_ended`` began judging
     the composed closing; and a closing bound an owner authored on the generic
     create form, which cannot lock the control, is read as the cache before
-    the first chokepoint makes it one.  R7d-c-2 / R7d-f move the remaining
-    reading surfaces onto the same door, and R7d-g then stops the column being
-    written at all.
+    the first chokepoint makes it one (plan ledger row **N-512**; R7d-f's
+    third leaf refuses it at create -- rulings **R-R60** and **R-R61**).
+    R7d-f moved the form's locked "Ends"
+    control and its inverted-window refusal onto the same door; R7d-c-2 moves
+    generation, and R7d-g then stops the column being written at all.
 
     A pure READ: it opens no transaction, writes nothing and reads no clock of
     its own (*ctx* carries the pass's ``as_of``).
@@ -230,7 +273,7 @@ def loan_payment_window(
             ``TransferTemplate``, or a ``TransactionTemplate``, which can never
             pay into an account and always answers ``None``.  ``getattr`` on
             the FK COLUMN is what keeps this kind-agnostic across the two, the
-            same way :func:`owns_validity_window` is.  **Must belong to
+            same way :func:`is_standing_loan_payment` is.  **Must belong to
             ``ctx.user_id``** -- the caller owns the ownership check, as every
             seam entry this reaches states.  A pairing of one owner's
             definition with another's read pass is refused by the pass itself
@@ -281,29 +324,12 @@ def loan_payment_window(
             reached FIRST, so a savings or investment transfer still resolves
             for an owner with no baseline.
     """
-    # **The COLUMN, then a lookup -- never ``template.to_account``**, and an
-    # adversarial review of this step measured why.  That relationship is
-    # ``lazy="joined"``, which loads it with the template and then does NOT
-    # refresh it when the FK column is written: measured on SQLAlchemy 2.0.49,
-    # a ``setattr(template, "to_account_id", other)`` leaves ``to_account``
-    # pointing at the OLD account through the following ``flush()`` and only
-    # re-loads at ``commit()``.  ``routes/transfers/templates.py`` writes
-    # exactly that -- ``to_account_id`` is in ``_TEMPLATE_UPDATE_FIELDS`` and
-    # is assigned by ``setattr`` -- and then REGENERATES before committing, so
-    # a resolver reading the relationship would bound the new destination's
-    # rows by the OLD loan's payoff.  A pending template is the second state:
-    # its ``to_account_id`` is set and its ``to_account`` is still ``None``.
-    # ``db.session.get`` costs nothing when the row is already in the identity
-    # map, which is the case the joined load creates anyway.
-    account_id = getattr(template, "to_account_id", None)
-    if account_id is None:
-        return None
-    account = db.session.get(Account, account_id)
+    # The column, then a lookup -- see :func:`_destination_account` for the
+    # joined-relationship staleness that rules out ``template.to_account``.
+    # ``None`` is the same early return :func:`sync_recurring_payment_bounds`
+    # makes for an account it cannot load.
+    account = _destination_account(template)
     if account is None:
-        # Unreachable for a persisted definition -- ``to_account_id`` is NOT
-        # NULL under an ``ON DELETE RESTRICT`` foreign key -- and reachable
-        # only for one not yet flushed, which generates nothing either way.
-        # The same early return :func:`sync_recurring_payment_bounds` makes.
         return None
     # ``loan_figures`` is asked for the not-a-loan answer as well as for the
     # payoff, rather than a ``load_loan_params`` pre-check beside it: that
@@ -540,67 +566,88 @@ def bind_rule_to_loan(rule: "RecurrenceRule", account_id: int) -> None:
     _sync_loan_cadence(rule, params)
 
 
-def owns_validity_window(template: "object") -> bool:
-    """Return whether THIS module writes *template*'s recurrence bounds.
+def is_standing_loan_payment(
+    template: RecurrenceOwner, ctx: BalanceContext,
+) -> bool:
+    """Return whether *template* is the STANDING payment of the loan it pays into.
 
-    **The one predicate, so the form's LOCK and this module's own guard cannot
-    disagree** (plan step R7b-4).  A recurring loan payment's opening and
-    closing bounds are DERIVED -- the loan's first contractual installment and
-    its projected payoff -- so both forms render those controls read-only and
-    both refuse a crafted submission that states one.  What decides that has
-    to be the condition :func:`sync_recurring_payment_bounds` returns early on,
-    or the form locks a control for a value nothing writes.
+    **The ONE identity behind every per-bound rule the recurrence form applies
+    to a loan payment, read from the pass** (plan step R7d-f).  It replaced
+    ``owns_validity_window(template)``, which answered "does this module write
+    BOTH of this definition's bounds" -- a premise ruling **R-R29** made false
+    (only the OPENING bound stays written; the CLOSING bound is derived by
+    :func:`loan_payment_window` for EVERY recurring transfer into a loan under
+    **R-R35**) -- and which re-ran two queries the pass already held (plan
+    ledger row **N-511**: ``load_loan_params`` after ``loan_figures`` had just
+    proved the params exist, and ``active_recurring_transfer_template`` after
+    ``resolved_loan(...).standing`` had memoised the very same lookup).  It now
+    reads that memo through the seam's
+    :func:`~app.services.balance_at.loan_standing_payment`, so the composed
+    door, the form's two locks and the three refusals read ONE producer and the
+    lookup runs once per pass however many of them ask.
 
-    **It is that function's OPENING-bound precondition exactly, and its
-    closing-bound one only approximately** -- an adversarial review of plan
-    step R7b-4 measured the gap and it is stated rather than papered over. The
-    start half is scenario-independent by design (ruling C8e: a loan's contract
-    terms are not scenario-scoped), so this predicate is complete for it. The
-    END half additionally returns early when the owner has no baseline
-    scenario, which this does not ask -- so an owner in that state sees a
-    locked "Ends" control for a payoff nothing currently writes. That is the
-    same defect SHAPE this predicate was built to close, one condition
-    narrower, and it is far less reachable: registration creates a baseline,
-    so the state is a broken invariant rather than a configuration. Splitting
-    the predicate per bound is the remedy if it is ever measured live.
+    **What the identity decides is stated PER BOUND**, which is the split this
+    step owed:
 
-    **It was NOT the same condition, and an adversarial review of plan step
-    R7b-3 measured the gap.**  The lock asked
-    ``_recurrence_form_refusals.is_loan_payment`` -- "does this template carry a
-    :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row" --
-    which is BROADER than what the sync writes for: the destination must also
-    be a CONFIGURED loan (``LoanParams``), and the template must be the one
-    that lookup returns, since a second recurring payment into one loan leaves
-    the newer rule unbounded.  A settings-carrying template outside that set
-    rendered its "Ends" control locked, saying the value came from the loan's
-    projected payoff, for a payoff nothing wrote.  None is measured on the
-    developer's data -- every live loan payment satisfies both -- but plan step
-    R7b-4 locks the OPENING bound on the same question, so deciding it once
-    here is what stops the second lock inheriting the first's error.
+    * The OPENING bound.  :func:`_sync_loan_cadence` writes and re-writes
+      ``starts_on`` for this definition and no other -- the loan's first
+      contractual installment -- so its "Starts on" control renders locked
+      and a submission stating one is refused
+      (:data:`~app.routes._recurrence_form_refusals.LOAN_PAYMENT_BOUND_IS_DERIVED`).
+      A SECOND recurring transfer into the same loan has its start derived at
+      creation (``settle_first_occurrence``) and never re-synced afterwards --
+      plan ledger row **D50**, ruled at R7d-g -- so its control stays the
+      owner's.
+    * The CLOSING bound.  The loan's own payment runs to the payoff and has
+      NO authored stop: archiving is the door to stop it early (ruling
+      **R-R59**, developer 2026-09-05, taken at R7d-f).  Its "Ends" control renders the
+      composed door's derived answer, locked; a stated bound is refused; and
+      the column the chokepoints cache the payoff into is read as that cache
+      rather than as the owner's word (ruling **R-R56**,
+      :func:`app.services.recurring_definition.authored_closing`) until R7d-g
+      NULLs it.  A second transfer's authored stop is its owner's and binds
+      beside the derived one.
+
+    **"Standing" is the seam's own word**
+    (:func:`~app.services.recurring_transfer_query.standing_payment`): the
+    loan's ACTIVE recurring transfer, tie-broken oldest-first.  That search is
+    the one ruling **R-R35** wants deleted rather than answered; it survives
+    here because the opening bound's writer still targets it (**D50**) and the
+    ESTIMATED tier still prices from it (**D47**, closed by R16).  Naming it for
+    what it is and reading it where the pass resolves it is this step's part;
+    deleting it is theirs.
 
     **Not the same question as "is this a loan payment".**
     :func:`~app.routes._recurrence_form_refusals.is_loan_payment` keeps the
     settings-row reading, and correctly: what it decides is whether clearing
     the recurrence would strand a standing ``extra_principal``, which is a
-    property of that row rather than of this module's write set.
+    property of that row rather than of the loan's payment identity.
 
     Args:
-        template: The ``TransactionTemplate`` or ``TransferTemplate`` a form is
-            rendering.  A transaction template can never be a loan payment, and
-            ``getattr`` is what keeps this kind-agnostic for the two form
-            helpers that call it.
+        template: The ``TransactionTemplate`` or ``TransferTemplate`` a form
+            is rendering or a refusal is judging.  A transaction template can
+            never pay into an account and answers ``False`` before any query;
+            ``getattr`` on the FK column is what keeps this kind-agnostic, the
+            same way :func:`loan_payment_window` is.  **Must belong to
+            ``ctx.user_id``**: the pass refuses to memoise a foreign loan
+            (``ForeignAccountError`` from its store-once primitive,
+            ``_context._memoize_once``) rather than answering about it.
+        ctx: The read pass.  Its per-loan resolution memo is where the
+            standing payment is read from, so a render or a refusal that has
+            already resolved the loan pays nothing more here; one that has not
+            resolves it once, and everything after it on the pass reads that.
 
     Returns:
-        ``True`` when this module writes the template's ``starts_on`` and
-        ``end_date``, so its form must render both read-only.
+        ``True`` when the destination is a configured loan and *template* is
+        the recurring transfer the seam resolves as that loan's payment.
     """
-    account_id = getattr(template, "to_account_id", None)
-    if account_id is None or template.recurrence_rule is None:
+    if template.recurrence_rule is None:
         return False
-    if loan_loaders.load_loan_params(account_id) is None:
+    account = _destination_account(template)
+    if account is None:
         return False
-    active = active_recurring_transfer_template(account_id, template.user_id)
-    return active is not None and active.id == template.id
+    standing = balance_at.loan_standing_payment(account, ctx)
+    return standing is not None and standing.template.id == template.id
 
 
 def sync_recurring_payment_bounds(account_id: int) -> None:

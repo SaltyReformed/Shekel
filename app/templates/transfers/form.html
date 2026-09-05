@@ -82,9 +82,9 @@
            a first occurrence FOR, so recurrence_form.js can lock the "Starts
            on" row the moment one is chosen (plan step R7c-b).  It is emitted
            on the CREATE form ALONE: an EDIT form already knows whether THIS
-           template is a loan payment and locks server-side through
-           recurrence.bounds_are_derived, and two locks answering the same
-           question is how they come to disagree.
+           template is the loan's standing payment and locks server-side
+           through recurrence.selected_start.locked, and two locks answering
+           the same question is how they come to disagree.
 
            The lock is an affordance.  The enforcement is the route's --
            _transfer_creation_helpers.settle_first_occurrence derives the date
@@ -95,19 +95,19 @@
              {% if template is none %}
              data-loan-account-ids="{{ loan_account_ids|join(',') }}"
              {% endif %}>
-          {# Both validity bounds lock together on ONE predicate (plan step
-             R7b-4): a recurring loan payment runs from the loan's first
-             contractual installment to its projected payoff, and
-             loan_recurrence_sync owns both. #}
+          {# Each validity bound's row carries its own lock (plan step R7d-f).
+             Both read ONE identity -- the loan's standing payment -- but what
+             each lock MEANS differs: the opening bound is WRITTEN by
+             loan_recurrence_sync (the loan's first contractual installment),
+             the closing bound is DERIVED (the loan's payoff, resolved through
+             the composed door) and the locked row displays it. #}
           {{ recurrence_starts_on(recurrence.picker,
                                    recurrence.selected_start,
                                    recurrence.starts_on_min,
                                    recurrence.starts_on_max,
-                                   locked=recurrence.bounds_are_derived,
                                    swappable=(template is none)) }}
           {{ recurrence_detail_fields(template, include_due_day=false) }}
-          {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end_bound,
-                                     locked=recurrence.bounds_are_derived) }}
+          {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end) }}
           {{ recurrence_preview(url_for('templates.preview_recurrence')) }}
         </div>
         {# The pay-period selector sits OUTSIDE #recurrence-fields because it

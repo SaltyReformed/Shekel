@@ -216,58 +216,74 @@
 
    ``picker.end_bounds`` is the offer set, derived from the same closed tuple
    app.services.recurrence.end_bound_from_token dispatches over, so a shape is
-   offerable and submittable together or neither.  ``selected`` is the stored
-   rule's own bound (edit_form_end_bound), or the unbounded shape on a create
-   form.
+   offerable and submittable together or neither.  ``end`` is the row's state
+   (_recurrence_form_render.RecurrenceEnd): the stored rule's own bound for an
+   OPEN row, or the unbounded shape on a create form, and the described stop
+   for a LOCKED one.
 
-   ``locked`` disables all three controls, for a definition whose bound the
-   app DERIVES rather than accepts: a loan payment's stop is the loan's
-   projected payoff, which loan_recurrence_sync rewrites on every
-   payoff-affecting edit, so an editable box here would discard the user's
-   value without saying so.  A disabled control posts nothing, so the mode key
+   ``end.locked`` renders the row READ-ONLY, for a definition whose bound the
+   app DERIVES rather than accepts: the loan's standing payment stops when the
+   loan does, and it takes no authored stop of its own -- archiving is the door
+   to stop it early (ruling R-R59, plan step R7d-f).  The locked row is ONE
+   disabled select carrying ONE option: ``end.stop_phrase``, the composed
+   door's answer in the same words the Recurring row uses ("until Feb 22,
+   2029", "never runs", or the control's own "Never"; ruling R-R58).  It showed the
+   stored end_date column until R7d-f, which for that definition is the
+   chokepoints' CACHE of the payoff and was measurably stale on live data
+   (plan ledger row D35).  A disabled control posts nothing, so the mode key
    arrives ABSENT -- which the schema and the update route read as "this form
    said nothing about the bound" and leave the stored one alone.  The server
    refuses a crafted submission that sends one anyway
    (LOAN_PAYMENT_BOUND_IS_DERIVED); disabling is the affordance, not the
-   guard.
+   guard.  An EMPTY option is the state where the door resolved nothing (an
+   owner with no pay periods, or a stored cadence the application no longer
+   models); the help text below still says where the value comes from.
 
    Both value inputs are disabled unless their own shape is chosen, which is
    the same idiom the two interval controls use above: a disabled control does
    not submit, so the payload carries the one input the chosen shape needs and
-   no other. #}
-{% macro recurrence_end_bound(picker, selected, locked=false) %}
+   no other.  On a locked row both stay hidden and disabled: the phrase carries
+   the value. #}
+{% macro recurrence_end_bound(picker, end) %}
 <div class="mb-3 d-none" id="field-end-bound">
   <label for="recurrence_end_mode" class="form-label">Ends</label>
   <div class="row g-2 align-items-center">
     <div class="col-auto">
+      {% if end.locked %}
       <select id="recurrence_end_mode" name="recurrence_end_mode" class="form-select"
-              aria-describedby="end-bound-help" {{ 'disabled' if locked else '' }}>
+              aria-describedby="end-bound-help" disabled>
+        <option selected>{{ end.stop_phrase if end.stop_phrase is not none else '' }}</option>
+      </select>
+      {% else %}
+      <select id="recurrence_end_mode" name="recurrence_end_mode" class="form-select"
+              aria-describedby="end-bound-help">
         {# data-needs names the control this shape needs a value from, so the
            script shows one and disables the rest without ever stating which
            shapes exist.  Empty for the shape that needs none. #}
         {% for opt in picker.end_bounds %}
         <option value="{{ opt.token }}" data-needs="{{ opt.needs_field_id or '' }}"
-          {{ 'selected' if selected.token == opt.token else '' }}>
+          {{ 'selected' if end.selected.token == opt.token else '' }}>
           {{ opt.label }}
         </option>
         {% endfor %}
       </select>
+      {% endif %}
     </div>
     {# A value wrap is hidden until its own shape is chosen -- the script owns
-       that -- EXCEPT on a locked form, where the script returns early and
-       would leave the user a disabled "On a date" select with no date beside
-       it: a control that says where its value comes from and never shows it.
-       So the server reveals the wrap matching the stored shape, and it stays
-       disabled either way. #}
-    <div class="col-auto {{ '' if locked and selected.end_date is not none else 'd-none' }}"
-         id="field-end-date">
+       that.  On a LOCKED row it never is: the phrase above carries the value,
+       so there is no box to reveal beside it and both inputs stay disabled.
+       ``end.selected`` is None on a locked row (RecurrenceEnd refuses any
+       other pairing), so there is no stored column here for a template to
+       leak -- the first cut of plan step R7d-f carried the cache in the state
+       and shipped it into a hidden input, and its own test read it back. #}
+    {% set shown = end.selected %}
+    <div class="col-auto d-none" id="field-end-date">
       <input type="date" id="end_date" name="end_date" class="form-control"
              aria-label="Date this stops repeating"
-             value="{{ selected.end_date.isoformat() if selected.end_date is not none else '' }}"
-             {{ 'disabled' if locked or selected.end_date is none else '' }}>
+             value="{{ shown.end_date.isoformat() if shown is not none and shown.end_date is not none else '' }}"
+             {{ 'disabled' if shown is none or shown.end_date is none else '' }}>
     </div>
-    <div class="col-auto {{ '' if locked and selected.max_occurrences is not none else 'd-none' }}"
-         id="field-max-occurrences">
+    <div class="col-auto d-none" id="field-max-occurrences">
       <div class="input-group">
         {# ``is not none`` on both, never truthiness: the two attributes have
            to agree, and a falsy-count bug would render an empty box that is
@@ -275,14 +291,14 @@
         <input type="number" id="max_occurrences" name="max_occurrences"
                class="form-control interval-box" min="1"
                aria-label="How many times this repeats"
-               value="{{ selected.max_occurrences if selected.max_occurrences is not none else '' }}"
-               {{ 'disabled' if locked or selected.max_occurrences is none else '' }}>
+               value="{{ shown.max_occurrences if shown is not none and shown.max_occurrences is not none else '' }}"
+               {{ 'disabled' if shown is none or shown.max_occurrences is none else '' }}>
         <span class="input-group-text">times</span>
       </div>
     </div>
   </div>
   <div id="end-bound-help" class="form-text">
-    {%- if locked -%}
+    {%- if end.locked -%}
       Set from the loan's projected payoff, and updated when the loan changes.
     {%- else -%}
       Entries won't be generated past this.
@@ -333,12 +349,15 @@
    door refuses a bad pair with, so the control cannot offer one the save
    would reject.
 
-   ``locked`` marks the row READ-ONLY, for the same definition and the same
-   reason recurrence_end_bound is locked: a loan payment's first occurrence is
-   the loan's FIRST CONTRACTUAL INSTALLMENT, which loan_recurrence_sync
-   rewrites on every payoff-affecting edit.  Both controls ask ONE predicate
-   (_recurrence_form_render.edit_form_bounds_are_derived), so they cannot lock
-   on different sets.
+   ``selected.locked`` marks the row READ-ONLY, for the same definition
+   recurrence_end_bound locks on and for a reason of its own: the loan's
+   standing payment's first occurrence is the loan's FIRST CONTRACTUAL
+   INSTALLMENT, which loan_recurrence_sync WRITES and rewrites on every
+   payoff-affecting edit -- where the "Ends" row's bound is DERIVED and never
+   stored (plan step R7d-f split the two).  Both rows read ONE identity
+   (loan_recurrence_sync.is_standing_loan_payment, asked once per render), so
+   they cannot lock on different sets; each carries its own flag so the
+   template states nothing about why.
 
    ``disabled``, exactly like the "Ends" control, so a locked form posts
    NOTHING for this field and absence keeps one meaning: "not mine to state",
@@ -367,7 +386,7 @@
    it.  Carrying a class no script removes is how a control ships permanently
    invisible; the suite cannot see the difference, which is what
    tests/manual/verify_recurrence_form.py exists for. #}
-{% macro recurrence_starts_on(picker, selected, date_min, date_max, locked=false, swappable=false) %}
+{% macro recurrence_starts_on(picker, selected, date_min, date_max, swappable=false) %}
 <div class="mb-3" id="field-starts-on">
   <label class="form-label" for="starts_on">Starts on</label>
   <div class="row g-2 align-items-center">
@@ -384,7 +403,7 @@
              aria-describedby="starts-on-help"
              min="{{ date_min.isoformat() }}" max="{{ date_max.isoformat() }}"
              value="{{ selected.starts_on.isoformat() }}"
-             {{ 'disabled' if locked else '' }}>
+             {{ 'disabled' if selected.locked else '' }}>
     </div>
     {# The ambiguity control.  The COPY is static and the option set is fixed
        -- the days a month can fail to hold are 29, 30 and 31 and no other --
@@ -405,7 +424,7 @@
       <div class="input-group">
         <label class="input-group-text" for="nominal_day">repeating on</label>
         <select id="nominal_day" name="nominal_day" class="form-select"
-                {{ '' if selected.day_choices and not locked else 'disabled' }}>
+                {{ '' if selected.day_choices and not selected.locked else 'disabled' }}>
           <option value="" {{ 'selected' if selected.nominal_day is none else '' }}>
             the same day of the month
           </option>
@@ -446,7 +465,7 @@
        data-locked-text="{{ starts_on_locked_help }}"
        data-open-text="{{ starts_on_open_help }}"
        {% endif %}>
-    {{- starts_on_locked_help if locked else starts_on_open_help -}}
+    {{- starts_on_locked_help if selected.locked else starts_on_open_help -}}
   </div>
 </div>
 {% endmacro %}

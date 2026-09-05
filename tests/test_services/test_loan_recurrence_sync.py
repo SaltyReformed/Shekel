@@ -357,8 +357,8 @@ class TestSyncRecurringPaymentBounds:
             db.session.commit()
 
 
-class TestOwnsValidityWindow:
-    """WHICH definitions this module writes bounds for -- asked once.
+class TestIsStandingLoanPayment:
+    """WHICH definition is the loan's standing payment -- asked once, off the pass.
 
     Plan step R7b-4 made this the ONE predicate the recurrence form's two bound
     controls lock on and the two crafted-POST refusals fire on, because the
@@ -369,11 +369,27 @@ class TestOwnsValidityWindow:
     fired on either loan and a typed end date would have been silently
     overwritten by the next payoff-affecting edit.
 
+    **Since plan step R7d-f it is ``is_standing_loan_payment(template, ctx)``**
+    and answers from the read pass's memoised loan resolution (the seam's
+    ``loan_standing_payment``) rather than re-running the two lookups the pass
+    already held (plan ledger row **N-511**).  It no longer claims to name
+    "the definition this module writes BOTH bounds for" -- ruling **R-R29**
+    keeps only the opening bound written -- but the SET it names is unchanged,
+    so every arm below is the arm it was.
+
     Every arm is exercised, and the THREE False ones are the point: a predicate
     that only ever returns True where it is asked is indistinguishable from no
-    predicate.  Each mirrors one early return in
-    :func:`~app.services.loan_recurrence_sync.sync_recurring_payment_bounds`.
+    predicate.  Each False arm is a state in which
+    :func:`~app.services.loan_recurrence_sync.sync_recurring_payment_bounds`
+    writes nothing for the template (no rule, not a configured loan, not the
+    account's active payment); the sync's own scenario arm has no twin here,
+    because the identity is scenario-independent.
     """
+
+    @staticmethod
+    def _ctx(seed_user):
+        """Return the read pass the identity is read off."""
+        return BalanceContext.build(seed_user["user"].id)
 
     def test_a_loans_active_recurring_payment_owns_its_window(
         self, app, db, seed_user, seed_periods,
@@ -384,7 +400,7 @@ class TestOwnsValidityWindow:
             template = make_loan_payment_template(db.session, seed_user, loan)
             db.session.flush()
 
-            assert loan_recurrence_sync.owns_validity_window(template) is True
+            assert loan_recurrence_sync.is_standing_loan_payment(template, self._ctx(seed_user)) is True
 
     def test_a_transfer_into_a_NON_loan_owns_nothing(
         self, app, db, seed_user, seed_periods,
@@ -402,7 +418,7 @@ class TestOwnsValidityWindow:
             template = make_transfer_template(db.session, seed_user, savings)
             db.session.flush()
 
-            assert loan_recurrence_sync.owns_validity_window(template) is False
+            assert loan_recurrence_sync.is_standing_loan_payment(template, self._ctx(seed_user)) is False
 
     def test_a_SECOND_recurring_payment_into_one_loan_owns_nothing(
         self, app, db, seed_user, seed_periods,
@@ -444,9 +460,10 @@ class TestOwnsValidityWindow:
             make_every_period_rule(db.session, second)
             db.session.flush()
 
+            ctx = self._ctx(seed_user)
             owned = [
-                loan_recurrence_sync.owns_validity_window(first),
-                loan_recurrence_sync.owns_validity_window(second),
+                loan_recurrence_sync.is_standing_loan_payment(first, ctx),
+                loan_recurrence_sync.is_standing_loan_payment(second, ctx),
             ]
             assert owned.count(True) == 1, (
                 f"exactly one of two recurring payments into one loan may own "
@@ -468,7 +485,7 @@ class TestOwnsValidityWindow:
             template.recurrence_rule = None
             db.session.flush()
 
-            assert loan_recurrence_sync.owns_validity_window(template) is False
+            assert loan_recurrence_sync.is_standing_loan_payment(template, self._ctx(seed_user)) is False
 
     def test_a_transaction_template_owns_nothing(
         self, app, db, seed_user, seed_periods,
@@ -483,7 +500,7 @@ class TestOwnsValidityWindow:
             template = make_expense_template(db.session, seed_user)
             db.session.flush()
 
-            assert loan_recurrence_sync.owns_validity_window(template) is False
+            assert loan_recurrence_sync.is_standing_loan_payment(template, self._ctx(seed_user)) is False
 
 
 class TestTheDerivedStopShapes:
@@ -784,13 +801,15 @@ class TestLoanPaymentWindowResolver:
         paying it down (the settled fold and the PLANNED tier both already sum
         every one of them with no template filter), and each stops when the
         loan does.  So the two definitions here must get the SAME answer --
-        which is what makes ``owns_validity_window``'s "is it the one the
-        lookup returns" clause unnecessary at plan step R7d-f.
+        which is why the RESOLVER carries no "is it the one the lookup
+        returns" clause at all.
 
-        Contrast ``TestOwnsValidityWindow``'s twin, which asserts exactly ONE
-        of two such templates owns its window: that is the predicate this
-        replaces, and the difference between the two assertions is the whole
-        ruling (**R-R35**).
+        Contrast ``TestIsStandingLoanPayment``'s twin, which asserts exactly
+        ONE of two such templates is the loan's standing payment: that
+        identity survives for the form's two LOCKS and the door's cache arm
+        (plan step R7d-f reads it off the pass), never for the resolver, and
+        the difference between the two assertions is the whole ruling
+        (**R-R35**).
 
         **What it does NOT assert is that the shared answer is RIGHT**, and an
         adversarial review of this step is why that is written down. The
