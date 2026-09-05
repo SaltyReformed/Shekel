@@ -176,9 +176,13 @@ class AccountPayrollFeed:
         year's own paydays reproduces what the deleted
         ``_annual_cap_averaged`` returned, ``min(amount x ppy, cap) / ppy``,
         from the engine's own priced figures rather than a second formula --
-        and is right where that function was not, on the 27-payday biweekly
-        year: 27 payments of ``$500`` are ``$500`` a payday, not the
-        ``$519.23`` that ``13,500 / 26`` gives.  Which years qualify, and why
+        and is right where that function was not: on a 27-payday year a
+        CAPPED deduction averages ``$1,000/27 = $37.04`` where
+        ``_annual_cap_averaged`` answers ``$1,000/26 = $38.46``.  (For an
+        UNCAPPED one the two agree -- that function returned an uncapped
+        amount unchanged.  ``$519.23``, which an earlier revision offered
+        here as its error, is ``13,500 / 26``: this method's OWN previous
+        divisor, not that function's.)  Which years qualify, and why
         the question is asked of the WINDOW and never of the cadence, is
         :meth:`_complete_years`.
 

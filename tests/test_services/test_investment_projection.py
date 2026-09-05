@@ -819,8 +819,13 @@ class TestBuildContributionTimeline:
         IDENTICALLY for their first two paydays, and their true tails are
         ``$500`` and ``$38.46``.  With no complete calendar year there is no
         annual figure to derive, so the hold falls back to the last PRICED
-        payday -- exact for an uncapped deduction, which is what this
-        fixture is (a flat ``$500``, held exactly).  For a CAPPED one that
+        payday -- which this fixture, a flat ``$500`` with no cap and no
+        cadence skip, is held at exactly.  That is the ONLY shape the
+        fallback is exact for: an uncapped deduction whose window ends on a
+        24-per-year skip holds ``$0.00`` instead, and a flat capped one whose
+        cap has not yet bound over-reads.  See
+        :meth:`~app.services.investment_projection._feed
+        .AccountPayrollFeed._year_averages`.  For a CAPPED one that
         payday's clamped figure can read either way: the sibling case below
         holds a trailing ``$0.00`` and understates, while a window ending on
         the ``$400`` of a ``$600``/``$1,000`` pair annualises to ``$10,400``.
