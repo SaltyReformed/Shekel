@@ -2193,12 +2193,16 @@ class TestTheLabelIsTheDERIVEDSpan:
         assert cal.periods[1].label != "01/16 - 01/29"
 
     def test_the_LAST_periods_label_follows_its_projection(self):
-        """The one end that IS the cadence projection, so the label moves with it.
+        """The one end that IS a projection, so the label moves with it.
 
-        The last period has no next payday, so its end is
-        ``start + cadence - 1`` and :attr:`end_is_projected` says so.  Asserted
-        because it is the end the STORED column disagrees with most often --
-        plan findings **P12** and **P28** both move this one and only this one.
+        The last period has no RECORDED next payday, so its end is the day
+        before the PROJECTED one and :attr:`end_is_projected` says so.
+        Asserted because it is the end the STORED column disagreed with most
+        often -- plan findings **P12** and **P28** both move this one and only
+        this one.  *It read ``start + cadence - 1`` until plan step
+        ``pay_calendar:C14-c`` made both ends one rule; the VALUE asserted
+        below is unchanged, because a projected payday is displaced only once
+        ``C14-e`` turns the convention on.*
         """
         cal = calendar(paydays=OFF_CADENCE)
 

@@ -9,8 +9,15 @@ fences exist to police one functional dependency
 that dependency, written once::
 
     period_index = row_number() over (order by start_date) - 1
-    end_date     = coalesce(lead(start_date) - 1,          -- the definition
-                            start_date + cadence_days - 1)  -- the open last one
+    end_date     = next_payday - 1
+
+where ``next_payday`` is the following row's ``start_date``, or -- for the
+last period, which has none -- the projection one cadence on
+(:func:`projected_payday`).  **Plan step C14-c made those ONE rule.**  The last
+end read ``start_date + cadence_days - 1``, which agrees with the first only
+while every payday sits exactly one cadence from its neighbour; once ``C14-e``
+displaces one onto a business day the two part, and the day between falls in
+NO period or in two (**R-PC54**).
 
 **Its one caller is** :meth:`~._calendar.PayCalendar.__post_init__`, since plan
 step C2-a; at C1 it had none at all, deliberately, because the value had to be
@@ -50,9 +57,12 @@ row P47) and live together, and the wide one has a caller outside this
 package.*
 
 **Why the last end is a different KIND of value, and says so.**  Every other
-end is dictated by a fact -- the next payday.  The last one has no next payday,
-so it is projected forward from ``budget.pay_schedule.cadence_days`` (ruling
-2026-08-08: "a projection stated as one").  :attr:`DerivedPeriod.end_is_projected`
+end is dictated by a fact -- the next RECORDED payday.  The last one has no
+successor row, so the payday it stops before is projected forward from
+``budget.pay_schedule.cadence_days`` (ruling 2026-08-08: "a projection stated
+as one").  The RULE over the two is identical since plan step ``C14-c``; what
+differs is whether the payday it reads is a record or a projection.
+:attr:`DerivedPeriod.end_is_projected`
 is that statement, and it cannot be recomputed by a consumer holding one period
 out of its calendar.  It is not cosmetic: plan finding P12 -- a
 ``/pay-periods/generate`` post naming an already-existing payday creates zero
@@ -184,10 +194,14 @@ class DerivedPeriod:
             position in payday order.
         start_date: The payday that opens the period.  The only fact in the
             row; everything else here is derived from it and its neighbours.
-        end_date: The last day the period covers -- the day before the next
-            payday, or, for the last period, ``start_date + cadence_days - 1``.
-        end_is_projected: Whether :attr:`end_date` came from the cadence rather
-            than from the next payday.  ``True`` for the LAST period of a
+        end_date: The last day the period covers -- the day before the NEXT
+            payday, which for the last period is the projected one
+            (:func:`projected_payday`) rather than a recorded neighbour.  ONE
+            rule since ``C14-c``; it read ``start_date + cadence_days - 1``
+            there, the same day only while no payday can move.
+        end_is_projected: Whether the payday :attr:`end_date` was taken from is
+            a PROJECTION rather than a recorded one.  ``True`` for the LAST
+            period of a
             non-empty calendar and ``False`` for every other -- so exactly one
             per calendar, and none at all for the empty one.  A consumer
             holding a single period cannot work this out, which is why it rides
@@ -511,20 +525,104 @@ def derive_periods(
         return ()
 
     last_position = len(ordered) - 1
-    return tuple(
-        DerivedPeriod(
-            period_id=period_id,
-            period_index=position,
-            start_date=payday,
-            end_date=(
-                payday + timedelta(days=cadence_days - 1)
-                if position == last_position
-                else ordered[position + 1][1] - timedelta(days=1)
-            ),
-            end_is_projected=position == last_position,
+    derived = []
+    for position, (period_id, payday) in enumerate(ordered):
+        # ONE end rule, since plan step C14-c: a period runs to the day
+        # before the NEXT payday.  All that differs for the last period is
+        # where that payday comes FROM -- the projection rather than the
+        # record -- which is what ``end_is_projected`` says.
+        is_last = position == last_position
+        next_payday = (
+            projected_payday(payday, cadence_days, 1)
+            if is_last
+            else ordered[position + 1][1]
         )
-        for position, (period_id, payday) in enumerate(ordered)
-    )
+        derived.append(
+            DerivedPeriod(
+                period_id=period_id,
+                period_index=position,
+                start_date=payday,
+                end_date=next_payday - timedelta(days=1),
+                end_is_projected=is_last,
+            )
+        )
+    return tuple(derived)
+
+
+def projected_payday(anchor: date, cadence_days: int, steps: int) -> date:
+    """Return the payday *steps* whole cadences after *anchor*.
+
+    **The FORWARD projection's one producer**, made a function at plan step
+    ``pay_calendar:C14-c`` from an expression written at three sites:
+    :func:`derive_periods` needs the next payday to close the last saved
+    period, and :func:`project_period_after` needs both the payday that OPENS a
+    period past the horizon and the one that CLOSES it.  Rule 14's tell -- one
+    value with three homes, agreeing only because nothing can move a payday
+    yet.  **It is where the shift convention lands** (**R-PC54**: applied at
+    the PRODUCER, because the payday a COUNT uses and the payday a PERIOD opens
+    on are one value).  The answer is nominal arithmetic today; ``C14-e``
+    displaces it onto a business day under the owner's convention.
+
+    **FOUR more spellings exist, and an adversarial review of this step struck
+    the sentence claiming otherwise.**  ``C14-e``'s census, written down rather
+    than re-derived:
+
+    * :func:`~._rhythm._backdated_paydays` open-codes it twice --
+      ``opening + timedelta(days=steps * cadence)``, then
+      ``day -= timedelta(days=cadence)`` down the loop -- for the BACKDATED
+      half.  Routing it here was REFUSED at ``C14-c``: it would make the
+      backward rhythm displace the day ``C14-e`` changes this body, and whether
+      it should is unruled (**R-PC47** shapes the PROJECTED half and says
+      nothing about the FICA wage-base walk reading the other).  Answering that
+      silently in a ``$0.00`` step is how a refactor comes to silence a later
+      step's alarm.
+    * ``pay_period_write._reject_backward_payday``'s floor,
+      ``latest_payday + cadence_days`` -- ``C14-d`` owns it.
+    * ``auth_service``'s registration window,
+      ``[first_payday, first_payday + cadence_days - 1]``.
+    * ``scripts/integrity_check.py``'s ``BA-06`` horizon,
+      ``MAX(start_date) + (cadence_days - 1)`` in SQL, which cannot call this.
+      It decides whether a settled transaction falls in no pay period, so a
+      live shift makes it misjudge the days between the two horizons.
+
+    **The BOUND is the CALLER's** -- ``C14-a``'s stated obligation on the
+    displacement this becomes:
+    :func:`~app.utils.business_days.shift_to_business_day` may answer outside
+    :data:`~app.utils.dates.CALENDAR_DATE_MIN` ..
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX`.  Recorded here because
+    ``C14-e`` makes this that caller.
+
+    **What it does NOT compound, and what it cannot guarantee.**  *steps* is
+    counted from one fixed *anchor* rather than accumulated, so displacing the
+    answer at ``C14-e`` cannot move a later payday -- the hazard
+    :func:`~app.utils.business_days.shift_to_business_day`'s own docstring
+    hands to the caller.  What it cannot do is make the ANCHOR nominal:
+    :func:`project_period_after` anchors on the last RECORDED payday, so an
+    owner whose employer displaced that one is projected a rhythm off by the
+    displacement until a real payday is recorded again.  That is ledger row
+    **N-495**, owned by ``C14-e``, and it is why **R-PC54**'s own
+    ``2026-01-14`` example does not reproduce here.  Worked from the
+    developer's stated payroll fact, not from a stored row -- production's
+    recorded paydays run 2026-03-26 to 2028-08-10 and hold no 2025-12-31 -- an
+    owner whose last RECORDED payday were the 2025-12-31 that 2026-01-01 was
+    really paid on is projected 2026-01-14 where the true payday is
+    2026-01-15, and every payday after it a day early.
+
+    Args:
+        anchor: A payday the owner's rhythm passes through.
+        cadence_days: Days between paydays, a positive ``int`` already
+            validated by :func:`validate_cadence` at the caller; re-validating
+            per call would put the bound in a second place.
+        steps: How many whole cadences after *anchor*.  ``1`` is the next
+            payday, ``0`` is *anchor*.  NEGATIVE is reachable and not a misuse:
+            :meth:`~._calendar.PayCalendar.span_containing` asks
+            :func:`project_period_after` about days BELOW its anchor, where
+            :func:`cadence_steps_to` answers with a negative count.
+
+    Returns:
+        The projected payday.
+    """
+    return anchor + timedelta(days=steps * cadence_days)
 
 
 def cadence_steps_to(anchor: date, cadence_days: int, day: date) -> int:
@@ -560,32 +658,170 @@ def cadence_steps_to(anchor: date, cadence_days: int, day: date) -> int:
     return (day - anchor).days // cadence_days
 
 
+def covering_projection(
+    candidates: "Iterable[DerivedPeriod]", day: date,
+) -> DerivedPeriod:
+    """Return the candidate projection covering *day*, refusing when none does.
+
+    **A function of its own so :func:`project_period_after` states the RULE and
+    this states the REFUSAL**, which is fifteen lines of it.  *An earlier form
+    claimed the split was what let the probe be graded before the shift ships;
+    an adversarial review of ``C14-c`` refuted that from the suite -- what
+    grades the probe is the test module's ``_displace_under``, which
+    substitutes the producer ``C14-e`` will ship and drives the REAL*
+    :func:`project_period_after` *-- reaching this through its own caller.*
+
+    Consumed LAZILY, so the arithmetic estimate costs the one candidate it
+    always did -- a property of the ORDER its caller offers them in, not of
+    this function, which is order-free for correctness.  The estimate is the
+    answer on EVERY call today and stays the answer on all but a fraction of a
+    percent once the convention is live: over the 26,427 days the projection
+    must answer for past the production owner's real horizon -- last recorded
+    payday 2028-08-10, cadence 14, out to
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX` -- it names the wrong period on
+    **64 of them, 0.24%**, under ``prior`` and again under ``next`` (measured
+    2026-09-05).  The horizon and cadence are the owner's real ones; the
+    CONVENTION is not -- every row is seeded ``none`` and nobody has answered
+    (**R-PC56**) -- so the two conventions bracket the figure.
+
+    **The containment test is the PERIOD's own** (:meth:`DerivedPeriod.covers`,
+    **R-PC31**) rather than a comparison written here, the discipline
+    :func:`~._searches.containing_index` keeps: one rule spelled two ways is how
+    ledger row **P6** came to have six copies that disagreed.  While the
+    collision floor holds the candidates TILE, so at most one matches and their
+    order cannot change the answer; below it two can overlap, the state the
+    refusal exists for.
+
+    **The refusal is a REPORTED hole, and ruling R-PC59 is where it is
+    reported.**  Nothing covers *day* only when two nominal paydays were
+    displaced onto one day or past each other, which needs a cadence no longer
+    than the longest run of consecutive closed days.
+    ``pay_schedule_service.reject_shift_on_short_cadence`` refuses that pair at
+    the column's one write door -- but a write-time refusal cannot see a row a
+    LATER holiday-set change made illegal, and nothing reconciles that table
+    (ledger row **N-493**).  Raising names the schedule; the alternative is
+    answering with a period that does not contain the day it was asked about.
+
+    Args:
+        candidates: The projections to choose between, NON-EMPTY.  The one
+            caller always offers three, so an empty set has no producer and
+            gets no message of its own -- an arm no caller can reach is one a
+            test could only grade against an impossible state.
+        day: The calendar day to place.
+
+    Returns:
+        The candidate whose span covers *day*.
+
+    Raises:
+        PayCalendarError: No candidate covers *day*.
+    """
+    tried = []
+    for candidate in candidates:
+        if candidate.covers(day):
+            return candidate
+        tried.append(candidate)
+    spans = ", ".join(
+        f"[{c.start_date.isoformat()}..{c.end_date.isoformat()}]"
+        for c in tried
+    )
+    raise PayCalendarError(
+        f"no projected pay period covers {day.isoformat()}: the candidates "
+        f"were {spans}.  A projection is the nominal rhythm displaced onto a "
+        f"business day, and the candidates either side of the arithmetic "
+        f"estimate cover every day the rhythm can reach while no payday moves "
+        f"by a whole cadence.  Reaching here means two nominal paydays "
+        f"displaced onto one day or past each other, which needs a cadence no "
+        f"longer than the longest run of consecutive closed days -- "
+        f"pay_schedule_service.reject_shift_on_short_cadence refuses that pair "
+        f"at the write door, and ruling R-PC59 records that a write-time "
+        f"refusal cannot see a stored row a later holiday-set change made "
+        f"illegal."
+    )
+
+
 def project_period_after(
     periods: "tuple[DerivedPeriod, ...]", cadence_days: int, day: date,
 ) -> DerivedPeriod:
     """Return the projected period covering *day*, past the last saved payday.
 
     **The forward continuation of the rule above**, and it lives beside it
-    rather than on a consumer because it IS that rule: the last saved period's
-    end is ``start_date + cadence_days - 1``, and every period after it is the
-    same span stepped forward by one cadence.  Two consumers ask for it --
+    because it IS that rule: a projected period runs from its own payday to the
+    day before the next, exactly as a saved one does, and both paydays come
+    from :func:`projected_payday`.  Two consumers ask --
     :meth:`~._calendar.PayCalendar.span_containing`, which must answer for any
-    day, and :func:`~._views.axis_window`, which walks the projection out to a
-    requested horizon -- and a second implementation of "where does the next
-    paycheck land" is exactly the class of duplicate ledger row **P6** counted
-    seven of.
+    day, and :func:`~._views.axis_window`, which walks the projection to a
+    horizon -- and a second implementation of "where does the next paycheck
+    land" is the class ledger row **P6** counted seven of.
 
-    Projection is ARITHMETIC on the last saved payday rather than a walk:
-    paydays continue at *cadence_days*, so the period covering *day* is the
-    ``n``-th one after the last saved payday where ``n`` is the whole number of
-    cadences between them.  Computing it directly means the cost does not grow
-    with how far past the horizon a caller asks.  **That count is
-    :func:`cadence_steps_to`** since plan step balance:X-bh-2, which reads the
-    same progression backward for the rhythm's other end.
+    Projection is ARITHMETIC rather than a walk: the period covering *day* is
+    about the ``n``-th after the last saved payday, ``n`` being the whole
+    cadences between them (:func:`cadence_steps_to`, since
+    ``balance:X-bh-2``), so cost does not grow with how far ahead a caller
+    asks.  That property was priced when :func:`~._views.projected_paychecks`
+    stepped to its answer instead of jumping -- **32 ms against 0.1 ms** for
+    one render, ``balance:X-bh-1``, measured 2026-08-30 -- and a walk here
+    would reintroduce it one layer down.
 
-    Every projected period reports ``end_is_projected`` ``True``, which stays
-    faithful to plan step C1's meaning of that flag: the end comes from the
-    cadence rather than from a payday anyone has recorded.  It carries
+    **"About" is plan step C14-c's word, and the PROBE is why the jump survives
+    a payday that moves** (**R-PC57**: the containment probe tolerates a moved
+    boundary).  The division is exact only while every payday sits on the
+    arithmetic grid; once ``C14-e`` displaces one, the count can name the
+    period next door, so the estimate is checked against its NEIGHBOURS and
+    whichever candidate covers *day* wins (:func:`covering_projection`).
+
+    **Why ONE neighbour either side is enough, and it is a theorem rather than
+    a margin.**  A displacement is bounded by the longest run of consecutive
+    closed days, and
+    :func:`~app.utils.business_days.shortest_collision_free_cadence` is that
+    run PLUS ONE -- the floor
+    ``pay_schedule_service.reject_shift_on_short_cadence`` holds a displacing
+    convention to (**R-PC59**).  So no payday moves a whole cadence, which puts
+    the true index within one of the estimate; a candidate two out would need a
+    displacement of a full cadence or more.  Swept in
+    ``tests/test_services/test_pay_calendar_derivation.py`` over both
+    conventions, four anchors, every cadence from the floor to a year, and
+    steps either side of the anchor -- driving THIS function, not a second copy
+    of its arithmetic.
+
+    **The theorem has a SECOND premise, and naming it is an adversarial
+    review's finding.**  It is not enough that no payday moves a whole cadence:
+    the count below and the candidates beside it must be measured from the SAME
+    anchor, which they are, both reading ``last.start_date``.  Break that and
+    the window is too narrow -- and the natural repair for ledger row **N-495**
+    is what breaks it.  Anchoring the projection on a NOMINAL payday while the
+    estimate still counts from the recorded one adds an offset the size of the
+    displacement, making the premise
+    ``cadence >= longest_closed_run + |anchor offset| + 1``.  Measured at the
+    floor: recorded anchor 2030-01-01, cadence 4, ``prior``, projected from the
+    nominal 2029-12-29, puts 2030-01-04's true index TWO above the estimate --
+    and the consequence is :func:`covering_projection` REFUSING an ordinary
+    day.  ``C14-e`` may not re-anchor without widening this window.
+
+    **The literal ``1`` and that floor are ONE value with two homes**
+    (adversarial review of ``C14-c``).  A general width is
+    ``(longest_closed_run - 1) // cadence_days + 1``, collapsing to ``1`` here
+    because the write door refuses a cadence at or below the run; deriving it
+    would make the refusal unreachable BY CONSTRUCTION rather than by another
+    door's promise, which is what doctrine asks of a fence.  Not done here
+    because it means reading the holiday set, and this module imports only
+    ``app.exceptions`` and ``app.utils.dates`` -- the purity that lets the
+    derivation run with no application stack.  ``C14-e``'s design question.
+
+    **The precondition below is NOT structural, and a first cut of this step
+    filtered on the belief that it was.**  Candidates at step ``0`` and below
+    were dropped, reasoning that *day* falls past the last period's end so
+    nothing earlier could win -- and the suite refused it:
+    :meth:`~._calendar.PayCalendar.span_containing` reaches here for a day
+    INSIDE an unsaved interior candidate, whose materialisation filter leaves
+    the total answer here.  *day* is then below the anchor, the count is
+    NEGATIVE, and the rhythm is read backwards -- exactly what shipped before
+    this step, and left as it was.  That answer assumes the recorded paydays
+    between are ON cadence, which **R-PC47** says they need not be; reported
+    rather than repaired, since repairing it moves an answer and this step
+    moves none.
+
+    Every projected period reports ``end_is_projected`` ``True`` -- the end
+    comes from the projection rather than a recorded payday -- and carries
     ``period_id = None``, so a caller needing a foreign key target cannot
     mistake one for a saved row.
 
@@ -594,25 +830,48 @@ def project_period_after(
             non-empty.  Only the last one is read.
         cadence_days: Days between paydays.  An ``int`` rather than
             ``int | None``: a calendar holding a period cannot have been
-            constructed without a cadence
-            (:func:`derive_periods` refuses that pair), and every caller
-            reaches here only after establishing that *periods* is non-empty.
-        day: A calendar day strictly after the last saved period's
-            ``end_date``.  The caller guarantees it -- both test first.
+            constructed without a cadence (:func:`derive_periods` refuses that
+            pair), and every caller reaches here only after establishing that
+            *periods* is non-empty.
+        day: The calendar day to place.  NORMALLY past the last saved period's
+            ``end_date``, which is what both callers test for -- but that is
+            not a guarantee, and this entry said it was until an adversarial
+            review of ``C14-c`` read it against the paragraph above.  Believing
+            the old wording is how the ``steps >= 1`` filter this step already
+            had to remove gets re-added.
 
     Returns:
         The projected :class:`DerivedPeriod`, carrying ``period_id = None`` and
         a ``period_index`` continuing the saved sequence.
+
+    Raises:
+        PayCalendarError: No candidate covers *day* -- the state
+            :func:`covering_projection` states in full.  No schedule the write
+            door admits can reach it TODAY; ledger row **N-493** is the
+            reported hole.
     """
     last = periods[-1]
-    steps = cadence_steps_to(last.start_date, cadence_days, day)
-    start = last.start_date + timedelta(days=steps * cadence_days)
-    return DerivedPeriod(
-        period_id=None,
-        period_index=last.period_index + steps,
-        start_date=start,
-        end_date=start + timedelta(days=cadence_days - 1),
-        end_is_projected=True,
+    estimate = cadence_steps_to(last.start_date, cadence_days, day)
+    return covering_projection(
+        (
+            DerivedPeriod(
+                period_id=None,
+                period_index=last.period_index + steps,
+                start_date=projected_payday(
+                    last.start_date, cadence_days, steps,
+                ),
+                end_date=projected_payday(
+                    last.start_date, cadence_days, steps + 1,
+                ) - timedelta(days=1),
+                end_is_projected=True,
+            )
+            # The estimate FIRST: it is the answer whenever no payday between
+            # the horizon and *day* was displaced across a boundary, and the
+            # generator is consumed lazily, so the common call builds one
+            # candidate as it always did.
+            for steps in (estimate, estimate - 1, estimate + 1)
+        ),
+        day,
     )
 
 
