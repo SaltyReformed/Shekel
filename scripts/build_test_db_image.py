@@ -175,6 +175,23 @@ class BuildError(RuntimeError):
     """A step of the bake failed, with a message naming which one."""
 
 
+class DockerError(BuildError):
+    """A docker command itself failed, so no verdict about the image exists.
+
+    Separate from its parent because the two demand OPPOSITE responses and
+    conflating them cost the cache.  ``main`` rebuilds when verification
+    returns a verdict of "stale"; a container that never STARTED returns no
+    verdict at all, and rebuilding on it treats an infrastructure fault as
+    evidence about the image.  Measured on the rootless daemon, where
+    ~30% of container starts failed a host-port bind: every invocation
+    reported "cached image rejected", rebuilt for 9 s, and buried the real
+    error, so the cache never once served its purpose.
+
+    A subclass, not a sibling, so the outer ``except BuildError`` in
+    ``main`` still reports it and exits non-zero.
+    """
+
+
 def _run(
     command: list[str], *, capture: bool = True, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
@@ -189,14 +206,21 @@ def _run(
         The completed process.
 
     Raises:
-        BuildError: When ``check`` and the command exited non-zero.
+        DockerError: When ``check`` and the command exited non-zero.
+
+            This is the DEFAULT classification, not a proof: ``_run`` sees an
+            exit status and nothing else, and `docker exec psql` exits
+            non-zero both for an unreachable daemon and for a missing
+            relation.  A caller that knows it asked a question ABOUT THE
+            IMAGE must catch this and re-raise :class:`BuildError` -- see
+            ``ask`` inside :func:`_verify_image`.
     """
     result = subprocess.run(
         command, capture_output=capture, text=True, check=False
     )
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
-        raise BuildError(
+        raise DockerError(
             f"{' '.join(command[:3])}... exited {result.returncode}: {detail}"
         )
     return result
@@ -464,30 +488,68 @@ def _verify_image(tag: str) -> None:
         tag: Image reference to verify.
 
     Raises:
-        BuildError: When the image does not contain a usable template.
+        BuildError: When the image does not contain a usable template -- a
+            verdict, on which ``main`` rebuilds.
+        DockerError: When docker itself failed, so no verdict was reached.
     """
     container = f"shekel-verify-{tag.rsplit(':', 1)[1]}-{os.getpid()}"
-    _run(["docker", "rm", "-f", container], check=False)
-    _run(
-        [
-            "docker", "run", "-d", "--name", container,
-            "-e", f"POSTGRES_USER={_BUILD_USER}",
-            "-e", f"POSTGRES_PASSWORD={_BUILD_PASSWORD}",
-            "-e", f"PGDATA={_BAKED_PGDATA}",
-            "-p", "127.0.0.1::5432", tag,
-        ]
-    )
+    _run(["docker", "rm", "-fv", container], check=False)
+    # The `docker run` belongs INSIDE the try.  It sat outside, so a start
+    # that failed after the container was created left it behind in Created
+    # state -- four accumulated on this daemon during one session of probing.
     try:
+        _run(
+            [
+                "docker", "run", "-d", "--name", container,
+                "-e", f"POSTGRES_USER={_BUILD_USER}",
+                "-e", f"POSTGRES_PASSWORD={_BUILD_PASSWORD}",
+                "-e", f"PGDATA={_BAKED_PGDATA}",
+                # NO PUBLISHED PORT.  Every question this function asks goes
+                # through `docker exec`; the mapped port was never read.  It
+                # ran on EVERY per-run invocation, so a dead argument was
+                # paying the rootless port-bind collision (5/12) once per run
+                # on the hot path.  `build()` still publishes one because
+                # build_test_template.py connects from the HOST.
+                tag,
+            ]
+        )
         _wait_ready(container)
 
         def ask(database: str, sql: str) -> str:
-            """Return one scalar from the committed image."""
-            return _run(
-                [
-                    "docker", "exec", container, "psql", "-U", _BUILD_USER,
-                    "-d", database, "-tAc", sql,
-                ]
-            ).stdout.strip()
+            """Return one scalar from the committed image.
+
+            Re-raises a failed query as :class:`BuildError`.  ``_run`` cannot
+            draw this line: it sees an exit status, and `docker exec` exits
+            non-zero both when the DAEMON is unreachable (a fault) and when
+            psql rejects the SQL because a relation is missing (a verdict --
+            the image is wrong and must be rebuilt).  Only the caller knows
+            it asked a question about the image's contents.
+
+            Args:
+                database: Database to query inside the committed image.
+                sql: Statement returning exactly one scalar.
+
+            Returns:
+                The scalar, stripped.
+
+            Raises:
+                BuildError: When the query fails, which means the image does
+                    not have the shape this verification requires.
+                DockerError: When `docker exec` could not run at all.
+            """
+            command = [
+                "docker", "exec", container, "psql", "-U", _BUILD_USER,
+                "-d", database, "-tAc", sql,
+            ]
+            probe = _run(command, check=False)
+            if probe.returncode != 0:
+                detail = (probe.stderr or probe.stdout or "").strip()
+                raise BuildError(
+                    f"{tag} could not answer {sql!r} against {database!r}: "
+                    f"{detail}. The image does not match this tree -- it is "
+                    "rebuilt rather than reported."
+                )
+            return probe.stdout.strip()
 
         present = ask(
             "postgres",
@@ -577,7 +639,7 @@ def _verify_image(tag: str) -> None:
                 "rebuild with --force."
             )
     finally:
-        _run(["docker", "rm", "-f", container], check=False)
+        _run(["docker", "rm", "-fv", container], check=False)
 
 
 def build(tag: str) -> None:
@@ -597,19 +659,19 @@ def build(tag: str) -> None:
     # first's live bake container mid-migration-replay, and neither takes any
     # lock.
     container = f"shekel-bake-{tag.rsplit(':', 1)[1]}-{os.getpid()}"
-    _run(["docker", "rm", "-f", container], check=False)
+    _run(["docker", "rm", "-fv", container], check=False)
     print(f"  starting build container from {_BASE_IMAGE.split('@', maxsplit=1)[0]}")
-    _run(
-        [
-            "docker", "run", "-d", "--name", container,
-            "-e", f"POSTGRES_USER={_BUILD_USER}",
-            "-e", f"POSTGRES_PASSWORD={_BUILD_PASSWORD}",
-            "-e", "POSTGRES_DB=postgres",
-            "-e", f"PGDATA={_BAKED_PGDATA}",
-            "-p", "127.0.0.1::5432", _BASE_IMAGE,
-        ]
-    )
     try:
+        _run(
+            [
+                "docker", "run", "-d", "--name", container,
+                "-e", f"POSTGRES_USER={_BUILD_USER}",
+                "-e", f"POSTGRES_PASSWORD={_BUILD_PASSWORD}",
+                "-e", "POSTGRES_DB=postgres",
+                "-e", f"PGDATA={_BAKED_PGDATA}",
+                "-p", "127.0.0.1::5432", _BASE_IMAGE,
+            ]
+        )
         _wait_ready(container)
         port = _mapped_port(container)
         admin = (
@@ -675,11 +737,18 @@ def build(tag: str) -> None:
         _run(["docker", "rmi", "-f", tag], check=False)
         _run(["docker", "commit", container, tag])
     finally:
-        _run(["docker", "rm", "-f", container], check=False)
+        _run(["docker", "rm", "-fv", container], check=False)
 
     print("  verifying the committed image")
     try:
         _verify_image(tag)
+    except DockerError:
+        # KEEP THE IMAGE.  A container that never started says nothing about
+        # what was just committed, and untagging here would throw away a good
+        # ~9 s bake because a host port bind lost a race -- which is exactly
+        # the confusion DockerError exists to prevent.  This arm was missed on
+        # the first pass and an adversarial review caught it.
+        raise
     except BuildError:
         # DO NOT LEAVE A REFUSED IMAGE TAGGED.  It would be accepted by the
         # next invocation's existence check, and the failure that produced it
@@ -728,6 +797,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{tag} already present; verifying")
             try:
                 _verify_image(tag)
+            except DockerError:
+                # No verdict was reached, so there is nothing to conclude
+                # about the image.  Report it rather than rebuilding on it.
+                raise
             except BuildError as stale:
                 print(f"  cached image rejected: {stale}", file=sys.stderr)
                 print("  discarding it and rebuilding")

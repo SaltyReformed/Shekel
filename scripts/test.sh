@@ -14,18 +14,25 @@
 # TEST_DB_PER_RUN: a cluster of this run's own
 #     Starts a container from the image
 #     ``scripts/build_test_db_image.py`` bakes -- the test template already
-#     inside it -- on a docker-assigned port, points the run at it, and
+#     inside it -- reached over a UNIX SOCKET in a per-run directory, and
 #     removes it afterwards.  Nothing is shared, so nothing needs
 #     coordinating: no suite slot, no hygiene restart, no live-backend
 #     probe, no per-worktree template or worker-database prefix.  Those all
 #     exist because ONE postmaster serves every worktree.
 #
-#     It is OPT-IN and will stay opt-in until the harness has a daemon of
-#     its own.  A container per run on the SYSTEM daemon is exactly the
-#     churn ``docs/test-harness-isolation.md`` was written to stop: that
-#     daemon also runs the production database, and the homelab
+#     NO PORT IS PUBLISHED.  The cluster serves one process on this machine,
+#     and on a rootless daemon a published port is a 25-40% failure: docker
+#     allocates it inside the container's network namespace and rootlesskit
+#     binds that number on the HOST.  See the block at the container start
+#     for the measurements.
+#
+#     It is OPT-IN.  Since ``balance:X-br-3`` it also REFUSES a daemon that
+#     is not rootless, because a container per run on the SYSTEM daemon is
+#     exactly the churn ``docs/test-harness-isolation.md`` was written to
+#     stop: that daemon runs the production database and the homelab
 #     wud/cadvisor/alloy stack watches every container on it.  Flipping the
-#     default belongs after ``DOCKER_HOST`` points somewhere isolated.
+#     DEFAULT is ``balance:X-br-4``, which also deletes the coordination
+#     machinery listed above.
 #
 # Why a restart exists at all
 #     Phase 3b per-test isolation drops and re-clones a per-worker
@@ -105,6 +112,21 @@
 #     probe below).
 #
 # Environment variables read:
+#     DOCKER_HOST        PER-RUN MODE ONLY.  The daemon this run talks to.
+#                        Auto-selected from ``XDG_RUNTIME_DIR`` when unset
+#                        and a rootless socket is there, then EXPORTED so
+#                        pytest and ``tests/test_deploy``'s conftest see the
+#                        same endpoint this script chose.
+#     XDG_RUNTIME_DIR    PER-RUN MODE ONLY.  Holds the rootless socket that
+#                        is auto-selected, and the per-run socket directory.
+#                        Default: ``/run/user/$(id -u)``.
+#     SHEKEL_ALLOW_HOST_DOCKER  ``1`` accepts a non-rootless daemon in
+#                        per-run mode.  Shares its spelling with
+#                        ``tests/test_deploy/conftest.py`` on purpose.
+#     CI                 Sanctions a non-rootless daemon, since a CI daemon
+#                        is a throwaway nothing observes.  Read through the
+#                        same truthy vocabulary as the flags below, NOT by
+#                        presence: ``CI=false`` must not sanction anything.
 #     TEST_DB_CONTAINER  Test-db container name.  Default:
 #                        ``shekel-dev-test-db``.  ENVIRONMENT ONLY --
 #                        alone among this wrapper's four ``TEST_*``
@@ -176,11 +198,17 @@
 #                        wins, because pytest keeps the last one.
 #
 # Exit codes:
-#     Whatever pytest returns, in the ordinary case.  Two bootstrap
-#     failures exit 2 without running pytest: a container that does
-#     not answer ``pg_isready`` within READINESS_TIMEOUT_SECONDS
-#     after a requested restart, and an unrecognised
-#     ``RESTART_TEST_DB`` value.  Other non-pytest statuses are
+#     Whatever pytest returns, in the ordinary case.  A bootstrap
+#     failure exits 2 without running pytest: an unrecognised
+#     ``RESTART_TEST_DB`` or ``TEST_DB_PER_RUN`` value, a container
+#     that does not answer ``pg_isready`` within
+#     READINESS_TIMEOUT_SECONDS, and in per-run mode a daemon that is
+#     not rootless or cannot be reached, a socket path over the
+#     kernel's 107-byte limit, a cluster that reports ready without
+#     leaving a socket, or an image that cannot be prepared.  NO COUNT
+#     IS GIVEN, for the reason the state-classifier below gives: every
+#     attempt to count them in a comment has been wrong.  Other
+#     non-pytest statuses are
 #     possible and are docker's or the shell's, not this script's --
 #     ``docker restart`` failing under ``set -e`` surfaces docker's
 #     status, and ``exec pytest`` with pytest off PATH gives 127.
@@ -324,6 +352,90 @@ if [ -n "$_per_run" ]; then
         echo "[test.sh] TEST_DB_PER_RUN needs docker, which is not on PATH." >&2
         exit 2
     fi
+
+    # THE DAEMON THIS RUN TALKS TO.
+    #
+    # Per-run mode starts a container per invocation.  The SYSTEM daemon on
+    # this host also runs the production database, and the homelab
+    # wud/cadvisor/alloy stack watches every container on it -- exactly the
+    # churn ``docs/test-harness-isolation.md`` exists to stop.  So the
+    # harness picks a rootless daemon of its own, and REFUSES rather than
+    # quietly spamming the system one.  Fail-closed: an absent rootless
+    # daemon stops the run with instructions, it does not fall back.
+    #
+    # The test asks the daemon WHAT IT IS instead of pattern-matching the
+    # socket path.  "Rootless" is a property of a daemon; a path is a guess
+    # about one, and the guess has a hole -- a tcp:// endpoint pointed at a
+    # socket-proxy container reads as isolated while being the production
+    # daemon wearing a different address.
+    #
+    # Exporting DOCKER_HOST also lets ``tests/test_deploy`` run: its conftest
+    # reads this variable and treats any non-default endpoint as isolated.
+    # That only takes effect for a caller who ALSO asks for those tests with
+    # ``PYTEST_MARKER_EXPR=docker``, because this wrapper defaults to
+    # ``not docker`` further down and the marker deselects them before the
+    # conftest is consulted.  An earlier draft of this comment claimed the
+    # export alone un-skipped them; a review measured otherwise.
+    if [ -z "${DOCKER_HOST:-}" ]; then
+        _rootless_sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock"
+        if [ -S "$_rootless_sock" ]; then
+            DOCKER_HOST="unix://${_rootless_sock}"
+            export DOCKER_HOST
+        fi
+        unset _rootless_sock
+    fi
+    # Capture REACHABILITY separately from the answer.  Folding them together
+    # made a stopped daemon report "is not rootless" -- a diagnosis the script
+    # never established, about a socket that may well be the rootless one,
+    # still on disk after the daemon behind it died.  The shared path below
+    # already separates "docker could not answer" from "not what you asked
+    # for"; this keeps per-run mode consistent with it.
+    #
+    # ``timeout`` because a wedged daemon otherwise blocks here forever, at a
+    # point where nothing has been started and there is nothing to clean up.
+    if _daemon_kind="$(timeout 15 docker info \
+        --format '{{.SecurityOptions}}' 2>/dev/null)"; then
+        _daemon_answered=yes
+    else
+        _daemon_answered=""
+        _daemon_kind=""
+    fi
+    case "$_daemon_kind" in
+        *rootless*) _daemon_private=yes ;;
+        *) _daemon_private="" ;;
+    esac
+    # ``CI`` goes through the same vocabulary as the two flags above rather
+    # than a presence test.  It sanctions a container per run on the daemon
+    # that runs PRODUCTION, which is the heaviest consequence in this file,
+    # and a bare ``[ -n "$CI" ]`` made ``CI=false`` and ``CI=0`` sanction it.
+    # An unrecognised value is NOT sanctioned -- this one cannot exit 2 the
+    # way a typo'd operator flag does, because CI sets it, not the operator.
+    case "${CI:-}" in
+        1 | true | TRUE | True | yes | on) _ci_sanctioned=yes ;;
+        *) _ci_sanctioned="" ;;
+    esac
+    if [ -z "$_daemon_private" ] \
+        && [ -z "$_ci_sanctioned" ] \
+        && [ "${SHEKEL_ALLOW_HOST_DOCKER:-}" != "1" ]; then
+        if [ -z "$_daemon_answered" ]; then
+            echo "[test.sh] TEST_DB_PER_RUN could not ask" \
+                "${DOCKER_HOST:-the default socket} what it is, so whether a" \
+                "container per run would land on the production daemon is" \
+                "UNKNOWN and this run stops.  Start the rootless daemon with" \
+                "'systemctl --user start docker.service' (see" \
+                "docs/test-harness-isolation.md)." >&2
+        else
+            echo "[test.sh] TEST_DB_PER_RUN refuses this daemon:" \
+                "${DOCKER_HOST:-the default socket} is not rootless, so a" \
+                "container per run would land on the daemon that runs" \
+                "production.  Start the rootless daemon with 'systemctl" \
+                "--user start docker.service' (see" \
+                "docs/test-harness-isolation.md), or set" \
+                "SHEKEL_ALLOW_HOST_DOCKER=1 to accept the churn." >&2
+        fi
+        exit 2
+    fi
+    unset _daemon_private _daemon_answered _daemon_kind _ci_sanctioned
     # TEST_DB_IMAGE lets a caller supply an image this run should use and
     # skip the build-and-verify entirely.  It exists for two callers that
     # both know more than this script does: CI, which builds the image once
@@ -356,6 +468,42 @@ if [ -n "$_per_run" ]; then
     # TEST_DB_PREFIX ever fixed.
     _run_container="shekel-testrun-$$"
 
+    # NO PUBLISHED PORT.  The cluster serves exactly one process on this
+    # machine, so a port buys nothing and costs a whole failure class: on a
+    # rootless daemon `dockerd` picks the port inside the container's network
+    # namespace and rootlesskit then binds that number on the HOST, where a
+    # live outbound connection often already owns it.  `ip_local_port_range`
+    # is 32768-60999, byte-identical to docker's publish band, and this host
+    # routinely holds thousands of sockets in it.  Measured: 5 of 12 container
+    # starts failed, and 3 of 12 still failed with no port ever recycled, so
+    # it is not a release race -- it is two allocators in two namespaces
+    # sharing one number space.  The root daemon does not hit it (0 of 8),
+    # which is why this only surfaced on moving off it.
+    #
+    # A socket has no allocator and no shared namespace: the run names its
+    # own directory, and it already has a unique name in its PID.
+    _run_sockdir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${_run_container}"
+    # A unix socket path is capped at 107 bytes by the kernel and postgres
+    # appends `/.s.PGSQL.5432` (14).  Refuse at the door rather than let the
+    # limit surface as a connection error from deep inside the suite.
+    # BYTES, not characters: ``${#var}`` counts characters and ``sun_path``
+    # is a byte budget, so a multibyte XDG_RUNTIME_DIR would under-count and
+    # admit a path the kernel then rejects.
+    _sockdir_bytes="$(printf '%s' "$_run_sockdir" | wc -c)"
+    if [ "$_sockdir_bytes" -gt 93 ]; then
+        echo "[test.sh] socket directory $_run_sockdir is too long;" \
+            "a unix socket path cannot exceed 107 bytes.  Set" \
+            "XDG_RUNTIME_DIR to something shorter." >&2
+        exit 2
+    fi
+    unset _sockdir_bytes
+    rm -rf "$_run_sockdir"
+    mkdir -p "$_run_sockdir"
+    # 0777 because rootless docker maps the container's postgres user into
+    # the subuid range, so it cannot write a directory owned by this user.
+    # The socket is still private: XDG_RUNTIME_DIR itself is 0700.
+    chmod 0777 "$_run_sockdir"
+
     # ``-v`` removes the container's ANONYMOUS VOLUME with it.  The baked
     # image inherits the base's ``VOLUME /var/lib/postgresql`` declaration
     # even though PGDATA lives elsewhere, so every run created a volume that
@@ -375,6 +523,16 @@ if [ -n "$_per_run" ]; then
                 "remove it by hand ('docker rm -fv $_run_container') or the" \
                 "next run reusing that PID collides with it." >&2
         fi
+        # The socket directory outlives the container and sits on a tmpfs, so
+        # a leak is bounded by the next reboot rather than by anything that
+        # prunes it.  A plain rm suffices ONLY because the mount point is
+        # /sockets: the entrypoint chowns /var/run/postgresql to its own
+        # subuid-mapped user and sets the sticky bit, after which this user
+        # cannot unlink the socket that user created -- measured 5 of 5.
+        rm -rf "$_run_sockdir" 2>/dev/null || true
+        if [ -e "$_run_sockdir" ]; then
+            echo "[test.sh] WARNING: $_run_sockdir survived teardown." >&2
+        fi
     }
 
     # Forward the signal to pytest FIRST, so the run stops rather than being
@@ -393,16 +551,28 @@ if [ -n "$_per_run" ]; then
     trap '_teardown_run_container; exit 130' INT
     trap '_teardown_run_container; exit 143' TERM
 
+    # ``--network=none`` follows from having no port: the cluster needs no
+    # network at all, which also takes the harness off the experimental
+    # gvisor-tap-vsock driver the rootless daemon falls back to when
+    # slirp4netns is absent.  ``listen_addresses=''`` means it does not even
+    # open a TCP listener inside its own namespace.
+    #
+    # The socket lives at /sockets, NOT the default /var/run/postgresql,
+    # because the entrypoint chowns that path to a subuid-mapped user and
+    # sticky-bits it, leaving behind files this user cannot delete.
     docker run -d --rm --name "$_run_container" \
+        --network=none \
         -e POSTGRES_USER=shekel_user \
         -e POSTGRES_PASSWORD=shekel_pass \
         -e POSTGRES_DB=postgres \
         -e PGDATA=/pgdata-baked \
-        -p 127.0.0.1::5432 \
+        -v "${_run_sockdir}:/sockets" \
         "$_image" \
         -c fsync=off \
         -c synchronous_commit=off \
-        -c full_page_writes=off >/dev/null
+        -c full_page_writes=off \
+        -c listen_addresses='' \
+        -c unix_socket_directories=/sockets >/dev/null
 
     # THE NON-DURABLE KNOBS ARE WHAT MAKE THIS AFFORDABLE, and leaving them
     # off is the difference between a design that pays for itself and one
@@ -418,11 +588,15 @@ if [ -n "$_per_run" ]; then
     # else -- exactly the argument the compose file already makes, which is
     # why these three are copied from it rather than invented here.
     #
-    # TCP, not the socket: the entrypoint's initdb window answers on the
-    # socket before the real server exists (see scripts/build_test_db_image.py).
+    # Asking over the socket is safe HERE and would not be in the builder.
+    # The entrypoint answers on a socket during its initdb window before the
+    # real server exists -- but the baked image ships a populated PGDATA, so
+    # the entrypoint skips initdb entirely and that window never opens.
+    # scripts/build_test_db_image.py, whose bake container DOES run initdb,
+    # is the one that still cannot trust a socket.
     _deadline=$(($(date +%s) + READINESS_TIMEOUT_SECONDS))
     until docker exec "$_run_container" \
-        pg_isready -q -h 127.0.0.1 -U shekel_user 2>/dev/null; do
+        pg_isready -q -h /sockets -U shekel_user 2>/dev/null; do
         # shellcheck disable=SC2312 # date +%s always succeeds; it only drives this timeout
         if [ "$(date +%s)" -ge "$_deadline" ]; then
             echo "[test.sh] $_run_container did not accept connections within" \
@@ -432,24 +606,23 @@ if [ -n "$_per_run" ]; then
         sleep 0.1
     done
 
-    # `docker port` prints e.g. "127.0.0.1:32768"; take the part after the
-    # last colon with parameter expansion rather than a pipe, so there is no
-    # reader to close early and no SIGPIPE for pipefail to promote.
-    _run_mapping="$(docker port "$_run_container" 5432/tcp)"
-    _run_mapping="${_run_mapping%%$'
-'*}"
-    _run_port="${_run_mapping##*:}"
-    if [ -z "$_run_port" ]; then
-        echo "[test.sh] no published port for $_run_container" >&2
+    # libpq reads a ``host`` beginning with ``/`` as a socket DIRECTORY, and
+    # SQLAlchemy passes the query string through untouched, so one URL shape
+    # serves both.  tests/conftest.py rewrites only the PATH of these URLs to
+    # reach a per-worker database, and urlparse/urlunparse preserve the
+    # query, so the socket survives that rewrite.
+    if [ ! -S "${_run_sockdir}/.s.PGSQL.5432" ]; then
+        echo "[test.sh] $_run_container reported ready but left no socket" \
+            "at ${_run_sockdir}/.s.PGSQL.5432" >&2
         exit 2
     fi
-    export TEST_ADMIN_DATABASE_URL="postgresql://shekel_user:shekel_pass@127.0.0.1:${_run_port}/postgres"
-    export TEST_DATABASE_URL="postgresql://shekel_user:shekel_pass@127.0.0.1:${_run_port}/shekel_test"
+    export TEST_ADMIN_DATABASE_URL="postgresql://shekel_user:shekel_pass@/postgres?host=${_run_sockdir}"
+    export TEST_DATABASE_URL="postgresql://shekel_user:shekel_pass@/shekel_test?host=${_run_sockdir}"
     # The baked template's name, not the worktree's: a private cluster has
     # exactly one template and nothing to collide with.
     export TEST_TEMPLATE_DATABASE=shekel_test_template
 
-    echo "[test.sh] private cluster $_run_container on 127.0.0.1:${_run_port}" \
+    echo "[test.sh] private cluster $_run_container on ${_run_sockdir}" \
         "from $_image" >&2
 
     PYTEST_MARKER_EXPR="${PYTEST_MARKER_EXPR:-not docker}"
