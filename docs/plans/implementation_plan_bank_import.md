@@ -146,22 +146,46 @@ what it leaves a LATER step is on that step's own entry.
       clone **32 of 62 were on NO surface**. Opened **N-402** (the statements route family is absent
       from the auth sweep) and **N-403** (the new-envelope answer needs scripting, on all three
       controls) -- `X-gi` and `X-gj-1c` own them, and the register's retirement is now unblocked.
-- [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the retirement leaf
-      **X-gf** owed on shipping, and since 2026-08-29 the LAST leaf of the Reconcile rebuild: it
-      waits on `X-gj` and deletes what that page orphans -- the review, register and workbench
-      routes and templates, the evidence-group rendering (`_queue.py`'s `_SAID`, the per-row
-      sentence composers `_notes_for`), and whatever else the census finds unreachable.
-      **It also decides N-470** (re-pointed 2026-09-03 when `X-gh` withdrew): two figures on the
-      import-delete receipt -- `anchors_released`, `merchants_forgotten` -- computed and rendered by
-      nothing, which the census either wires to the flash or deletes.
-      **It is a CENSUS before it is a deletion**: it may delete nothing it has not first shown to be
-      orphaned, because a route that looks dead to a reading is not the same as one no door reaches
-      (**N-112**'s shape). What the archived X-gf span leaves it: `apply=hand` is already DELETED
-      (never re-add an index over a form), and `TestNoSweptRowCarriesASentence` guards a queue this
-      step removes, so the test goes with the queue, not before it.
-      **And what the archived X-gj span leaves it** (rule 5, moved here rather than archived because
-      it binds this step): the review QUEUE goes with the register, which the retired register page
-      still links to three times.
+- [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the DECOMPOSED
+      parent of the exception queue's retirement, split 2026-09-05 at its own census into five
+      leaves. **The census may delete nothing it has not shown orphaned**, because a route that
+      reads dead is not one no door reaches (**N-112**'s shape). Measured on `cef75a42`: three route
+      modules over nine endpoints, seven templates, `statement_review.js`, `.stmt-pick-list`,
+      `_queue.py`, `_register.py`, four test modules -- and SIX live inbound links to repoint FIRST.
+      *It VOIDED its own headline*: 287 matches, none naming two bank lines, measures an import
+      feature the developer had abandoned, so no step may cite it.
+  - [ ] **X-gi-1** `feat(import): the links point at Reconcile, and MATCH works unscripted` -- the
+        six repoints, plus **R-KA**: `?open=<line_id>` renders ONE card's candidate rows
+        server-side. Rendering ALL of them is 143,298 bytes of a 238,645-byte page, which is
+        **N-374** re-opened; one card is at most 15 rows. **Waits on `X-gm`** (developer
+        2026-09-05).
+  - [ ] **X-gi-2** `refactor(import): review, register and workbench retire as pages` -- **R-HU**'s
+        deletion, once nothing links in. Closes **N-404**, whose remedy was always this.
+  - [ ] **X-gi-3** `refactor(import): the queue's model has no reader` -- `_queue.py` whole
+        (`_SAID`, `_notes_for`, the evidence grouping), `_register.py`, four `ReviewSet` members,
+        their re-exports, `test_queue.py`, and `test_rules.py`'s queue half.
+        **A LATER READER must obey**: `TestNoSweptRowCarriesASentence` goes WITH the queue, never
+        before it.
+  - [ ] **X-gi-4** `fix(import): three findings the deletion does not close` -- **N-470**'s two
+        unrendered receipt figures, **N-405**'s CSP-dead inline style, **N-402**'s 12 uncovered
+        route decorators. **N-405's ledger diagnosis was WRONG**: djlint H021 runs in pre-commit and
+        CI and refuses an inline style UNLESS a Jinja expression sits between `style=` and the tag's
+        `>`; that one blind spot passed all 159 templates. `SHK01` closes it. No X-gm dependency.
+  - [ ] **X-gi-5** `fix(import): one ordered read takes every lock a pass needs` -- **N-471**.
+        `apply_reviewed` locks in submission order across THREE loops, so two presses naming the
+        same lines in opposite order deadlock. **MOVES MONEY, OWN PR.** No X-gm dependency.
+- [ ] **X-gm** `refactor(import): the badge and the inbox are one producer` -- **R-KB**. Measured
+      2026-09-05 at head: the grid badge reads **27** and the Reconcile inbox **18**, the delta
+      being 9 parked card payments at `$7,412.94` on the Transfers tab, and 18 + 9 = 27 exactly.
+      Today they AGREE because the badge opens the queue, so `X-gi-1` is what would MINT the
+      disagreement -- which is why it ranks first and no interim sentence is built. Move the parked
+      and impossible-day split off the proposer into `_undisposed`, which **R-HQ** already implies:
+      a holding state is not a task, so nothing should be proposing a match for one.
+- [ ] **X-gn** `feat(import): a match may name a second bank line` -- **R-KC**. The workbench is the
+      only door to a multi-line group and `X-gi-2` deletes it; the developer accepted that gap. The
+      AXIS stays: `MatchSides.of` sums over lines, `MatchDays.posted_first` exists only for it,
+      `test_accept.py` covers it, **R-JY**'s model keeps `group_id`, and
+      `uq_statement_match_members_line` forbids faking it as two matches.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.
