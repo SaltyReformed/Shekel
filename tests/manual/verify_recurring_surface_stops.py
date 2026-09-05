@@ -7,10 +7,10 @@ configured loan, the stored column beside the resolver's own answer.  Run it on
 ``origin/dev`` and again on the branch and diff the two files.  An empty diff
 is the claim that no rendered character moved, measured rather than argued.
 Where it is NOT empty, the moved rows must be loan payments whose stored bound
-is NULL or LATER than the loan's closing date -- the only rows the composed
-value changes, since the stored copy still binds where it is the earlier date
-until plan step R7d-g deletes it -- and each such row is the step working; a
-moved row of any other kind is a regression.
+differs from the loan's derived closing date -- the only rows the composed
+value changes, since the door reads the app-written column as the cache it is
+(ruling R-R56) and the derived stop alone binds -- and each such row is the
+step working; a moved row of any other kind is a regression.
 
 Usage (from a checkout, against a production clone)::
 

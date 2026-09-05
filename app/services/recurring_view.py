@@ -68,16 +68,28 @@ payoff written into ``budget.recurrence_rules.end_date`` by ten call sites --
 so the cadence sentence and the next date named whichever value a chokepoint
 had most recently written (plan ledger row **D35**).
 
-**What they name now is the EARLIER of the stored bound and the derived
-closing date, until plan step R7d-g deletes the stored copy.**  The composed
-value ANDs its two halves, and for a loan payment the ``end_date`` column is
-not the owner's word but the chokepoints' cached copy of the derived payoff
-(the form locks the control), which the value cannot tell from an authored
-date.  Where the cache is NULL or LATER than the closing date the derived stop
-binds -- a retired loan's row stops on the day the loan closed; where it is
-EARLIER (ledger row D35's measured shape, ``2029-01-22`` stored against
-``2029-02-22`` derived) the row still names the cached date.  The phrase and
+**An ACTIVE loan payment's row now names the loan's derived closing date**,
+because the door reads the stored copy as the cache it is (ruling **R-R56**,
+2026-09-04): for the loan payment the app itself bounds, the ``end_date``
+column is the chokepoints' cached payoff and not the owner's word, so the door
+composes no authored bound for it and the derived stop is the whole answer --
+where the cache is EARLIER than the closing date (ledger row D35's measured
+shape, ``2029-01-22`` stored against ``2029-02-22`` derived) the row names
+``2029-02-22``.  A second transfer into the same loan keeps whatever its owner
+authored while an older active transfer is the loan's payment.  The phrase and
 the next date read ONE value, so they cannot disagree with each other.
+
+Two cells still read the column, and each is named rather than denied.  The
+ARCHIVED drawer: an archived loan payment is no longer the account's active
+transfer, so the predicate that names the app-written bound does not name it
+and the column the app wrote while it was active is read as its owner's bound
+-- a cache earlier than the derived stop binds that drawer row until R7d-g
+NULLs it, and R7d-g's census must cover archived loan payments.  The MONTHLY
+EQUIVALENT: ``template_monthly_or_none`` -> ``has_ended`` reads the rule's own
+columns, so on D35's shape the row shows the derived stop and a next date
+beside a BLANK monthly figure for the one installment between the cached
+date's last occurrence and the derived one; plan step R7d-e moves that reader
+onto the door.  R7d-g deletes the stored copy and the door's arm with it.
 
 **It takes the READ PASS** (:class:`~app.services.balance_at.BalanceContext`),
 which carries the owner's whole schedule as a ``PayCalendar`` (plan step
@@ -486,10 +498,10 @@ def _build_section(
     :func:`~app.services.recurring_definition.read_definition` -- the single
     resolve-then-narrow-then-place composition -- and the second pass derives
     both from what it returned.  That door is where the destination's own stop
-    joins the rule's (plan step R7d-d): the two are ANDed, so a loan payment's
-    row stops at the EARLIER of its stored bound and the loan's derived closing
-    date -- the derived stop alone once plan step R7d-g deletes the stored copy
-    (see the module docstring).
+    joins the rule's (plan step R7d-d): a loan payment's row stops where the
+    loan's derived closing date says, because the door reads the cached column
+    as a cache and not as the owner's bound (ruling **R-R56**; see the module
+    docstring).
 
     **This is a fail-CLOSED read**, and plan step R4a is what changed it.  The
     retired matcher used to log a warning and answer ``[]`` for a rule it could
@@ -691,9 +703,14 @@ def build_archived_rows(
     Only the description is resolved: an archived definition generates nothing,
     so its occurrences are never walked.  It is the COMPOSED description
     (:func:`~app.services.recurring_definition.resolved_definition`, plan step
-    R7d-d), so an archived loan payment's stop line is composed exactly as the
-    active list's is -- a drawer describing a different narrowing from the list
-    beside it would be one surface disagreeing with itself.
+    R7d-d), through the same door the active list takes.  **One limit until
+    plan step R7d-g**: the door reads an app-written column as the cache only
+    for the account's ACTIVE payment (ruling **R-R56**), and an archived loan
+    payment is no longer that, so the column the chokepoints wrote while it was
+    active is read here as its owner's bound and a cache earlier than the
+    derived stop still binds the drawer row.  The schema records who wrote a
+    bound nowhere; deleting the stored copy is the remedy, and R7d-g's census
+    must include archived loan payments.
 
     Args:
         templates: The user's archived templates of one kind, in the order the

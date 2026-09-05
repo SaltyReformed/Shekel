@@ -291,14 +291,12 @@ class Closing:
         authored: The bound the OWNER stated -- :data:`.._bounds.NEVER_ENDS`
             for the many live rules that state none.  Always present: a
             definition always has an authored bound, even when that bound is
-            "it does not stop".  **For a loan payment it is not yet the owner's
-            word**: until plan step R7d-g deletes the stored copy, ten
-            chokepoints write the loan's derived payoff into the authored
-            bound's own column, and this value cannot tell that cached date
-            from an authored one -- so where the cache is EARLIER than the
-            derived stop it still binds.  That is the maintained copy this
-            paragraph's "never maintained" does not yet cover, and deleting
-            the column is what makes it true.
+            "it does not stop".  **This value cannot tell an authored date
+            from a cached one**, and until plan step R7d-g deletes the stored
+            copy the ``end_date`` column of the loan payment the app bounds
+            holds the chokepoints' cache of the derived payoff -- so the
+            composed door supplies ``NEVER_ENDS`` here for that definition
+            (ruling **R-R56**), and the derived half is its whole stop.
         derived: What something outside the rule allows, or ``None`` when
             nothing does.  ``None`` is "no derived source bounds this
             definition" and is a complete answer rather than an unknown -- a

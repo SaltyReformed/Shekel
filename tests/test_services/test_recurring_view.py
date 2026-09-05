@@ -20,6 +20,7 @@ are exercised end to end.
 """
 
 import logging
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -48,7 +49,10 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service, balance_at, recurring_view
 from app.services.balance_at import BalanceContext
-from app.services.loan_recurrence_sync import bind_rule_to_loan
+from app.services.loan_recurrence_sync import (
+    bind_rule_to_loan,
+    owns_validity_window,
+)
 from app.services.obligations_aggregator import committed_monthly
 from app.services.pay_calendar import (
     PayCadence,
@@ -57,8 +61,11 @@ from app.services.pay_calendar import (
     calendar_for,
 )
 from app.services.recurrence import (
+    EndsOnDate,
     RecurrenceResolutionError,
     read_rule,
+    reauthor_rule,
+    recurrence_spec,
 )
 from app.services.recurrence import rule_occurrences
 # Imported as a MODULE so the firing controls below patch the names the
@@ -853,6 +860,78 @@ class TestTheDestinationsStopReachesTheRow:
             "row but the walk was narrowed to nothing"
         )
         assert row.next_date >= _LOAN_TODAY
+
+    def test_a_stale_EARLIER_cached_column_does_not_reach_the_row(
+        self, seed_user, seed_periods_52,
+    ):
+        """Plan ledger row **D35**'s shape on the surface, under ruling **R-R56**.
+
+        The column holds a date EARLIER than the loan's payoff -- the shape
+        measured on production (``2029-01-22`` stored against ``2029-02-22``
+        derived).  Before the ruling the composed value read it as the owner's
+        bound and the row named the cached date; the door now reads the column
+        the app itself writes as the cache it is, so the row names the payoff
+        and keeps a next date.
+        """
+        loan = _loan(seed_user)
+        tpl = make_loan_payment_template(db.session, seed_user, loan)
+        db.session.commit()
+        ctx = _ctx(seed_user, _LOAN_TODAY)
+        stale = date(2027, 1, 1)
+        reauthor_rule(
+            tpl.recurrence_rule,
+            replace(recurrence_spec(tpl.recurrence_rule), end_bound=EndsOnDate(on=stale)),
+            ctx.calendar(),
+        )
+        db.session.commit()
+        assert tpl.recurrence_rule.end_date == stale, "precondition: stale"
+        assert owns_validity_window(tpl), (
+            "precondition: this is the definition whose bound the app writes"
+        )
+        assert balance_at.loan_figures(loan, ctx).closing_date == (
+            date(2028, 7, 1)
+        ), "precondition: the loan's own stop is LATER than the cache"
+
+        view = recurring_view.build_view([], [], [tpl], ctx)
+        row = view.transfers.rows[0]
+
+        assert row.recurrence.stops == "until Jul 01, 2028"
+        assert row.next_date is not None
+
+    def test_an_ARCHIVED_loan_payments_cached_column_is_still_read_as_authored(
+        self, seed_user, seed_periods_52,
+    ):
+        """The interim's one remaining reader of the cache, pinned until R7d-g.
+
+        Ruling **R-R56** keys on the account's ACTIVE recurring transfer, and an
+        archived loan payment is no longer that -- so the column the chokepoints
+        wrote while it was active is read in the Archived drawer as its owner's
+        bound, and a cache EARLIER than the derived stop still binds the drawer
+        row.  The schema records who wrote a bound nowhere, so no predicate can
+        tell this cache from an owner's date; plan step R7d-g NULLs the column,
+        and its census must include archived loan payments, at which point this
+        case flips to the payoff and trips here rather than moving the drawer
+        silently.
+        """
+        loan = _loan(seed_user)
+        tpl = make_loan_payment_template(db.session, seed_user, loan)
+        db.session.commit()
+        ctx = _ctx(seed_user, _LOAN_TODAY)
+        stale = date(2027, 1, 1)
+        reauthor_rule(
+            tpl.recurrence_rule,
+            replace(recurrence_spec(tpl.recurrence_rule), end_bound=EndsOnDate(on=stale)),
+            ctx.calendar(),
+        )
+        tpl.is_active = False
+        db.session.commit()
+        assert not owns_validity_window(tpl), (
+            "precondition: an archived payment is not the account's active one"
+        )
+
+        rows = recurring_view.build_archived_rows([tpl], ctx)
+
+        assert rows[0].recurrence.stops == "until Jan 01, 2027"
 
     def test_a_RETIRED_loan_payments_row_stops_on_the_day_the_loan_closed(
         self, seed_user, seed_periods_52,

@@ -178,12 +178,13 @@ class RecurrenceDescription:
             whichever value a chokepoint had most recently written.  It now
             words the whole :class:`~app.services.recurrence.Closing` -- the
             same value the occurrence walk reads, so the cell and the walk
-            cannot disagree with each other.  Two limits stand while the R7d
+            cannot disagree with each other.  Limits stand while the R7d
             leaves land: generation walks the rule's own bound until plan step
-            R7d-c-2 takes the same door, and until R7d-g deletes the cached
-            column that column IS the authored half for a loan payment, so
-            what this names is the earlier of the cached date and the derived
-            one.
+            R7d-c-2 takes the same door; and the cached ``end_date`` column
+            does not reach this phrase for the ACTIVE loan payment the app
+            bounds (the door reads it as the cache it is, ruling **R-R56**),
+            but it does for an ARCHIVED one, whose column the app wrote while
+            it was active, until R7d-g NULLs it.
 
             **It was two fields, ``until`` and ``after_occurrences``, with a
             ``__post_init__`` refusing the pair, until plan step R7b-3.**  That

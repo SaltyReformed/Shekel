@@ -46,12 +46,42 @@ complete here (:mod:`app.services.recurrence._closing` states the same limit).
 What it does NOT do
 -------------------
 
-It resolves; it does not decide policy.  ``None`` back from
+It resolves; it decides no policy of its own.  ``None`` back from
 :func:`~app.services.loan_recurrence_sync.loan_payment_window` means "no
 derived source bounds this definition" -- a transaction template pays into no
 account at all, and a transfer into a savings account has no derived stop --
 and that is carried through as a :class:`~app.services.recurrence.Closing` with
 no derived half rather than translated into some neutral shape.
+
+The one policy it APPLIES is a developer ruling (**R-R56**, 2026-09-04): **a
+closing bound the APP writes is read as the cache it is, not as the owner's
+word.**  Until plan step R7d-g deletes the stored copy, ten chokepoints write a
+loan payment's derived payoff into ``budget.recurrence_rules.end_date`` -- the
+authored bound's own column -- and the form locks the control, so for the
+definition :func:`~app.services.loan_recurrence_sync.owns_validity_window`
+names, that column holds no authored fact at all.  Composed as authored it
+would be ANDed with the fresh derivation, and where the cache is EARLIER (plan
+ledger row **D35**'s measured shape: ``2029-01-22`` stored against
+``2029-02-22`` derived) the stale date would still bind.  So the door composes
+``authored=NEVER_ENDS`` for that definition and the derived stop is the whole
+answer.  A second recurring transfer into the same loan keeps whatever its
+owner authored -- for as long as an older active transfer is the loan's
+payment; archive that one and the second is promoted, its column is written by
+the next chokepoint, and this door reads it as the cache from then on, which
+is what the sync will make it.
+
+**Two limits, stated because the schema records who wrote a bound nowhere.**
+The predicate answers "does the app write this bound NOW", so an ARCHIVED loan
+payment -- no longer the account's active transfer -- has the column the app
+wrote while it was active read as its owner's bound in the Archived drawer,
+and a cache EARLIER than the derived stop still binds that drawer row until
+plan step R7d-g NULLs it (R7d-g's census must therefore cover archived loan
+payments, not the active one alone).  And **R7d-g deletes this arm with the
+column** only while the form's Ends control stays locked for the definition
+the app bounds: once nothing stores that bound, ``end_bound_from_columns``
+reads ``NEVER_ENDS`` on its own and the arm is dead code; if R7d-f unlocks the
+control instead, the arm must go WITH the unlock or it discards an owner's
+word.  Either way it is a fence around the stored copy and not a design.
 
 Flask-isolated (``CLAUDE.md`` Architecture): it takes a template and a read
 pass and returns plain values, reads no ``request`` / ``session``, opens no
@@ -63,9 +93,13 @@ pass its derived stop is resolved in cannot be two values that disagree.
 
 from dataclasses import replace
 
-from app.services.loan_recurrence_sync import loan_payment_window
+from app.services.loan_recurrence_sync import (
+    loan_payment_window,
+    owns_validity_window,
+)
 from app.services.balance_at import BalanceContext
 from app.services.recurrence import (
+    NEVER_ENDS,
     Closing,
     RecurrenceOwner,
     ResolvedRecurrence,
@@ -96,13 +130,19 @@ def resolved_definition(
     because :class:`~app.services.recurrence.ResolvedRecurrence` is frozen, and
     the authored half is carried across from the value the pure resolver
     built rather than re-read off the rule: reading it twice would be a second
-    spelling of the same column.
+    spelling of the same column.  The one exception is ruling **R-R56** (see
+    the module docstring): for the definition whose closing bound the app
+    itself writes, the stored bound is the chokepoints' cache of the derived
+    payoff and is replaced by ``NEVER_ENDS``, so only the derived stop binds.
 
     Args:
         template: The recurring definition -- a ``TransactionTemplate`` or a
             ``TransferTemplate`` (:data:`~app.services.recurrence.
             RecurrenceOwner`), or any object exposing ``recurrence_rule`` and
-            ``to_account_id``, which is what the test fixtures build.
+            ``to_account_id``, which is what the test fixtures build -- plus
+            ``user_id`` and ``id`` whenever the destination is a configured
+            loan, which :func:`~app.services.loan_recurrence_sync.
+            owns_validity_window` reads.
             **Must belong to ``ctx.user_id``**: the caller owns the ownership
             check, as every seam entry this reaches states.  A cross-owner
             pairing is refused one call down by
@@ -155,12 +195,24 @@ def resolved_definition(
     # the resolver, whose EMPTY test needs the definition's first occurrence:
     # this is the one resolution of the rule on the pass (``CLAUDE.md`` rule
     # 14), where a first build had the resolver derive it again on its own.
+    derived = loan_payment_window(template, resolved, ctx)
+    # Ruling R-R56: the bound the APP writes is the cache, not the owner's
+    # word.  Asked only where a loan is behind the definition, because the
+    # predicate costs two queries a savings transfer need not pay -- and on
+    # this path both re-ask facts the pass already holds: ``loan_figures``
+    # just proved the loan's params exist, and ``resolved_loan(...).standing``
+    # memoizes the same active-payment lookup.  Kept as the ONE predicate the
+    # form lock and the refusals share (plan step R7b-4) rather than spelled a
+    # second time off the pass; plan step R7d-f, which splits that predicate
+    # per bound, is where the leaf moves so both read one producer.  R7d-g
+    # deletes this arm with the column it reads around.
+    authored = (
+        NEVER_ENDS
+        if derived is not None and owns_validity_window(template)
+        else resolved.closing.authored
+    )
     return replace(
-        resolved,
-        closing=Closing(
-            authored=resolved.closing.authored,
-            derived=loan_payment_window(template, resolved, ctx),
-        ),
+        resolved, closing=Closing(authored=authored, derived=derived),
     )
 
 

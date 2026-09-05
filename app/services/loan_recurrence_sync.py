@@ -209,11 +209,14 @@ def loan_payment_window(
     **Its first reader arrived at plan step R7d-d**, which is the composed
     door :func:`app.services.recurring_definition.resolved_definition` -- the
     Recurring surface's cadence sentence and next date read this answer
-    through it.  The stored copy still binds beside it there where it is the
-    EARLIER date, because the composed value reads the column as the authored
-    half until R7d-g deletes it.  R7d-c-2 / R7d-e / R7d-f move the remaining
-    reading surfaces onto the same door, and R7d-g then stops the column being
-    written at all.
+    through it, and the door reads the stored copy as the cache it is for the
+    definition :func:`owns_validity_window` names (ruling **R-R56**), so that
+    row's stop line and next date come from this answer and not the column.
+    The column is still read on that surface by the archived drawer (an
+    archived payment is not the one the predicate names) and by the monthly
+    equivalent (``has_ended``, R7d-e's reader).  R7d-c-2 / R7d-e / R7d-f move
+    the remaining reading surfaces onto the same door, and R7d-g then stops the
+    column being written at all.
 
     A pure READ: it opens no transaction, writes nothing and reads no clock of
     its own (*ctx* carries the pass's ``as_of``).
