@@ -12,8 +12,8 @@ of ruling **R-HB** this keeps.  *It named four until plan step
 verbs and moves with them.
 
 **A verb is OFFERED only where its door is open, and which those are is stated
-HERE rather than in a Jinja condition** (ruling **R-HW**).  Two of the four
-have no door in the app at all today:
+HERE rather than in a Jinja condition** (ruling **R-HW**).  ONE of the four has
+no door in the app at all, and a second is shut for one class of line:
 
 * TRANSFER waits for a door that turns a bank line INTO a transfer, which
   no module in the app has.  It is not the card ACCOUNT that is missing --
@@ -23,12 +23,16 @@ have no door in the app at all today:
   the purchases it covers (finding **N-337**, owner ``credit_card:CC3b``,
   ruling **R-GJ**).  :mod:`._bars` PARKS such a line rather than letting it
   become spending.
-* SKIP waits for its verb to be LIT, which is plan step
-  ``bank_import:X-gj-4b``.  The place to record the disposition exists --
-  ``budget.statement_line_skips`` and its two doors shipped at ``X-gj-4a``
-  (ruling **bank_import:R-JG**) -- and nothing calls them yet, so
-  :data:`SKIP_WAITS` still holds: a skip this build could take would be a line
-  that comes back on the next visit.
+* SKIP is OPEN as of plan step ``bank_import:X-gj-4b``, which lit it.  *This
+  module said the verb had no door and that a skipped line would come back on
+  the next visit*, which was true of a build with no store: the store and its
+  two doors shipped at ``X-gj-4a`` (ruling **bank_import:R-JG**), the tab a
+  recorded skip lands on at ``X-gj-4c-2``, and nothing called
+  :func:`~._skipping.skip_line` until this step.  It is shut for exactly ONE
+  class of line -- one a source files as paying an account the owner holds
+  (ruling **bank_import:R-JI**) -- and :data:`SKIP_SHUT_PAYS_AN_ACCOUNT` is
+  the sentence that DOOR raises and this module renders, which is one string
+  rather than two that agree today.
 
 **The panel renders all four anyway** (ruling **R-HW**, developer 2026-08-29):
 the vocabulary is taught by the panel itself, so a verb absent from three
@@ -142,13 +146,36 @@ TRANSFER_WAITS = (
     "covers."
 )
 
-#: Why SKIP cannot be pressed yet.  Nothing records a skipped line's
-#: disposition, so the honest statement is that the line would come back.
-SKIP_WAITS = (
-    "Skip is for a line that explains nothing you budget for -- a duplicate "
-    "your bank later reversed, or a figure that is not money you spent.  It "
-    "is not recorded yet, so a line you skipped here would be back on this "
-    "list the next time you opened it."
+#: Why SKIP is shut for a line whose merchant a source files as paying an
+#: account the owner holds.  Ruling **bank_import:R-JI** (developer,
+#: 2026-09-02), plan step ``bank_import:X-gj-4b``.
+#:
+#: **It lives HERE and not beside the door, so the screen and the door cannot
+#: disagree about the same refusal.**  It was ``_skipping._PAYS_AN_ACCOUNT``
+#: until this step, which was the only reader; lighting the verb gave it a
+#: second one, and two spellings that agree today are still two spellings
+#: (``CLAUDE.md`` rule 14).  :func:`~._skipping.skip_line` imports it for the
+#: ``ValidationError`` it raises, and :func:`offers_for` renders it as the
+#: tab's explanation -- so a crafted submission and an opened panel are
+#: answered in the same words.
+#:
+#: **The refusal is at the DOOR and the shut tab is its disclosure**, never
+#: the other way round, which is ruling **R-GJ**'s lesson one verb over: that
+#: ruling cost `$7,412.94` to learn that a warning paragraph over a working
+#: control is not a refusal.
+#:
+#: **And it is not only doctrine.**  Such a line is a
+#: :class:`~._bars.BarredLine` the Reconcile page counts on its *waiting for
+#: the account they paid* chip, whose label carries a COUNT and a MAGNITUDE
+#: (:func:`~._reconcile._chips`).  Skipping one drops it out of the pass, so
+#: that money figure falls -- a skip moving a rendered amount, which is the
+#: one thing this act is supposed never to do.  Named by adversarial review
+#: 2026-09-02.
+SKIP_SHUT_PAYS_AN_ACCOUNT = (
+    "Your bank files that line as a payment to another account you hold, so "
+    "it is not explained by nothing -- the money moved between two of your "
+    "own accounts.  It waits on the Transfers tab until the app can pair the "
+    "two sides."
 )
 
 #: Why ADD is shut for a line this pass has PROPOSED a match for.  The pass
@@ -214,16 +241,36 @@ class VerbOffer:
     def is_add(self) -> bool:
         """Return whether this offer is the ADD verb.
 
-        See :attr:`is_match`.  The two do NOT partition
-        :class:`Verb` -- TRANSFER and SKIP have no door in this build -- so a
-        template renders one arm each with no ``else``, and a verb neither
-        predicate claims renders its explanation instead of a control.
+        See :attr:`is_match`.  The three predicates here do NOT partition
+        :class:`Verb` -- TRANSFER has no door in this build -- so a template
+        renders one arm each with no ``else``, and a verb none of them claims
+        renders its explanation instead of a control.
         """
         return self.verb is Verb.ADD
+
+    @property
+    def is_skip(self) -> bool:
+        """Return whether this offer is the SKIP verb.
+
+        See :attr:`is_match` for why this is a predicate rather than a value
+        for a template to compare.  Added at plan step
+        ``bank_import:X-gj-4b``, which gave SKIP a door: until then the verb
+        was shut on every line, so its pane rendered
+        :attr:`waiting_for` and no template ever asked which verb it was.
+
+        **An open SKIP pane renders no submitting control of its own**, and
+        that is a fact about the ACT rather than an omission.  MATCH offers
+        rows and ADD offers a destination because those verbs take an
+        argument; a skip takes none, so the card's own OK checkbox and the
+        verb radio it was left on are the whole submission.  The pane's
+        content is what the act does and what it does NOT do.
+        """
+        return self.verb is Verb.SKIP
 
 
 def offers_for(
     *, add_waits: "str | None", has_rows_to_match: bool,
+    skip_waits: "str | None",
 ) -> "tuple[VerbOffer, ...]":
     """Return all four verbs for one line, each with its door's state.
 
@@ -252,6 +299,12 @@ def offers_for(
             One fact about the pass that every line shares, so it is passed in
             rather than re-derived per line -- the redundant producer call
             this package treats as a DRY violation rather than a cost.
+        skip_waits: Why this line may not be recorded as explained by nothing,
+            or ``None`` when it may.  **Stated by the caller for the same
+            reason ``add_waits`` is**, and with a sharper edge: the ONE line
+            class it is ever set for (ruling **bank_import:R-JI**) is not
+            derivable from any of the pass's lists, which is argued once on
+            :attr:`~._reads.ReviewSet.account_payments`.
 
     Returns:
         One :class:`VerbOffer` per :class:`Verb`, in the enum's own order,
@@ -264,5 +317,5 @@ def offers_for(
         ),
         VerbOffer(verb=Verb.ADD, waiting_for=add_waits),
         VerbOffer(verb=Verb.TRANSFER, waiting_for=TRANSFER_WAITS),
-        VerbOffer(verb=Verb.SKIP, waiting_for=SKIP_WAITS),
+        VerbOffer(verb=Verb.SKIP, waiting_for=skip_waits),
     )

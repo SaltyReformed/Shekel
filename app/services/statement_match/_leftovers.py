@@ -656,7 +656,7 @@ def _period_id_for(calendar, day: date) -> "int | None":
 class Leftovers:
     """What this pass could not explain, placed against the owner's rule.
 
-    Six facts one derivation produces that travel together, which is the
+    Seven facts one derivation produces that travel together, which is the
     argument :class:`~._offers.Candidates` and
     :class:`~._propose.ProposedMatches` already make in this package: a caller
     holding the offerable lines without the count of the ones declined would
@@ -664,7 +664,10 @@ class Leftovers:
     plan step ``bank_import:X-gj-4c``, and adversarial review caught the
     off-by-one being carried forward rather than corrected* -- a count in a
     docstring is a claim about the value below it, so it moves with the field
-    and is re-counted rather than incremented.
+    and is re-counted rather than incremented.  It was SIX until plan step
+    ``bank_import:X-gj-4b`` added :attr:`account_payments`, and that number was
+    re-counted off the field block rather than incremented, which is the same
+    discipline one step later.
 
     It leaves this module for :func:`~._reads.review_set`, which is what
     assembles it into a :class:`~._reads.ReviewSet`.
@@ -698,12 +701,32 @@ class Leftovers:
         merchants: The rule control's rows and option list.
         impossible_day_count: How many outflows were declined for being dated
             MADE after they POSTED (finding **N-325**).
+        account_payments: The merchant row ids this account's sources file as a
+            payment to an account the owner holds
+            (:attr:`~._bars.CreationBars.account_payments`).
+            **Published rather than kept private, because a consumer outside
+            these lists needs it and cannot reach it any other way** (plan step
+            ``bank_import:X-gj-4b``); the argument is stated once on
+            :attr:`~._reads.ReviewSet.account_payments`, which is what this is
+            assembled into.
+            **Carried rather than re-read**, which is :func:`leftovers`' own
+            rule for the answers themselves: the bars have already read it at
+            this pass's instant, and a second read in
+            :func:`~._reads.review_set` would be the redundant producer call
+            inside one request that this package treats as a DRY violation.
     """
 
     # Pylint: ``duplicate-code`` -- Incidental field-block similarity with
-    # :class:`~._reads.ReviewSet`, which publishes all five of these names
-    # because it is what this value is assembled INTO, four of them carrying
-    # the same value.  It is five annotation lines and no logic:
+    # :class:`~._reads.ReviewSet`, which publishes SIX of this value's seven
+    # names because it is what this value is assembled INTO -- five of them
+    # carrying the same value.  **The FENCE below is narrower than either
+    # number and deliberately so**: it covers five annotation lines and no
+    # logic, of which four carry the same value, because
+    # :attr:`account_payments` is separated from the run in BOTH classes
+    # (by ``impossible_day_count`` here and by ``bounds`` there) and so
+    # extends no similarity run.  *An earlier correction re-counted the
+    # published names and left the fence's own figures describing them,
+    # which named no set that exists.*
     # ``ReviewSet.creatable`` is
     # :func:`~._verdict.ruled` over this one and is a different value under
     # the same name, and the two are separate types deliberately -- this is
@@ -721,6 +744,7 @@ class Leftovers:
     merchants: MerchantSection
     # pylint: enable=duplicate-code
     impossible_day_count: int
+    account_payments: "frozenset[int]"
 
 
 def _by_pipeline(
@@ -801,6 +825,13 @@ def leftovers(
         creatable=split.creatable,
         parked=split.parked,
         answered_never=split.answered_never,
+        # **The bars' own set, at the instant the bars were read.**  The
+        # screen shuts SKIP on exactly the lines :func:`~._skipping.skip_line`
+        # refuses (ruling **bank_import:R-JI**), and both read
+        # :func:`~._vocabulary.account_payment_merchants` -- this one once per
+        # pass, the door once per act, which is the read-for-yourself-across-a-
+        # write-boundary rule the module header states for the rules.
+        account_payments=bars.account_payments,
         recordable_inflows=_recordable_inflows(
             scope.calendar, by_pipeline[LinePipeline.INCOME], view,
         ),

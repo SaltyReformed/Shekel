@@ -539,6 +539,39 @@ class StatementIncomeSchema(BaseSchema):
     )
 
 
+class StatementSkipSchema(BaseSchema):
+    """Validate ONE bank line being recorded as explained by nothing.
+
+    Ruling **bank_import:R-JG**, plan step ``bank_import:X-gj-4b``.
+
+    **One line id and nothing else, and the emptiness goes further than its
+    sibling's.**  :class:`StatementIncomeSchema` has one field because an
+    income row is filed against no container; a SKIP is filed against nothing
+    at all -- no container, no row, no figure and no reason, because the
+    decision IS *explained by nothing*.  There is no second fact about a skip
+    for this schema to grow.
+
+    **A one-field schema still earns its place**, for its sibling's reason: it
+    is what refuses a forged ``line_id`` -- a negative, a thousand-digit
+    string, a word -- through the same :class:`RowId` every other id on this
+    pass is graded by, before any of it reaches a door.
+
+    **Which lines may be skipped is the DOOR's question, not this schema's**:
+    that the line is on this account, that no accepted match already answers
+    it, and that its merchant is not one a source files as paying an account
+    the owner holds (ruling **bank_import:R-JI**) are all facts about the
+    database rather than about the submission -- and a nested error here would
+    refuse the ENTIRE pass, which is the failure mode
+    :class:`StatementPurchaseSchema` records having cost 124 proposals and 90
+    creations once.
+    """
+
+    line_id = RowId(
+        required=True,
+        error_messages={"required": "Which statement line are you skipping?"},
+    )
+
+
 class StatementBatchSchema(Schema):
     """Validate ONE reviewed pass: every match ticked, every line named.
 
@@ -585,6 +618,17 @@ class StatementBatchSchema(Schema):
         fields.Nested(StatementIncomeSchema), required=False,
         load_default=list,
     )
+    #: The lines the owner decided are explained by NOTHING (ruling
+    #: **bank_import:R-JG**, plan step ``bank_import:X-gj-4b``).  **Its own
+    #: list beside the three above** for the reason ``incomes`` is its own:
+    #: it reaches a different door, which writes a different TABLE
+    #: (``budget.statement_line_skips``) and no money at all.  Folding it into
+    #: any of them would mean a required field that is meaningless for its
+    #: members -- a skip names no destination and no row.
+    skips = fields.List(
+        fields.Nested(StatementSkipSchema), required=False,
+        load_default=list,
+    )
 
     @validates_schema
     def validate_pass_is_not_too_large(self, data, **kwargs):
@@ -605,9 +649,13 @@ class StatementBatchSchema(Schema):
             len(data.get("matches", ()))
             + len(data.get("creations", ()))
             # **Every kind of act, and the sum is why this arm is stated over
-            # a list rather than per field**: a third list with its own
-            # ceiling would admit half again as much work as the bound says.
+            # a list rather than per field**: four lists each carrying
+            # their own ceiling would admit FOUR TIMES what the bound says.
+            # *This comment said "a third list" until plan step
+            # ``bank_import:X-gj-4b`` added the fourth*, which is a claim about
+            # the lines below it rather than a turn of phrase.
             + len(data.get("incomes", ()))
+            + len(data.get("skips", ()))
         )
         if total > MAX_BATCH_ITEMS:
             raise ValidationError(

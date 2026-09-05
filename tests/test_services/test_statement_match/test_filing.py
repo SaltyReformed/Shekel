@@ -795,6 +795,7 @@ class TestARefusedItemCostsOnlyItself:
 
             outcome = statement_match.apply_reviewed(
                 ReviewedBatch(
+                    skips=(),
                     consent=Consent.STANDING_RULE,
                     incomes=(),
                     matches=(),
@@ -986,6 +987,11 @@ class TestEveryBoundThePassPublishesWITHHOLDS:
     def _a_review(**bounds):
         """Return a ReviewSet publishing *bounds* and nothing else."""
         return ReviewSet(
+            # **No default on the dataclass, so every construction states it**
+            # (plan step ``bank_import:X-gj-4b``): an empty set means *nothing is
+            # barred*, and that is the value that reads as safe.  This helper
+            # exercises no SKIP and no card-payment merchant, so empty is honest.
+            account_payments=frozenset(),
             proposals=(), unmatched=(), unmatched_rows=(),
             creatable=(), parked=(), answered_never=(),
             recordable_inflows=(),
@@ -1094,6 +1100,7 @@ class TestARuleMayNotModifyAHandMadeRow:
         """
         with pytest.raises(ValueError) as refused:
             ReviewedBatch(
+                skips=(),
                 consent=Consent.STANDING_RULE,
                 incomes=(),
                 matches=(MatchSubmission(
@@ -1112,6 +1119,7 @@ class TestARuleMayNotModifyAHandMadeRow:
         case above and break every reviewed pass in the app.
         """
         batch = ReviewedBatch(
+            skips=(),
             consent=Consent.TICKED,
             incomes=(),
             matches=(MatchSubmission(
@@ -1126,6 +1134,7 @@ class TestARuleMayNotModifyAHandMadeRow:
     def test_a_rule_consented_batch_of_CREATIONS_is_legal(self):
         """...and the arm the filing door actually builds is not refused."""
         batch = ReviewedBatch(
+            skips=(),
             consent=Consent.STANDING_RULE,
             incomes=(),
             matches=(),
@@ -1162,6 +1171,7 @@ class TestTheReceiptCarriesTheUndo:
 
             statement_match.apply_reviewed(
                 ReviewedBatch(
+                    skips=(),
                     consent=Consent.TICKED,
                     incomes=(),
                     matches=(),

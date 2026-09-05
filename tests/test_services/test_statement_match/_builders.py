@@ -669,7 +669,7 @@ def filed_acts(seed_user, how_many, *, by_rule):
     **Nothing about the bound depends on WHERE the money landed**, which is
     why spreading it costs no coverage: the settled tabs render one unnamed
     section whatever the destinations are
-    (:func:`~app.services.statement_match._cards.act_sections`), and both
+    (:func:`~app.services.statement_match._card_sections.act_sections`), and both
     cases assert over counts of acts.
 
     Args:

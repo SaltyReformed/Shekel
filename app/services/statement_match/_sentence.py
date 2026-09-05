@@ -371,10 +371,31 @@ def for_skip() -> "tuple[Span, ...]":
     composer that is a constant: a sentence about what the app does not know
     varies with nothing either.
 
-    **What a skip does NOT do is said once under the list and never on the
-    card** (ruling **R-HR**): a skip closes no difference between the books
-    and the bank, and printing that beside every card is the paragraph-per-row
-    R-HR removed from this screen.
+    **What a skip does NOT do is never on the CARD** (ruling **R-HR**): a
+    skip closes no difference between the books and the bank, and printing
+    that beside every card is the paragraph-per-row R-HR removed from this
+    screen.  *This said "said once", and it is FIVE* -- a first correction at
+    plan step ``bank_import:X-gj-4b`` said three and adversarial review
+    counted the two it had missed, one of them added by that same step.  The
+    Skipped tab's footer, the SKIP pane where the verb is pressed, that
+    step's own line on the pass receipt
+    (``_statement_pass_receipt.html``), the unskip flash
+    (:func:`~app.routes.accounts.statement_reconcile._unskip_report`, since
+    ``X-gj-4c-2``), and :func:`~._receipt_sentences.skip_summary` -- whose
+    REPEAT branch does not state it, because a press that wrote nothing
+    closed nothing either.  Five audiences at five moments, across a
+    template/service boundary no string crosses.  **The count is stated
+    rather than claimed to be one, which is the only reason it could be
+    caught wrong twice.**
+
+    **Five is exact for the PHRASE and not for this paragraph's own wider
+    framing**, which is *what a skip does NOT do*: the skip card's Undo
+    confirm says *no money moves and no date changes* (a ``data-confirm``
+    attribute, so it is not PRINTED beside the card and **R-HR** is
+    untouched).  Said because the next reader greps for the claim rather than
+    for the sentence.  *The clause about which copy an earlier correction
+    missed is a QUOTE and not a measurement* -- three of the five sites are
+    new in one commit and no intermediate commit distinguishes them.
 
     **It names no MERCHANT**, where :func:`for_parked_transfer` does.  That
     sentence names one because the merchant IS what the money went to; here
@@ -385,14 +406,19 @@ def for_skip() -> "tuple[Span, ...]":
         The spans.  They read *Skipped as explained by nothing*, which is
         :attr:`~._verbs.Verb.past` followed by the page legend's own gloss on
         the verb (``_statement_reconcile_body.html``: *Skip -- explained by
-        nothing*), so the tab and the legend teach one phrase.  *An earlier
-        draft of this paragraph claimed the panel's SKIP pane uses it too, and
-        adversarial review measured that FALSE*: :data:`~._verbs.SKIP_WAITS`
-        reads *explains nothing you budget for*, which is a near-miss rather
-        than the same words.  Reconciling the two is ``bank_import:X-gj-4b``'s,
-        which rewrites that sentence when it lights the verb; claiming it here
-        would be this docstring asserting a consistency the screen does not
-        have.
+        nothing*), so the tab and the legend teach one phrase.  **The panel's
+        SKIP pane teaches it too as of plan step ``bank_import:X-gj-4b``**,
+        which lit the verb and wrote that pane on this phrase.  *An earlier
+        draft of this paragraph claimed the pane already used it, and
+        adversarial review measured that FALSE*: the shut verb's sentence read
+        *explains nothing you budget for*, a near-miss rather than the same
+        words.  That constant is DELETED rather than reworded --
+        :data:`~._verbs.SKIP_SHUT_PAYS_AN_ACCOUNT` is the only SENTENCE
+        :mod:`._verbs` holds about SKIP now, and it is about one class of line
+        rather than about the verb.  *An earlier draft said the only THING,
+        which that same step falsified*: the module also holds
+        :attr:`~._verbs.Verb.SKIP`, its two words in ``_WORDS``, and
+        :attr:`~._verbs.VerbOffer.is_skip`.
     """
     return (
         Span.words(Verb.SKIP.past, Ink.VERB),

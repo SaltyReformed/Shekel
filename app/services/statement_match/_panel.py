@@ -20,10 +20,13 @@ the ceiling on its own.
 a purchase into a container the owner picks between, or records an income row
 against no container at all -- two doors, two controls -- so
 :class:`AddTab` names WHICH, and no template asks a bank line's sign.  MATCH
-offers rows, so :class:`MatchTab` carries them.  TRANSFER and SKIP have no
-door in this build at all (:data:`~._verbs.TRANSFER_WAITS`,
-:data:`~._verbs.SKIP_WAITS`), so they have no value: what they render is the
-explanation their :class:`~._verbs.VerbOffer` already carries.
+offers rows, so :class:`MatchTab` carries them.  TRANSFER has no door in this
+build at all (:data:`~._verbs.TRANSFER_WAITS`) and SKIP has one that takes no
+ARGUMENT (plan step ``bank_import:X-gj-4b``), so neither carries a value here
+-- and the two absences are different facts.  A shut TRANSFER renders the
+explanation its :class:`~._verbs.VerbOffer` carries; an OPEN SKIP renders what
+the act does and what it does not do, because there is nothing for the owner
+to choose between.
 
 **The MATCH tab opens on the line's own pay period and the SEARCH reaches
 further** (developer, 2026-08-30, on the measurement below).  Both halves are

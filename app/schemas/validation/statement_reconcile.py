@@ -163,16 +163,28 @@ def reconcile_payload(form) -> "tuple[dict, tuple[str, ...]]":
     **The OK checkbox is the consent and the VERB radio is the act**, so
     nothing here infers an arm from an absence -- the defect that made the
     existing-envelope arm unreachable from a browser at plan step X-f6a-3b.
-    A card OK'd on a verb this build has no door for (TRANSFER, SKIP), or on
-    ADD with nothing chosen, produces no item and is REPORTED rather than
-    dropped: see the second half of the return value.
+    A card OK'd on a verb this build has no door for (TRANSFER), or on ADD
+    with nothing chosen, produces no item and is REPORTED rather than dropped:
+    see the second half of the return value.  *SKIP was in that list until
+    plan step ``bank_import:X-gj-4b`` lit it*, and it is out rather than
+    reworded: a card OK'd on SKIP now produces an item.
+
+    **A card OK'd on a SKIP the panel rendered SHUT still produces one**, and
+    that is deliberate.  Ruling **bank_import:R-JI** shuts the verb for a line
+    a source files as paying an account the owner holds, and the tab is a
+    LABEL for a radio the browser will happily select -- so the honest answer
+    is the DOOR's refusal, quoted on the receipt in its own words, rather than
+    this reader silently dropping the item into ``ok_with_no_act``, whose
+    sentence (*without choosing what to do with them*) would be false of an
+    owner who chose.
 
     Args:
         form: The request's ``MultiDict``.
 
     Returns:
         ``(payload, ok_with_no_act)``.  The payload is
-        ``{"matches": [...], "creations": [...], "incomes": [...]}``, in
+        ``{"matches": [...], "creations": [...], "incomes": [...],
+        "skips": [...]}``, in
         ascending bank-line order through the same
         :func:`~app.schemas.validation._helpers.order_token_key` every other
         reader here uses, because the receipt this order becomes is meant to
@@ -184,11 +196,19 @@ def reconcile_payload(form) -> "tuple[dict, tuple[str, ...]]":
     matches: list = []
     creations: list = []
     incomes: list = []
+    skips: list = []
     silent: list = []
     for key in sorted(set(form.getlist(_OK_FIELD)), key=order_token_key):
         verb = form.get(f"{_VERB_PREFIX}{key}", "")
         if verb == Verb.MATCH.value:
             matches.append(reconcile_match_payload(form, key))
+            continue
+        if verb == Verb.SKIP.value:
+            # **One id and nothing to unpack**, which is ruling
+            # **bank_import:R-GW**'s argument for the income arm below taken
+            # one verb further: a skip is filed against nothing at all, so the
+            # verb the tab submitted is the whole of what the wire has to say.
+            skips.append({"line_id": key})
             continue
         destination = (
             form.get(f"{DESTINATION_PREFIX}{key}", LEAVE_ALONE)
@@ -204,7 +224,10 @@ def reconcile_payload(form) -> "tuple[dict, tuple[str, ...]]":
         else:
             silent.append(key)
     return (
-        {"matches": matches, "creations": creations, "incomes": incomes},
+        {
+            "matches": matches, "creations": creations, "incomes": incomes,
+            "skips": skips,
+        },
         tuple(silent),
     )
 
