@@ -518,6 +518,118 @@ class TestTheNewEnvelopeArm:
             assert entry.description == "ACH DEBIT GEICO"
 
 
+class TestTheDoorRefusesAnIMPOSSIBLEDayLine:
+    """Plan step ``bank_import:X-gm``, finding **N-325**.
+
+    The bank dates the line MADE after it POSTED, so its money left before it
+    was spent.  ``entry_service._reject_settled_before_purchase`` has always
+    refused the resulting pair, backed by
+    ``ck_transaction_entries_settled_not_before_purchase`` -- but it refuses it
+    LAST, after ``resolve_destination`` may have minted an envelope for a
+    purchase that will never exist, and it says so in the entry door's own
+    words rather than the bank line's.  This door refuses it FIRST and in the
+    sentence the card shows.
+
+    **Both halves are graded here**, because the reason for the new refusal is
+    entirely the ORDER and the WORDING -- an assertion that "it raises" would
+    pass against the old tree.
+    """
+
+    @staticmethod
+    def _an_impossible_line(seed_user):
+        """Stage one line the bank dates made a day AFTER it took the money."""
+        day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
+        return a_bank_line(
+            seed_user, an_import(seed_user), amount="-31.41", posted_on=day,
+            transaction_on=day + timedelta(days=1),
+            description="POINT OF SALE DEBIT L340 LOWES #00907 (Lowe's)",
+        )
+
+    def test_it_is_refused_BEFORE_an_envelope_is_minted(
+        self, app, db, seed_user,
+    ):
+        """The order is the point, so the case is written on the minting arm.
+
+        Submitted against a NEW ENVELOPE, the old tree resolved the
+        destination, created the ``budget.transactions`` row, and only then met
+        ``create_entry``'s refusal.  Nothing may be staged now.
+        """
+        with app.app_context():
+            line = self._an_impossible_line(seed_user)
+            before = db.session.query(Transaction).count()
+
+            # **NO message match here**, and the omission is deliberate: the
+            # entry door refuses this pair too, so a case that asserted the
+            # WORDING would fail on the wording before it ever reached the
+            # count -- which is the claim.  The sentence is graded by
+            # test_the_DOOR_and_the_CARD_say_the_same_thing below, and the
+            # two together are what the removed refusal has to break.
+            with pytest.raises(ValidationError):
+                _record(seed_user, line, new_envelope=NewEnvelope(
+                    name="Lowe's",
+                    category_id=seed_user["categories"]["Groceries"].id,
+                ))
+
+            # The query AUTOFLUSHES, so a staged envelope is counted here;
+            # this sees what the old order left behind rather than only what
+            # a commit would have kept.
+            assert db.session.query(Transaction).count() == before
+            assert db.session.query(StatementMatch).count() == 0
+
+    def test_a_line_dated_made_BEFORE_it_posted_is_recorded(
+        self, app, db, seed_user,
+    ):
+        """The other side, so the refusal is not refusing every line.
+
+        Without it a door that raised unconditionally would pass the case
+        above, and the whole CREATE act would be dead with the suite green.
+        """
+        with app.app_context():
+            day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
+            line = a_bank_line(
+                seed_user, an_import(seed_user), amount="-31.41",
+                posted_on=day, transaction_on=day - timedelta(days=1),
+                description="POINT OF SALE DEBIT L340 LOWES #00907 (Lowe's)",
+            )
+
+            recorded = _record(seed_user, line, new_envelope=NewEnvelope(
+                name="Lowe's",
+                category_id=seed_user["categories"]["Groceries"].id,
+            ))
+            db.session.flush()
+
+            assert db.session.get(Transaction, recorded.transaction_id)
+
+    def test_the_DOOR_and_the_CARD_say_the_same_thing(
+        self, app, db, seed_user,
+    ):
+        """ONE sentence, which is the whole reason it lives in ``_scope``.
+
+        The screen withholds the ADD control on
+        ``_leftovers._add_refusal`` and the door raises on
+        ``_scope.reject_impossible_days``; a second spelling is what
+        ``no_period_refusal`` records having had to delete one refusal over.
+        The door appends *Nothing was changed* and nothing else, so the card's
+        whole sentence is a prefix of the door's.
+        """
+        with app.app_context():
+            a_transaction(seed_user, name="Groceries", is_envelope=True)
+            line = self._an_impossible_line(seed_user)
+            db.session.commit()
+
+            withheld = statement_match.review_set(
+                a_scope(seed_user),
+            ).creatable[0].withheld
+            with pytest.raises(ValidationError) as raised:
+                _record(seed_user, line, new_envelope=NewEnvelope(
+                    name="Lowe's",
+                    category_id=seed_user["categories"]["Groceries"].id,
+                ))
+
+            assert withheld
+            assert str(raised.value) == f"{withheld}  Nothing was changed."
+
+
 class TestWhatTheCreateDoorRefuses:
     """Every refusal, each written to fail if the refusal were deleted."""
 

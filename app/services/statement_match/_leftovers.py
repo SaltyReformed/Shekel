@@ -34,18 +34,24 @@ review:
   answer -- because that answer shuts the ADD door and says nothing about what
   the line IS, so the line is still unexplained work;
 * every OTHER inflow becomes an uncategorized INCOME row
-  (:class:`RecordableInflow`, ruling **bank_import:R-GW**);
-* **an outflow the bank dates MADE after it POSTED reaches none of the three.**
-  :func:`_creatable_lines` drops it before the split, on finding **N-325**'s
-  developer ruling of 2026-08-19 -- *reported rather than repaired*, because
-  the alternative decides which day the app believes when the bank contradicts
-  itself, which ruling **R-FW** refused one clock over.  It survives only as
-  :attr:`~._reads.ReviewBounds.impossible_day_count`, a number naming no line,
-  and it is still counted by ``awaiting_review_count``.  **That is the same
-  shape bank_import:R-GW closed for inflows**, on a class whose remedy is already ruled and
-  already owned, so it is named here rather than repaired here: 0 of the
-  developer's 378 recorded lines are it, and the OFX adapter's own measurement
-  found 2 of 361.
+  (:class:`RecordableInflow`, ruling **bank_import:R-GW**).
+
+**THERE IS NO FOURTH CLASS SINCE PLAN STEP ``bank_import:X-gm``, and deleting
+it is that step's own root cause.**  A line the bank dates MADE after it POSTED
+used to reach none of the three: :func:`_creatable_lines` dropped it before the
+split into ``ReviewBounds.impossible_day_count``, a number naming no line.  What
+that cost was not a count -- it was the line.  :func:`~._card_sections
+.to_explain_sections` builds the inbox from four lists and this was in none of
+them, so such a line reached NO CARD on the Reconcile page at all, on no tab,
+and survived only in :attr:`~._reads.ReviewSet.unmatched` for the workbench
+plan step ``bank_import:X-gi-2`` deletes.  It is a :class:`CreatableLine`
+carrying :attr:`CreatableLine.withheld` now -- the identical remedy an
+adversarial review applied on 2026-08-29 to a line no saved pay period covers,
+one refusal over (see :func:`_one_creatable`).  Finding **N-325**'s ruling is
+untouched: the app still does not choose between the bank's two days, and
+:func:`~._scope.impossible_days_refusal` is the one sentence saying so.  0 of
+the developer's 378 recorded lines are this shape; the OFX adapter's own
+measurement found 2 of 361, so a second source makes it live.
 
 **The third was missing until 2026-08-27 and the gap was invisible because the
 three lived apart.**  ``_creatable_lines`` took ``amount < 0`` and nothing took
@@ -93,7 +99,7 @@ from ._placement import (
     placements_for,
 )
 from ._rules import LinePipeline, RuleView, pipeline_for
-from ._scope import ReviewScope, no_period_refusal
+from ._scope import ReviewScope, impossible_days_refusal, no_period_refusal
 from ._section import MerchantSection, merchant_section
 
 if TYPE_CHECKING:  # pragma: no cover -- the edge back would be a cycle
@@ -285,7 +291,7 @@ def _barred_line(
 class _SplitLines:
     """What :func:`_creatable_lines` made of the lines routed to PURCHASE.
 
-    **A value and not a four-tuple**, which the third and fourth positions are
+    **A value and not a three-tuple**, which the second and third positions are
     what forces: ``parked`` and ``answered_never`` are both
     ``tuple[BarredLine, ...]``, so a caller that transposed them would type-check,
     run, and put the owner's own answered lines under a chip that renders a
@@ -293,22 +299,30 @@ class _SplitLines:
     adjacent same-typed positions are a pairing hazard this package already
     refuses by name (:func:`~._accept._record`'s two account ids).
 
+    **It held a fourth member until plan step ``bank_import:X-gm``** --
+    ``impossible_day_count``, the lines this function declined for being dated
+    MADE after they POSTED.  Those lines are :attr:`creatable` now, carrying
+    :attr:`CreatableLine.withheld`, and the module header carries why.  The
+    count is re-read off the field block rather than decremented, which is the
+    discipline :class:`Leftovers` states for its own.
+
     Attributes:
-        creatable: The offerable lines a create control may be rendered for.
+        creatable: The lines a create control may be rendered for, each with
+            its own :attr:`CreatableLine.withheld` where the door would refuse
+            it.  **Membership is not the door's answer** and never was: that
+            is :func:`_one_creatable`'s own note, and the field is what says so
+            per line.
         parked: The barred lines a source files as paying an account the owner
             holds -- a HOLDING state (**R-HQ**), never inbox work.
         answered_never: The barred lines whose ONLY bar is the owner's own
             *never a purchase* answer (**R-JH**).  Inbox work with its ADD
             door shut, because that answer claims nothing about what the line
             is.
-        impossible_day_count: How many lines were declined for being dated
-            MADE after they POSTED (finding **N-325**).
     """
 
     creatable: "tuple[CreatableLine, ...]"
     parked: "tuple[BarredLine, ...]"
     answered_never: "tuple[BarredLine, ...]"
-    impossible_day_count: int
 
 
 def _creatable_lines(
@@ -325,17 +339,23 @@ def _creatable_lines(
     hands it every line ``pipeline_for`` routes to PURCHASE, and that includes
     a container-answered credit.
 
-    **A line the bank dates MADE after it POSTED is not one of them** (finding
-    **N-325**, developer ruling 2026-08-19).  ``entry_service.create_entry``
-    refuses a purchase whose money left before it was spent, so such a line's
-    destination chooser is a control whose submission can never succeed; it is
-    counted on :class:`ReviewBounds` instead, beside every other thing this
-    pass did not look at.  The rejected remedy was clamping the purchase day to
-    the earlier of the two, which decides which day the app believes when the
-    bank contradicts itself -- the substitution ruling **R-FW** refused one
-    clock over.  The predicate is
+    **A line the bank dates MADE after it POSTED IS one of them, and that is
+    plan step ``bank_import:X-gm``'s correction** (finding **N-325**, developer
+    ruling 2026-08-19 for the rule; developer 2026-09-05 for the placement).
+    ``entry_service.create_entry`` refuses a purchase whose money left before
+    it was spent, so its destination chooser is a control whose submission can
+    never succeed -- and this function used to answer that by DROPPING the line
+    into a count on :class:`ReviewBounds`.  Dropping it took the line off every
+    tab of the Reconcile page, not just out of one list, which the module
+    header states in full.  It is withheld per line now
+    (:func:`_one_creatable`), which is the answer the identical case one
+    refusal over already had.  The RULE is unchanged: clamping the purchase day
+    to the earlier of the two was rejected, because it decides which day the
+    app believes when the bank contradicts itself -- the substitution ruling
+    **R-FW** refused one clock over.  The predicate is
     :attr:`~._offers.BankLine.states_impossible_days`, stated once because
-    :func:`~._pairing.within_window` asks it too.
+    :func:`~._pairing.within_window` and
+    :func:`~._scope.reject_impossible_days` ask it too.
 
     Args:
         calendar: The owner's
@@ -378,14 +398,12 @@ def _creatable_lines(
         *waiting for the account they paid* chip -- a rendered money figure
         over a line no source filed as a payment.
 
-        **All three counts reach the INFLOW direction since plan step
-        ``bank_import:X-gj-2b-2``**, and the third is the one worth stating: a
-        refund whose source dates it MADE after it POSTED is declined here, so
-        it is counted into ``impossible_day_count`` where before this step it
-        was offered as a recordable INFLOW.  That is the same treatment its
-        outflow twin already got (finding **N-325**) rather than a class going
-        missing -- the line stays in :attr:`~._reads.ReviewSet.unmatched`, so
-        the hand-build form still reaches it, and the bound reports it.
+        **Both lists reach the INFLOW direction since plan step
+        ``bank_import:X-gj-2b-2``**: a refund is a purchase, so a credit whose
+        merchant carries a container answer is routed here and barred here
+        exactly as its debits are.  A refund whose source ALSO dates it MADE
+        after it POSTED is a creatable line with its ADD withheld, which is the
+        same treatment its outflow twin gets, on the same sentence.
         The per-period destination tuple is SHARED by every line in that
         period, so a statement with 91 outflows over 11 periods builds 11
         tuples rather than 91.
@@ -393,13 +411,16 @@ def _creatable_lines(
     # **No sign test**: :func:`_by_pipeline` already chose these, and since
     # plan step ``bank_import:X-gj-2b-2`` they include the INFLOWS whose
     # merchant carries a container answer -- a refund is a purchase.
-    impossible = [line for line in unmatched if line.states_impossible_days]
-    offerable = [line for line in unmatched if not line.states_impossible_days]
-    if not offerable:
-        return _SplitLines(
-            creatable=(), parked=(), answered_never=(),
-            impossible_day_count=len(impossible),
-        )
+    #
+    # **And no impossible-day test either, since plan step
+    # ``bank_import:X-gm``.**  This function used to open by splitting those
+    # lines off and returning their COUNT, which is the one arm here that
+    # dropped a line rather than routing it.  Deleting it is what makes the
+    # routing below TOTAL over what it is given -- every line appends to
+    # exactly one list -- and that totality is what lets the inbox be counted
+    # rather than summed (:func:`~._reconcile.reconcile_page`).
+    if not unmatched:
+        return _SplitLines(creatable=(), parked=(), answered_never=())
     # ONE pass over the destinations, and ONE placement per line.  Both were
     # asked twice: the grouping rescanned every destination once per period,
     # and each line placed itself once for its id and again for its lookup --
@@ -413,7 +434,7 @@ def _creatable_lines(
     creatable: "list[CreatableLine]" = []
     parked: "list[BarredLine]" = []
     answered_never: "list[BarredLine]" = []
-    for line in offerable:
+    for line in unmatched:
         barred = _barred_line(line, bars)
         if barred is not None:
             # **THE SOURCE'S FILING DECIDES, AND NOT THE OWNER'S ANSWER**
@@ -439,7 +460,6 @@ def _creatable_lines(
         creatable=_marked_joining(creatable),
         parked=tuple(parked),
         answered_never=tuple(answered_never),
-        impossible_day_count=len(impossible),
     )
 
 
@@ -608,33 +628,70 @@ def _one_creatable(
         view: What the owner has said and what it can resolve against.
 
     Returns:
-        Its :class:`CreatableLine`.  A line no saved period covers gets no
-        placement AND a :attr:`~CreatableLine.withheld` refusal, because a rule
-        resolves into a destination and there is no period here for one to be
-        in.  **Withholding the placement alone was not enough** (adversarial
-        review 2026-08-29): the line stayed in ``creatable``, so a reader
-        taking membership of that list as the door's answer offered a control
-        ``ReviewScope.period_holding`` then refused by name -- the
-        chooser-that-cannot-succeed shape, on any swipe made just before the
-        first payday or posted past the last saved period.
+        Its :class:`CreatableLine`.  A line the create door would refuse gets no
+        placement AND a :attr:`~CreatableLine.withheld` refusal
+        (:func:`_add_refusal`), because a rule resolves into a destination and
+        the sweep presses whatever it resolved.  **Withholding the placement
+        alone was not enough** (adversarial review 2026-08-29): the line stayed
+        in ``creatable``, so a reader taking membership of that list as the
+        door's answer offered a control ``ReviewScope.period_holding`` then
+        refused by name -- the chooser-that-cannot-succeed shape, on any swipe
+        made just before the first payday or posted past the last saved period.
+        **The two are one condition now** rather than two spellings of one
+        period test, which is what let plan step ``bank_import:X-gm`` add a
+        second refusal to this value without adding a second guard.
     """
     offered = by_period.get(period_id, [])
+    withheld = _add_refusal(line, period_id)
     return CreatableLine(
         line=line,
         pay_period_id=period_id,
         destinations=tuple(offered),
+        # **No placement where the door would refuse**, which is the pairing
+        # the ``Returns`` above argues for: a placement is what
+        # :func:`~._queue._sweeps_for` counts and what a one-click sweep
+        # presses, so a refused line carrying one is a bulk control that
+        # cannot succeed.
         placement=(
-            None if period_id is None
+            None if withheld is not None
             else placements_for(line.merchant_id, view, offered)
         ),
-        # **The MADE day**, which is the day this purchase would be placed by
-        # and the day ``period_id`` was resolved from -- one derivation, so
-        # the screen cannot offer a control the door refuses.
-        withheld=(
-            None if period_id is not None
-            else no_period_refusal(line.happened_on, "this purchase")
-        ),
+        withheld=withheld,
     )
+
+
+def _add_refusal(line: BankLine, period_id: "int | None") -> "str | None":
+    """Return why the create door would refuse *line*, or ``None``.
+
+    Plan step ``bank_import:X-gm``.  **The screen's half of two refusals the
+    door raises, in the order the door raises them**, so an owner who reaches
+    the door anyway is told the same thing the card told them:
+    :func:`~._scope.reject_impossible_days` fires before a destination is
+    resolved (beside :meth:`~._scope.ReviewScope.reject_line_before_books_open`
+    and for its reason), and :meth:`~._scope.ReviewScope.period_holding` fires
+    when one is.  Both can hold of one line -- a swipe dated before the first
+    payday whose bank also contradicts itself -- and stating the LATER one
+    would name a refusal the owner never reaches.
+
+    **Neither sentence is composed here.**  Both are read from the module that
+    the door raises them from, which is :func:`~._scope.no_period_refusal`'s
+    own rule; this function is the ORDER and nothing else.
+
+    Args:
+        line: The bank line routed to the purchase pipeline.
+        period_id: The pay period covering the day it was MADE, or ``None``.
+            **The MADE day**, which is the day this purchase would be placed
+            by and the day this was resolved from -- one derivation, so the
+            screen cannot offer a control the door refuses.
+
+    Returns:
+        The refusal sentence, or ``None`` when the door would take the line.
+    """
+    if line.states_impossible_days:
+        return impossible_days_refusal(line)
+    if period_id is None:
+        return no_period_refusal(line.happened_on, "this purchase")
+    return None
 
 
 def _period_id_for(calendar, day: date) -> "int | None":
@@ -656,7 +713,7 @@ def _period_id_for(calendar, day: date) -> "int | None":
 class Leftovers:
     """What this pass could not explain, placed against the owner's rule.
 
-    Seven facts one derivation produces that travel together, which is the
+    Six facts one derivation produces that travel together, which is the
     argument :class:`~._offers.Candidates` and
     :class:`~._propose.ProposedMatches` already make in this package: a caller
     holding the offerable lines without the count of the ones declined would
@@ -667,7 +724,9 @@ class Leftovers:
     and is re-counted rather than incremented.  It was SIX until plan step
     ``bank_import:X-gj-4b`` added :attr:`account_payments`, and that number was
     re-counted off the field block rather than incremented, which is the same
-    discipline one step later.
+    discipline one step later.  It was SEVEN until plan step
+    ``bank_import:X-gm`` deleted ``impossible_day_count``, whose lines are
+    :attr:`creatable` now; re-counted off the block a third time.
 
     It leaves this module for :func:`~._reads.review_set`, which is what
     assembles it into a :class:`~._reads.ReviewSet`.
@@ -699,8 +758,6 @@ class Leftovers:
         recordable_inflows: The unexplained INFLOWS, each with the period
             that would hold it (ruling **bank_import:R-GW**).
         merchants: The rule control's rows and option list.
-        impossible_day_count: How many outflows were declined for being dated
-            MADE after they POSTED (finding **N-325**).
         account_payments: The merchant row ids this account's sources file as a
             payment to an account the owner holds
             (:attr:`~._bars.CreationBars.account_payments`).
@@ -717,13 +774,13 @@ class Leftovers:
     """
 
     # Pylint: ``duplicate-code`` -- Incidental field-block similarity with
-    # :class:`~._reads.ReviewSet`, which publishes SIX of this value's seven
-    # names because it is what this value is assembled INTO -- five of them
+    # :class:`~._reads.ReviewSet`, which publishes FIVE of this value's six
+    # names because it is what this value is assembled INTO -- four of them
     # carrying the same value.  **The FENCE below is narrower than either
     # number and deliberately so**: it covers five annotation lines and no
     # logic, of which four carry the same value, because
     # :attr:`account_payments` is separated from the run in BOTH classes
-    # (by ``impossible_day_count`` here and by ``bounds`` there) and so
+    # (by the blank line here and by ``bounds`` there) and so
     # extends no similarity run.  *An earlier correction re-counted the
     # published names and left the fence's own figures describing them,
     # which named no set that exists.*
@@ -743,7 +800,7 @@ class Leftovers:
     recordable_inflows: "tuple[RecordableInflow, ...]"
     merchants: MerchantSection
     # pylint: enable=duplicate-code
-    impossible_day_count: int
+
     account_payments: "frozenset[int]"
 
 
@@ -859,5 +916,4 @@ def leftovers(
             + [item.line for item in split.parked],
             view, bars,
         ),
-        impossible_day_count=split.impossible_day_count,
     )

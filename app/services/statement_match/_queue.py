@@ -364,17 +364,17 @@ class StatementQueue:
     Ruling **bank_import:R-HB**.  It leaves this module for
     :attr:`~._reads.ReviewSet.queue`, which is what the screen renders.
 
-    **It does NOT hold every line in** :attr:`~._reads.ReviewSet.unmatched`.
-    An outflow the bank dates MADE after it POSTED reaches none of the three
-    mechanisms -- :func:`~._leftovers._creatable_lines` drops it on finding
-    **N-325**'s developer ruling -- so it stays in ``unmatched``, reaches no
-    group, and is disclosed as :attr:`~._gaps.ReviewBounds.impossible_day_count`
-    in the panel that states what this pass did not look at.  The conserved
-    identity is therefore ``sum(len(group.rows)) + impossible_day_count ==
-    len(unmatched)``, and a reader that assumed the simpler one would be
-    wrong by exactly that class.  Measured 0 of the developer's 378 recorded
-    lines; the OFX adapter's own measurement found 2 of 361, so a second
-    source makes it live.
+    **It holds every line in** :attr:`~._reads.ReviewSet.unmatched`, and since
+    plan step ``bank_import:X-gm`` that is structural rather than nearly true.
+    An outflow the bank dates MADE after it POSTED used to reach none of the
+    four mechanisms -- :func:`~._leftovers._creatable_lines` dropped it into a
+    count -- so the conserved identity read
+    ``sum(len(group.rows)) + impossible_day_count == len(unmatched)`` and a
+    reader assuming the simpler one was wrong by exactly that class.  That
+    dropping arm is deleted: such a line is a
+    :class:`~._leftovers.CreatableLine` carrying its own refusal, so it reaches
+    a group like every other, and the identity is
+    ``sum(len(group.rows)) == len(unmatched)``.
 
     Attributes:
         groups: The non-empty groups, riskiest first

@@ -525,16 +525,22 @@ def _chips(
 def _unexamined(review: "ReviewSet") -> "tuple[str, ...]":
     """Return what this pass did NOT look at, one sentence each.
 
-    **Three of the five bounds, and the partition is decided HERE.**  The
+    **Two of the four bounds, and the partition is decided HERE.**  The
     other two are stated elsewhere on the page and stating either twice is
     the clutter this rebuild removed:
     :attr:`~._gaps.ReviewBounds.before_calendar_count` is a
     :class:`HoldingChip` above the fold, and
     :attr:`~._gaps.ReviewBounds.books` is
     :attr:`ReconcilePage.books_bound`, which carries an ACT and so cannot
-    be one of these plain sentences.  A template picking three of five
+    be one of these plain sentences.  A template picking two of four
     would be the *second place for a partition to be wrong* this package
     refuses everywhere else.
+
+    **It said THREE of FIVE until plan step ``bank_import:X-gm``**, which
+    deleted ``ReviewBounds.impossible_day_count`` rather than reworded its
+    sentence here: the lines it counted are inbox cards now, each carrying its
+    own refusal, so a sentence in this panel would be announcing work the page
+    is already showing.  :class:`~._gaps.ReviewBounds` carries the argument.
 
     Args:
         review: The pass.
@@ -555,12 +561,6 @@ def _unexamined(review: "ReviewSet") -> "tuple[str, ...]":
         said.append(
             f"{bounds.unpriceable_count} of your rows could not be priced, "
             f"so nothing here was offered against them."
-        )
-    if bounds.impossible_day_count:
-        said.append(
-            f"{bounds.impossible_day_count} bank line(s) are dated as made "
-            f"AFTER they posted, so no day exists a purchase could be made "
-            f"on and nothing here can record them."
         )
     return tuple(said)
 

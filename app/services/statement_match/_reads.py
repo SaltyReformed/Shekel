@@ -889,7 +889,6 @@ def review_set(scope: ReviewScope) -> ReviewSet:
         # day too crowded to search that had been searched.
         crowded_days=proposed.crowded_days,
         unpriceable_count=len(candidates.unpriceable_ids),
-        impossible_day_count=parts.impossible_day_count,
         books=lines.books,
     )
     # **ONE derivation, read twice below** -- by the set's own field and by the
