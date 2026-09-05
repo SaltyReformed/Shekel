@@ -233,13 +233,48 @@ pay period. The money did not leave your net worth -- it is inside account 10's 
 the income statement now reports spending that did not happen. Ruling **R-HK** names this act but
 not that consequence.
 
-**4c and 4d need the twin UNARCHIVED first.** While an account is archived the cockpit offers only
-*Unarchive* and *Delete* -- no kebab, no edit form, no detail page -- so neither door has a click path.
-That is finding **N-430**. Both doors accept the write when reached; only the reach is missing.
+**4c and 4d still need the twin UNARCHIVED first, and 4c now needs it for a DIFFERENT REASON.**
+This paragraph used to give one reason for both: while an account is archived the cockpit offers
+only *Unarchive* and *Delete*, so neither door had a click path. That was finding **N-430**, and
+plan step `balance:X-f3c-2b-2d` closed it -- the archived card carries the same **Edit** link the
+live cell's kebab does, so 4c's own instruction below (*Account 2 -> **Edit** -> **Books opening***)
+is clickable while the twin is still archived. **4d is not reachable BY CLICKING, which is not
+the same as unreachable**, and the set is stated by CENSUS rather than by subtraction. Five
+templates open the shared anchor editor: `accounts/_cash_balance_hero.html`,
+`investment/_balance_hero.html`, `loan/_balance_hero.html`, `dashboard/_pulse_balance.html` and
+`savings/_cockpit_balance.html`. Two of the five can never render for an archived account -- the
+dashboard pulse resolves its hero through `account_resolver`, whose
+`_first_active_checking_account` filters `is_active=True`, and the cockpit's live cell is the branch
+an archived account does NOT take, because it renders in this drawer instead. The three that remain
+are detail-page heroes, and the archived card's own figure is static text, so nothing here links
+them. Typed
+directly, `/accounts/2/details` answers **200 with a working balance editor**, so this is a reach
+problem and not a capability one (**N-453**, ruled to `balance:X-f4`). The runbook prescribes clicks,
+so it takes the unarchive.
+
+**The order does not change, and the reason is NOT the double count.** A first draft of this
+paragraph said 4c opens the double-count window and that taking it early would widen it. Both halves
+were wrong, and the stop rules above say so: that window opens at **act 3**, which is what puts the
+money inside account 10's opening while the twin still asserts `$5,363.56` -- 4c neither opens nor
+closes it, and only 4d does. Nor would taking 4c early widen the exposure: the rule ranks ARCHIVED
+as the narrower state (only the balance sheet sees it) and the UNARCHIVE as what puts it on every
+dashboard, so doing 4c while archived is if anything the quieter half. Corrected by adversarial
+review, 2026-09-04.
+
+**What 4c DOES open is smaller and separate, and it is still a reason to keep the order.** The
+restatement takes the twin's opening to `$0.00` while its 2026-04-06 assertion stands, so the gap
+books a `$5,363.56` correction against that assertion -- and ruling **R-FO** sends an
+interest-bearing account's true-up counter leg to `interest_income`, so the income statement reports
+a gain that never happened until 4d clears it. That window opens at 4c and closes at 4d, and the
+income statement carries no archived-account exclusion to hide it. Since 4d forces the unarchive
+anyway, taking 4c early buys one click and pays for it by running that phantom gain for however long
+separates the two sittings -- against a stop rule that already requires 4c, 4d and the re-archive in
+one sitting.
+
 Unarchive it from the cockpit's archived region, do 4c and 4d, then archive it again. **Do not stop
-while it is unarchived** -- see the stop rules above. Each flip moves no money, and that is now
-GRADED rather than claimed: the rehearsal digests every posted-ledger row either side of each
-archive act and refuses if the digest moves.
+while it is unarchived** -- see the stop rules above. Each flip moves no money, and that is GRADED
+rather than claimed: the rehearsal digests every posted-ledger row either side of each archive act
+and refuses if the digest moves. `tests/manual/rehearse_account_10_repair.py` rehearses THIS order.
 
 **4c.** Account 2 -> **Edit** -> **Books opening**. Day **2026-03-26**, equity **`$0.00`**.
 
@@ -409,7 +444,14 @@ rather than comparing against a quoted one.**
   (**N-368**).
 - **Two rows stay restorable.** Transfers 1 and 102 are soft-deleted and the recurrence conflict
   chooser can put either back. **N-386**, now binding on two rows rather than one.
-- **An archived account's two cards still have no click path.** **N-430**.
+- **An archived account still reaches no BALANCE editor, so this procedure still unarchives.** Its
+  RESTATEMENT door has a click path as of `balance:X-f3c-2b-2d`, which closed **N-430** -- but the
+  archived card's figure is static text, the grid resolves only active accounts, and the three
+  anchor editors that remain sit on pages that card links to from nowhere. Reach, not capability:
+  `/accounts/2/details` typed directly answers 200 with a working editor. 4d forces the
+  unarchive, and act 4 keeps 4c inside it deliberately rather than taking the new link. Whether that
+  reach is a defect at all or is what archiving MEANS is **N-453**, ruled to `balance:X-f4` on
+  2026-09-04 because it is the same question about the same state as **N-384** below.
 - **The class behind the twin survives the instance.** An account archived while its ledger still
   holds a net is a state the app can still reach, and no surface says the balance sheet and the
   dashboards disagree about it. **N-384**, owned by `balance:X-f4`.

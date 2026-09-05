@@ -277,12 +277,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
           **ACT 4b IS OPEN AND BLOCKS THE PROCEDURE**: the developer rejected booking a `$500.00` expense that never happened (2026-09-01, "I don't like faking or hiding money"), and neither alternative offered survives the same principle -- recording nothing hides the outflow in an equity correction, and **R-HK** rejected the earlier opening on its own grounds. The movement is Checking into another account's OPENING EQUITY, a shape the app cannot record; the from-scratch design is owed before this step can run.
           **Acceptance is `$0.00` on the opening day the measurement prints SEPARATELY -- the figure act 3 exists to set -- plus ZERO mismatches on every SCORED day for the cash-fold and cutover arms**, rehearsed 14 of 14 on each. The RENDERED arm is excused at 13 of 14: its `$0.32` is **R-HM**'s one-day accrual, a standing `$20.49` over five accounts this step does not own.
           Those 14 are ELEVEN bank days above the books plus THREE the owner asserted on that the bank never names. NOT the export's 17 stated days: five fall below the books and **R-HG** puts them inside the opening equity, and the opening day is scored by no arm because nothing asserts on it -- so a predicate naming 17 is one no run can meet.
-        * [ ] **X-f3c-2b-2d** `feat(accounts): an archived account reaches the restatement door` -- closes
-          **N-430**. `X-f3c-2b-2a` gave the door two entrances (**R-IE**) and an ARCHIVED account reaches
-          neither: the archived card carried ZERO hrefs naming its account while `/accounts/2/edit` and
-          `/details` both answered 200 by URL, five link sites not two. The account-10 runbook would
-          otherwise unarchive and re-archive the twin; this leaf links *Restate* from the archived card
-          first and is ranked before the repair.
+        * [x] **X-f3c-2b-2d** `1f0c1cd7` -- the archived drawer card carries the live cell's own **Edit** link, ungated and carrying no `#books-opening` fragment (**R-JT**), so the door **R-IE** gave two entrances has a click path once an account is archived. Closed **N-430**; opened **N-453**, **N-454**.
       * [ ] **X-f3c-2b-3** `feat(cash): a balance is not declared for a day the books
         did not exist on` -- the ASSERTION side of the books boundary, which is
         the one door **X-f3c-2b-1** left unbounded: `resolve_observation_day`
