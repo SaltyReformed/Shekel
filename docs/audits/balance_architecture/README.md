@@ -499,34 +499,16 @@ in SILENCE where a refused DELETE is loud.
   **Two obligations RESTATED from leaves archived 2026-08-26**, binding the leaves that REMAIN: a
   derived row's answer must be INVARIANT under a change to its own amount column, agreement being
   blind to the resolver (X-au-b); and the basis is REQUIRED on both `settle_amount` twins, pinned once in `cash_ledger.baseline_amount_basis` (X-au-j).
-* [x] **X-au-c** `3d1379d1` -- the amount model's SEAM, the DECOMPOSED parent of three leaves
-  (developer, 2026-08-12); ticked with `X-au-c3`, its last. Records: `archive/x_au_c_as_built_2026-08-26.md`
-  and `archive/eight_shipped_steps_2026-09-01.md`. **What still binds LATER steps** (rule 5 forbids a
-  live sentence depending on an archived one): `get_payment_history` may never take the resolver;
-  nothing reachable from `loan_payment_service` may NAME `cash_ledger` (the producer-free arms live
-  in `row_valuation.py`); and the amount rules read no STATUS -- the `date.today()` basis is `X-i2`'s.
-  * [x] **X-au-c3** `3d1379d1` -- a settle RECORDS what moved rather than refreshing an amount. What a later leaf must obey is in this phase's preamble, not here. Record in `archive/eight_shipped_steps_2026-09-01.md`.
-* [x] **X-au-k** `7315ecd9` -- a row's amount ownership is ONE mapped attribute over a value
-  object total across ruling R-FI's two states (**R-IW**); the `_FIGURE_COLUMNS` registry is
-  gone and no migration was needed. Closed **N-293**, opened **N-437** and **N-440**. Record in
-  `archive/x_au_k_as_built_2026-09-02.md`.
-* [x] **X-au-d** `ed06acf6` -- a paycheck's amount is its salary profile's, and it stores none.
-  59 non-override salary rows declared (**R-JB**: settled ones too), the read-time repair and
-  its whole seam deleted, and FOUR dormant defects the stored figure was absorbing closed or
-  filed -- the archive re-price (**N-261**, `-$9,677.24`), a templates-form 500 (**N-253**),
-  `_freshest_amount`'s conjunct, and **N-444**. Two engines, one pass, one fence fewer.
-  Record in `archive/x_au_d_as_built_2026-09-03.md`.
-* [x] **X-au-e** `c000d7f6` `b846386a` -- a template row reads its template's series. 525 rows
-  declared, generation's last pricing fork deleted, and the `$502.45` class dead with it: a
-  generator that prices nothing cannot mis-price. Closed **N-244**, **N-247**, **N-444**. **This
-  bullet's own claim that the chooser's keep-vs-use decision dies was REFUTED** -- it keeps its
-  offer and loses only its FIGURE (**R-JD**), because `_conflicts` is the one door in `app/` that
-  clears `is_override`. Record in `archive/x_au_e_as_built_2026-09-03.md`.
+* [x] **X-au-c** `3d1379d1` -- the amount model's SEAM, ticked with its last leaf `X-au-c3`. THREE constraints it leaves on later steps (the resolver, the `cash_ledger` name, the STATUS-free amount rules) are in `archive/seven_shipped_pointers_2026-09-05.md`, with `archive/x_au_c_as_built_2026-08-26.md`.
+  * [x] **X-au-c3** `3d1379d1` -- a settle RECORDS what moved rather than refreshing an amount. `archive/eight_shipped_steps_2026-09-01.md`.
+* [x] **X-au-k** `7315ecd9` -- amount ownership is ONE mapped attribute (**R-IW**); `_FIGURE_COLUMNS` gone. Closed **N-293**, opened **N-437**, **N-440**. `archive/x_au_k_as_built_2026-09-02.md`.
+* [x] **X-au-d** `ed06acf6` -- a paycheck's amount is its salary profile's and it stores none; 59 rows declared (**R-JB**), FOUR absorbed defects closed or filed. `archive/x_au_d_as_built_2026-09-03.md`.
+* [x] **X-au-e** `c000d7f6` `b846386a` -- a template row reads its template's series; 525 rows declared, the `$502.45` class dead. Closed **N-244**, **N-247**, **N-444**. Its own keep-vs-use claim was REFUTED (**R-JD**) -- see `archive/seven_shipped_pointers_2026-09-05.md` and `archive/x_au_e_as_built_2026-09-03.md`.
 * [ ] **X-au-g** the DECOMPOSED parent of the LOAN-PAYMENT cutover, split 2026-08-31 into four
   leaves: the pricing cycle's deletion, the tier move that unwinds the amount model's reach into the
   loan service, the ruling that puts a loan's terms on the installment they govern, and the cutover
   those three unblock.
-  * [x] **X-au-g-1** `af61263d` -- a loan's price reads its TERMS, never its own payment rows. Finding **N-266**(a) is MISDIAGNOSED rather than falsified: the PATH is dead, the CONCLUSION stands. Record in `archive/eight_shipped_steps_2026-09-01.md`.
+  * [x] **X-au-g-1** `af61263d` -- a loan's price reads its TERMS. **N-266**(a) MISDIAGNOSED, not falsified. `archive/eight_shipped_steps_2026-09-01.md`.
   * [x] **X-au-g-2a -- rule 4's producer moves below the amount model.** `b16908f7`. The
     tier move `row_valuation.py` has always said this arc owes: `_basis` / `_pricing` become
     `cash_ledger._loan_installment` / `._loan_pricing`, so the arrow runs one way.
@@ -554,12 +536,7 @@ in SILENCE where a refused DELETE is loud.
       * [x] **X-au-g-2c-3c** `cb6469b2` -- a FIFTH spelling of the accrual deleted; `recurrence:D52`'s 200,000-draw agreement REFUTED at 500,000, `$565.37` against `$565.36`. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
       * [ ] **X-au-g-2c-3b** the DECOMPOSED parent of the CHARGE-CALENDAR half, split 2026-09-02.
         * [x] **X-au-g-2c-3b-1** `fd3afc59` -- the CHARGE calendar moved to `loan_ledger._charges`, the same inversion one tier up. **D53** and **D55** deliberately not taken. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
-        * [x] **X-au-g-2c-3b-2** `3b7716f8` -- ONE interest accrual and ONE escrow per
-          INSTALLMENT, `split_payment_cash` deleted, both tiers folded onto the ONE replay
-          `loan_ledger._replay.replay_loan_events` (rule 14). `$0.00` on production, `$1,631.05`
-          on a forced collision. Closes **recurrence:D51**, carries **N-409**'s second half, rules
-          **R-IX**, files **N-439**. As built: `archive/x_au_g_2c_3b_2_2026-09-02.md`. **A later
-          step must NOT delete `tests/oracles/loan_monthly_composition.py`.**
+        * [x] **X-au-g-2c-3b-2** `3b7716f8` -- ONE accrual and ONE escrow per INSTALLMENT, both tiers on the ONE replay (rule 14). Rules **R-IX**, files **N-439**. **A later step must NOT delete `tests/oracles/loan_monthly_composition.py`.** `archive/x_au_g_2c_3b_2_2026-09-02.md`.
         * [ ] **X-au-g-2c-3b-3** `fix(loans): the engine feed states no allocation` -- the feed
           passes the CASH and `project_forward` charges the month's escrow, which DELETES the floor
           rather than re-dating it. Two earlier remedies were measured wrong first: re-keying the
@@ -670,9 +647,7 @@ section 4, under their unchanged ids.*
   **N-238**'s untouched remedy -- the column still records a re-price and a period move
   indistinguishably, and the move needs its own representation before the flag can be deleted.
   Carries **N-238**, **F-11**, **N-245**, **N-246**, and **N-448**'s closed record.
-* [x] **X-au-h** `825fd791` -- **`is_override` says ONE thing** (*this row is the OWNER's, not the rule's*) and authorship is a fact the PAYLOAD carries (**R-JR**); migration `e7c3a1f9b482` dropped the flag from the OCCURRENCE-keyed unique index, keeping it on the undated one. Closed **N-248**, **N-436**, **N-448**; opened **N-451**, **N-452**.
-  **What a LATER step must still obey**: **N-238** stays OPEN and NARROWED -- the flag still records a re-price and a period move indistinguishably, and deleting it still needs the move represented first; **F-11**, **N-245** and **N-246** stay open here, N-246 SHARPENED because `due_date`, `name` and `category_id` are derived fields a popover edits without raising the flag.
-  The four-fact specification this entry replaced over-counted, and its safety argument named `idx_transactions_template_period_scenario`, which R17 DROPPED -- true of production (35 revisions behind) and false at HEAD, with the collision surviving for UNDATED rows only.
+* [x] **X-au-h** `825fd791` -- **`is_override` says ONE thing** and authorship is on the PAYLOAD (**R-JR**); `e7c3a1f9b482` dropped the flag from the occurrence-keyed index. Closed **N-248**, **N-436**, **N-448**; opened **N-451**, **N-452**. **N-238** stays OPEN and NARROWED, with **F-11**, **N-245**, **N-246** -- the clauses a later step obeys are in `archive/seven_shipped_pointers_2026-09-05.md`.
 * [x] **X-aw** `078077db` -- a paycheck's gross is a RATE (**R-HW**), so **N-239** died by construction. Closed its horizon half; opened **N-390** and **N-391**. Record in `archive/four_shipped_steps_2026-08-30.md`.
 * [x] **X-bh-1** `b955d0c8` -- the paycheck engine reads the owner's CALENDAR, so **D25**'s narrow context is unrepresentable rather than forbidden in prose. Opened **N-394**, **N-395**, **N-396**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
 * [x] **X-bh-2** `49fdfb91` -- the rhythm runs BACKWARD too (**R-IA**), bounded by a stored registration; **`NULL` means NOT STATED** (**R-IF**). Closed **N-390** and **N-396**; opened **N-398**, **N-399**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
@@ -1012,6 +987,34 @@ section 4, under their unchanged ids.*
   collapsed twelve sites in `routes/transactions/forms.py` into four; `url_converters.py`,
   `routes/transfers/_helpers.py` (which counts its own `request.form` site, so it says 35) and
   `steps.md` state the same number and were moved with it.
+* [ ] **X-br** `container` -- THE FRESH CONTAINER PER RUN (ruled 2026-09-04).
+  Every fence the suite carries -- the slot, `RESTART_TEST_DB`, the
+  live-backend probe, `TEST_DB_PREFIX`, `TEST_TEMPLATE_DATABASE` -- exists
+  because ONE postmaster serves every worktree. A cluster per run makes each
+  guard nothing rather than guard less, and fixes what none of them did: two
+  runs in ONE worktree. Ticks with **X-br-4**.
+* [x] **X-br-1** `b1ffc9b6` -- the test template baked into a tagged,
+  self-verifying image (PR #247, merge `418695b2`).
+  `scripts/build_test_db_image.py` IS the specification; three measured facts
+  in its module docstring must not be re-derived. **A later step must obey:**
+  the cache key is an OPTIMISATION and verification runs on EVERY invocation,
+  so a stale image is refused rather than trusted.
+* [ ] **X-br-2** `feat(test): a run can have a cluster of its own` -- the
+  wrapper starts **X-br-1**'s image on an assigned port and exports the admin
+  and template DSNs at it. It cannot `exec` pytest: an exec has no after in
+  which to remove the container. INT and TERM are trapped with EXIT, since
+  Ctrl-C is what strands one. Opt-in behind `TEST_DB_PER_RUN` until **X-br-3**.
+* [ ] **X-br-3** `chore(test): the harness gets a daemon of its own` -- FIRST
+  ACT IS THE DEVELOPER'S and no session can do it: `sudo pacman -S
+  docker-rootless-extras`, since `docs/test-harness-isolation.md` records
+  those packages absent. Then `DOCKER_HOST` selects it, so per-run containers
+  stop landing on the daemon running production. Unblocks the 28
+  `tests/test_deploy` tests that run nowhere locally.
+* [ ] **X-br-4** `refactor(test): delete what the shared postmaster needed` --
+  the payoff: the slot, the probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX`,
+  `TEST_TEMPLATE_DATABASE` and the catalog-fragmentation section all go.
+  Closes **N-457**, whose remedy was always deletion. After **X-br-2** AND
+  **X-br-3**.
 * [ ] **X-bg** `feat(transfers): an occurrence that did not happen is not an archive` --
   closes **N-386**, whose row carries the measurement. **The door derives its own
   destructiveness from a link rather than from what the owner said**:
