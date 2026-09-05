@@ -70,7 +70,6 @@ def _freeze_today_inside_seed_range(monkeypatch):
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services import account_service, obligations_aggregator
-from app.services.pay_calendar import calendar_for
 from app.services.auth_service import hash_password
 from app.models.amount_ownership import AmountOwnership
 
@@ -1529,7 +1528,7 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(), calendar_for(seed_user["user"].id),
+                [tmpl], BalanceContext.build(seed_user["user"].id),
             )
             assert result == Decimal("500.00"), (
                 f"Monthly template should contribute exactly $500, got {result}"
@@ -1557,8 +1556,8 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [once_tmpl, recurring_tmpl], date.today(),
-                calendar_for(seed_user["user"].id),
+                [once_tmpl, recurring_tmpl],
+                BalanceContext.build(seed_user["user"].id),
             )
             # Only recurring: 100 * 26/12 = 216.67
             expected = (Decimal("100") * Decimal("26") / Decimal("12")).quantize(
@@ -1646,8 +1645,7 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             result = obligations_aggregator.committed_monthly(
-                [template], date.today(),
-                calendar_for(seed_user["user"].id),
+                [template], BalanceContext.build(seed_user["user"].id),
             )
             assert result == Decimal("0.00"), (
                 f"Expected 0.00 when template has None amount, got {result}"
@@ -1667,7 +1665,7 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(), calendar_for(seed_user["user"].id),
+                [tmpl], BalanceContext.build(seed_user["user"].id),
             )
             assert result == Decimal("650.00"), (
                 f"Expected 650.00 for every-2-periods template, got {result}"
@@ -1685,7 +1683,7 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(), calendar_for(seed_user["user"].id),
+                [tmpl], BalanceContext.build(seed_user["user"].id),
             )
             assert result == Decimal("100.00"), (
                 f"Expected 100.00 for annual template, got {result}"
@@ -1694,10 +1692,10 @@ class TestEmergencyFundCommittedBaseline:
     def test_committed_monthly_empty_iterable(
         self, app, seed_user,
     ):
-        """obligations_aggregator.committed_monthly([], today) returns zero."""
+        """obligations_aggregator.committed_monthly([], pass) returns zero."""
         with app.app_context():
             result = obligations_aggregator.committed_monthly(
-                [], date.today(), calendar_for(seed_user["user"].id),
+                [], BalanceContext.build(seed_user["user"].id),
             )
             assert result == Decimal("0.00"), (
                 f"Expected 0.00 for empty iterable, got {result}"

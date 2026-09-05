@@ -78,10 +78,16 @@ closed could supply another.
 Pure: no Flask, no ORM, no clock, no database.
 """
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from functools import cache
 
-from app.services.recurrence._bounds import EndBound
+from app.services.recurrence._bounds import (
+    BoundReading,
+    EndBound,
+    date_bound_has_closed,
+)
 
 
 class DerivedStop(ABC):
@@ -114,12 +120,15 @@ class DerivedStop(ABC):
     unauthorable, unstorable member in the closed set the picker is derived
     from.
 
-    **It carries no ``has_closed``, and that is a scope line rather than an
-    oversight.**  ``obligations_aggregator`` asks that question of the authored
-    bound today (:func:`app.services.recurrence.has_ended`), and moving it onto
-    the composed value is plan step R7d-e's leaf.  Writing the method here with
-    no caller would be speculative work of exactly the kind ``CLAUDE.md`` rule
-    13 refuses; R7d-e adds it with the caller that needs it.
+    **Every shape answers :meth:`has_closed` too, since plan step R7d-e**,
+    which is the question ``obligations_aggregator`` asks to decide whether a
+    commitment still belongs in the ``/obligations`` and ``/savings`` monthly
+    totals.  Until that step the aggregator asked it of the AUTHORED bound
+    alone (:func:`app.services.recurrence.has_ended` read the rule's own
+    columns), so a retired loan's payment went on inflating both totals until
+    some chokepoint happened to rewrite the cached column -- and left them the
+    day it did, which is a fact about when a page was saved rather than about
+    the loan.
     """
 
     @abstractmethod
@@ -142,6 +151,45 @@ class DerivedStop(ABC):
 
         Returns:
             ``True`` while the derived source still covers *occurrence*.
+        """
+
+    @abstractmethod
+    def has_closed(
+        self, *, on: date, reading: Callable[[], BoundReading],
+    ) -> bool:
+        """Return whether this stop had ended the definition by *on*.
+
+        **ONE reading for a derived stop, and it is R-R45's** (ruling
+        **R-R57**, developer 2026-09-05): the definition OWES no occurrence on
+        or after *on*.  Not "the closing date has passed".  The two agree for a
+        loan that runs to its last installment -- a payment due the 22nd of
+        each month whose loan closes 2029-02-22 owes that day's installment and
+        leaves the totals on 2029-02-23 under either reading -- and part where
+        a loan is cleared MID-period: trued to zero on 2026-09-01 after its
+        2026-08-22 installment, the definition owes nothing from 2026-08-23
+        under this reading and would have counted a payment no occurrence
+        backs for ten more days under the other.  The same reading the
+        authored bound took at plan ledger row **D33**, so two ways of stopping
+        one definition cannot disagree about the day it stopped.
+
+        The signature is :meth:`~app.services.recurrence.EndBound.has_closed`'s
+        unchanged, so :class:`Closing` asks both of its stops the one question
+        over one reading.
+
+        Args:
+            on: The day being asked about, normally "today".
+            reading: Called with no arguments for the definition's
+                :class:`~app.services.recurrence.BoundReading` -- the
+                occurrences the walk emitted under the WHOLE closing, so
+                already narrowed by this stop, and the schedule's horizon.
+                A shape that can answer without it never calls it.
+
+        Returns:
+            ``True`` when the definition owes no occurrence on or after *on*
+            because of THIS stop.  A schedule that has not been extended far
+            enough to say so answers ``False``, for the reason
+            :func:`~app.services.recurrence._bounds.date_bound_has_closed`
+            gives: that is the schedule's limit, not the definition's end.
         """
 
 
@@ -175,6 +223,28 @@ class ClosesOn(DerivedStop):
         """
         return occurrence <= self.on
 
+    def has_closed(
+        self, *, on: date, reading: Callable[[], BoundReading],
+    ) -> bool:
+        """Return whether the definition owes no occurrence on or after *on*.
+
+        The date-bound closure rule
+        (:func:`~app.services.recurrence._bounds.date_bound_has_closed`)
+        applied to :attr:`on` -- the same rule the authored
+        :class:`~app.services.recurrence.EndsOnDate` applies to its own day,
+        because a last admitted day is the same bound whoever states it.
+
+        Args:
+            on: The day being asked about.
+            reading: Called only while the closing date is still ahead.
+
+        Returns:
+            ``True`` when the closing date has passed, or when no occurrence
+            falls in ``[on, self.on]`` and the schedule reaches far enough to
+            say so.
+        """
+        return date_bound_has_closed(self.on, on=on, reading=reading)
+
 
 @dataclass(frozen=True)
 class Indefinite(DerivedStop):
@@ -198,6 +268,20 @@ class Indefinite(DerivedStop):
             Always ``True``.
         """
         return True
+
+    def has_closed(
+        self, *, on: date, reading: Callable[[], BoundReading],
+    ) -> bool:
+        """Never close: a stop that names no date ends nothing.
+
+        Args:
+            on: Unread.
+            reading: Never called.
+
+        Returns:
+            Always ``False``.
+        """
+        return False
 
 
 @dataclass(frozen=True)
@@ -240,6 +324,24 @@ class Empty(DerivedStop):
             Always ``False``.
         """
         return False
+
+    def has_closed(
+        self, *, on: date, reading: Callable[[], BoundReading],
+    ) -> bool:
+        """Closed on every day: a window that admits nothing owes nothing.
+
+        The loan cleared before its first installment owes no occurrence on or
+        after ANY day, so the answer does not depend on *on* and needs no walk
+        -- the precomputation this shape IS, reached from the other side.
+
+        Args:
+            on: Unread.
+            reading: Never called.
+
+        Returns:
+            Always ``True``.
+        """
+        return True
 
 
 #: The stop of a source that stops nothing.  A module-level singleton because
@@ -329,6 +431,45 @@ class Closing:
         if not self.authored.admits(emitted=emitted, occurrence=occurrence):
             return False
         return self.derived is None or self.derived.admits(occurrence)
+
+    def has_closed(
+        self, *, on: date, reading: Callable[[], BoundReading],
+    ) -> bool:
+        """Return whether ANYTHING that stops this definition had done so by *on*.
+
+        EITHER stop ending it ends it, so the two answers are ORed exactly as
+        :meth:`admits` ANDs them: a definition fires only while both allow it,
+        and it has ended once either does not.  Plan step R7d-e; the reading
+        each stop takes is ruling **R-R45**'s, restated for the derived half by
+        **R-R57**.
+
+        **Both stops judge ONE reading, and asking twice costs one walk.**  The
+        reading is the walk made under this whole value, so it is already
+        narrowed by both stops; each shape then asks it against its OWN last
+        day (:func:`~app.services.recurrence._bounds.date_bound_has_closed`),
+        which is why no arbitration between the two is needed -- a stop the
+        walk never reached cannot be the one that ended it, and a stop it did
+        reach answers for itself.  The callable is memoised here rather than
+        by the caller, so a caller cannot forget to and pay for the walk twice
+        on a pair that asks for it twice: an authored date bound still ahead,
+        or a count bound still unspent (that shape always reads the walk),
+        beside a closing date still ahead.
+
+        Args:
+            on: The day being asked about, normally "today".
+            reading: Called at most once, for the definition's
+                :class:`~app.services.recurrence.BoundReading`.
+
+        Returns:
+            ``True`` when either stop says the definition owes no occurrence
+            on or after *on*.
+        """
+        once = cache(reading)
+        if self.authored.has_closed(on=on, reading=once):
+            return True
+        return self.derived is not None and self.derived.has_closed(
+            on=on, reading=once,
+        )
 
 
 __all__ = [

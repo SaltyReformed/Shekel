@@ -377,26 +377,20 @@ def compute_goal_progress(balance_ctx: BalanceContext) -> list[GoalProgress]:
         core.balance_ctx.user_id,
         account_data,
         _GoalInputs(
-            all_periods=core.balance_ctx.reported_periods(),
             net_biweekly_pay=net_biweekly_pay,
-            # After the no-goals early return above, for the reason
-            # ``compute_debt_summary`` resolves it after ITS early return.
-            # The WHOLE schedule rather than the cadence since plan step
-            # R7b-3: the contribution filter has to tell whether a
-            # count-bounded template has spent its count, which depends on
-            # when the paychecks fall.
-            #
-            # Off the PASS since plan step C2-f2d-1, not through
-            # ``calendar_for``: this producer already holds a read pass whose
-            # whole job is to derive that calendar once, and calling the loader
-            # beside it derived a second copy of the same value -- measured at
-            # two derivations per ``compute_goal_progress`` call on a
-            # production clone.  The memo makes a second ask free rather than
-            # cheap, so the early return above still costs an owner with no
+            # The PASS itself (plan step R7d-e), where the inputs carried its
+            # reported window, its calendar and its day as three scalars: the
+            # contribution filter reads the composed door now, which folds a
+            # loan and so needs the pass.  What the scalars bought still holds
+            # -- the WHOLE schedule rather than the cadence (plan step R7b-3,
+            # so a count-bounded template that has spent its count leaves the
+            # floor), off the pass's memo rather than through ``calendar_for``
+            # (plan step C2-f2d-1, which measured a second derivation of the
+            # same calendar per call), and the build's ONE day (plan step
+            # C2-f2d-3, ledger row **P55**) -- and the memo makes a later ask
+            # free, so the early return above still costs an owner with no
             # goals nothing.
-            calendar=core.balance_ctx.calendar(),
-            # The build's ONE day (plan step C2-f2d-3, ledger row **P55**).
-            as_of=core.balance_ctx.as_of,
+            balance_ctx=core.balance_ctx,
         ),
         active_goals,
     )
@@ -698,9 +692,7 @@ def _compute_emergency_fund_section(
         (:class:`~app.services.savings_goal_service.SavingsCoverage`),
         ``total_savings`` and ``avg_monthly_expenses``.
     """
-    avg_monthly_expenses = _compute_avg_monthly_expenses(
-        core.balance_ctx.user_id, core, calendar,
-    )
+    avg_monthly_expenses = _compute_avg_monthly_expenses(core, calendar)
     total_savings = _sum_liquid_balances(account_data)
     return {
         "emergency_metrics": savings_goal_service.calculate_savings_metrics(
@@ -806,11 +798,12 @@ def compute_dashboard_data(balance_ctx: BalanceContext):
         core.balance_ctx.user_id,
         account_data,
         _GoalInputs(
-            all_periods=core.balance_ctx.reported_periods(),
             net_biweekly_pay=net_biweekly_pay,
-            calendar=calendar,
-            # The build's ONE day (plan step C2-f2d-3, ledger row **P55**).
-            as_of=core.balance_ctx.as_of,
+            # The pass, whole (plan step R7d-e): its calendar is the one
+            # ``calendar`` above was read off, its reported window is the goal
+            # count's domain, and its day is the build's ONE day (plan step
+            # C2-f2d-3, ledger row **P55**).
+            balance_ctx=core.balance_ctx,
         ),
         _load_active_goals(core.balance_ctx.user_id),
     )

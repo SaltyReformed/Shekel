@@ -570,12 +570,13 @@ class TestTheStopLineIsTotalOverTheShapes:
                 """
                 return True
 
-            def has_closed(self, *, on, occurrences_before):
+            def has_closed(self, *, on, reading):
                 """Never close.
 
                 Args:
                     on: Unread.
-                    occurrences_before: Unread.
+                    reading: Never called -- the real contract's callable,
+                        named as :meth:`EndBound.has_closed` names it.
 
                 Returns:
                     Always ``False``.
@@ -708,7 +709,14 @@ class TestTheDerivedStopIsTotalOverItsShapes:
         the destination has stopped is the surface saying money keeps moving.
         """
         class _StopsWhenTheGoalIsMet(DerivedStop):
-            """A stand-in for a shape a later supplier adds."""
+            """A stand-in for a shape a later supplier adds.
+
+            It answers the WHOLE contract -- ``admits`` and, since plan step
+            R7d-e, ``has_closed`` -- because a shape that forgets either is
+            unconstructible (that refusal has its own case in
+            ``test_recurrence_closing``), and this case is about the one gap
+            construction cannot catch: a shape with no wording.
+            """
 
             def admits(self, occurrence):
                 """Admit everything.
@@ -720,6 +728,18 @@ class TestTheDerivedStopIsTotalOverItsShapes:
                     Always ``True``.
                 """
                 return True
+
+            def has_closed(self, *, on, reading):
+                """Never close.
+
+                Args:
+                    on: Unread.
+                    reading: Never called.
+
+                Returns:
+                    Always ``False``.
+                """
+                return False
 
         with pytest.raises(RecurrenceDescriptionError, match="no wording"):
             _describe._stops_phrase(  # pylint: disable=protected-access

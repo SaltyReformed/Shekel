@@ -14,9 +14,9 @@ Two units, one source of truth
 Every monetary figure is produced in BOTH units so the page-wide
 Monthly / Per-paycheck toggle can switch without recomputing money in the
 template or in JS.  There is exactly one monthly source of truth --
-``obligations_aggregator.template_monthly_or_none`` (E-24 / HIGH-05, also
-behind the /savings emergency-fund baseline) -- and the per-paycheck value
-is DERIVED from it by
+``obligations_aggregator.monthly_or_none`` (E-24 / HIGH-05; the same
+producer, one entry up, is behind the /savings emergency-fund baseline) -- and
+the per-paycheck value is DERIVED from it by
 :meth:`~app.services.pay_calendar.PayCadence.monthly_to_per_paycheck`.  The
 toggle therefore only re-expresses the same committed figure in a different
 unit; it never opens a second money path that could disagree with the first.
@@ -52,12 +52,12 @@ Jinja branches over the closed ``pattern_id`` set until then;
 ``recurrence.describe`` words it from the two-axis meaning instead, so the
 column survives plan step R7c dropping the columns those branches read.  Each
 rule is read ONCE per render THROUGH THE DOOR -- ``read_definition`` returns
-the meaning and the placements together -- because the phrase and the next
-date are two questions about one reading, and resolving twice would be a second
-resolution point in one request.  The monthly-equivalent producer beside it
-(``template_monthly_or_none`` -> ``has_ended``) still makes a resolution of its
-own for a rule whose date bound lies in the future; plan step R7d-e moves it
-onto the door.
+the meaning and the placements together -- because the phrase, the next date
+and the monthly equivalent are three questions about one reading, and resolving
+twice would be a second resolution point in one request.  The monthly
+equivalent joined the other two at plan step R7d-e: until then
+``template_monthly_or_none`` -> ``has_ended`` resolved and walked a bounded
+rule a second time, off the rule's own columns.
 
 **The reading is the COMPOSED one since plan step R7d-d**: what the rule says
 AND what its destination allows, held in one
@@ -79,16 +79,19 @@ shape, ``2029-01-22`` stored against ``2029-02-22`` derived) the row names
 authored while an older active transfer is the loan's payment.  The phrase and
 the next date read ONE value, so they cannot disagree with each other.
 
-Three limits stand, each named rather than denied.  The ARCHIVED drawer: an
-archived loan payment is no longer the account's active transfer, so the
-predicate that names the app-written bound does not name it and the column the
-app wrote while it was active is read as its owner's bound -- a cache earlier
-than the derived stop binds that drawer row until R7d-g NULLs it, and R7d-g
-must decide archived loan payments rather than sweep them (ledger row D56).
-The MONTHLY EQUIVALENT: ``template_monthly_or_none`` -> ``has_ended`` reads the
-rule's own columns, so on D35's shape the row shows the derived stop and a next
-date beside a BLANK monthly figure for the one installment the derived stop
-adds past the cached date; plan step R7d-e moves that reader onto the door.
+Two limits stand, each named rather than denied, and a third closed at plan
+step R7d-e.  The ARCHIVED drawer: an archived loan payment is no longer the
+account's active transfer, so the predicate that names the app-written bound
+does not name it and the column the app wrote while it was active is read as
+its owner's bound -- a cache earlier than the derived stop binds that drawer
+row until R7d-g NULLs it, and R7d-g must decide archived loan payments rather
+than sweep them (ledger row D56).  The MONTHLY EQUIVALENT is the closed one:
+``template_monthly_or_none`` -> ``has_ended`` read the rule's own columns, so on
+D35's shape the row showed the derived stop and a next date beside a BLANK
+monthly figure for the one installment the derived stop adds past the cached
+date, and a RETIRED loan's row stated a monthly figure beside a stop line
+saying the money had stopped; the monthly column reads the same door as the
+other two since R7d-e, so the three cannot disagree.
 The CREATE form: ``POST /transfers`` cannot lock the Ends control, so a closing
 bound an owner authors there on a loan-destination transfer sits in the column
 until the first chokepoint overwrites it, and the door reads it as the cache
@@ -112,7 +115,7 @@ What appears vs what totals
 The list is a management surface, so it shows EVERY active definition,
 including the non-repeating (rule-less) definitions you still need to edit,
 archive, or delete.  The summary band and the section subtotals, however,
-sum only genuine recurring commitments -- ``template_monthly_or_none``
+sum only genuine recurring commitments -- ``monthly_or_none``
 returns ``None`` for rule-less / expired / missing-or-zero-amount templates, so
 those rows render with a blank equivalent and contribute nothing to any
 total (matching the retired /obligations kernel exactly).
@@ -132,7 +135,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.services.balance_at import BalanceContext
 from app.services.obligations_aggregator import (
     RecurringTemplate,
-    template_monthly_or_none,
+    monthly_or_none,
     template_rule,
 )
 from app.services.pay_calendar import PayCadence
@@ -284,7 +287,7 @@ def _unit_pair(
     """Round a full-precision monthly figure into both display units.
 
     ``monthly_full`` is the unquantized monthly equivalent from
-    ``template_monthly_or_none`` (per-row) or a sum of such values (per
+    ``monthly_or_none`` (per-row) or a sum of such values (per
     section).  Rounding once here, at the display boundary, keeps
     intermediate sums at full precision so pennies cannot accumulate drift
     (the ``committed_monthly`` contract).  ``None`` in propagates to both
@@ -498,15 +501,21 @@ def _build_section(
     full-precision total once, so it equals ``committed_monthly`` for the
     section by construction.
 
-    **Each rule is READ once** (plan step R7a).  A row's cadence phrase and its
-    next date are two questions about one reading, so the first pass takes
+    **Each rule is READ once** (plan step R7a).  A row's cadence phrase, its
+    next date and its monthly equivalent are three questions about one reading,
+    so the first pass takes
     :func:`~app.services.recurring_definition.read_definition` -- the single
-    resolve-then-narrow-then-place composition -- and the second pass derives
-    both from what it returned.  That door is where the destination's own stop
-    joins the rule's (plan step R7d-d): a loan payment's row stops where the
-    loan's derived closing date says, because the door reads the cached column
-    as a cache and not as the owner's bound (ruling **R-R56**; see the module
-    docstring).
+    resolve-then-narrow-then-place composition -- derives the monthly figure
+    from what it returned (plan step R7d-e; the aggregator's
+    :func:`~app.services.obligations_aggregator.monthly_or_none` takes the
+    reading rather than resolving the rule again), and the second pass derives
+    the other two.  That door is where the destination's own stop joins the
+    rule's (plan step R7d-d): a loan payment's row stops where the loan's
+    derived closing date says, because the door reads the cached column as a
+    cache and not as the owner's bound (ruling **R-R56**; see the module
+    docstring) -- and since R7d-e its monthly figure leaves the section total
+    on the same day, so a retired loan's row cannot state a commitment beside
+    a stop line that says the money has stopped.
 
     **This is a fail-CLOSED read**, and plan step R4a is what changed it.  The
     retired matcher used to log a warning and answer ``[]`` for a rule it could
@@ -557,13 +566,21 @@ def _build_section(
     prepared: list[_PreparedRow] = []
     section_total_full = Decimal("0")
     for template in templates:
-        monthly_full = template_monthly_or_none(template, ctx.as_of, calendar)
         rule = template_rule(template)
+        # The RULE decides whether there is a reading at all
+        # (:class:`_PreparedRow` insists the two are set together); the
+        # monthly figure is then derived from THAT reading, never from a
+        # second resolution of the rule (plan step R7d-e).
+        reading = None if rule is None else read_definition(template, ctx)
+        monthly_full = (
+            None if reading is None
+            else monthly_or_none(template, reading, ctx)
+        )
         prepared.append(_PreparedRow(
             template=template,
             monthly_full=monthly_full,
             rule=rule,
-            reading=None if rule is None else read_definition(template, ctx),
+            reading=reading,
         ))
         if monthly_full is not None:
             section_total_full += monthly_full

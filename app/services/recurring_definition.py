@@ -188,11 +188,12 @@ def resolved_definition(
             before the scenario guard.
     """
     # ``getattr`` rather than attribute access, and NOT
-    # ``obligations_aggregator.template_rule``: plan step R7d-e moves that
-    # module's ``has_ended`` onto THIS door, so importing it here would be a
-    # cycle one step out -- the same "move the leaf" problem this step just
-    # solved one layer down, recreated one layer up.  The read is one
-    # ``getattr`` and the duck-typed contract is the recurrence package's own
+    # ``obligations_aggregator.template_rule``: that module reads THIS door
+    # since plan step R7d-e (its expired filter judges the composed closing),
+    # so importing it here would be a cycle one step out -- the same "move the
+    # leaf" problem plan step R7d-d solved one layer down, recreated one layer
+    # up.  The read is one ``getattr`` and the duck-typed contract is the
+    # recurrence package's own
     # (:data:`~app.services.recurrence.RecurrenceOwner`).
     rule = getattr(template, "recurrence_rule", None)
     if rule is None:
