@@ -59,6 +59,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from app.enums import BusinessDayShiftEnum
+from app.services import pay_calendar, pay_period_admin
 from app.services import pay_period_write
 from app.services.pay_calendar import (
     MAX_CADENCE_DAYS,
@@ -67,27 +68,38 @@ from app.services.pay_calendar import (
     PayCalendarError,
     PeriodWindow,
     derive_periods,
+    projected_payday,
 )
 
 # Package-PRIVATE on purpose, and this is the one import in the suite that
-# takes it.  ``covering_projection`` and ``projected_payday`` have no
-# application caller outside :mod:`app.services.pay_calendar._derive` -- they
-# are the two halves plan step ``C14-c`` split :func:`project_period_after`
-# into -- so exporting them would widen the package's curated surface for a
-# test's convenience.  The W9910 gate (``shekel-private-module-import``) runs
-# over ``app/``, ``scripts/`` and ``tests/manual/`` -- not this tree -- and
+# takes it.  ``covering_projection`` and ``project_period_after`` have no
+# caller outside the PACKAGE, so exporting them would widen its curated
+# surface for a test's convenience.  *An adversarial review of ``C14-d``
+# corrected this line: it said "outside :mod:`app.services.pay_calendar._derive`",
+# which is false of ``project_period_after`` -- ``_calendar`` and ``_views``
+# both call it.  The predicate the curated surface is drawn on is the PACKAGE
+# boundary, which is also what the W9910 gate enforces.*  The W9910 gate (``shekel-private-module-import``) runs over
+# ``app/``, ``scripts/`` and ``tests/manual/`` -- not this tree -- and
 # ``tests/test_services/test_spending_report_service.py`` reaches a sibling
 # package's ``_window`` the same way.
+#
+# ``projected_payday`` was in this list until plan step ``C14-d``, which gave
+# it the application caller the list is drawn on:
+# ``pay_period_write._reject_backward_payday`` asks it where the last paycheck
+# ends rather than restating the arithmetic.  It is imported publicly above,
+# and the entry is corrected rather than dropped because the sentence it used
+# to carry -- *no application caller* -- was a measurement that expired.
 from app.services.pay_calendar import _derive
-from app.services.pay_calendar._derive import (
-    covering_projection,
-    projected_payday,
-)
+from app.services.pay_calendar._derive import covering_projection
 from app.utils.business_days import (
     shift_to_business_day,
     shortest_collision_free_cadence,
 )
-from tests._test_helpers import all_periods, rhythm_of
+from tests._test_helpers import (
+    all_periods,
+    displace_paydays_under,
+    rhythm_of,
+)
 from tests.oracles.pay_calendar_derivation import (
     IRREGULAR_SHAPES,
     cadence_control,
@@ -527,11 +539,12 @@ class TestReDerivationStability:
     def test_appending_exactly_one_cadence_later_moves_no_end(self):
         """The extend path's append is the only stable one.
 
-        ``pay_period_admin.extend_pay_periods`` opens its batch at
-        ``last.end_date + 1``, which for a projected end of
-        ``last_start + cadence - 1`` is exactly ``last_start + cadence``.  The
-        old last period's end is then ``lead - 1``, the same day the projection
-        gave it -- so nothing moves and only the FLAG changes.
+        ``pay_period_admin.extend_pay_periods`` opens its batch on the NOMINAL
+        grid one cadence after the last recorded payday (plan step ``C14-d``;
+        it read ``last.end_date + 1`` off the calendar until then, which is the
+        same day while nothing displaces a payday).  The old last period's end
+        is then ``lead - 1``, the same day the projection gave it -- so nothing
+        moves and only the FLAG changes.
         """
         before = derive_periods(self._PAYDAYS, 14)
         assert before[-1].end_date == date(2026, 1, 29)
@@ -686,10 +699,12 @@ class TestTheWritersOwnScheduleDerives:
     ):
         """The extend path's shape -- a batch opening one cadence after the last.
 
-        ``pay_period_admin.extend_pay_periods`` asks the CALENDAR where the
-        next payday falls (plan step C2-f3b) rather than doing arithmetic of
-        its own, and this is the append that moves no previously-derived end --
-        see :class:`TestReDerivationStability`.
+        ``pay_period_admin.extend_pay_periods`` asks a PRODUCER where the next
+        payday falls rather than doing arithmetic of its own (plan step
+        C2-f3b), and since plan step ``C14-d`` the producer it asks is the
+        NOMINAL grid rather than the calendar -- the same day until ``C14-e``
+        displaces one.  This is the append that moves no previously-derived
+        end; see :class:`TestReDerivationStability`.
         """
         with app.app_context():
             user_id = bare_user["user"].id
@@ -820,34 +835,25 @@ def _saved(anchor: date, cadence_days: int) -> "tuple[DerivedPeriod, ...]":
 def _displace_under(monkeypatch, shift: BusinessDayShiftEnum) -> None:
     """Give the package plan step ``C14-e``'s producer for one test.
 
-    **The SIMULATION the probe is graded against, and why it is a substitution
-    rather than a fixture.**  With the convention still at ``none``,
-    ``projected_payday`` answers the nominal rhythm, every payday sits exactly
-    on the arithmetic grid and the neighbouring candidates
-    ``project_period_after`` offers can never win -- so a test driving the real
-    function would grade the estimate and nothing else.  What ``C14-e`` changes
-    is that ONE body: the nominal day displaced onto a business day under the
-    owner's convention.  Substituting exactly that, and then calling the REAL
-    ``project_period_after`` and ``derive_periods``, grades the window, the end
-    rule and the selector against the mechanism itself -- where hand-building
-    candidates in the test would grade the selector alone and pass against a
-    production window narrowed back to one candidate.
+    This module's name for :func:`tests._test_helpers.displace_paydays_under`,
+    which is where the simulation and its argument live.  It MOVED there at
+    plan step ``C14-d``, when a second suite needed the same substitution:
+    ``pay_period_write._reject_backward_payday``'s floor now calls the
+    producer, so the writer's tests grade the same mechanism, and a copied
+    simulation is two spellings of the world ``C14-e`` ships.
 
-    It replaces a COLLABORATOR, never the code under test:
-    :func:`~app.utils.business_days.shift_to_business_day` is the shipped
-    displacement from plan step ``C14-a``, not a stand-in for one.
+    **The move also fixed it.**  The form written here patched
+    ``_derive.projected_payday`` alone, which was complete while
+    :mod:`app.services.pay_calendar._derive` held the only binding.  The
+    package re-exports the name since ``C14-d``, so one patch would leave the
+    derivation displaced and the writer nominal -- a state no convention can
+    produce.  The shared helper patches both.
 
     Args:
         monkeypatch: pytest's patcher.
         shift: The convention to displace under.
     """
-    monkeypatch.setattr(
-        _derive,
-        "projected_payday",
-        lambda anchor, cadence_days, steps: shift_to_business_day(
-            anchor + timedelta(days=steps * cadence_days), shift,
-        ),
-    )
+    displace_paydays_under(monkeypatch, shift)
 
 
 class TestTheProjectedPaydayHasOneProducer:
@@ -943,6 +949,51 @@ class TestTheProjectedPaydayHasOneProducer:
             f"no shape's last end moved under {shift.name}, so this graded the "
             f"nominal path a second time"
         )
+
+
+class TestTheGridIsNotTheProjection:
+    """Plan step ``C14-d``: two producers, and the substitution separates them.
+
+    ``projected_payday`` returns ``nominal_payday``'s answer unchanged today,
+    so on the shipped path a test comparing them grades nothing -- which is
+    exactly why the split is asserted under ``C14-e``'s producer instead.
+    What the split is FOR is that a writer continuing a rhythm and a calendar
+    displaying a paycheck stop wanting the same day, and both callers exist:
+    ``pay_period_admin.extend_pay_periods`` takes the grid, ``derive_periods``
+    takes the projection.
+    """
+
+    @pytest.mark.parametrize(
+        "shift", [BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT],
+        ids=lambda s: s.name.lower(),
+    )
+    def test_the_TWO_DOORS_read_two_different_producers(
+        self, monkeypatch, shift,
+    ):
+        """The writer's binding displaces and the extend door's does not.
+
+        **Read off the APPLICATION modules, and an adversarial review of this
+        step is why.**  A first form of this case called the names this test
+        module imported, which ``monkeypatch`` can never reach -- so it would
+        have passed unchanged even if the substitution HAD displaced the grid,
+        which is the one thing it claimed to detect.  It also compared the
+        substituted producer against the expression that producer computes, an
+        equality whose two sides share one body.
+
+        What is asserted now is the pair of bindings the two doors actually
+        call: ``pay_period_write._reject_backward_payday`` reaches
+        ``pay_calendar.projected_payday`` and ``extend_pay_periods`` reaches
+        ``pay_period_admin.nominal_payday``.  If ``C14-e`` displaces the second
+        of those, the extend door starts recording cash dates again and this
+        fails.
+        """
+        anchor, thanksgiving = date(2030, 11, 14), date(2030, 11, 28)
+        assert pay_period_admin.nominal_payday(anchor, 14, 1) == thanksgiving
+
+        _displace_under(monkeypatch, shift)
+
+        assert pay_period_admin.nominal_payday(anchor, 14, 1) == thanksgiving
+        assert pay_calendar.projected_payday(anchor, 14, 1) != thanksgiving
 
 
 class TestTheCoveringProbeToleratesAMovedBoundary:

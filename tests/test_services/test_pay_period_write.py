@@ -43,7 +43,7 @@ import pytest
 
 from app.exceptions import ValidationError
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import BusinessDayShiftEnum, StatusEnum, TxnTypeEnum
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import CADENCE_DAYS_MIN, PaySchedule
 from app.models.transaction import Transaction
@@ -63,6 +63,7 @@ from tests._test_helpers import (
     all_periods,
     capture_sql_statements,
     create_savings_account,
+    displace_paydays_under,
     freeze_today,
 )
 
@@ -407,6 +408,255 @@ class TestTheForwardOnlyFloor:
             )
             db.session.commit()
             assert periods[0].start_date == date(2020, 3, 1)
+
+
+#: What the floor becomes for each convention, on the schedule
+#: :class:`TestTheFloorFollowsTheProducer` records.
+#:
+#: The last recorded payday is 2025-12-18, an ordinary Thursday, and the
+#: nominal next one is 2026-01-01 -- New Year's Day, which is closed.  So the
+#: three conventions put the next paycheck's opening day in three different
+#: places, and the floor is that day in each: **the R-PC47 case, worked**.
+#: Hand-computed from the federal holiday set, not read back from
+#: :func:`~app.utils.business_days.shift_to_business_day`, so this table is an
+#: independent oracle rather than the mechanism restated.
+_FLOOR_PER_CONVENTION = [
+    (BusinessDayShiftEnum.NONE, date(2026, 1, 1)),
+    (BusinessDayShiftEnum.PRIOR, date(2025, 12, 31)),
+    (BusinessDayShiftEnum.NEXT, date(2026, 1, 2)),
+]
+
+
+class TestTheFloorFollowsTheProducer:
+    """Plan step **C14-d**: the floor is where the last paycheck ENDS.
+
+    ``_reject_backward_payday`` open-coded ``latest_payday + cadence_days`` and
+    a sentence in its own docstring held that equal to the last saved period's
+    derived end -- rule 14's tell, one value with two homes and a maintenance
+    contract.  It calls
+    :func:`~app.services.pay_calendar.projected_payday` now, the same producer
+    :func:`~app.services.pay_calendar.derive_periods` closes that period with,
+    so the fence and the boundary it guards cannot come apart.
+
+    **These cases are driven through the substitution plan step ``C14-e``
+    ships** (:func:`~tests._test_helpers.displace_paydays_under`), because
+    while the convention is ``none`` the two spellings agree on every day and a
+    test of the real producer would grade the deleted one just as well.  That
+    is not hypothetical: an adversarial review of ``C14-c`` measured its
+    sibling equality passing with the OLD end rule restored.
+
+    The ``none`` row of :data:`_FLOOR_PER_CONVENTION` is the WITHIN-simulation
+    control: it fixes the floor the displacing rows are read against, so their
+    two answers are the only ones that moved.  **It is not the ``$0.00``
+    claim**, and an adversarial review of this step struck a sentence saying it
+    was -- ``none`` still substitutes an identity DOUBLE, so the shipped
+    producer is not called on that arm either.  The unpatched controls are
+    :meth:`TestTheForwardOnlyFloor.test_the_floor_is_one_CADENCE_after_the_latest_payday`,
+    hand-computed at 2026-01-30 and untouched by this step, and the extend
+    suite's ``test_it_is_ZERO_DOLLARS_while_the_convention_displaces_nothing``,
+    which runs with no substitution at all.
+    """
+
+    def _fortnightly_through_december(self, user_id, shift):
+        """Record 2025-12-04 and 2025-12-18 UNDER *shift*; the second is last.
+
+        **The convention is stored, and an adversarial review of this step is
+        why.**  A first form seeded every arm under ``none`` and argued that a
+        payday is a RECORDED FACT (**R-PC47**) so the rows are the same either
+        way.  The rows ARE the same -- ``_requested_paydays`` is shift-blind,
+        so this records 2025-12-04 and 2025-12-18 whatever is passed -- which
+        makes that a non-reason rather than a justification.  What differed was
+        the SCHEDULE ROW: it said ``none`` while the case simulated a
+        displacing convention, and the shipped ``C14-e`` producer reads that
+        row (``pay_schedule_service.resolve_shift`` today, a widened
+        ``ScheduleFacts`` after it).  So the arm pinned a world ``C14-e`` could
+        not reproduce for this owner: the real producer would have answered the
+        nominal day and every displacing assertion here would fail.
+        """
+        return pay_period_write.record_paydays(
+            user_id=user_id, first_payday=date(2025, 12, 4),
+            num_periods=2, rhythm=rhythm_of(14, shift),
+        )
+
+    @pytest.mark.parametrize(
+        ("shift", "floor"), _FLOOR_PER_CONVENTION,
+        ids=lambda value: getattr(value, "name", str(value)).lower(),
+    )
+    def test_the_day_below_the_floor_is_refused_and_the_floor_is_taken(
+        self, app, db, bare_user, monkeypatch, shift, floor,
+    ):
+        """Both sides of the boundary, wherever the convention puts it.
+
+        Asserting the refusal alone would pass for a rule that refused
+        everything, and asserting the acceptance alone for one that refused
+        nothing; the pair pins the floor to a day.  Across the three arms that
+        day MOVES IN BOTH DIRECTIONS -- ``prior`` pulls it back to 2025-12-31
+        and ``next`` pushes it out to 2026-01-02 -- so a floor that ignored the
+        producer and kept answering 2026-01-01 fails two of the three.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._fortnightly_through_december(user_id, shift)
+            db.session.commit()
+            displace_paydays_under(monkeypatch, shift)
+
+            below = floor - timedelta(days=1)
+            with pytest.raises(
+                ValidationError, match=f"on or after {floor.isoformat()}",
+            ):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=below,
+                    num_periods=1, rhythm=rhythm_of(14, shift),
+                )
+            db.session.rollback()
+            assert len(all_periods(user_id)) == 2
+
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=floor,
+                num_periods=1, rhythm=rhythm_of(14, shift),
+            )
+            db.session.commit()
+            assert [period.start_date for period in all_periods(user_id)] == [
+                date(2025, 12, 4), date(2025, 12, 18), floor,
+            ]
+
+    def test_the_accepted_payday_is_the_one_the_LAST_PAYCHECK_ends_before(
+        self, app, db, bare_user, monkeypatch,
+    ):
+        """The floor and the derived end are ONE value, shown as a calendar.
+
+        Under ``prior`` the 2025-12-18 paycheck runs to 2025-12-30, because the
+        payday that closes it is the 2026-01-01 payroll really pays on
+        2025-12-31.  The floor accepts exactly 2025-12-31, so the recorded
+        payday opens the day after that end and the calendar tiles -- which is
+        the property the open-coded floor could only promise.  Its own
+        ``latest + cadence`` would have refused this write outright, leaving
+        the owner unable to record a payday they were really paid.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._fortnightly_through_december(
+                user_id, BusinessDayShiftEnum.PRIOR,
+            )
+            db.session.commit()
+            displace_paydays_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
+
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2025, 12, 31),
+                num_periods=1, rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
+            )
+            db.session.commit()
+
+            assert _paydays(user_id) == [
+                (date(2025, 12, 4), date(2025, 12, 17), 0),
+                (date(2025, 12, 18), date(2025, 12, 30), 1),
+                (date(2025, 12, 31), date(2026, 1, 13), 2),
+            ]
+
+    def test_the_floor_follows_a_RETIRED_tail_down(
+        self, app, db, bare_user, monkeypatch,
+    ):
+        """The floor reads what the operation LEAVES, not what the table holds.
+
+        ``record_paydays`` takes the retirements and the recordings in ONE call
+        so every refusal judges the payday set the operation actually leaves
+        behind, and the floor is the case that most depends on it: retire
+        2025-12-18 and the last surviving payday becomes 2025-12-04, so the
+        floor drops a whole cadence.  Added by an adversarial review of this
+        step, which named this the one path where ``max(surviving_paydays)``
+        and *the payday the derivation closes the calendar on* could come apart
+        -- the equality the new floor claims cannot.
+
+        Under ``prior`` the floor is then the day 2025-12-18's own payroll
+        would really have landed on, which is 2025-12-18 itself: an ordinary
+        Thursday, so the displacement is the identity and the arithmetic is
+        visible.  2025-12-17 splits the surviving paycheck and is refused.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            created = self._fortnightly_through_december(
+                user_id, BusinessDayShiftEnum.PRIOR,
+            )
+            db.session.commit()
+            doomed = {created[-1].id}
+            displace_paydays_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
+
+            with pytest.raises(ValidationError, match="on or after 2025-12-18"):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2025, 12, 17),
+                    num_periods=1,
+                    rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
+                    retiring_ids=doomed,
+                )
+            db.session.rollback()
+
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2025, 12, 18),
+                num_periods=1,
+                rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
+                retiring_ids=doomed,
+            )
+            db.session.commit()
+            assert [period.start_date for period in all_periods(user_id)] == [
+                date(2025, 12, 4), date(2025, 12, 18),
+            ]
+
+    def test_a_displaced_ANCHOR_still_refuses_a_real_payday_and_that_is_N_495(
+        self, app, db, bare_user, monkeypatch,
+    ):
+        """What asking the producer does NOT fix, pinned so it cannot be missed.
+
+        :func:`~app.services.pay_calendar.projected_payday` steps from the last
+        RECORDED payday, and **R-PC47** says a recorded payday may itself have
+        been moved.  Under ``next`` the 2030-11-28 payroll is really paid
+        2030-11-29, so a schedule whose last row is that Friday projects its
+        next payday from the Friday: the floor lands on 2030-12-13 while the
+        real payday is 2030-12-12, and the write is refused.
+
+        Measured across production's own rhythm -- 1,951 paydays from
+        2026-03-26 at cadence 14 out to ``CALENDAR_DATE_MAX``, probed
+        2026-09-05 -- the open-coded floor refuses **58** of them under either
+        convention; asking the producer takes ``prior`` to **0** and leaves
+        ``next`` at those same 58, every one of them anchored on a payday that
+        was itself displaced.  That residue is ledger row **N-495**, owner
+        ``C14-e``, and this case is here so a later reader does not read the
+        step's own ``prior`` result as the whole of it.
+
+        **The displacement below is INERT and the case is not, which an
+        adversarial review of this step made explicit.**  2030-12-13 is a
+        Friday and an ordinary business day, so the floor is that day with the
+        substitution, without it, and under the deleted expression alike -- the
+        substitution is here to state the world, not to produce the refusal.
+        What produces it is the ANCHOR: 2030-11-29 is not on the owner's grid,
+        so ``latest + cadence`` lands a day past the real payday however the
+        floor is spelled.  That is precisely why N-495 is an anchor repair and
+        not a floor repair, and it is why this case survived the mutation that
+        killed the three above it.
+
+        It also states the direction: the floor is now wrong exactly where the
+        DERIVED END is wrong, and no longer anywhere else.  The 2030-11-29
+        paycheck really is derived as running through 2030-12-12, so refusing a
+        payday on that day is this fence agreeing with the calendar rather than
+        contradicting it -- which is why the repair belongs to the anchor and
+        not here.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2030, 11, 29),
+                num_periods=1, rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+            displace_paydays_under(monkeypatch, BusinessDayShiftEnum.NEXT)
+
+            with pytest.raises(ValidationError, match="on or after 2030-12-13"):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2030, 12, 12),
+                    num_periods=1,
+                    rhythm=rhythm_of(14, BusinessDayShiftEnum.NEXT),
+                )
+            db.session.rollback()
+            assert len(all_periods(user_id)) == 1
 
 
 class TestAWriteTouchesNoRowItDidNotName:
