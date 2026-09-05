@@ -810,7 +810,14 @@ def blocked_by_violations() -> list[str]:
 REGISTRY_CAPS = {
     "conventions.md": 280,
     "verification.md": 120,
-    "lessons.md": 200,
+    # **RAISED 200 -> 280 by the developer, 2026-09-05**, on rule 4's terms
+    # and on a measurement: the file sat at 179-180 from 2026-08-16 to
+    # 2026-09-05, EXACTLY its old headroom floor, having grown 143 -> 180 in
+    # the five days before.  A file pinned at its floor and one that has
+    # stopped growing look identical to every arm here, so each edit in that
+    # window DISPLACED a lesson rather than adding one, invisibly.  Rule 5
+    # cannot apply: a lesson has no span to complete.
+    "lessons.md": 280,
 }
 
 #: The number of ``steps.md`` rows that can only be an accident.
