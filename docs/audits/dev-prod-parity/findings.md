@@ -85,10 +85,10 @@ references to that run.
 - **D02** DevConfig cookie posture (no `Secure`/`__Host-` on plain-HTTP dev; audit F-112).
 - **D11** Committed public dev credentials + hard-coded dev `APP_ROLE_PASSWORD` (F-081), loopback-only DB binds (F-057).
 - **D05/M03** No tunnel/nginx in dev; the operator-private `shekel-dev` nginx vhost (LAN-allowlisted, TLS) exists for mobile testing and is deliberately un-mirrored to the repo.
-- **D20** Dev app `restart: no` (a self-resurrecting debug server would be worse); dev DBs `unless-stopped` (correct -- test.sh and host flask depend on them).
+- **D20** Dev app `restart: no` (a self-resurrecting debug server would be worse); dev DB `unless-stopped` (correct -- host flask depends on it; `test.sh` no longer does, since `balance:X-br-4` gave it a container of its own).
 - **D21** No subnet pinning in dev (no forwarded-header trust literals depend on dev subnets).
 - **M02** `REGISTRATION_ENABLED` defaults true in dev, false+404 in prod (F-053). Test auth-route changes once with it false.
-- **M05** test-db (non-durable knobs + btrfs reflink clone path) is dev-only by design. Note the host dependency: a fresh machine needs `sudo btrfs subvolume create /var/lib/shekel-test-pgdata && sudo chown 70:70 ...` before `./scripts/test.sh` works.
+- **M05** test-db (non-durable knobs + btrfs reflink clone path) is dev-only by design. **SUPERSEDED by `balance:X-br-4` (2026-09-05):** the `test-db` service is deleted and `./scripts/test.sh` starts a throwaway container per run instead, so the btrfs subvolume `/var/lib/shekel-test-pgdata` is no longer a prerequisite -- and no longer referenced at all. The non-durable knobs moved to the per-run container. The fresh-machine prerequisite is now a ROOTLESS DOCKER DAEMON (`docs/test-harness-isolation.md`).
 - **D24** `TOTP_ENCRYPTION_KEY` soft-defaults empty in dev; cloned users' 2FA needs the prod key or a reset (known clone caveat).
 - **D06** No Postgres TLS in dev (loopback/bridge-local traffic; prod-only cert mount).
 

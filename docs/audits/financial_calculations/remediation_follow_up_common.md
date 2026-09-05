@@ -32,9 +32,8 @@ union holds.
 5. **Targeted pytest during edits; pylint clean; full pytest green as
    the per-commit final gate.**
    - Run targeted tests via `./scripts/test.sh tests/path/test_file.py -v`
-     (the wrapper does NOT restart the test-db container unless
-     `RESTART_TEST_DB=1` is set; see `docs/testing-standards.md` "Catalog
-     fragmentation" for what the restart buys).
+     (the wrapper starts a throwaway postgres cluster for the run and
+     removes it afterwards; see `docs/testing-standards.md`).
    - `pylint app/ --fail-on=E,F` clean -- no new warnings vs baseline.
    - Full pytest via `./scripts/test.sh` (`-n 12 default`); ends in
      `N passed`, zero failed/errors/xfailed.
@@ -92,12 +91,9 @@ M. Ask: "Ready to commit and push to dev?"
 ## Test-run conventions
 
 - **Always invoke `./scripts/test.sh`** rather than bare `pytest`.
-  The wrapper resolves the test DSNs out of `.env` and defaults the
-  marker expression.
-- **Hygiene restart is opt-in:** `RESTART_TEST_DB=1 ./scripts/test.sh`
-  restarts `shekel-dev-test-db` to defeat the catalog-fragmentation
-  drift documented in `docs/testing-standards.md`. Ask for it on the
-  final full-suite gate, not on every command in an iteration loop.
+  The wrapper starts a postgres cluster of the run's own, exports the
+  test DSNs at it, and defaults the marker expression.  A bare `pytest`
+  has no local database to reach.
 - **Single file or test:**
   - `./scripts/test.sh tests/path/test_file.py -v`
   - `./scripts/test.sh tests/path/test_file.py::test_name -v`

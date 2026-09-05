@@ -2,11 +2,12 @@
 """Bake the test template database into a tagged docker image.
 
 The test suite clones a per-worker database from ``shekel_test_template``
-for every test.  That template is built by :mod:`scripts.build_test_template`
-against a long-lived shared container, which is why the suite needs a slot
+for every test.  That template was built by :mod:`scripts.build_test_template`
+against a long-lived shared container, which is why the suite carried a slot
 lock, a restart flag, a live-backend probe, ``TEST_DB_PREFIX`` and
-``TEST_TEMPLATE_DATABASE``: one postmaster, many worktrees.  Give each RUN
-its own container and every one of those becomes unnecessary.
+``TEST_TEMPLATE_DATABASE``: one postmaster, many worktrees.  Each RUN now has
+its own container and every one of those has been deleted
+(``balance:X-br-4``).
 
 This script builds the artifact that makes that affordable: an image whose
 PGDATA already contains the template, so starting a run costs a container
@@ -89,6 +90,13 @@ _BASE_IMAGE = (
 _BAKED_PGDATA = "/pgdata-baked"
 
 _IMAGE_REPO = "shekel-test-db"
+# The baked template's name.  ONE spelling in this file: ``_verify_image``
+# asked for it by literal in five places, so a rename elsewhere would have left
+# the verifier reporting "the commit did not capture it" -- a diagnosis naming
+# the wrong cause -- and ``main`` discarding a good image on every invocation,
+# forever.  ``tests/conftest.py`` and ``scripts/build_test_template.py`` spell
+# the same constant; all THREE must agree.
+_TEMPLATE_DATABASE = "shekel_test_template"
 
 # Inputs the key covers no matter what the builder imports.  These shape the
 # template without being reachable by reading its import block: the migration
@@ -383,6 +391,49 @@ def _wait_stopped(container: str) -> None:
     )
 
 
+# THE BAKE CONTAINER IS THE LAST PUBLISHED PORT IN THIS HARNESS, and the
+# number it publishes on is CHOSEN rather than assigned.  `docker run -p
+# 127.0.0.1::5432` lets dockerd pick, and on a rootless daemon that is a
+# 25-40% failure: dockerd's portallocator picks inside the container's network
+# namespace and rootlesskit then binds the same number on the HOST, where a
+# different set of sockets lives.  `net.ipv4.ip_local_port_range` is
+# 32768-60999, byte-identical to docker's publish band, and this host routinely
+# holds thousands of sockets in it.  Measured 2026-09-05, rootless daemon:
+#
+#     12 containers, docker-assigned, removed between each     5/12 failed
+#     12 containers, docker-assigned, none removed             3/12 failed
+#     12 containers, caller-chosen port outside the band       0/12 failed
+#      8 containers, docker-assigned, on the ROOT daemon       0/8  failed
+#
+# The third row is the fix and the second is why it is a diagnosis rather than
+# a guess: with nothing recycled there is no release race left to blame.  The
+# run container solved this by having no port at all (`scripts/test.sh`); this
+# one cannot, because the postgres entrypoint's post-`initdb` `psql` hardcodes
+# `/var/run/postgresql` and `PGHOST` does not override it (measured: exit 2
+# either way), and mounting over that path leaves files this user cannot
+# delete.  So it keeps a port and picks a safe one.
+#
+# 20000-32767 is entirely BELOW the ephemeral range, so nothing allocates into
+# it behind our back.  The number is derived from the PID for the same reason
+# the container NAME is: two worktrees on one branch derive the same cache key
+# and so bake at the same moment, and a single fixed port would make the second
+# one fail.  A PID is also what makes the ordinary advice work -- a re-run is a
+# new PID and therefore a different port -- which is why this is not wrapped in
+# a retry loop.
+_BAKE_PORT_BAND_START = 20000
+_BAKE_PORT_BAND_SIZE = 12768
+
+
+def _bake_port() -> int:
+    """Return this process's host port for the bake container.
+
+    Returns:
+        A port in 20000-32767, derived from the PID so two concurrent bakes
+        do not collide and a re-run lands somewhere else.
+    """
+    return _BAKE_PORT_BAND_START + (os.getpid() % _BAKE_PORT_BAND_SIZE)
+
+
 def _mapped_port(container: str) -> str:
     """Return the host port docker assigned to the cluster.
 
@@ -554,7 +605,7 @@ def _verify_image(tag: str) -> None:
         present = ask(
             "postgres",
             "SELECT count(*) FROM pg_database "
-            "WHERE datname = 'shekel_test_template'",
+            f"WHERE datname = '{_TEMPLATE_DATABASE}'",
         )
         if present != "1":
             raise BuildError(
@@ -577,14 +628,14 @@ def _verify_image(tag: str) -> None:
         # raw `relation "alembic_version" does not exist`, which is true but
         # tells the reader nothing about what to do; measured on a
         # deliberately empty probe image.
-        if ask("shekel_test_template", "SELECT to_regclass('alembic_version')") == "":
+        if ask(_TEMPLATE_DATABASE, "SELECT to_regclass('alembic_version')") == "":
             raise BuildError(
                 f"{tag} has a template database with no alembic_version "
                 "table, so it was never migrated. The template is empty -- "
                 "check that build_test_template.py actually ran, and rebuild "
                 "with --force."
             )
-        stamped = ask("shekel_test_template", "SELECT version_num FROM alembic_version")
+        stamped = ask(_TEMPLATE_DATABASE, "SELECT version_num FROM alembic_version")
         if stamped != head:
             raise BuildError(
                 f"{tag} is stamped {stamped!r} but the migration chain's head "
@@ -618,14 +669,14 @@ def _verify_image(tag: str) -> None:
                 _expected_append_only_triggers(),
             ),
         ):
-            answer = ask("shekel_test_template", sql)
+            answer = ask(_TEMPLATE_DATABASE, sql)
             if answer != str(expected):
                 raise BuildError(
                     f"{tag} failed verification ({label}): got {answer!r}, "
                     f"expected {expected}. The image does not match this "
                     "tree -- rebuild with --force."
                 )
-        log_rows = ask("shekel_test_template", "SELECT count(*) FROM system.audit_log")
+        log_rows = ask(_TEMPLATE_DATABASE, "SELECT count(*) FROM system.audit_log")
         if log_rows != "0":
             raise BuildError(
                 f"{tag} ships {log_rows} audit_log rows; the template must "
@@ -661,18 +712,35 @@ def build(tag: str) -> None:
     container = f"shekel-bake-{tag.rsplit(':', 1)[1]}-{os.getpid()}"
     _run(["docker", "rm", "-fv", container], check=False)
     print(f"  starting build container from {_BASE_IMAGE.split('@', maxsplit=1)[0]}")
+    host_port = _bake_port()
     try:
-        _run(
-            [
-                "docker", "run", "-d", "--name", container,
-                "-e", f"POSTGRES_USER={_BUILD_USER}",
-                "-e", f"POSTGRES_PASSWORD={_BUILD_PASSWORD}",
-                "-e", "POSTGRES_DB=postgres",
-                "-e", f"PGDATA={_BAKED_PGDATA}",
-                "-p", "127.0.0.1::5432", _BASE_IMAGE,
-            ]
-        )
+        try:
+            _run(
+                [
+                    "docker", "run", "-d", "--name", container,
+                    "-e", f"POSTGRES_USER={_BUILD_USER}",
+                    "-e", f"POSTGRES_PASSWORD={_BUILD_PASSWORD}",
+                    "-e", "POSTGRES_DB=postgres",
+                    "-e", f"PGDATA={_BAKED_PGDATA}",
+                    "-p", f"127.0.0.1:{host_port}:5432", _BASE_IMAGE,
+                ]
+            )
+        except DockerError as exc:
+            # Name the port, because the docker error alone reads as a daemon
+            # fault and the remedy is different: something on this host already
+            # holds 127.0.0.1:<port>.  A re-run picks a different one.
+            raise DockerError(
+                f"the bake container could not bind 127.0.0.1:{host_port}, "
+                "which this process derived from its PID inside "
+                f"{_BAKE_PORT_BAND_START}-"
+                f"{_BAKE_PORT_BAND_START + _BAKE_PORT_BAND_SIZE - 1}.  "
+                "Something else on this host holds it; re-running picks a "
+                f"different port.  docker said: {exc}"
+            ) from exc
         _wait_ready(container)
+        # Asked back from docker rather than reused from ``host_port``: the
+        # point is to confirm the publish actually happened, and a value this
+        # process already holds cannot confirm anything.
         port = _mapped_port(container)
         admin = (
             f"postgresql://{_BUILD_USER}:{_BUILD_PASSWORD}"
@@ -689,7 +757,6 @@ def build(tag: str) -> None:
                 "PATH": "/usr/bin:/bin",
                 "HOME": str(Path.home()),
                 "TEST_ADMIN_DATABASE_URL": admin,
-                "TEST_TEMPLATE_DATABASE": "shekel_test_template",
             },
             capture_output=True,
             text=True,
