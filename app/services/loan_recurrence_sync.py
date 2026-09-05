@@ -213,12 +213,14 @@ def loan_payment_window(
     definition :func:`owns_validity_window` names (ruling **R-R56**), so that
     row's stop line and next date come from this answer and not the column.
     The column is still read on that surface by the archived drawer (an
-    archived payment is not the one the predicate names) and by the monthly
-    equivalent (``has_ended``, R7d-e's reader); and a closing bound an owner
-    authored on the generic create form, which cannot lock the control, is read
-    as the cache before the first chokepoint makes it one.  R7d-c-2 / R7d-e /
-    R7d-f move the remaining reading surfaces onto the same door, and R7d-g
-    then stops the column being written at all.
+    archived payment is not the one the predicate names); the monthly
+    equivalent stopped reading it at plan step R7d-e, when
+    ``obligations_aggregator`` took the door and ``has_ended`` began judging
+    the composed closing; and a closing bound an owner authored on the generic
+    create form, which cannot lock the control, is read as the cache before
+    the first chokepoint makes it one.  R7d-c-2 / R7d-f move the remaining
+    reading surfaces onto the same door, and R7d-g then stops the column being
+    written at all.
 
     A pure READ: it opens no transaction, writes nothing and reads no clock of
     its own (*ctx* carries the pass's ``as_of``).

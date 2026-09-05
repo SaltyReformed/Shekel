@@ -1,13 +1,26 @@
 """What the GRID's bank door counts, and why it is not simply "unmatched".
 
 The control the grid renders beside the anchor balance carries a count of the
-lines the review has not disposed of, and that figure links to the review
-screen.  A figure and its caption may not disagree (the design language's
-second principle), so the count applies exactly the predicates
-:func:`~app.services.statement_match.review_set` splits on and no others.
-There are FOUR since plan step bank_import:X-gj-4a added the recorded SKIP;
-this header said "two" until balance:X-f3c-2b-2b added the books bound and
-"three" until the skip, which is the count going stale where nothing reads it.
+lines the review is still asking the owner about, and that figure links to the
+Reconcile page.  A figure and its caption may not disagree (the design
+language's second principle).
+
+**Since plan step bank_import:X-gm the count does not APPLY the review's
+predicates -- it is the review's own membership walk**
+(``_undisposed.inbox_partition``), which the page is also built from.  That is
+``CLAUDE.md`` rule 14: one producer, and every caller reaches it.  Until then
+the count spelled four predicates of its own beside the pass's Python, two of
+them SQL restatements of it and one -- the holding states -- a predicate the
+pass had and the badge did not.  Measured 2026-09-05 at migration head on the
+developer's own Checking, the badge read **27** where the page's inbox read
+**18**, the difference being 9 parked card payments worth `$7,412.94`; they
+agreed only because the badge still opened the retiring review queue, which
+rendered all 27.
+
+*This header counted those predicates through three steps that changed them --
+"two" until balance:X-f3c-2b-2b, "three" until bank_import:X-gj-4a's skip,
+"four" until here -- which is a number going stale where nothing reads it, and
+is why there is no number in it now.*
 
 **The calendar bound is what makes this a real gate rather than a spelling of
 ``COUNT(*)``.**  A line posted before the owner's first payday can never be
@@ -29,9 +42,11 @@ from tests._test_helpers import open_books_before_the_first_assertion
 
 from ._builders import (
     a_bank_line,
+    a_purchase,
     a_scope,
     a_submission,
     a_transaction,
+    an_envelope,
     an_import,
 )
 
@@ -46,6 +61,25 @@ def _opens(seed_user):
         The bootstrap period's start day.
     """
     return seed_user["bootstrap_period"].start_date
+
+
+def _OWNER(seed_user):  # pylint: disable=invalid-name
+    """Return the owning user id the count is scoped to.
+
+    Plan step ``bank_import:X-gm`` gave ``awaiting_review_count`` an owner:
+    the inbox excludes the lines a source files as paying an account the owner
+    holds, and which merchants those are is read beside what the OWNER has
+    answered about them (``budget.merchant_rules`` is keyed by user as well as
+    account).  Named in capitals so a reader scanning a call sees which
+    argument is which at the site rather than having to count positions.
+
+    Args:
+        seed_user: The seeded user bundle.
+
+    Returns:
+        The owning user's id.
+    """
+    return seed_user["user"].id
 
 
 class TestTheCountTheGridRenders:
@@ -67,7 +101,9 @@ class TestTheCountTheGridRenders:
         the reason for it is that a control appearing only once lines exist
         cannot be found by someone who has never imported one.
         """
-        assert awaiting_review_count(seed_user["account"].id, _opens(seed_user)) == 0
+        assert awaiting_review_count(
+            _OWNER(seed_user), seed_user["account"].id, _opens(seed_user),
+        ) == 0
 
     def test_an_unmatched_line_inside_the_calendar_counts(
         self, app, db, seed_user,
@@ -75,7 +111,9 @@ class TestTheCountTheGridRenders:
         """The ordinary case: the bank said something nobody has filed yet."""
         a_bank_line(seed_user, an_import(seed_user))
 
-        assert awaiting_review_count(seed_user["account"].id, _opens(seed_user)) == 1
+        assert awaiting_review_count(
+            _OWNER(seed_user), seed_user["account"].id, _opens(seed_user),
+        ) == 1
 
     def test_a_line_BEFORE_the_calendar_opens_is_not_counted(
         self, app, db, seed_user,
@@ -93,7 +131,9 @@ class TestTheCountTheGridRenders:
             posted_on=opens - timedelta(days=1),
         )
 
-        assert awaiting_review_count(seed_user["account"].id, opens) == 0
+        assert awaiting_review_count(
+            _OWNER(seed_user), seed_user["account"].id, opens,
+        ) == 0
 
     def test_a_line_ON_the_opening_day_IS_counted(self, app, db, seed_user):
         """The boundary is inclusive, matching ``_split_at_calendar_open``.
@@ -104,7 +144,9 @@ class TestTheCountTheGridRenders:
         opens = _opens(seed_user)
         a_bank_line(seed_user, an_import(seed_user), posted_on=opens)
 
-        assert awaiting_review_count(seed_user["account"].id, opens) == 1
+        assert awaiting_review_count(
+            _OWNER(seed_user), seed_user["account"].id, opens,
+        ) == 1
 
     def test_an_owner_with_NO_calendar_counts_every_unmatched_line(
         self, app, db, seed_user,
@@ -129,7 +171,9 @@ class TestTheCountTheGridRenders:
         )
         a_bank_line(seed_user, an_import(seed_user), posted_on=day)
 
-        assert awaiting_review_count(seed_user["account"].id, None) == 1
+        assert awaiting_review_count(
+            _OWNER(seed_user), seed_user["account"].id, None,
+        ) == 1
 
     def test_a_line_an_accepted_match_names_is_not_counted(
         self, app, db, seed_user,
@@ -144,7 +188,9 @@ class TestTheCountTheGridRenders:
         line = a_bank_line(seed_user, statement, amount="-180.00")
         txn = a_transaction(seed_user, amount="180.00")
         opens = _opens(seed_user)
-        assert awaiting_review_count(seed_user["account"].id, opens) == 1
+        assert awaiting_review_count(
+            _OWNER(seed_user), seed_user["account"].id, opens,
+        ) == 1
 
         scope = a_scope(seed_user)
         statement_match.accept_match(
@@ -153,7 +199,9 @@ class TestTheCountTheGridRenders:
         )
         db.session.flush()
 
-        assert awaiting_review_count(seed_user["account"].id, opens) == 0
+        assert awaiting_review_count(
+            _OWNER(seed_user), seed_user["account"].id, opens,
+        ) == 0
 
     def test_it_counts_ONE_account(self, app, db, seed_user):
         """The grid renders one account's door; it may not total the owner's.
@@ -179,8 +227,10 @@ class TestTheCountTheGridRenders:
         a_bank_line(seed_user, an_import(seed_user, account=other), amount="-9.99")
         opens = _opens(seed_user)
 
-        assert awaiting_review_count(seed_user["account"].id, opens) == 1
-        assert awaiting_review_count(other.id, opens) == 1
+        assert awaiting_review_count(
+            _OWNER(seed_user), seed_user["account"].id, opens,
+        ) == 1
+        assert awaiting_review_count(_OWNER(seed_user), other.id, opens) == 1
 
 
 class TestASkippedLineIsNotWork:
@@ -202,11 +252,11 @@ class TestASkippedLineIsNotWork:
         line = a_bank_line(seed_user, an_import(seed_user))
         db.session.flush()
         account_id = seed_user["account"].id
-        assert awaiting_review_count(account_id, opens) == 1
+        assert awaiting_review_count(_OWNER(seed_user), account_id, opens) == 1
 
         statement_match.skip_line(line.id, seed_user["user"].id, account_id)
 
-        assert awaiting_review_count(account_id, opens) == 0
+        assert awaiting_review_count(_OWNER(seed_user), account_id, opens) == 0
 
     def test_undoing_the_skip_makes_it_work_again(self, app, db, seed_user):
         """The question comes back, so the badge does too."""
@@ -222,36 +272,220 @@ class TestASkippedLineIsNotWork:
             recorded.skip_id, seed_user["user"].id, account_id,
         )
 
-        assert awaiting_review_count(account_id, opens) == 1
+        assert awaiting_review_count(_OWNER(seed_user), account_id, opens) == 1
+
+
+class TestTakingTheHoldingStatesOffTheProposerCostsNoACT:
+    """Plan step ``bank_import:X-gm``: what the split must NOT have broken.
+
+    The walk hands the proposer only the inbox, so a parked card payment is
+    never proposed.  Ruling **R-GJ** leaves the hand-built GROUP MATCH as such
+    a line's only arm, and that arm is reached off
+    :attr:`~._reads.ReviewSet.unmatched` and through
+    :meth:`~._reads.ReviewSet.card_subject` -- so the line has to rejoin that
+    list even though it left the count.  Losing it there would take the last
+    act a `$7,412.94` class has, which is the fail-closed shape ruling
+    **R-KA** refused to mint one surface over.
+    """
+
+    def _a_card_payment(self, seed_user):
+        """Stage one line a source files as paying an account the owner holds."""
+        return a_bank_line(
+            seed_user, an_import(seed_user), amount="-793.23",
+            merchant="Capital One Credit Card",
+            source_category="Financial Services/Credit Card Payment",
+        )
+
+    def test_the_parked_line_is_still_in_unmatched(self, app, db, seed_user):
+        """It is out of the COUNT and in the LIST, which are different sets."""
+        line = self._a_card_payment(seed_user)
+
+        review = statement_match.review_set(a_scope(seed_user))
+
+        assert [one.line_id for one in review.unmatched] == [line.id]
+        assert [one.line.line_id for one in review.parked] == [line.id]
+
+    def test_its_MATCH_pane_still_resolves(self, app, db, seed_user):
+        """The route's own membership question, asked the way the route asks it.
+
+        ``accounts.statement_reconcile_match`` answers ``card_subject`` and
+        404s on ``None``.  A parked line dropped from ``unmatched`` would 404
+        there -- indistinguishable from someone else's line, which is the
+        confusion :meth:`~._reads.ReviewSet.card_subject`'s own docstring
+        measured at 137 of 137 cards.
+        """
+        line = self._a_card_payment(seed_user)
+
+        subject = statement_match.review_set(a_scope(seed_user)).card_subject(
+            line.id,
+        )
+
+        assert subject is not None
+        assert subject.line.line_id == line.id
+        assert subject.proposal is None, (
+            "a holding state was proposed a match, which the walk exists to "
+            "stop"
+        )
+
+    def test_taking_a_line_off_the_proposer_FREES_ITS_ROW(
+        self, app, db, seed_user,
+    ):
+        """The consequence that is not about the parked line at all.
+
+        ``propose`` is a cascade over a SHARED row pool, and
+        ``_least_cost_pairing`` is a least-cost pairing over all of it -- so
+        removing a line does not only remove ITS proposal, it changes which
+        line the freed row is paired with.
+
+        **The fixture is built so the two trees answer differently.**  The row
+        settles on the card payment's own day, so ``days_outside`` scores that
+        pairing zero and the ordinary swipe three; before the split the row
+        went to the card payment and the swipe stayed unexplained, and after it
+        the card payment is never offered and the swipe is PROPOSED.  A fixture
+        with both lines on one day would score both zero and decide on the
+        tie-break, which would grade the ordering rather than the split.
+        """
+        statement = an_import(seed_user)
+        day = _opens(seed_user) + timedelta(days=4)
+        envelope = an_envelope(seed_user)
+        a_purchase(
+            seed_user, envelope, amount="793.23", description="Capital One",
+            purchased_on=day, settled_on=day,
+        )
+        card_payment = a_bank_line(
+            seed_user, statement, amount="-793.23", posted_on=day,
+            sequence_in_group=0, merchant="Capital One Credit Card",
+            source_category="Financial Services/Credit Card Payment",
+        )
+        swipe = a_bank_line(
+            seed_user, statement, amount="-793.23", sequence_in_group=1,
+            posted_on=day + timedelta(days=3), merchant="Kroger",
+        )
+        db.session.commit()
+
+        review = statement_match.review_set(a_scope(seed_user))
+
+        proposed = [
+            line.line_id
+            for one in review.proposals for line in one.lines
+        ]
+        assert proposed == [swipe.id], (
+            "the freed row did not reach the line the split leaves offerable"
+        )
+        assert [one.line.line_id for one in review.parked] == [
+            card_payment.id,
+        ]
+
+    def test_the_list_is_still_ascending_by_posted_day(
+        self, app, db, seed_user,
+    ):
+        """The parked lines rejoin in ORDER, not appended after the rest.
+
+        ``unmatched`` is documented ascending by day and the workbench renders
+        it in that order; appending the parked lines would put an April card
+        payment after an August swipe.
+        """
+        statement = an_import(seed_user)
+        opens = _opens(seed_user)
+        a_bank_line(
+            seed_user, statement, amount="-793.23", sequence_in_group=0,
+            posted_on=opens, merchant="Capital One Credit Card",
+            source_category="Financial Services/Credit Card Payment",
+        )
+        a_bank_line(
+            seed_user, statement, amount="-42.00", sequence_in_group=1,
+            posted_on=opens + timedelta(days=2),
+        )
+
+        review = statement_match.review_set(a_scope(seed_user))
+
+        days = [one.posted_on for one in review.unmatched]
+        assert len(days) == 2, "both lines must reach the list"
+        assert days == sorted(days)
+        assert days[0] == opens
 
 
 class TestTheCountAgreesWithTheScreenItLinksTo:
-    """The invariant the whole design rests on."""
+    """The invariant the whole design rests on, plan step ``bank_import:X-gm``.
 
-    def test_it_equals_what_the_review_is_still_asking_about(
+    **The page's own figure is the right side of the equals sign now, not a
+    re-derivation of it.**  This class asserted ``proposals | unmatched``,
+    which is the union the badge used to be compared against -- and that union
+    is exactly what parted the two: it holds the parked card payments, which
+    are on the Transfers tab and are not work.  A case that kept it would be
+    grading the old disagreement as the invariant.
+    """
+
+    def test_the_badge_equals_the_page_it_links_to(
         self, app, db, seed_user,
     ):
-        """Proposals plus unmatched, counted the expensive way, agree.
+        """The number the grid shows IS the number the inbox shows.
 
-        This is the assertion that would catch the count drifting from
-        ``review_set`` if either grew a predicate the other did not: it
-        derives the truth through the real screen and compares.  A proposal
-        is still WORK -- nobody has accepted it -- which is why it is on this
-        side of the equals sign.
+        Compared against ``page.hero.to_explain`` -- which is the count of the
+        cards the inbox tab renders -- rather than against a sum this case
+        works out for itself.  A case that re-derived the right-hand side
+        would be a third spelling of the value under test, which is the shape
+        this step exists to delete.
+
+        **The fixture stages all three terms**, and each is asserted present:
+        an ordinary unexplained line, a line a tier PROPOSES a match for, and a
+        card payment the pass PARKS.  With any of the three missing the
+        equality reduces to a claim about a shorter sum -- and the parked one
+        is the term that made the two numbers differ at all, so a fixture
+        without it would have passed on the broken tree.
         """
         statement = an_import(seed_user)
         a_bank_line(seed_user, statement, amount="-180.00", sequence_in_group=0)
         a_bank_line(seed_user, statement, amount="-42.00", sequence_in_group=1)
+        a_bank_line(
+            seed_user, statement, amount="-793.23", sequence_in_group=2,
+            merchant="Capital One Credit Card",
+            source_category="Financial Services/Credit Card Payment",
+        )
         a_transaction(seed_user, amount="180.00")
 
         scope = a_scope(seed_user)
         review = statement_match.review_set(scope)
-        still_asking = len(
-            {line.line_id for p in review.proposals for line in p.lines}
-            | {line.line_id for line in review.unmatched}
+        page = statement_match.reconcile_page(
+            scope, None, statement_match.Tab.TO_EXPLAIN,
         )
 
-        assert still_asking == 2, "fixture should leave both lines as work"
+        assert review.proposals, "no proposal staged: one term of three"
+        assert review.parked, "no parked line staged: the term that DIFFERED"
+        assert page.hero.to_explain == 2
         assert awaiting_review_count(
-            seed_user["account"].id, scope.calendar.opening_bound(),
-        ) == still_asking
+            _OWNER(seed_user),
+            seed_user["account"].id,
+            scope.calendar.opening_bound(),
+        ) == page.hero.to_explain
+
+    def test_the_parked_line_is_on_the_page_and_out_of_the_count(
+        self, app, db, seed_user,
+    ):
+        """The other side, so the equality above is not agreeing about nothing.
+
+        Without it a badge and a page that BOTH dropped the parked line -- or
+        both counted it -- would satisfy the equality while getting the
+        Transfers tab wrong.  The line has to be absent from the figure and
+        present on the page.
+        """
+        a_bank_line(
+            seed_user, an_import(seed_user), amount="-793.23",
+            merchant="Capital One Credit Card",
+            source_category="Financial Services/Credit Card Payment",
+        )
+
+        scope = a_scope(seed_user)
+        page = statement_match.reconcile_page(
+            scope, None, statement_match.Tab.TRANSFERS,
+        )
+
+        assert awaiting_review_count(
+            _OWNER(seed_user),
+            seed_user["account"].id,
+            scope.calendar.opening_bound(),
+        ) == 0
+        assert [
+            count.count for count in page.counts
+            if count.tab is statement_match.Tab.TRANSFERS
+        ] == [1]

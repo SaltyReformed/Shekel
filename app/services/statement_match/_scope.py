@@ -64,7 +64,83 @@ from app.services.cash_ledger import (
 
 from ._candidates import candidates_for, destinations_for
 from ._creations import PurchaseDestination
-from ._offers import Candidates
+from ._offers import BankLine, Candidates
+
+
+def impossible_days_refusal(line: BankLine) -> str:
+    """Return why nothing can record *line* as a purchase.
+
+    Plan step ``bank_import:X-gm``, finding **N-325**.  **ONE spelling, for the
+    reason :func:`no_period_refusal` below is one**: this sentence is READ by
+    :func:`~._leftovers._one_creatable` to withhold the ADD control before the
+    owner presses anything, and RAISED by
+    :func:`~._create.create_purchase_from_line` when a stale page or a crafted
+    body reaches the door anyway.  A screen and a door saying different things
+    about one rule is what that function's own docstring records having had to
+    fix once already.
+
+    **The line's two dates contradict each other and this app does not choose
+    between them.**  ``entry_service._reject_settled_before_purchase`` refuses
+    a purchase whose money left before it was spent, backed by
+    ``ck_transaction_entries_settled_not_before_purchase``, so a purchase from
+    such a line cannot exist -- and clamping the purchase day to the earlier of
+    the two was refused on 2026-08-19 (developer, finding **N-325**), because
+    it decides which day the app believes when the bank contradicts itself.
+    That is the substitution ruling **R-FW** refused one clock over.
+
+    Args:
+        line: The bank line, which must be one
+            :attr:`~._offers.BankLine.states_impossible_days` is true of -- so
+            its ``transaction_on`` is not ``None``.  The caller asks that
+            predicate and this composes the sentence for it, which is what
+            keeps the comparison stated in exactly one place.
+
+    Returns:
+        The sentence, naming both of the bank's own days and the act that is
+        still open.  It carries no *nothing was changed* clause, for the reason
+        :func:`no_period_refusal` carries none: that is true of a refused WRITE
+        and false of a control withheld before one, and the door appends its
+        own.
+    """
+    return (
+        f"Your bank dates that line as made on "
+        f"{line.transaction_on.isoformat()} and taken on "
+        f"{line.posted_on.isoformat()}, so its money left before it was "
+        f"spent.  A purchase cannot reach your bank before you make it, so "
+        f"nothing here can record one.  Match it to a row you already hold "
+        f"instead."
+    )
+
+
+def reject_impossible_days(line: BankLine) -> None:
+    """Refuse a bank line whose own two dates contradict each other.
+
+    Plan step ``bank_import:X-gm``, finding **N-325**.  **The DOOR's half of
+    the withholding the screen renders**, and it exists for the reason ruling
+    **R-GJ** cost `$7,412.94` to learn: a control the screen withholds and a
+    door that does not refuse is a refusal a crafted body walks around.
+
+    **It fires BEFORE a destination is resolved**, which is
+    :meth:`ReviewScope.reject_line_before_books_open`'s placement and its
+    reason: ``create_entry`` refuses this pair too, and refuses it AFTER
+    :func:`~._create.resolve_destination` may have minted an envelope for a
+    purchase that will never exist -- while :mod:`._create`'s own promise is
+    that every refusal fires before anything is written.  Until this step that
+    promise was FALSE for exactly this class, because the screen dropped these
+    lines out of every list and so nothing else ever asked.
+
+    Args:
+        line: The bank line the caller is about to record as a purchase.
+
+    Raises:
+        ValidationError: When the bank dates the line MADE after it POSTED.  A
+            400: an owner working from a page rendered before the withholding
+            existed reaches it, and so does a crafted body.
+    """
+    if line.states_impossible_days:
+        raise ValidationError(
+            f"{impossible_days_refusal(line)}  Nothing was changed."
+        )
 
 
 def no_period_refusal(day: "date", subject: str) -> str:

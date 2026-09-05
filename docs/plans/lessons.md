@@ -72,6 +72,19 @@ rationale, where a reader meets it at the moment it fires.
   caller meant drops the other (X-au-c3: a corrected Actual archived nothing, and answered 200).
 - **A CONSTRAINT CANNOT HOLD A CONVERSATION.** The door owes the CHECK's rule in words with the
   repair in the message, or the user meets it as "invalid reference" (X-au-c3).
+- **FIVE RULES FOR ONE EXTRAPOLATION, EACH MEASURED WRONG (`salary:R14-b`, 2026-09-04).** Past the
+  saved calendar a modelled payroll deduction has to come from somewhere, and every rule that
+  GUESSES it is exact on the shape its author had in mind. On a window holding no whole year: the
+  last payday that PAID something reads a capped deduction's clamped final payment as its rate
+  (**10.4x**); a year average over the paydays OBSERVED reads **2.00x** the cap at 13 paydays and
+  **15.6x** at 1; refusing outright never overstates but flattens the committed line while the
+  what-if overlay beside it stays at the user's figure, so a SMALLER what-if reads as LARGER. One
+  cause under all three: a sub-year window has thrown the cap away, since a `$500`-a-payday
+  deduction and a `$1,000`-capped one price IDENTICALLY for two paydays. Two more failed on windows
+  that DO hold a year -- dividing it by the CADENCE (**+3.846%** on the 9.07% of default windows
+  whose year holds 27 biweekly paydays) and grading completeness by a COUNT (a 27-payday year passes
+  at 26 observed; **60%** understated). **The remedy was not a sixth rule.** It is `S3`: the engine
+  prices every payday of the horizon, and nothing extrapolates.
 
 ## The surface a human actually sees
 
@@ -175,3 +188,9 @@ rationale, where a reader meets it at the moment it fires.
   open. The withdrawer owns the correction -- say what a SHA touches, not what you do not.
 - **Documents rot in days here.** This file is the only one allowed to rot, and every edit re-dates
   it.
+- **IN FIVE CONSECUTIVE ADVERSARIAL PASSES, THE DEFECTIVE PART WAS A SENTENCE THE FIX WROTE ABOUT
+  ITSELF** (`salary:R14-b`, 2026-09-04). Every measurement held; the self-descriptions did not. The
+  fourth instance was written WHILE fixing the third, and two more surfaced only because a line
+  ceiling forced a docstring to be re-read. A fix's claims about its own correctness are written
+  LAST, under post-measurement confidence, and are the one thing its own tests cannot grade. **Grade
+  them separately, and never let the pass that fixes them also be the pass that wrote them.**

@@ -106,13 +106,23 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.exceptions import ValidationError
 from app.models.statement_import import BankStatementLine
 
 from ._offers import BankLine
-from ._rules import RuleView, StandingRule, rules_for
+from ._rules import (
+    LinePipeline,
+    RuleView,
+    StandingRule,
+    pipeline_for,
+    rules_for,
+)
 from ._vocabulary import account_payment_merchants
+
+if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from decimal import Decimal
 
 class CreationBar(enum.Enum):
     """Why one merchant's lines may not become purchases.
@@ -548,6 +558,111 @@ class MerchantAnswers:
             view=view,
             bars=CreationBars.build(owner_id, account_id, view.rules),
         )
+
+    def is_a_holding_state(
+        self, *, amount: "Decimal", merchant_id: "int | None",
+    ) -> bool:
+        """Return whether a line is a holding state (:func:`is_a_holding_state`).
+
+        The spelling for a caller that already holds this pair, which the
+        review pass does.  It reads :attr:`view`'s rules and nothing else off
+        the view, which is the asymmetry the free function below exists for.
+
+        Args:
+            amount: The line's own figure, on the bank's convention.
+            merchant_id: The line's merchant row, or ``None``.
+
+        Returns:
+            Whether this line is a holding state.
+        """
+        return is_a_holding_state(
+            amount=amount, merchant_id=merchant_id,
+            rules=self.view.rules, bars=self.bars,
+        )
+
+
+def is_a_holding_state(
+    *,
+    amount: "Decimal",
+    merchant_id: "int | None",
+    rules: "dict[int, StandingRule]",
+    bars: CreationBars,
+) -> bool:
+    """Return whether a line is WAITING ON THE APP rather than on the owner.
+
+    Ruling **bank_import:R-HQ**, plan step ``bank_import:X-gm``.  **The one
+    statement of which lines the Reconcile inbox does NOT hold**, and it is one
+    statement because two readers ask it: the membership walk
+    (:func:`~._undisposed.inbox_partition`), which is what the grid's badge
+    counts and what the proposer is given, and
+    :func:`~._leftovers._creatable_lines`, which is what puts the line on the
+    Transfers tab.  Those two used to answer it separately -- the badge not at
+    all, and the pass through :attr:`BarredLine.also_pays_an_account` -- and
+    the badge promising 27 pieces of work on a page whose inbox stated 18 is
+    what that cost.
+
+    **Money the SOURCE says moved between two accounts the owner holds is a
+    STATE, not a task.**  The verb it ends on is TRANSFER, which has no door in
+    this build (:data:`~._verbs.TRANSFER_WAITS`, finding **N-337**, owner
+    ``credit_card:CC3b``), so there is nothing the owner can do about it and
+    counting it as outstanding work asks a question they cannot answer.
+
+    **It asks the PIPELINE and not only the merchant**, and the difference is a
+    whole direction: a deposit from such a merchant that no container answer
+    claims routes to INCOME (:func:`~._rules.pipeline_for`) and is an ordinary
+    recordable inflow -- so it IS in the inbox, IS given to the proposer, and
+    CAN be proposed.  Whether ruling **R-GJ**'s bar should reach that line at
+    all is an OPEN question -- argued at :func:`reject_barred_line` and in
+    ``pipeline_for``'s own table -- and this predicate deliberately does not
+    decide it: it states today's answer in one place so that deciding it later
+    is one edit.
+
+    **It takes the RULES and the BARS rather than a**
+    :class:`MerchantAnswers`, **and the reason is measured.**  Those are the
+    only two facts it reads, and the grid's badge -- which asks this of every
+    undisposed line on the app's hottest render -- would otherwise pay for a
+    whole :class:`~._rules.RuleView`: template names and the active category
+    list, for a screen it is not drawing.  Measured on the developer's own
+    Checking, 2026-09-05 at migration head, medians of 15 runs with the session
+    expired between: ``MerchantAnswers.build`` **2.54 ms**, against **0.71 ms**
+    for the pair :func:`~._undisposed.awaiting_review_count` reads instead.
+    *That pair is 0.71 ms TOGETHER and not 0.41 + 0.71*: the 0.41 ms is
+    ``rules_for`` alone and the 0.71 ms is ``CreationBars.build`` measured
+    without being handed rules, so it pays for its own ``rules_for`` inside --
+    which the badge does not, because it passes the dict it already has.  The
+    PASS holds the pair already and asks through
+    :meth:`MerchantAnswers.is_a_holding_state` above, so the predicate has one
+    body and two spellings of its inputs rather than two bodies.
+
+    Args:
+        amount: The line's own figure, on the bank's convention.  **The two
+            columns rather than a view model**, because the membership walk
+            reads ORM rows and building a :class:`~._offers.BankLine` for each
+            would need :func:`~._reads.as_bank_line`, whose module imports the
+            walk's.
+        merchant_id: The line's merchant row, or ``None`` where the source
+            names none -- which is never a holding state, through
+            :meth:`CreationBars.pays_an_account`'s own totality rather than a
+            branch here.
+        rules: What the owner has answered, by merchant
+            (:func:`~._rules.rules_for`).
+        bars: Which of this account's merchants may not become purchases
+            (:class:`CreationBars`).  **Read at the same instant as**
+            *rules*, which is :class:`MerchantAnswers`' own rule: a consumer
+            holding them from two instants could park a line under an answer
+            the same pass had just replaced.
+
+    Returns:
+        Whether this line is a holding state.
+    """
+    rule = rules.get(merchant_id)
+    return (
+        pipeline_for(
+            amount=amount,
+            answer=rule.answer if rule is not None else None,
+        ) is LinePipeline.PURCHASE
+        and bars.pays_an_account(merchant_id)
+    )
 
 
 def reject_barred_line(

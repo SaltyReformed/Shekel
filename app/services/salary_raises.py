@@ -32,15 +32,33 @@ def apply_raises(base_salary, raises, as_of):
     plain inputs so the pension projector no longer reaches into a private
     symbol with fabricated duck-typed objects (deep-hunt #83).
 
-    Raises are sorted by (effective_year, effective_month, method)
-    before application -- the method key sorts flat raises ahead of
-    percentage raises -- so that within the same effective date a flat
-    raise applies before a percentage raise.  Raise application is
+    **APPLICATIONS are ordered by the date each one lands on**, not by the
+    raise they belong to.  Raise application is
     non-commutative (``(salary + flat) * pct`` != ``salary * pct +
-    flat``), so this makes the result deterministic regardless of
-    database query order (M-01; deep-hunt #12 added the method
-    tie-break the original M-01 fix specified but omitted, leaving
-    same-date ties resolved by DB row order).
+    flat``), so the order is the answer, and until this step the order was
+    wrong whenever an owner held a flat raise and a percentage raise at
+    once: the raises were sorted, then EACH raise's whole run of yearly
+    applications was applied before the next raise began.  A recurring flat
+    ``$1,500`` COLA therefore contributed all of its additions up front and
+    a recurring 4% merit raise then multiplied the lot -- including the
+    COLA dollars that arrive in later years, which that percentage had not
+    been earned on.
+
+    The size of that is small inside the owner's saved pay calendar, which
+    is why it stood: on a 3%-plus-flat pair it is ``$62.40`` by the second
+    year.  It grows without bound over a projection.  The two-phase split
+    ``pension_calculator.project_salaries_by_year`` used to apply its merit
+    horizon happened to BOUND the error past the cutoff by re-basing on the
+    cutoff salary, so the defect surfaced when that split was examined for
+    removal; it was never a property of the horizon.
+
+    Within a single date a flat raise still applies before a percentage one
+    (M-01; deep-hunt #12 added the method tie-break the original M-01 fix
+    specified but omitted, leaving same-date ties resolved by DB row
+    order), and the number of times each raise applies is unchanged.  For
+    an owner whose raises are all percentages the result is therefore
+    identical to the previous rule, multiplication being commutative --
+    which is every raise on the developer's own profile.
 
     A raise applies if:
     - Its effective_year is on or before ``as_of``'s year (recurring
@@ -70,43 +88,66 @@ def apply_raises(base_salary, raises, as_of):
     period_year = as_of.year
     period_month = as_of.month
 
-    sorted_raises = sorted(
-        raises,
-        key=lambda r: (
-            r.effective_year,
-            r.effective_month,
-            # Flat raises sort ahead of percentage within one effective
-            # date so the documented flat-before-percentage order holds
-            # regardless of DB row order (M-01 / deep-hunt #12).  A raise
-            # is exactly one method (ck_salary_raises_one_method) with a
-            # positive amount, so a truthy flat_amount uniquely marks the
-            # flat leg.
-            0 if r.flat_amount else 1,
-        ),
+    # Sorting by (year, month, method) puts every application in the order
+    # the money actually arrived.  The list is of APPLICATIONS, not of
+    # raises, which is the whole of this rule -- see this
+    # function's docstring for what it corrects.  ``sorted`` is stable and
+    # the key excludes the raise object, so two applications on one date
+    # with one method keep their input order and nothing compares a
+    # ``SalaryRaise`` against another.
+    applications = sorted(
+        _applications(raises, period_year, period_month),
+        key=lambda a: a[:3],
     )
 
-    for raise_obj in sorted_raises:
+    for _, _, _, raise_obj in applications:
+        salary = _apply_single_raise(salary, raise_obj)
+
+    return round_money(salary)
+
+
+def _applications(raises, period_year, period_month):
+    """Yield one entry per raise APPLICATION, with the date it lands on.
+
+    The unit :func:`apply_raises` orders by.  A recurring raise contributes
+    one entry per year from its effective year through the last year whose
+    effective month the caller's date has reached; a one-time raise
+    contributes at most one.  The counts are exactly those the per-raise
+    loop this replaced produced -- what changed is that they are now
+    interleaved by DATE rather than grouped by raise.
+
+    Args:
+        raises: The raise objects, as :func:`apply_raises` documents them.
+        period_year: The year the salary is being evaluated at.
+        period_month: The month within that year.
+
+    Yields:
+        ``(year, month, method_rank, raise_obj)`` -- *method_rank* is 0 for
+        a flat raise and 1 for a percentage one, which is how the
+        documented flat-before-percentage order survives inside a single
+        date (M-01 / deep-hunt #12).  A raise is exactly one method
+        (``ck_salary_raises_one_method``) with a positive amount, so a
+        truthy ``flat_amount`` uniquely marks the flat leg.
+    """
+    for raise_obj in raises:
         eff_year = raise_obj.effective_year
         eff_month = raise_obj.effective_month
+        method_rank = 0 if raise_obj.flat_amount else 1
 
         if raise_obj.is_recurring:
             # Recurring raises compound each year at the specified month.
-            # Count total applications: one per year from eff_year onward
-            # where the effective month has been reached.
-            if period_year >= eff_year:
-                total_applications = period_year - eff_year
-                if period_month >= eff_month:
-                    total_applications += 1
-                for _ in range(total_applications):
-                    salary = _apply_single_raise(salary, raise_obj)
-        else:
-            # One-time raise: apply if we're at or past the effective date.
-            if (period_year > eff_year) or (
-                period_year == eff_year and period_month >= eff_month
-            ):
-                salary = _apply_single_raise(salary, raise_obj)
-
-    return round_money(salary)
+            # The last year that has landed is the caller's own, unless the
+            # effective month has not been reached in it yet.
+            last_year = (
+                period_year if period_month >= eff_month else period_year - 1
+            )
+            for year in range(eff_year, last_year + 1):
+                yield year, eff_month, method_rank, raise_obj
+        elif (period_year > eff_year) or (
+            period_year == eff_year and period_month >= eff_month
+        ):
+            # One-time raise: it lands once, on its own effective date.
+            yield eff_year, eff_month, method_rank, raise_obj
 
 
 def _apply_single_raise(salary, raise_obj):

@@ -420,15 +420,16 @@ on -- Van Loan, 24 projected rows, stamped clone 2026-08-31: unedited `2029-02-2
 - [x] **R7d-d** `4a839587` -- the DISPLAY readers took the resolver through a COMPOSED DOOR:
       `recurring_view` and its route take ONE read pass and read each definition through
       `recurring_definition`; the resolver takes the resolved rule; `4f40d6de` is ruling **R-R56**
-      (an app-written `end_date` is read as the cache). Later steps obey: R7d-e moves the monthly
-      equivalent off the column; R7d-f owns **N-511** and **N-512**; R7d-g deletes the door's arm
-      with the column. As built: commits `f6ba59f8`..`713c4fce` (PR #240).
+      (an app-written `end_date` is read as the cache). Later steps obey: R7d-e moved the monthly
+      equivalent off the column (`89302ba4`); R7d-f owns **N-511** and **N-512**; R7d-g deletes the
+      door's arm with the column. As built: commits `f6ba59f8`..`713c4fce` (PR #240).
 
-- [ ] **R7d-e -- `/obligations` and the emergency-fund baseline take the resolver.**
-
-`obligations_aggregator.has_ended` asks the resolver for a loan payment, so a RETIRED loan's payment
-leaves the committed-monthly total and `savings_goal_service`'s baseline on the day the loan is
-finished, not the day a chokepoint last ran. **MOVES MONEY** on both.
+- [x] **R7d-e** `89302ba4` -- the monthly totals took the resolver: every `DerivedStop` answers
+      `has_closed` under **R-R57** (R-R45's reading), `Closing.has_closed` ORs its two stops over
+      one memoised reading, the date-bound closure rule is ONE function shared by `EndsOnDate` and
+      `ClosesOn`, `has_ended` judges the reading the door produced, and the aggregator and its three
+      callers take the read pass. `$0.00` on dev, `$200.00`/mo both ways in its tests. Opened
+      **N-513**, **N-514** (both R7d-f). As built: PR #253.
 
 - [ ] **R7d-f -- the FORM's "Ends" control, its refusals and its preview.**
 

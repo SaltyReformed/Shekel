@@ -999,11 +999,11 @@ section 4, under their unchanged ids.*
   in its module docstring must not be re-derived. **A later step must obey:**
   the cache key is an OPTIMISATION and verification runs on EVERY invocation,
   so a stale image is refused rather than trusted.
-* [ ] **X-br-2** `feat(test): a run can have a cluster of its own` -- the
-  wrapper starts **X-br-1**'s image on an assigned port and exports the admin
-  and template DSNs at it. It cannot `exec` pytest: an exec has no after in
-  which to remove the container. INT and TERM are trapped with EXIT, since
-  Ctrl-C is what strands one. Opt-in behind `TEST_DB_PER_RUN` until **X-br-3**.
+* [x] **X-br-2** `7c739495` -- the wrapper starts **X-br-1**'s image on an
+  assigned port and exports the admin and template DSNs at it. It cannot `exec`
+  pytest: an exec has no after in which to remove the container, and INT and TERM
+  are trapped with EXIT since Ctrl-C is what strands one. Opt-in behind
+  `TEST_DB_PER_RUN` until **X-br-3**; measured FASTER than the shared cluster.
 * [ ] **X-br-3** `chore(test): the harness gets a daemon of its own` -- FIRST
   ACT IS THE DEVELOPER'S and no session can do it: `sudo pacman -S
   docker-rootless-extras`, since `docs/test-harness-isolation.md` records

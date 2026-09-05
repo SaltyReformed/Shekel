@@ -8,10 +8,12 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**Minted, nothing shipped.** Eight steps: six re-filed with their ids unchanged (conventions rule
-10) -- `recurrence:R14`, `R15`, `R18`, `pay_calendar:C12`, `balance:X-at`, `X-av` -- and `S1`, `S2`
-minted here. Their ledger rows came with them, plus the four `balance:X-au-d` measured on 2026-09-02
-that had no arc to go to (**N-391**, **N-441**, **N-442**, **N-443**).
+**Three shipped: `S2`, `R14-a` and `R14-b`, which took the `R14` container with it.** Nine steps:
+six re-filed with their ids unchanged (conventions rule 10) -- `recurrence:R14`, `R15`, `R18`,
+`pay_calendar:C12`, `balance:X-at`, `X-av` -- `S1` and `S2` minted here, and `S3` minted 2026-09-05
+when `R14-b` shipped an extrapolation the developer ruled deleted rather than repaired
+(**R-SAL10**). Their ledger rows came with them, plus the four `balance:X-au-d` measured on
+2026-09-02 that had no arc to go to (**N-391**, **N-441**, **N-442**, **N-443**).
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -139,31 +141,35 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       recomputes (**N-530**) are decided here: the rates derive from the stub's stated figures at
       read, or the stub's figures are the stored fact and the rates go (**balance:R-IY**). A
       migration; own review pass.
-- [ ] **R14 -- what a payroll deduction's gross is priced from** -- the DECOMPOSED parent, split
-      2026-09-03 (**R-SAL6**) into the EXPAND and the MONEY, because an additive migration is graded
-      by its backfill's branches and a money cutover by what it moves against a named input set.
-      Carries **D45**.
+- [x] **R14** `e0f0c05f` -- the DECOMPOSED parent of what a payroll deduction's gross is priced
+      from, split 2026-09-03 (**R-SAL6**) into the EXPAND and the MONEY. Both leaves have shipped,
+      so the container ships with the last of them. Closed **D45**.
   - [x] **R14-a** `9e81d9e7` -- an employer contribution NAMES its funding profile (**R-SAL5**) and
         the calendar-wide projection became SINGLE (**N-443**), closing **N-533** / **N-534** with
         it. **A later step must obey**: `investment_params.salary_profile_id` is nullable and
         UNREAD; `R14-b` is its reader and owns what a NULL means at the door.
-  - [ ] **R14-b -- what a deduction's gross is priced from** (**R-SAL2**; **D45**, **N-532**).
-        `investment_projection._compute_deduction_per_period` divides a profile's stored
-        `annual_salary` by the paycheck count, where every sibling surface routes through the
-        engine; it sets both the employee contribution and the employer-match basis.
-        **R-SAL2 answers the three questions together** (D45 carries what R-F16's revert measured):
-        the deduction's OWN profile; THAT period's gross from the engine's per-period breakdown,
-        raises applied as-of the period; the period as the clock, never `date.today()`. The tier
-        CONSUMES the breakdown map -- the first surface moved onto the shared leaf C12 later
-        collapses the rest onto. **Consuming the breakdown deletes more than the gross**:
-        `DeductionLine` already carries `target_account_id`, and the engine already applies the
-        calendar-year cap per line, so `_annual_cap_averaged` and `_period_capped_total` are a third
-        and fourth spelling beside the raise-blind gross (**D45**) and the ignored inflation
-        escalation (**N-532**). The two cap semantics differ (even spread against front-loaded):
-        state which survives and grade it. **It runs after `S2`** (developer, 2026-09-04) -- that
-        `-$19.28` is in the engine this step makes the feed's single source, and the feed is dormant
-        today, so shipping first leaves no baseline that could show the difference. **MOVES MONEY**;
-        own review pass, own harness.
+  - [x] **R14-b** `e0f0c05f` -- the contribution tier CONSUMES the paycheck engine's per-period
+        breakdown instead of re-deriving it (**R-SAL2**), retiring the second spelling of a
+        deduction's amount together with `_annual_cap_averaged` and `_period_capped_total`. Moved
+        `+$452.42` of modelled employer money, reproduced on two independent bases. Closed **D45**,
+        **N-532**. **A later step must obey**: it ships an INTERIM tail rule past the saved calendar
+        whose two residues are measured (**N-541**, **R-SAL10**).
+- [ ] **S3 -- the engine prices the WHOLE horizon** (**R-SAL10**; closes **N-541**, carries
+      **N-540**). `AccountPayrollFeed` holds a figure past the saved calendar because nothing prices
+      a payday past it, and six rules over that fold were each measured wrong, so the remedy is to
+      DELETE the extrapolation rather than to find a seventh (**R-SAL10**).
+      `income_service.project_profile` takes a HORIZON and prices to it; `employee_at` becomes a
+      LOOKUP that RAISES past the horizon, deleting `_year_averages`, `_complete_years`,
+      `_held_employee`, `_held_gross` and `salary_basis(beyond=)`. Measured cost of pricing the
+      horizon: `project_profile` runs at 88 microseconds a payday, so 92 ms per profile per render
+      for a 40-year chart, ONCE behind the projection memo
+      `tests/test_arch/test_one_read_pass_per_render.py` already pins.
+      **AN OPEN DEVELOPER FORK BOUNDS THIS STEP'S CENSUS**: which RAISE MODEL the engine applies
+      past the saved calendar is unruled -- the paycheck engine compounds a recurring merit raise
+      forever and `/retirement` applies a merit horizon, and over 41 years the two shipped functions
+      diverge to `2.81x`, worth `$303,121.02` on a 5%-of-gross employer contribution. The deletion
+      census is AMENDED onto this entry once he rules the model; the sentence above holds under
+      every candidate. **MOVES MONEY**; own review pass, own harness.
 - [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (**R-SAL3**; findings **F-21**,
       **N-395**). `salary.paycheck_deductions.deductions_per_year` server-defaults to 26 and the
       form offers 26 / 24 / 12; it is never multiplied or divided, only compared, so it is a

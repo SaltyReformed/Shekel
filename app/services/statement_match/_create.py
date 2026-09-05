@@ -108,8 +108,9 @@ from ._creations import (
     PurchaseCreation,
 )
 from ._offers import CandidateRow, RowKind, merchant_label
+from ._reads import as_bank_line
 from ._rules import LinePipeline, is_inflow, pipeline_for
-from ._scope import ReviewScope
+from ._scope import ReviewScope, reject_impossible_days
 
 _logger = logging.getLogger(__name__)
 
@@ -501,6 +502,21 @@ def create_purchase_from_line(
     # written (:func:`~._income.record_income_from_line`), and the savepoint
     # that would have covered it is the batch's rather than this door's.
     scope.reject_line_before_books_open(line.posted_on, "this purchase")
+    # **The third refusal that has to fire here for the same reason** (plan
+    # step ``bank_import:X-gm``, finding **N-325**).  A line the bank dates
+    # MADE after it POSTED can become no purchase at all: ``create_entry``
+    # refuses the resulting pair through
+    # ``entry_service._reject_settled_before_purchase``, backed by
+    # ``ck_transaction_entries_settled_not_before_purchase`` -- and refuses it
+    # AFTER ``resolve_destination`` may have minted an envelope, which is
+    # exactly what the comment above says this module does not do.  The screen
+    # withholds the ADD control on the same sentence
+    # (:func:`~._leftovers._add_refusal`), so a stale page and a crafted body
+    # are answered in the same words.  **The BankLine is built rather than the
+    # comparison re-spelled**: the predicate is
+    # :attr:`~._offers.BankLine.states_impossible_days` and this door asks it
+    # through the same view model :func:`~._skipping.skipped_acts` builds.
+    reject_impossible_days(as_bank_line(line))
     made_on = _made_on(line)
     # ONE construction of the bank's own day for this act, for the two
     # writers that need it: the purchase is born carrying it, and the

@@ -606,7 +606,7 @@ class _BankControl(NamedTuple):
 
     Attributes:
         account_id: The grid account, for the statements page URL.
-        awaiting: How many recorded lines the review has not disposed of
+        awaiting: How many bank lines the review is still asking about
             (:func:`~app.services.statement_match.awaiting_review_count`).
             ``0`` is rendered as a plain door rather than hiding it: the
             control is how the feature is FOUND, and a badge that appears
@@ -666,7 +666,9 @@ def _bank_control(account, calendar) -> "_BankControl | None":
         return None
     return _BankControl(
         account_id=account.id,
-        awaiting=awaiting_review_count(account.id, calendar.opening_bound()),
+        awaiting=awaiting_review_count(
+            account.user_id, account.id, calendar.opening_bound(),
+        ),
     )
 
 

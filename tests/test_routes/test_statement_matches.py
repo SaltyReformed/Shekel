@@ -2056,17 +2056,25 @@ class TestTheStandingRuleSection:
     def test_a_line_dated_MADE_after_it_POSTED_says_so_on_the_screen(
         self, auth_client, db, seed_user,
     ):
-        """Finding N-325's user-facing half, which nothing graded.
+        """Finding N-325's user-facing half, one surface on from where it was.
 
-        The service integer was asserted; the sentence the owner reads was not,
-        so the whole ``{% if %}`` could be deleted with the suite green -- and
-        a bound that is counted and never SAID reads as a clean sweep, which is
-        the failure ``ReviewBounds`` exists against.
+        *It asserted the BOUNDS panel until plan step ``bank_import:X-gm``*,
+        which deleted that bullet: the line is not something this pass failed
+        to look at, it is unexplained work whose ADD door is shut, and it is
+        listed with the rest.  The claim this case makes is unchanged in kind
+        -- the sentence the owner READS is asserted, so the branch cannot be
+        deleted with the suite green -- and it is stronger in one way, because
+        it now also asserts the CONTROL is absent.
+
+        A chooser whose submission can never succeed is the shape ruling
+        **R-GJ** cost `$7,412.94` to learn, and this line's submission cannot:
+        ``entry_service._reject_settled_before_purchase`` refuses a purchase
+        whose money left before it was spent.
         """
         an_envelope(seed_user)
         statement = an_import(seed_user)
         day = seed_user["bootstrap_period"].start_date
-        a_bank_line(
+        line = a_bank_line(
             seed_user, statement, amount="-12.00", posted_on=day,
             transaction_on=day + timedelta(days=1), merchant="Amazon",
         )
@@ -2076,8 +2084,17 @@ class TestTheStandingRuleSection:
             _review_url(seed_user["account"].id),
         ).data.decode().split())
 
-        assert "What this page did not look at" in body
-        assert "MADE after the day it took the money" in body
+        # The SERVICE's sentence, naming both of the bank's own days.
+        assert "its money left before it was spent" in body
+        assert f"made on {day + timedelta(days=1)}" in body
+        assert f"taken on {day}" in body
+        # And no control: the select this row would otherwise carry is gone,
+        # which is what makes the sentence a refusal rather than a warning
+        # printed over a working chooser.
+        assert f'name="destination-{line.id}"' not in body
+        # It is no longer reported as a BOUND, because it is not one: the
+        # line is on the page.
+        assert "MADE after the day it took the money" not in body
 
     def test_the_receipt_names_what_was_UNCHANGED_as_well_as_what_moved(
         self, auth_client, db, seed_user,
