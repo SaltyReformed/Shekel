@@ -28,17 +28,27 @@ import pytest
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
-from tests._test_helpers import make_cadence_rule
+from tests._test_helpers import (
+    create_loan_account,
+    freeze_today,
+    insert_trueup_event,
+    loan_params_for,
+    make_cadence_rule,
+    make_loan_payment_template,
+)
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     MONTHLY,
     QUARTERLY,
     ANNUAL,
 )
+from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.services import account_service, recurring_view
+from app.services import account_service, balance_at, recurring_view
+from app.services.balance_at import BalanceContext
+from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.services.obligations_aggregator import committed_monthly
 from app.services.pay_calendar import (
     PayCadence,
@@ -88,6 +98,53 @@ def _calendar(periods):
         The :class:`~app.services.pay_calendar.PayCalendar` for their owner.
     """
     return calendar_for(periods[0].user_id)
+
+
+def _ctx(seed_user, as_of=None):
+    """Return the read pass the surface takes (plan step R7d-d).
+
+    ``build_view`` and ``build_archived_rows`` take a
+    :class:`~app.services.balance_at.BalanceContext` rather than a calendar
+    and an as-of since that step: the pass carries the owner's schedule AND
+    the scenario a loan payment's stop is folded in, so the two cannot be
+    handed in disagreeing.  Built the way the route builds it -- at
+    ``date.today()`` -- unless a case pins the day the way its fixtures do.
+
+    Args:
+        seed_user: The owner.
+        as_of: The pass's "now", or ``None`` for today.
+
+    Returns:
+        The :class:`~app.services.balance_at.BalanceContext`.
+    """
+    return BalanceContext.build(
+        seed_user["user"].id, date.today() if as_of is None else as_of,
+    )
+
+
+def _empty_schedule(seed_user):
+    """Return a read pass over an owner who has a cadence and NO paydays.
+
+    The bootstrap period is deleted AFTER the case has authored its
+    definition -- a rule is resolved against the schedule when it is written
+    -- and the ``budget.pay_schedule`` row stays, so the calendar the pass
+    derives is empty but still carries the owner's cadence.  That is the state
+    :class:`TestNoneMeansDoesNotRepeat` is about, and it is deliberately not
+    the cadence-less one :class:`TestAnAbsentCadenceIsRefused` covers.
+
+    Args:
+        seed_user: The owner whose paydays to delete.
+
+    Returns:
+        A pass whose ``calendar()`` holds no periods.
+    """
+    db.session.query(PayPeriod).filter_by(
+        user_id=seed_user["user"].id,
+    ).delete(synchronize_session=False)
+    db.session.flush()
+    ctx = _ctx(seed_user)
+    assert not ctx.calendar().periods, "precondition: no pay periods"
+    return ctx
 
 
 def _author_cadence(tmpl, cadence, *, interval_n=1,
@@ -196,7 +253,7 @@ class TestUnitEquivalents:
         tmpl = _create_expense(seed_user, EVERY_PERIOD, Decimal("100.00"))
 
         view = recurring_view.build_view(
-            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+            [], [tmpl], [], _ctx(seed_user),
         )
         row = view.expenses.rows[0]
         # Hand-computed at 26 paychecks a year: 100 * 26 / 12 = 216.6667 ->
@@ -211,7 +268,7 @@ class TestUnitEquivalents:
         tmpl = _create_expense(seed_user, MONTHLY, Decimal("500.00"), day_of_month=15)
 
         view = recurring_view.build_view(
-            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+            [], [tmpl], [], _ctx(seed_user),
         )
         row = view.expenses.rows[0]
         # Hand-computed: 500 * 12 / 26 = 230.7692... -> 230.77.
@@ -225,7 +282,7 @@ class TestUnitEquivalents:
         tmpl = _create_expense(seed_user, ANNUAL, Decimal("1200.00"), day_of_month=1, month_of_year=6)
 
         view = recurring_view.build_view(
-            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+            [], [tmpl], [], _ctx(seed_user),
         )
         row = view.expenses.rows[0]
         # Hand-computed: 1200 / 12 = 100.00 a month; 100 * 12 / 26 =
@@ -254,7 +311,7 @@ class TestSubtotals:
         as_of = date.today()
 
         view = recurring_view.build_view(
-            [], [e1, e2], [], _calendar(seed_periods_today), as_of,
+            [], [e1, e2], [], _ctx(seed_user),
         )
         assert view.expenses.subtotal.monthly == Decimal("716.67")
         assert view.expenses.subtotal.monthly == committed_monthly(
@@ -274,7 +331,7 @@ class TestSubtotals:
         e2 = _create_expense(seed_user, MONTHLY, Decimal("500.00"), name="B", day_of_month=15)
 
         view = recurring_view.build_view(
-            [], [e1, e2], [], _calendar(seed_periods_today), date.today(),
+            [], [e1, e2], [], _ctx(seed_user),
         )
         # Hand-computed: (100 * 26 / 12) + 500 = 716.6667 a month at full
         # precision, then * 12 / 26 = 330.7692... -> 330.77 a paycheck.
@@ -283,7 +340,7 @@ class TestSubtotals:
     def test_empty_section_subtotal_is_zero(self, seed_user, seed_periods_today):
         """A section with no templates subtotals to $0.00 in both units."""
         view = recurring_view.build_view(
-            [], [], [], _calendar(seed_periods_today), date.today(),
+            [], [], [], _ctx(seed_user),
         )
         assert view.expenses.rows == ()
         assert view.expenses.subtotal.monthly == Decimal("0.00")
@@ -312,7 +369,7 @@ class TestNonRecurringRows:
         real = _create_expense(seed_user, EVERY_PERIOD, Decimal("100.00"), name="Real")
 
         view = recurring_view.build_view(
-            [], [once, real], [], _calendar(seed_periods_today), date.today(),
+            [], [once, real], [], _ctx(seed_user),
         )
         names = {row.template.name: row for row in view.expenses.rows}
         assert "OneTime" in names, "one-time definition must still be listed"
@@ -340,7 +397,7 @@ class TestNonRecurringRows:
 
         with caplog.at_level(logging.WARNING):
             recurring_view.build_view(
-                [], [once], [], _calendar(seed_periods_today), date.today(),
+                [], [once], [], _ctx(seed_user),
             )
         assert "Unknown recurrence pattern" not in caplog.text
 
@@ -349,7 +406,7 @@ class TestNonRecurringRows:
         tmpl = _create_expense(seed_user, None, Decimal("42.00"), name="NoRule")
 
         view = recurring_view.build_view(
-            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+            [], [tmpl], [], _ctx(seed_user),
         )
         row = view.expenses.rows[0]
         assert row.template.name == "NoRule"
@@ -365,7 +422,7 @@ class TestNonRecurringRows:
         tmpl = _create_expense(seed_user, EVERY_PERIOD, Decimal("1500.00"), name="Expired", end_date=date.today() - timedelta(days=1))
 
         view = recurring_view.build_view(
-            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+            [], [tmpl], [], _ctx(seed_user),
         )
         row = view.expenses.rows[0]
         assert row.template.name == "Expired"
@@ -398,7 +455,7 @@ class TestSummaryBand:
         )
 
         view = recurring_view.build_view(
-            [income], [expense], [transfer], _calendar(seed_periods_today), date.today(),
+            [income], [expense], [transfer], _ctx(seed_user),
         )
         band = view.band
         assert band.income.monthly == Decimal("3250.00")
@@ -416,7 +473,7 @@ class TestSummaryBand:
         expense = _create_expense(seed_user, EVERY_PERIOD, Decimal("100.00"))
 
         view = recurring_view.build_view(
-            [], [expense], [], _calendar(seed_periods_today), date.today(),
+            [], [expense], [], _ctx(seed_user),
         )
         assert view.band.expenses_pct_of_income is None
         assert view.band.income.monthly == Decimal("0.00")
@@ -424,7 +481,7 @@ class TestSummaryBand:
     def test_empty_band(self, seed_user, seed_periods_today):
         """No definitions: every band figure is $0.00 and the pct is None."""
         view = recurring_view.build_view(
-            [], [], [], _calendar(seed_periods_today), date.today(),
+            [], [], [], _ctx(seed_user),
         )
         assert view.band.net.monthly == Decimal("0.00")
         assert view.band.net.per_paycheck == Decimal("0.00")
@@ -451,8 +508,7 @@ class TestSharesAndOrdering:
             [],
             _load_expenses(seed_user),
             [],
-            _calendar(seed_periods_today),
-            date.today(),
+            _ctx(seed_user),
         )
         by_name = {row.template.name: row for row in view.expenses.rows}
         assert by_name["Small"].share_pct == Decimal("30.2")
@@ -473,7 +529,7 @@ class TestSharesAndOrdering:
         _create_expense(seed_user, None, Decimal("999.00"), name="Once")
 
         view = recurring_view.build_view(
-            [], _load_expenses(seed_user), [], _calendar(seed_periods_today), date.today(),
+            [], _load_expenses(seed_user), [], _ctx(seed_user),
         )
         order = [row.template.name for row in view.expenses.rows]
         assert order == ["High", "Mid", "Low", "Once"]
@@ -496,7 +552,7 @@ class TestNextDates:
         tmpl = _create_expense(seed_user, MONTHLY, Decimal("100.00"), day_of_month=15)
 
         view = recurring_view.build_view(
-            [], [tmpl], [], _calendar(seed_periods_today), today,
+            [], [tmpl], [], _ctx(seed_user),
         )
         next_date = view.expenses.rows[0].next_date
         # Independent engine recomputation of the contract.
@@ -531,7 +587,7 @@ class TestNextDates:
         tmpl = _create_expense(seed_user, EVERY_PERIOD, Decimal("50.00"))
 
         view = recurring_view.build_view(
-            [], [tmpl], [], _calendar(seed_periods_today), today,
+            [], [tmpl], [], _ctx(seed_user),
         )
         next_date = view.expenses.rows[0].next_date
         assert next_date is not None
@@ -582,7 +638,7 @@ class TestTheRecurrenceDescription:
         tmpl = _create_expense(seed_user, MONTHLY, Decimal("100.00"), day_of_month=22)
 
         view = recurring_view.build_view(
-            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+            [], [tmpl], [], _ctx(seed_user),
         )
 
         assert view.expenses.rows[0].recurrence.cadence == "Monthly (day 22)"
@@ -596,7 +652,7 @@ class TestTheRecurrenceDescription:
         tmpl = _create_expense(seed_user, None, Decimal("100.00"))
 
         view = recurring_view.build_view(
-            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+            [], [tmpl], [], _ctx(seed_user),
         )
 
         assert view.expenses.rows[0].recurrence is None
@@ -622,7 +678,7 @@ class TestTheRecurrenceDescription:
         tmpl = _create_expense(seed_user, MONTHLY, Decimal("100.00"), day_of_month=22, end_date=end)
 
         view = recurring_view.build_view(
-            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+            [], [tmpl], [], _ctx(seed_user),
         )
 
         assert view.expenses.rows[0].recurrence.stops == "until Sep 15, 2029"
@@ -635,7 +691,7 @@ class TestTheRecurrenceDescription:
         tmpl = _create_transfer(seed_user, EVERY_PERIOD, Decimal("50.00"), savings)
 
         view = recurring_view.build_view(
-            [], [], [tmpl], _calendar(seed_periods_today), date.today(),
+            [], [], [tmpl], _ctx(seed_user),
         )
 
         assert view.transfers.rows[0].recurrence.cadence == "Every paycheck"
@@ -671,8 +727,7 @@ class TestTheRecurrenceDescription:
         monkeypatch.setattr(_reading, "resolve", counting_resolve)
 
         view = recurring_view.build_view(
-            [income], [expense], [], _calendar(seed_periods_today),
-            date.today(),
+            [income], [expense], [], _ctx(seed_user),
         )
 
         # The control must be shown to FIRE: if the patch missed, ``calls`` is
@@ -682,6 +737,219 @@ class TestTheRecurrenceDescription:
         assert len(calls) == 2, (
             f"two rule-bearing definitions resolved {len(calls)} times; each "
             f"must be read once per build"
+        )
+
+
+#: The day the loan cases below are measured at, frozen so the derived payoff
+#: is a LITERAL.  The door's own tests (``test_recurring_definition``) use the
+#: same day and the same $12,000 / 5% / 24-month loan, whose payoff read then is
+#: 2028-07-01; a case here that disagreed with one there would be the surface
+#: and its door coming apart.
+_LOAN_TODAY = date(2026, 7, 1)
+
+
+def _loan(seed_user, **kwargs):
+    """Return a 24-month $12,000 loan at 5%, originating on the frozen day.
+
+    Args:
+        seed_user: The owner.
+        **kwargs: Overrides forwarded to ``create_loan_account``.
+
+    Returns:
+        The loan ``Account``.
+    """
+    defaults = {
+        "name": "Surface Loan",
+        "principal": Decimal("12000.00"),
+        "rate": Decimal("0.05000"),
+        "term": 24,
+        "origination_date": _LOAN_TODAY,
+    }
+    defaults.update(kwargs)
+    return create_loan_account(seed_user, db.session, **defaults)
+
+
+def _retired_loan_payment(seed_user):
+    """Return a loan payment whose loan was cleared AFTER its first installment.
+
+    The loan originates 2026-05-01 with a ``payment_day`` of 1, so its first
+    contractual installment is 2026-06-01; a true-up to ``$0.00`` on 2026-06-15
+    retires it.  Its closing date is therefore 2026-06-15 -- the same fixture
+    ``test_loan_recurrence_sync`` pins ``ClosesOn(2026-06-15)`` on -- and the
+    definition HAS fired once, so the stop is a date and not "never runs".
+
+    Args:
+        seed_user: The owner.
+
+    Returns:
+        ``(loan, template)``, committed.
+    """
+    loan = _loan(
+        seed_user, name="Retired Loan",
+        origination_date=date(2026, 5, 1), payment_day=1,
+    )
+    insert_trueup_event(
+        loan_params_for(db.session, loan.id), Decimal("0.00"),
+        anchor_date=date(2026, 6, 15),
+    )
+    tpl = make_loan_payment_template(
+        db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
+    )
+    # The production door for the OPENING bound, so ``starts_on`` is the
+    # contract's first installment rather than a fixture day.
+    bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+    db.session.commit()
+    return loan, tpl
+
+
+class TestTheDestinationsStopReachesTheRow:
+    """A loan payment's row stops where the LOAN says, not where a column does.
+
+    Plan step R7d-d.  Until it, the only way a loan's payoff reached this
+    surface was the cached copy ten chokepoints wrote into
+    ``budget.recurrence_rules.end_date`` -- the authored bound's own column --
+    so the stop line and the next date named whichever value a chokepoint had
+    most recently written (plan ledger row **D35**).  The surface now reads the
+    composed door, so both name the loan's DERIVED closing date.
+
+    **Every case leaves that column NULL and asserts it stayed so.**  A phrase
+    that could have come from the column would prove nothing about the
+    derivation; with the column empty the rule's authored bound is
+    ``NEVER_ENDS``, and before this step each of these rows showed no stop line
+    and a next date the loan had already made impossible.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _frozen(self, monkeypatch):
+        """Freeze today mid-loan so the projected payoff does not drift."""
+        freeze_today(monkeypatch, _LOAN_TODAY)
+
+    def test_a_live_loan_payments_stop_line_is_the_derived_payoff(
+        self, seed_user, seed_periods_52,
+    ):
+        """The rule authors NO stop; the cell names the loan's payoff anyway.
+
+        Asserted against the seam's own ``closing_date`` as well as against
+        the literal, so a drift in the loan fixture reports as a precondition
+        rather than as a display defect.
+        """
+        loan = _loan(seed_user)
+        tpl = make_loan_payment_template(db.session, seed_user, loan)
+        db.session.commit()
+        assert tpl.recurrence_rule.end_date is None, (
+            "precondition: nothing stored could have supplied the stop"
+        )
+        ctx = _ctx(seed_user, _LOAN_TODAY)
+        assert balance_at.loan_figures(loan, ctx).closing_date == (
+            date(2028, 7, 1)
+        ), "precondition: the fixture loan pays off 2028-07-01"
+
+        view = recurring_view.build_view([], [], [tpl], ctx)
+        row = view.transfers.rows[0]
+
+        assert row.recurrence.stops == "until Jul 01, 2028"
+        assert row.next_date is not None, (
+            "a loan still owing must keep a next date; the stop reached the "
+            "row but the walk was narrowed to nothing"
+        )
+        assert row.next_date >= _LOAN_TODAY
+
+    def test_a_RETIRED_loan_payments_row_stops_on_the_day_the_loan_closed(
+        self, seed_user, seed_periods_52,
+    ):
+        """The past-and-future closing date, on the surface.
+
+        A loan cleared 2026-06-15 has no forward crossing; its closing date is
+        the day it LAST became closed (plan step ``recurrence:R7d-h``), and the
+        row names it.  The next date is ``None``: the definition's July
+        installment falls after the loan ended, and projecting it would be a
+        payment against a debt that is gone -- which is exactly what the
+        NEVER_ENDS column showed before this step.
+
+        The monthly equivalent is NOT asserted here.  It comes from
+        ``obligations_aggregator.template_monthly_or_none``, which still reads
+        the authored bound alone; moving it onto the door is plan step R7d-e's
+        leaf, and until then a retired loan's row states a monthly figure
+        beside a stop line that says the money has stopped.
+        """
+        loan, tpl = _retired_loan_payment(seed_user)
+        assert tpl.recurrence_rule.end_date is None, (
+            "precondition: nothing stored could have supplied the stop"
+        )
+        ctx = _ctx(seed_user, _LOAN_TODAY)
+        assert balance_at.loan_figures(loan, ctx).closing_date == (
+            date(2026, 6, 15)
+        ), "precondition: the loan closed on the day it was trued to zero"
+
+        view = recurring_view.build_view([], [], [tpl], ctx)
+        row = view.transfers.rows[0]
+
+        assert row.recurrence.stops == "until Jun 15, 2026"
+        assert row.next_date is None, (
+            f"a payment dated {row.next_date} was projected against a loan "
+            "that closed 2026-06-15"
+        )
+
+    def test_the_archived_drawer_names_the_same_stop(
+        self, seed_user, seed_periods_52,
+    ):
+        """The drawer reads the same door, so it cannot disagree with the list.
+
+        A drawer describing a different narrowing from the active row beside
+        it would be one surface disagreeing with itself about one definition.
+        """
+        _loan_account, tpl = _retired_loan_payment(seed_user)
+        tpl.is_active = False
+        db.session.commit()
+
+        rows = recurring_view.build_archived_rows(
+            [tpl], _ctx(seed_user, _LOAN_TODAY),
+        )
+
+        assert rows[0].recurrence.stops == "until Jun 15, 2026"
+
+    def test_a_loan_payment_is_RESOLVED_exactly_once_per_build(
+        self, seed_user, seed_periods_52, monkeypatch,
+    ):
+        """The rule-14 guard on the door: one rule, one resolution per pass.
+
+        The resolver's EMPTY test needs the definition's first occurrence, and
+        the first build of plan step R7d-d had it resolve the rule AGAIN to
+        get one -- so a loan payment cost two resolutions where every other
+        row cost one.  The door now hands the resolver the value it already
+        built.  Patched at the DEFINITION site (``_reading.resolve``) like
+        :meth:`TestTheRecurrenceDescription.test_each_rule_is_RESOLVED_exactly_once_per_build`,
+        and the control is shown to fire before the count is read.
+
+        **Scoped to a NULL stored column, which is what it guards.**  A loan
+        payment whose column holds a FUTURE date is resolved a second time on
+        this surface by the monthly-equivalent producer
+        (``template_monthly_or_none`` -> ``has_ended`` ->
+        ``EndsOnDate.has_closed``), a walk plan step R7d-e removes by moving
+        that reader onto the door; this case counts the door's own
+        resolutions and would read two on a synced column for that reason.
+        """
+        loan = _loan(seed_user)
+        tpl = make_loan_payment_template(db.session, seed_user, loan)
+        db.session.commit()
+
+        calls = []
+        real_resolve = _reading.resolve
+
+        def counting_resolve(spec, calendar):
+            calls.append(spec.unit)
+            return real_resolve(spec, calendar)
+
+        monkeypatch.setattr(_reading, "resolve", counting_resolve)
+
+        view = recurring_view.build_view(
+            [], [], [tpl], _ctx(seed_user, _LOAN_TODAY),
+        )
+
+        assert view.transfers.rows[0].recurrence.stops == "until Jul 01, 2028"
+        assert len(calls) == 1, (
+            f"one loan payment resolved its rule {len(calls)} times in one "
+            f"build; the door resolves once and hands the value down"
         )
 
 
@@ -697,7 +965,7 @@ class TestTheArchivedDrawer:
         db.session.flush()
 
         rows = recurring_view.build_archived_rows(
-            [tmpl], _calendar(seed_periods_today),
+            [tmpl], _ctx(seed_user),
         )
 
         assert len(rows) == 1
@@ -713,7 +981,7 @@ class TestTheArchivedDrawer:
         db.session.flush()
 
         rows = recurring_view.build_archived_rows(
-            [tmpl], _calendar(seed_periods_today),
+            [tmpl], _ctx(seed_user),
         )
 
         assert rows[0].recurrence is None
@@ -733,7 +1001,7 @@ class TestTheArchivedDrawer:
         db.session.flush()
 
         rows = recurring_view.build_archived_rows(
-            [first, second], _calendar(seed_periods_today),
+            [first, second], _ctx(seed_user),
         )
 
         assert [row.template.name for row in rows] == ["Zed", "Abe"]
@@ -759,7 +1027,7 @@ class TestTheArchivedDrawer:
         monkeypatch.setattr(_reading, "occurrence_placements", fail_if_called)
 
         rows = recurring_view.build_archived_rows(
-            [tmpl], _calendar(seed_periods_today),
+            [tmpl], _ctx(seed_user),
         )
 
         assert rows[0].recurrence.cadence == "Monthly (day 9)"
@@ -779,63 +1047,53 @@ class TestNoneMeansDoesNotRepeat:
     cite -- ``reset_pay_periods`` deletes and regenerates in one transaction),
     so it is refused rather than worded.
 
-    **The empty calendars below carry a CADENCE, and that is deliberate** (plan
+    **The empty schedules below carry a CADENCE, and that is deliberate** (plan
     step R7a-2a).  "No pay periods" and "no stated pay cadence" are two
     different states, and this class is about the first: an owner who HAS said
     how often they are paid but whose payday list is empty.  The second is
     refused one door earlier, by a different value, with a different exception
-    -- see :class:`TestAnAbsentCadenceIsRefused`.  Building these fixtures with
+    -- see :class:`TestAnAbsentCadenceIsRefused`.  The state is built by
+    deleting the owner's paydays and keeping their schedule row
+    (:func:`_empty_schedule`), since plan step R7d-d put the surface on a read
+    pass that derives its own calendar; a hand-built calendar with
     ``cadence_days=None`` would trip that earlier door and report a pass for a
     claim these cases never reached.
     """
 
     def test_an_empty_schedule_refuses_rather_than_reading_one_time(
-        self, seed_user, seed_periods_today,
+        self, seed_user,
     ):
         """A repeating definition is never described as non-repeating."""
         tmpl = _create_expense(seed_user, QUARTERLY, Decimal("60.00"), day_of_month=2, month_of_year=3)
-        empty = PayCalendar.from_paydays(
-            paydays=(), cadence_days=14, user_id=seed_user["user"].id,
-            history_opens_on=None,
-        )
+        ctx = _empty_schedule(seed_user)
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
-            recurring_view.build_view([], [tmpl], [], empty, date.today())
+            recurring_view.build_view([], [tmpl], [], ctx)
 
-    def test_the_archived_drawer_refuses_it_too(
-        self, seed_user, seed_periods_today,
-    ):
+    def test_the_archived_drawer_refuses_it_too(self, seed_user):
         """Both row kinds reach the same discriminator."""
         tmpl = _create_expense(seed_user, MONTHLY, Decimal("25.00"), day_of_month=9)
         tmpl.is_active = False
         db.session.flush()
-        empty = PayCalendar.from_paydays(
-            paydays=(), cadence_days=14, user_id=seed_user["user"].id,
-            history_opens_on=None,
-        )
+        ctx = _empty_schedule(seed_user)
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
-            recurring_view.build_archived_rows([tmpl], empty)
+            recurring_view.build_archived_rows([tmpl], ctx)
 
-    def test_a_rule_less_definition_still_answers_none(
-        self, seed_user, seed_periods_today,
-    ):
+    def test_a_rule_less_definition_still_answers_none(self, seed_user):
         """The control: the sentinel still means what it is supposed to.
 
         Without this, "raise whenever the resolution is absent" would pass the
         two cases above while breaking the only state ``None`` may describe.
         """
         tmpl = _create_expense(seed_user, None, Decimal("25.00"))
-        empty = PayCalendar.from_paydays(
-            paydays=(), cadence_days=14, user_id=seed_user["user"].id,
-            history_opens_on=None,
-        )
+        ctx = _empty_schedule(seed_user)
 
-        view = recurring_view.build_view([], [tmpl], [], empty, date.today())
+        view = recurring_view.build_view([], [tmpl], [], ctx)
 
         assert view.expenses.rows[0].recurrence is None
         assert recurring_view.build_archived_rows(
-            [tmpl], empty,
+            [tmpl], ctx,
         )[0].recurrence is None
 
 
@@ -904,7 +1162,7 @@ class TestAnAbsentCadenceIsRefused:
         tmpl = _create_expense(seed_user, MONTHLY, Decimal("25.00"), day_of_month=9)
         tmpl.is_active = False
         db.session.flush()
-        calendar = _calendar(seed_periods_today)
+        ctx = _ctx(seed_user)
 
         def _refuse(_self):
             raise PayCalendarError("the cadence was read")
@@ -913,7 +1171,7 @@ class TestAnAbsentCadenceIsRefused:
 
         # The drawer words each rule's cadence phrase off the schedule -- which
         # needs paydays -- and converts no money, so it must not touch this.
-        rows = recurring_view.build_archived_rows([tmpl], calendar)
+        rows = recurring_view.build_archived_rows([tmpl], ctx)
         assert rows[0].recurrence.cadence == "Monthly (day 9)"
 
         # The control on the control: the active sections DO convert, so the
@@ -922,7 +1180,7 @@ class TestAnAbsentCadenceIsRefused:
         tmpl.is_active = True
         db.session.flush()
         with pytest.raises(PayCalendarError, match="the cadence was read"):
-            recurring_view.build_view([], [tmpl], [], calendar, date.today())
+            recurring_view.build_view([], [tmpl], [], ctx)
 
 
 class TestTheValuesCannotDisagree:
