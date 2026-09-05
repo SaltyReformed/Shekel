@@ -159,13 +159,15 @@ there is nothing to repair.*  The three, as they were:
   seats against a real period id and generates a row where it used to be
   logged and skipped.
 * **The stored CADENCE moved the horizon** (row **P28**).  The last period's
-  derived end is ``payday + cadence_days - 1``, so a stored cadence that no
-  longer matched the stored end moved the generation window -- SHORTER losing
-  the occurrences past the new horizon, LONGER seating rows in a paycheck whose
-  stored span ended before their date.  **This one has a survivor**: the
-  cadence is still the sole input to the last period's PROJECTED end, so
-  changing it still moves the horizon.  What is gone is the DISAGREEMENT --
-  there is no stored end for it to come apart from.
+  derived end is the day before the PROJECTED next payday, one cadence on
+  (``pay_calendar._derive.projected_payday``, spelled ``payday +
+  cadence_days - 1`` until plan step ``pay_calendar:C14-c`` made the two ends
+  one rule), so a stored cadence that no longer matched the stored end moved
+  the generation window -- SHORTER losing the occurrences past the new horizon,
+  LONGER seating rows in a paycheck whose stored span ended before their date.
+  **This one has a survivor**: the cadence is still an input to the last
+  period's PROJECTED end, so changing it still moves the horizon.  What is gone
+  is the DISAGREEMENT -- there is no stored end for it to come apart from.
 * **A stored ORDINAL was re-derived** (row **P26**).  ``period_index`` is a
   period's position in payday order, so a stored ordinal that was not
   ``0..n-1`` re-phased every ``Every N Periods`` rule -- including one naming a

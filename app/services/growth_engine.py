@@ -340,10 +340,10 @@ def span_return_rate(
     The date door onto :func:`growth_rate_for_days`, and it exists so the
     ``+ 1`` is written once.  Pay periods carry an inclusive last day: a
     standard 14-calendar-day period runs ``start`` .. ``start + 13`` and the
-    next one starts the following day (since plan step C3-b
-    :func:`app.services.pay_period_write.record_paydays` stores ``next payday
-    - 1`` for every period but the last, and ``start + cadence_days - 1`` for
-    that one).  The span is therefore ``(last_day - first_day).days + 1`` --
+    next one starts the following day -- every period ends the day before its
+    NEXT payday, which for the last one is the PROJECTED payday rather than a
+    recorded neighbour (one rule since plan step ``pay_calendar:C14-c``).  The
+    span is therefore ``(last_day - first_day).days + 1`` --
     14 for a standard biweekly period, not 13.  Counting exclusively (the old
     ``end - start`` without the ``+ 1``) dropped one calendar day per period;
     because consecutive periods tile the calendar with no gaps, that lost 1 day
@@ -366,9 +366,11 @@ def span_return_rate(
         ValueError: *last_day* precedes *first_day*.  **No call path in
         ``app/`` can produce one** since plan step C2-e -- every period reaching
         here is a
-        :class:`~app.services.pay_calendar.DerivedPeriod`, whose end is either
-        the next payday minus a day or ``start + cadence_days - 1`` and so is
-        never below its own start, and its one date-pair caller
+        :class:`~app.services.pay_calendar.DerivedPeriod`, whose end is the day
+        before its next payday and so is never below its own start -- a
+        cadence carrying a displacing convention is held to a floor no two
+        paydays can be displaced onto one day under (ruling
+        **pay_calendar:R-PC59**) -- and its one date-pair caller
         (``property_equity_chart``) selects strictly forward dates.  It is a
         boundary guard on a public function, not a live branch -- the same
         standing :meth:`~app.services.pay_calendar.PayCalendar.overlapping`'s
