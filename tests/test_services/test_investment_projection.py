@@ -119,11 +119,6 @@ def _feed(periods=(), *, employee=None, gross=None, linked=None):
         employee_by_payday=_series(employee),
         gross_by_payday=_series(gross),
         is_payroll_linked=(employee is not None) if linked is None else linked,
-        # The owner's cadence, which the employee hold divides a year's total
-        # by.  Required whenever the feed prices anything: the count of
-        # paydays IN the map is the window's, not the year's, and an
-        # adversarial review measured a 13-payday window holding a capped
-        # deduction at 2.00x its own cap when the two were conflated.
     )
 
 
@@ -880,7 +875,10 @@ class TestBuildContributionTimeline:
             date(2027, 1, 1) + timedelta(days=14 * i) for i in range(27)
         ]
         assert paydays[-1] == date(2027, 12, 31), "27 paydays inside 2027"
-        # A payday either side, so 2027 grades COMPLETE.
+        # Flanked on both sides.  The flanks are belt and braces rather than
+        # the thing under test: stepping one interval out from 2027-01-01
+        # and 2027-12-31 already lands in 2026 and 2028, so this window
+        # grades 2027 complete with or without them.
         span = [date(2026, 12, 18)] + paydays + [date(2028, 1, 14)]
         feed = _feed(_periods(*span), employee=Decimal("500"))
 
@@ -893,10 +891,20 @@ class TestBuildContributionTimeline:
         27-payday year the window opened one payday late.  The year's total
         is then short by exactly the payday that was cut, and for a
         front-loaded capped deduction that payday is where the money is: an
-        adversarial pass measured ``$15.38`` held against a true ``$38.46``,
-        a 60% understatement that never expires.  Covering a year means
-        reaching past BOTH its edges, so this window must fall back instead
-        of averaging.
+        adversarial pass measured ``$15.38`` held here.
+
+        **The truth for THIS fixture is ``$37.04``**, not the ``$38.46`` a
+        26-payday year would give: its 2027 holds 27 paydays (asserted
+        below), and ``$1,000 / 27`` is what a full future year pays per
+        payday.  So the count test was 58% low.
+
+        **And the refusal this asserts is further from truth still**, at
+        ``$0.00``.  That is the trade taken deliberately: the count test was
+        wrong about WHICH years it could average -- 129 of 20,000 randomised
+        windows against this rule's 0 -- and every year it stops averaging
+        moves the held figure DOWN, never up.  A conservative wrong number
+        beats a confident one, and the salary-path step removes both by
+        pricing the tail.
         """
         full_year = [
             date(2027, 1, 1) + timedelta(days=14 * i) for i in range(27)
@@ -907,19 +915,21 @@ class TestBuildContributionTimeline:
         amounts[observed[0]] = Decimal("400")
         feed = _feed(_periods(*observed), employee=amounts)
 
+        assert len(full_year) == 27, "2027 holds 27 biweekly paydays"
         assert feed._complete_years() == set()
         # The fallback, not 400/26 == $15.38 dressed as a year's average.
         assert feed.employee_at(date(2040, 1, 1)) == Decimal("0")
 
     def test_a_WEEKLY_owner_covering_a_year_gets_that_year(self):
-        """Completeness is covering the year, not counting to a cadence.
+        """Coverage, at a cadence whose count test fails differently.
 
-        The rule this replaced asked whether the year held at least
-        ``periods_per_year`` paydays, which for a weekly owner is 52 -- and
-        an adversarial pass measured 97.8% of weekly windows failing it, so
-        the whole tail took the fallback.  The window here covers 2026
-        exactly once and must hold the true ``$1,000 / 52``.
+        A weekly year holds 52 paydays or 53, so ``>= periods_per_year`` is
+        wrong at cadence 7 the same way it is at 14 -- and this class had no
+        non-biweekly case at all, which let a rule that hardcoded 26 look
+        correct.  Both halves here are the weekly analogue of the biweekly
+        pair above.
         """
+        # (a) A 52-payday 2026 fully covered: the exact $1,000 / 52.
         paydays = [
             date(2025, 12, 29) + timedelta(days=7 * i) for i in range(60)
         ]
@@ -933,6 +943,22 @@ class TestBuildContributionTimeline:
 
         assert 2026 in feed._complete_years()
         assert feed.employee_at(date(2040, 1, 1)) == Decimal("19.23")
+
+        # (b) A 53-payday 2026 seen 52 times: a count test passes it at
+        # 52 >= 52 and averages a year it never saw the whole of.  This is
+        # the half the biweekly 27-seen-26 case cannot reach, and the half
+        # that fails if the completeness rule reverts to a count.
+        long_year = [
+            date(2026, 1, 1) + timedelta(days=7 * i) for i in range(53)
+        ]
+        assert len({day.year for day in long_year}) == 1
+        assert len(long_year) == 53, "2026 holds 53 weekly paydays"
+        truncated = long_year[1:]
+        short = _feed(
+            _periods(*truncated),
+            employee={day: Decimal("0") for day in truncated},
+        )
+        assert short._complete_years() == set()
 
     def test_a_period_PAST_the_calendar_reads_the_held_figure(self):
         """The timeline's domain may run past the owner's saved schedule.
@@ -1004,7 +1030,7 @@ class TestBuildContributionTimeline:
             employee_by_payday={p.start_date: Decimal("0") for p in periods},
             gross_by_payday={},
             is_payroll_linked=True,
-            )
+        )
         result = build_contribution_timeline(
             feed=feed,
             contribution_transactions=[

@@ -311,7 +311,7 @@ def load_shadow_income_contributions_for_accounts(
     excludes a ``NULL`` ``pay_period_id``.
 
     **Rows that contribute nothing are DROPPED rather than priced at zero.**
-    :func:`~app.services.investment_projection._average_transfer_contribution`
+    :func:`~app.services.investment_projection._inputs._average_transfer_contribution`
     divides by the number of distinct pay periods it sees, so a Cancelled
     contribution carried through as ``$0.00`` would enlarge that denominator and
     silently lower the average.  The screen is applied before the pricing for
