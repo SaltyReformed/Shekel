@@ -51,13 +51,26 @@
        a glyph jammed against its own text.  Every sibling button here is
        Bootstrap's default inline-block for the same reason. #}
     {# **The BADGE and the destination answer the same question, so they may not
-       disagree.**  The count is ``awaiting_review_count`` -- lines the REVIEW
-       screen is still asking about -- and this control linked unconditionally
+       disagree.**  The count is ``awaiting_review_count`` -- the bank lines the
+       review is still asking about -- and this control linked unconditionally
        to the IMPORT screen, which never mentions them.  So a developer who
        clicked a "16" landed on an upload form that explained nothing about the
        16 and offered no way to act on it; the review screen was reachable only
        from a second click there, or from the command palette.  Reported by the
        developer on 2026-08-21 after their first real import.
+
+       **THE DESTINATION IS THE RECONCILE PAGE since plan step
+       bank_import:X-gm** (developer 2026-09-05), and moving it is what makes
+       the sentence above TRUE rather than merely written down.  It opened
+       `accounts.review_statements`, the retiring queue, which lists the parked
+       card payments a source files as paying an account the owner holds; the
+       Reconcile page holds those on its Transfers tab and does not count them
+       as work.  That step made the badge the Reconcile inbox's own membership,
+       so leaving the link on the queue would have shipped a button reading 18
+       over a page listing 27 -- the disagreement this comment forbids, pointed
+       the other way.  These two attributes are two of the six inbound links
+       plan step bank_import:X-gi-1 repoints; the other four are on pages that
+       step deletes, and are left to it. #}
 
        The two URLs are therefore both carried as DATA and ``href`` is whichever
        is the live act: with work outstanding, the door opens on the work.  The
@@ -66,9 +79,9 @@
        as a proxy for either. #}
     {% if bank_control %}
     <a class="btn btn-sm btn-outline-secondary grid-bank-door d-none d-md-inline-block"
-       href="{% if bank_control.awaiting %}{{ url_for('accounts.review_statements', account_id=bank_control.account_id) }}{% else %}{{ url_for('accounts.statements', account_id=bank_control.account_id) }}{% endif %}"
+       href="{% if bank_control.awaiting %}{{ url_for('accounts.statement_reconcile', account_id=bank_control.account_id) }}{% else %}{{ url_for('accounts.statements', account_id=bank_control.account_id) }}{% endif %}"
        data-import-url="{{ url_for('accounts.statements', account_id=bank_control.account_id) }}"
-       data-review-url="{{ url_for('accounts.review_statements', account_id=bank_control.account_id) }}"
+       data-review-url="{{ url_for('accounts.statement_reconcile', account_id=bank_control.account_id) }}"
        title="{% if bank_control.awaiting %}Review {{ bank_control.awaiting }} imported bank line{{ '' if bank_control.awaiting == 1 else 's' }} your records do not explain{% else %}Import a bank statement, or review what is already imported{% endif %}">
       <i class="bi bi-bank"></i><span class="d-none d-sm-inline"> {% if bank_control.awaiting %}Review statements{% else %}Import statements{% endif %}</span>
       {% if bank_control.awaiting %}

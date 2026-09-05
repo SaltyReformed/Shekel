@@ -23,6 +23,7 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import AcctTypeEnum, StatementSourceEnum
 from app.extensions import db
+from app.models.merchant import Merchant
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.user import UserSettings
 from app.services import account_service
@@ -75,6 +76,78 @@ def _a_recorded_line(seed_user, posted_on, account=None):
         amount=Decimal("-64.04"),
         description="POINT OF SALE DEBIT APPLE.COM/BILL",
         sequence_in_group=0,
+    )
+    db.session.add(line)
+    db.session.commit()
+    return line
+
+
+def _tab_count(body, label):
+    """Return the figure the Reconcile tab bar prints beside *label*.
+
+    Args:
+        body: The whitespace-collapsed page body.
+        label: The tab's own label (``Tab.label``).
+
+    Returns:
+        The count, as a string.  Raises ``AssertionError`` naming the tab when
+        the tab is absent, because a regex that returned ``None`` would make
+        the caller's comparison fail with nothing said about why.
+    """
+    found = re.search(
+        rf'{label}\s*<span class="rec-tab-count font-mono">(\d+)</span>',
+        body,
+    )
+    assert found is not None, f"the {label} tab is not on the page"
+    return found.group(1)
+
+
+def _a_card_payment(seed_user, posted_on):
+    """Record one line a source files as paying an account the owner holds.
+
+    Plan step ``bank_import:X-gm``.  The class the grid badge and the
+    Reconcile inbox used to disagree about: the pass holds it on the Transfers
+    tab as a HOLDING state (ruling **R-HQ**) and does not count it as work.
+    Staged here rather than reached for from the service builders, because
+    this module builds its rows directly against the models.
+
+    Args:
+        seed_user: The seeded user bundle.
+        posted_on: The day the bank posted it.
+
+    Returns:
+        The COMMITTED :class:`BankStatementLine`.
+    """
+    account = seed_user["account"]
+    merchant = Merchant(account_id=account.id, name="Capital One Credit Card")
+    db.session.add(merchant)
+    statement = StatementImport(
+        account_id=account.id,
+        user_id=seed_user["user"].id,
+        source_id=ref_cache.statement_source_id(
+            StatementSourceEnum.SECU_CHECKING_CSV,
+        ),
+        file_name="card.csv",
+        file_digest="c" * 64,
+        period_start=posted_on,
+        period_end=posted_on,
+        line_count=1,
+        recorded_count=1,
+    )
+    db.session.add(statement)
+    db.session.flush()
+    line = BankStatementLine(
+        account_id=account.id,
+        import_id=statement.id,
+        posted_on=posted_on,
+        amount=Decimal("-793.23"),
+        description="ACH DEBIT CAPITAL ONE CRCARDPMT",
+        sequence_in_group=0,
+        merchant_id=merchant.id,
+        # **The SOURCE's own filing**, which is what ruling R-GJ reads --
+        # ``_vocabulary.ACCOUNT_PAYMENT_CATEGORIES`` maps this exact string
+        # for this source.  A merchant name alone parks nothing.
+        source_category="Financial Services/Credit Card Payment",
     )
     db.session.add(line)
     db.session.commit()
@@ -172,6 +245,79 @@ class TestTheBadgeCountsWhatIsWaiting:
 
             assert _DOOR.search(response.data) is not None
             assert _BADGE.search(response.data) is None
+
+
+class TestTheBadgeAndThePageItOPENSAgree:
+    """Plan step ``bank_import:X-gm``, end to end through a browser's path.
+
+    **The invariant asserted where an owner would meet it**: render the grid,
+    read the number off the badge, FOLLOW the badge's own href, and count the
+    cards the page it lands on renders.  Everything else about this step is
+    graded on the service; this is the only case that goes through the
+    rendered link, and it is the one a repointing mistake shows up in.
+
+    It is why the badge's destination moved to the Reconcile page in the same
+    change: the count became that page's own inbox membership, so a badge left
+    pointing at the retiring queue would have read 18 over a page listing 27
+    -- the disagreement the grid template's own comment forbids.
+    """
+
+    def test_the_door_opens_the_RECONCILE_page(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The destination itself, asserted rather than only followed.
+
+        ``test_the_door_actually_OPENS`` follows the href and asserts 200,
+        which a link to the retiring queue also satisfies.  This names WHICH
+        page, because the count the badge carries is that page's and no
+        other's.
+        """
+        with app.app_context():
+            _a_recorded_line(seed_user, display_today())
+            grid = auth_client.get("/grid")
+
+            href = _HREF.search(grid.data).group(1).decode()
+            review_url = _REVIEW_URL.search(grid.data).group(1).decode()
+
+            assert href.endswith(
+                f"/accounts/{seed_user['account'].id}/statements/reconcile",
+            )
+            # The command palette reads the attribute rather than the href,
+            # so it is a second destination nothing else would catch rotting.
+            assert review_url == href
+
+    def test_the_number_on_the_door_is_the_number_on_the_page(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """One ordinary line and one PARKED card payment, counted both ways.
+
+        The parked line is what makes this case bite: it is the class the two
+        producers used to disagree about, so a fixture without one would have
+        passed on the tree this step replaced.  The badge must read 1, and the
+        page it opens must show one inbox card and hold the card payment
+        somewhere that is not the inbox.
+        """
+        with app.app_context():
+            today = display_today()
+            _a_recorded_line(seed_user, today)
+            _a_card_payment(seed_user, today)
+            grid = auth_client.get("/grid")
+
+            badge = _BADGE.search(grid.data)
+            href = _HREF.search(grid.data).group(1).decode()
+            page = auth_client.get(href)
+
+            assert badge is not None
+            body = " ".join(page.data.decode().split())
+            # The tab caption the page renders for its own inbox, which is
+            # the figure the badge is claiming to be.  Read off the page
+            # rather than compared to a literal, so the two are asserted
+            # EQUAL rather than both asserted to be 1.
+            assert badge.group(1).decode() == _tab_count(body, "To explain")
+            assert badge.group(1) == b"1"
+            # And the parked line is on the page, off the inbox -- so the two
+            # agree by holding it back, not by both losing it.
+            assert _tab_count(body, "Transfers") == "1"
 
 
 class TestTheGateOnWhichAccountsGetADoor:

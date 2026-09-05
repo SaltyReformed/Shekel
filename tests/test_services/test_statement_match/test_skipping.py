@@ -1073,11 +1073,15 @@ class TestABoundedLineCannotBeSkipped:
         )
         db.session.flush()
         account_id = seed_user["account"].id
-        assert awaiting_review_count(account_id, opens) == 0
+        assert awaiting_review_count(
+            seed_user["user"].id, account_id, opens,
+        ) == 0
 
         _skip(seed_user, line)
 
-        assert awaiting_review_count(account_id, opens) == 0
+        assert awaiting_review_count(
+            seed_user["user"].id, account_id, opens,
+        ) == 0
         assert db.session.query(StatementLineSkip).count() == 1
 
 

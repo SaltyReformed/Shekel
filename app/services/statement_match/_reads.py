@@ -46,14 +46,14 @@ from ._already_held import (
     ArrivalsAlreadyHeld,
     arrivals_already_held,
 )
-from ._bars import BarredLine
-from ._gaps import ReviewBounds, bounded_lines, search_gap
+from ._bars import BarredLine, MerchantAnswers
+from ._gaps import ReviewBounds, search_gap
 from ._leftovers import CreatableLine, RecordableInflow, leftovers
 from ._propose import propose
 from ._queue import StatementQueue, statement_queue
 from ._scope import ReviewScope
 from ._section import MerchantSection
-from ._undisposed import undisposed_lines
+from ._undisposed import inbox_partition
 from ._verdict import ruled
 
 
@@ -354,19 +354,33 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             :attr:`~._bars.BarredLine.also_pays_an_account` answers this for
             the two BARRED lists only, and a line a tier has proposed a match
             for never meets :meth:`~._bars.CreationBars.bar_for` at all.
-            **That the gap is REACHABLE is established by construction rather
-            than by a census**
-            (``test_panel.TestTheSKIPVerbIsLitAndShutWhereTheDoorWouldRefuse
-            .test_a_PROPOSED_card_payment_line_is_shut_TOO``, which asserts
-            its own premise): an earlier draft of this paragraph cited
-            :mod:`._bars`' seven Van Loan lines as the populated case and that
-            was the WRONG SET -- that module records four of them as already
-            MATCHED and three as falling before the pay calendar opens, and
-            neither is a line in ``proposals``.  A matched line is out of the
-            pass altogether.  Named by adversarial review 2026-09-04.
-            Shutting the verb anywhere
-            but on this set renders a control the door refuses, which is ruling
-            **R-GJ**'s `$7,412.94` shape one verb over.
+            **ONE of the two populations it was widened for is gone, and the
+            set stays because the OTHER one is untouched** (plan step
+            ``bank_import:X-gm``).  The argument for reaching past the barred
+            lists was that a line a tier PROPOSED a match for is in
+            :attr:`proposals` and in neither of them.  An OUTFLOW from such a
+            merchant can no longer be proposed --
+            :func:`~._undisposed.inbox_partition` takes the holding states off
+            the proposer (ruling **R-HQ**) -- but an INFLOW from one still can:
+            a deposit no container answer claims routes to INCOME
+            (:func:`~._rules.pipeline_for`), so it is not a holding state, it
+            is in the inbox, and it reaches this pass as a
+            :class:`~._leftovers.RecordableInflow` rather than a
+            :class:`~._bars.BarredLine`.  :attr:`~._bars.BarredLine
+            .also_pays_an_account` cannot answer for such a line AT ALL, which
+            is why the narrower spelling is still wrong and this set is still
+            the one :func:`~._cards._offers` asks.  It is also the DOOR's own
+            set (:func:`~._vocabulary.account_payment_merchants`, read once per
+            pass), so a card builder added later shuts the verb by asking the
+            question :func:`~._skipping.skip_line` asks rather than by
+            remembering a list.  Shutting the verb anywhere but on this set
+            renders a control the door refuses, which is ruling **R-GJ**'s
+            `$7,412.94` shape one verb over.
+            *An earlier draft of this paragraph cited :mod:`._bars`' seven Van
+            Loan lines as the populated case and that was the WRONG SET* --
+            that module records four of them as already MATCHED and three as
+            falling before the pay calendar opens, and a matched line is out of
+            the pass altogether.  Named by adversarial review 2026-09-04.
             **A line naming NO merchant is never shut**, and that is
             :meth:`~._bars.CreationBars.bar_for`'s own totality rather than a
             guard restated by a reader:
@@ -487,7 +501,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             **The two halves are not equally falsifiable, and the asymmetry is
             recorded rather than papered over.**  Every proposal this app
             builds names exactly ONE line: :func:`~._propose._one_to_one` and
-            :func:`~._propose._groups` and :func:`~._near.near_proposals` all
+            :func:`~._propose._groups` and :func:`~._near.near_misses` all
             construct ``lines=(line,)``.  So counting distinct line ids and
             counting PROPOSALS give the same number for every input that
             exists, and a mutation swapping one for the other survives as an
@@ -848,16 +862,31 @@ def review_set(scope: ReviewScope) -> ReviewSet:
     Returns:
         Its :class:`ReviewSet`.
     """
-    calendar = scope.calendar
     account_id = scope.account_id
-    opens = calendar.opening_bound()
+    opens = scope.calendar.opening_bound()
     # **The two DAY bounds, applied in sequence and stated once**
     # (:func:`~._gaps.bounded_lines`, plan step **balance:X-f3c-2b-2b**).  They
     # are different facts with different remedies -- the owner's pay schedule
     # and this ACCOUNT's opening -- and they overlap on real data, so the order
     # they are applied in decides whether their counts add up.
-    lines = bounded_lines(
-        undisposed_lines(account_id), opens, scope.opening,
+    # **What the owner has SAID, read ONCE for the whole pass** (plan step
+    # ``bank_import:X-gm``).  It is read HERE rather than on the scope for the
+    # reason :func:`~._leftovers.leftovers` states -- a pass can restate a
+    # rule, and this screen is re-rendered after the door that does -- and it
+    # is read here rather than THERE because the membership walk below needs
+    # the same answers at the same instant.  Two reads of ``merchant_rules`` in
+    # one request is this project's DRY violation, and the walk and the split
+    # answering from two instants could park a line under an answer this pass
+    # had just replaced.
+    answers = MerchantAnswers.build(scope.owner_id, account_id)
+    # **ONE statement of what the inbox IS**, which the grid's badge counts and
+    # this pass is built from (:func:`~._undisposed.inbox_partition`).  It
+    # applies both day bounds and takes the holding states out, so the
+    # proposer below is given exactly the lines that are TASKS -- ruling
+    # **bank_import:R-HQ** made structural rather than restated per surface,
+    # since nothing should propose a match for a line nobody can act on.
+    lines = inbox_partition(
+        account_id, opens, scope.opening, answers.view.rules, answers.bars,
     )
 
     # **What is already CLAIMED is read HERE, not carried in the scope.**  The
@@ -867,13 +896,25 @@ def review_set(scope: ReviewScope) -> ReviewSet:
     matched = matched_subjects(account_id)
     candidates = scope.candidates
     offerable = unmatched_rows(candidates, matched)
-    bank_lines = [as_bank_line(line) for line in lines.inside]
+    bank_lines = [as_bank_line(line) for line in lines.inbox]
     proposed = propose(bank_lines, offerable)
     proposals = proposed.proposals
-    unmatched = _unexplained(bank_lines, proposals)
+    # **The parked lines rejoin here and nowhere earlier.**  They are still
+    # ``unmatched`` -- no proposal explains them, and the hand-built group
+    # match ruling **R-GJ** leaves open is reached off this list, as is the
+    # MATCH pane's own membership test (:meth:`ReviewSet.card_subject`) -- but
+    # they were never OFFERED to the proposer, which is the half that changed.
+    # Sorted back into the pass's documented order rather than appended, so a
+    # surface rendering this list still reads oldest first.
+    unmatched = sorted(
+        _unexplained(bank_lines, proposals)
+        + [as_bank_line(line) for line in lines.parked],
+        key=lambda line: (line.posted_on, line.line_id),
+    )
     parts = leftovers(
         scope, unmatched,
         unmatched_destinations(scope.destinations, matched),
+        answers,
     )
     bounds = ReviewBounds(
         calendar_opens=opens,

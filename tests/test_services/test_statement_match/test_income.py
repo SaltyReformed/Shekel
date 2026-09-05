@@ -363,13 +363,13 @@ class TestTheLineStopsBeingUnexplained:
         line = _a_deposit(seed_user)
         opens = a_scope(seed_user).calendar.opening_bound()
         before = statement_match.awaiting_review_count(
-            seed_user["account"].id, opens,
+            seed_user["user"].id, seed_user["account"].id, opens,
         )
 
         _record(seed_user, line)
 
         after = statement_match.awaiting_review_count(
-            seed_user["account"].id, opens,
+            seed_user["user"].id, seed_user["account"].id, opens,
         )
         assert (before, after) == (1, 0)
 

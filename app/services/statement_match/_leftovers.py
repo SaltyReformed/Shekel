@@ -7,10 +7,11 @@ review screen SHOW about this pass*, and this answers *what may one line the
 matcher could not explain be turned into*, which is a different question with a
 different grain -- one answer per line, and every one of them a door.
 
-**Three answers, and a FOURTH class that has none** -- which is what this
-module being one module makes visible, and a first draft of this header claimed
-the three were total and was measured FALSE by this step's own adversarial
-review:
+**Three answers, and they are TOTAL over what this module is given** since
+plan step ``bank_import:X-gm``.  *A first draft of this header claimed that at
+plan step ``bank_import:X-gf-1`` and was measured FALSE by that step's own
+adversarial review*, because a FOURTH class reached none of them; the paragraph
+below the three carries what that class was and what deleting it took:
 
 * a line becomes a PURCHASE against a budget line the owner picks
   (:class:`CreatableLine`, ruling **R-FX**).  **Every outflow, and the INFLOWS
@@ -328,8 +329,7 @@ class _SplitLines:
 def _creatable_lines(
     calendar, unmatched: "list[BankLine]",
     destinations: "list[PurchaseDestination]",
-    view: RuleView,
-    bars: CreationBars,
+    answers: MerchantAnswers,
 ) -> "_SplitLines":
     """Split the unmatched lines it is GIVEN into what may be recorded and what may not.
 
@@ -369,14 +369,15 @@ def _creatable_lines(
             whole pass and grouped here rather than
             re-queried per line -- a redundant producer call inside one request
             is this project's DRY violation rather than a cost.
-        view: What the owner has said and what it can resolve against
-            (:class:`~._rules.RuleView`).
-        bars: Which of this account's merchants may not become purchases, and
-            why (:class:`~._bars.CreationBars`, ruling **R-GJ**).  **Asked
+        answers: What the owner has said and which merchants that bars
+            (:class:`~._bars.MerchantAnswers`, ruling **R-GJ**).  **Asked
             BEFORE a destination is resolved**, because a barred line has no
             destination to resolve one against: the placement machinery answers
             *which budget line would this go in*, and for these the answer is
-            that none may, which is a refusal rather than a suggestion.
+            that none may, which is a refusal rather than a suggestion.  It is
+            the whole value rather than its two halves since plan step
+            ``bank_import:X-gm``, because the holding-state test below is a
+            method on it and reads both.
 
     Returns:
         The :class:`_SplitLines` -- one :class:`CreatableLine` per offerable
@@ -435,7 +436,7 @@ def _creatable_lines(
     parked: "list[BarredLine]" = []
     answered_never: "list[BarredLine]" = []
     for line in unmatched:
-        barred = _barred_line(line, bars)
+        barred = _barred_line(line, answers.bars)
         if barred is not None:
             # **THE SOURCE'S FILING DECIDES, AND NOT THE OWNER'S ANSWER**
             # (ruling **bank_import:R-JH**).  A line a source files as paying
@@ -448,13 +449,25 @@ def _creatable_lines(
             # pass so the answer decides MEMBERSHIP rather than only a tab --
             # see this function's ``Returns`` for why the weaker remedy prints
             # a money figure over the wrong line.
-            if barred.also_pays_an_account:
+            #
+            # **The question is asked of ``answers`` and not of the value in
+            # hand** (plan step ``bank_import:X-gm``).  Reading
+            # ``barred.also_pays_an_account`` gave the same answer, and that is
+            # the problem: it was a SECOND spelling of the test
+            # :func:`~._undisposed.inbox_partition` asks to decide what the
+            # grid's badge counts, so the two could drift and the badge would
+            # promise work this tab is holding.  ``CLAUDE.md`` rule 14: one
+            # producer, and every caller reaches it.
+            if answers.is_a_holding_state(
+                amount=line.amount, merchant_id=line.merchant_id,
+            ):
                 parked.append(barred)
             else:
                 answered_never.append(barred)
             continue
         creatable.append(_one_creatable(
-            line, _period_id_for(calendar, line.happened_on), by_period, view,
+            line, _period_id_for(calendar, line.happened_on), by_period,
+            answers.view,
         ))
     return _SplitLines(
         creatable=_marked_joining(creatable),
@@ -774,9 +787,12 @@ class Leftovers:
     """
 
     # Pylint: ``duplicate-code`` -- Incidental field-block similarity with
-    # :class:`~._reads.ReviewSet`, which publishes FIVE of this value's six
-    # names because it is what this value is assembled INTO -- four of them
-    # carrying the same value.  **The FENCE below is narrower than either
+    # :class:`~._reads.ReviewSet`, which publishes ALL SIX of this value's
+    # names because it is what this value is assembled INTO -- five of them
+    # carrying the same value.  *It said SIX of SEVEN until plan step
+    # ``bank_import:X-gm`` deleted ``impossible_day_count``, the one name that
+    # did not travel*; re-read off both field blocks rather than decremented.
+    # **The FENCE below is narrower than either
     # number and deliberately so**: it covers five annotation lines and no
     # logic, of which four carry the same value, because
     # :attr:`account_payments` is separated from the run in BOTH classes
@@ -844,27 +860,35 @@ def leftovers(
     scope: ReviewScope,
     unmatched: "list[BankLine]",
     destinations: "list[PurchaseDestination]",
+    answers: MerchantAnswers,
 ) -> "Leftovers":
     """Return the unexplained outflows placed against the owner's rule.
 
-    **What the owner has SAID is read HERE, not carried on the scope**, for the
-    same reason the claims are (plan step ``bank_import:X-f6a-3d``): a pass can
-    restate a rule, and this screen is re-rendered after the door that does,
-    so a reader taking it off the scope would show the answers the pass had
-    just replaced.  Ruling **R-GJ**'s bars are read at the same instant and for
-    the same reason -- one of them IS an answer, and the other is the absence
-    of one -- and from the answers this view has already read, so one request
-    asks ``merchant_rules`` once.
+    **What the owner has SAID is read at the PASS's instant, not carried on the
+    scope**, for the same reason the claims are (plan step
+    ``bank_import:X-f6a-3d``): a pass can restate a rule, and this screen is
+    re-rendered after the door that does, so a reader taking it off the scope
+    would show the answers the pass had just replaced.  Ruling **R-GJ**'s bars
+    are read at the same instant and for the same reason -- one of them IS an
+    answer, and the other is the absence of one -- and from the answers that
+    view has already read, so one request asks ``merchant_rules`` once.
 
     Args:
         scope: The pass's derived offer set.
         unmatched: The bank lines inside the calendar no proposal explains.
         destinations: The budget lines still open to a new purchase.
+        answers: What the owner has said and which merchants that bars
+            (:class:`~._bars.MerchantAnswers`).  **A parameter since plan step
+            ``bank_import:X-gm``**, which built it here until then: the
+            membership walk that decides what the inbox IS
+            (:func:`~._undisposed.inbox_partition`) asks the same answers, and
+            two reads inside one request is the DRY violation the paragraph
+            above is about -- one instant further apart than the one it names.
+            :func:`~._reads.review_set` reads it once and threads it to both.
 
     Returns:
         The :class:`Leftovers`.
     """
-    answers = MerchantAnswers.build(scope.owner_id, scope.account_id)
     view, bars = answers.view, answers.bars
     # **ONE partition, on what each line is a candidate to BECOME** (plan step
     # ``bank_import:X-gj-2b-2``).  The two halves each took their own SIGN test
@@ -876,7 +900,7 @@ def leftovers(
     by_pipeline = _by_pipeline(unmatched, view)
     split = _creatable_lines(
         scope.calendar, by_pipeline[LinePipeline.PURCHASE], destinations,
-        view, bars,
+        answers,
     )
     return Leftovers(
         creatable=split.creatable,
