@@ -273,18 +273,35 @@ if [ -z "$_restart_requested" ]; then
     # silently STARTED such a container and this one does not.
     _db_status=""
     _have_docker=""
+    _daemon_ok=""
     if command -v docker >/dev/null 2>&1; then
         _have_docker=yes
-        _db_status="$(docker ps -a --filter "name=^${TEST_DB_CONTAINER}$" \
-            --format '{{.Status}}' 2>/dev/null | head -n1 || true)"
+        # Capture docker's EXIT STATUS, not just its output.  Piping straight
+        # into ``head`` and swallowing failure with ``|| true`` made an
+        # unreachable daemon indistinguishable from a container that does not
+        # exist: both yield an empty string.  They want different messages
+        # and different advice -- "docker start" cannot help you when the
+        # daemon is down, and the restart path would go on to say the
+        # container "does not exist", which is not established.
+        # ``if cmd`` suspends errexit for cmd, so a non-zero status here is a
+        # branch rather than an abort.
+        if _db_raw="$(docker ps -a --filter "name=^${TEST_DB_CONTAINER}$" \
+            --format '{{.Status}}' 2>/dev/null)"; then
+            _daemon_ok=yes
+            _db_status="$(printf '%s\n' "$_db_raw" | head -n1)"
+        fi
+        unset _db_raw
     fi
-    # FIVE states.  An earlier version collapsed "docker is not installed"
-    # and "the container does not exist" into one message while two documents
-    # claimed the wrapper told them apart -- so either the code or the docs
-    # had to move, and the code already knows the answer.  Counting them was
-    # then wrong twice in a row, "three" and then "four", which is why
-    # tests/test_scripts/test_test_runner_container_states.py now enumerates
-    # them against real docker output instead of a comment doing it.
+    # The states are enumerated and pinned by
+    # tests/test_scripts/test_test_runner_container_states.py against real
+    # docker output, deliberately, because every attempt to COUNT them in
+    # this comment was wrong: "three", then "four", then "five", each time
+    # written while editing the branch it was counting.  The test is the
+    # census; this comment no longer offers a number.
+    #
+    # Two of them are reached before the case: docker missing, and docker
+    # present with an unreachable daemon.  Only then does an empty status
+    # genuinely mean "no such container".
     #
     # ``*'(Paused)'*`` MUST precede ``Up*``: docker renders a paused
     # container as ``Up 5 minutes (Paused)``, so it matches ``Up*`` and was
@@ -300,6 +317,11 @@ if [ -z "$_restart_requested" ]; then
     if [ -z "$_have_docker" ]; then
         echo "[test.sh] not restarting $TEST_DB_CONTAINER (docker is not on" \
             "PATH) -- set RESTART_TEST_DB=1 to force the hygiene restart" >&2
+    elif [ -z "$_daemon_ok" ]; then
+        echo "[test.sh] cannot reach the docker daemon, so the state of" \
+            "$TEST_DB_CONTAINER is UNKNOWN -- not 'missing'.  pytest will" \
+            "fail to connect unless the database is reachable another way." \
+            "Check the daemon (systemctl status docker, or DOCKER_HOST)." >&2
     else
         case "$_db_status" in
             '')
@@ -326,7 +348,7 @@ if [ -z "$_restart_requested" ]; then
                 ;;
         esac
     fi
-    unset _db_status _have_docker
+    unset _db_status _have_docker _daemon_ok
 elif ! command -v docker >/dev/null 2>&1; then
     echo "[test.sh] docker not on PATH -- skipping container restart" >&2
 elif ! docker inspect "$TEST_DB_CONTAINER" >/dev/null 2>&1; then
