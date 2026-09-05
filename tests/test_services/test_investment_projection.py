@@ -893,10 +893,15 @@ class TestBuildContributionTimeline:
         front-loaded capped deduction that payday is where the money is: an
         adversarial pass measured ``$15.38`` held here.
 
-        **The truth for THIS fixture is ``$37.04``**, not the ``$38.46`` a
-        26-payday year would give: its 2027 holds 27 paydays (asserted
-        below), and ``$1,000 / 27`` is what a full future year pays per
-        payday.  So the count test was 58% low.
+        **The figure being modelled is the ``$1,000`` cap**, which per payday
+        is ``$38.46`` in a 26-payday year and ``$37.04`` in a 27-payday one.
+        This fixture's 2027 holds 27, so the count test's ``$15.38`` is 58%
+        low against that year -- but the hold is a FORWARD rate, and on this
+        fixture's own rhythm 40 of the next 43 years hold 26 paydays, so
+        ``$38.46`` is the better description of what it should model.  *An
+        earlier revision of this docstring called ``$37.04`` "the truth"; an
+        adversarial pass measured that it is this rule's own output on the
+        untruncated window, which grades a fix against its own producer.*
 
         **And the refusal this asserts is further from truth still**, at
         ``$0.00``.  That is the trade taken deliberately: the count test was
@@ -915,7 +920,11 @@ class TestBuildContributionTimeline:
         amounts[observed[0]] = Decimal("400")
         feed = _feed(_periods(*observed), employee=amounts)
 
-        assert len(full_year) == 27, "2027 holds 27 biweekly paydays"
+        assert full_year[-1] == date(2027, 12, 31), (
+            "the 27th payday must still be inside 2027 -- asserting "
+            "len(full_year) instead would be true by construction and would "
+            "pass for an anchor whose year holds 16"
+        )
         assert feed._complete_years() == set()
         # The fallback, not 400/26 == $15.38 dressed as a year's average.
         assert feed.employee_at(date(2040, 1, 1)) == Decimal("0")
@@ -939,7 +948,7 @@ class TestBuildContributionTimeline:
         for day in in_2026[:10]:
             amounts[day] = Decimal("100")     # $1,000, cap reached early
 
-        feed = _feed(_periods(*paydays), employee=amounts)
+        feed = _feed(_periods(*paydays, cadence=7), employee=amounts)
 
         assert 2026 in feed._complete_years()
         assert feed.employee_at(date(2040, 1, 1)) == Decimal("19.23")
@@ -953,12 +962,17 @@ class TestBuildContributionTimeline:
         ]
         assert len({day.year for day in long_year}) == 1
         assert len(long_year) == 53, "2026 holds 53 weekly paydays"
+        # Price one payday, so the two rules differ by a DOLLAR and not just
+        # by a predicate: a count test grades 2026 complete at 52 >= 52 and
+        # averages $100 / 52 == $1.92, where refusing falls back to the last
+        # priced payday, which is $0.00.
         truncated = long_year[1:]
-        short = _feed(
-            _periods(*truncated),
-            employee={day: Decimal("0") for day in truncated},
-        )
+        amounts = {day: Decimal("0") for day in truncated}
+        amounts[truncated[0]] = Decimal("100")
+        short = _feed(_periods(*truncated, cadence=7), employee=amounts)
+
         assert short._complete_years() == set()
+        assert short.employee_at(date(2040, 1, 1)) == Decimal("0")
 
     def test_a_period_PAST_the_calendar_reads_the_held_figure(self):
         """The timeline's domain may run past the owner's saved schedule.

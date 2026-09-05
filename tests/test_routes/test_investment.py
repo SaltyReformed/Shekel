@@ -558,7 +558,7 @@ class TestContributionLimitZeroCap:
 
         deep-quality-hunt #59: the YTD subtracted from the limit is summed
         over periods whose payday is ``<= current_period.start_date``
-        (``investment_projection._ytd_contributions``), so the
+        (``investment_projection._inputs._ytd_contributions``), so the
         per-period suggestion must spread the remainder over the periods
         STRICTLY AFTER the current period -- else the current period is
         double-counted (in YTD *and* in the remaining spread) on the single

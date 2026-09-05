@@ -145,8 +145,8 @@ def _compute_suggested_contribution(ctx: _ProjectionContext) -> Decimal:
 
     ``remaining_periods`` is anchored on ``current_period.start_date`` --
     the SAME boundary the subtracted ``ytd_contributions`` uses
-    (:func:`investment_projection._inputs._ytd_contributions`: same calendar year,
-    ``<= current_period.start_date``).  So the current
+    (:func:`investment_projection._inputs._ytd_contributions`: same
+    calendar year, ``<= current_period.start_date``).  So the current
     period is counted once -- in YTD (already contributed) -- and the
     remaining limit is spread over the periods STRICTLY AFTER it.
     Anchoring on the clock instead double-counted the current

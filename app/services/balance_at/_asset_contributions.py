@@ -13,7 +13,8 @@ it is already an ACTUAL / PLANNED event in the cash fold underneath the replay; 
 payroll deduction never has one, so it is the modelled CONTRIBUTION event
 :func:`contribution_events` dates.  The two feeds are therefore disjoint BY
 CONSTRUCTION and there is no de-dup rule to get wrong -- which is why nothing
-here reads ``investment_projection._average_transfer_contribution``, the scalar
+here reads ``investment_projection._inputs._average_transfer_contribution``,
+the scalar
 that folds both feeds into one number and so makes them indistinguishable.  The
 recorded feed IS read here, for the two things a cash delta cannot say: how much
 of the calendar year's contribution limit is already consumed, and what employee

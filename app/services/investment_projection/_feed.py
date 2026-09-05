@@ -15,8 +15,12 @@ EMPLOYEE hold asks (the gross hold does not: it holds at the nearest priced
 payday, which needs no year) -- and because the two halves together broke
 pylint's 1000-line ceiling.  The split falls to whoever breaks it, per ruling
 ``balance:R-IR``.  Nothing outside the package imports this module: the
-package re-exports the class under its original path, so every reference
-written before the split still resolves.
+package re-exports every public name under its original path, so imports and
+``:class:`` references written before the split resolve unchanged.  The
+PRIVATE names moved with their code and their four references were repointed
+at ``._inputs`` -- two in the splitting commit and two an adversarial pass
+found surviving it, which is why this sentence now says which names it
+covers.
 """
 
 from collections.abc import Mapping
@@ -201,12 +205,14 @@ class AccountPayrollFeed:
         wrong on exactly that shape (``docs/plans/lessons.md``, the R14-b
         entry, holds the three and their figures).  The fallback is exact for
         an uncapped deduction, which is every live one on the developer's
-        data, and reads a capped one's trailing CLAMPED figure, which
-        understates -- except on a window shorter than the cap takes to bind,
-        where it reads the UNCLAMPED rate, and annualises to
-        ``amount x periods_per_year`` against the cap (13x for the
-        ``$500``-a-payday, ``$1,000``-capped biweekly case; the ratio, not
-        the multiple, is the bound).
+        data, and reads a capped one's trailing CLAMPED figure -- unless the
+        window ends just past a January, where the cap has reset and that
+        payday is a fresh UNCLAMPED payment.  **Then it OVERSTATES**, by
+        15.6x on a measured 27-payday biweekly window and 31.2x on its weekly
+        analogue.  The trigger is not window LENGTH, which an earlier
+        revision claimed; it is which calendar year the window's last payday
+        falls in.  See the fallback branch below for the measurement and for
+        why no rule over this fold can close it.
 
         The residue is the SHORT window, not a cadence: any owner whose saved
         schedule covers one whole calendar year gets the exact figure,
@@ -229,25 +235,40 @@ class AccountPayrollFeed:
             by_year.setdefault(payday.year, []).append(amount)
         complete = sorted(self._complete_years())
         if not complete:
-            # No complete year, so no annual total to divide.  The LAST
-            # PRICED payday is the fallback: exact for an uncapped deduction
-            # (its rate is the same every payday), and for a capped one it
-            # reads the trailing clamped figure, which understates rather
-            # than over -- except in a window so short the cap has not
-            # bound yet, where it reads the unclamped rate (measured: a
-            # $1,000-capped deduction on a one- or two-payday biweekly
-            # window holds $500, annualising to $13,000, 13x the cap; the
-            # ratio scales with the owner's cadence).
+            # No complete year, so no annual total to divide, and the LAST
+            # PRICED payday is the fallback.  **It is the weakest thing in
+            # this module and it can OVERSTATE without bound.**  It reads one
+            # payday, so it inherits whatever that payday happened to be: for
+            # an uncapped deduction that is exact, and for a capped one it is
+            # the trailing CLAMPED figure -- unless the window ends just past
+            # a January, where the cap has reset and the last payday is a
+            # fresh UNCLAMPED payment.
             #
-            # **This branch can sit FURTHER from the truth than the count
-            # test it replaced.**  On a 27-payday year seen 26 times with a
-            # front-loaded cap, the count test averaged $15.38 and this
-            # refuses to $0.00 against a true $37.04.  The refusal is still
-            # right: the count test was wrong about WHICH years it could
-            # average (129 of 20,000 randomised windows; this rule, 0), and
-            # every disagreement moves the figure DOWN, never up.  Trading a
-            # confident wrong number for a conservative one is the most an
-            # extrapolation can do; the salary-path step stops extrapolating.
+            # Measured, biweekly, a $600-a-payday deduction against a $1,000
+            # cap on 2027-01-15..2028-01-14: this holds $600, annualising to
+            # $15,600, **15.6x the cap**, for the whole tail.  A one- or
+            # two-payday window is the same defect earlier: $500 held,
+            # $13,000 annualised, 13x.  The ratio scales with cadence (31.2x
+            # measured weekly), so the multiple is an instance, not a bound.
+            #
+            # **An earlier revision of this comment claimed every
+            # disagreement with the count test moves the figure DOWN, never
+            # up, and used that as the warrant for accepting a larger
+            # absolute error.  An adversarial pass measured it FALSE** on the
+            # window above, where the count test holds the CORRECT $38.46.
+            # The premise was true -- coverage accepts a strict subset of the
+            # count test's years -- but shrinking that set to EMPTY switches
+            # formula, and the fallback is not conservative.  There is no
+            # warrant, and none is claimed now: no rule over this fold can be
+            # safe, because the fold does not carry the cap that would bound
+            # it.  Reverting to the count test does not fix it either
+            # (measured over 730 anchors at 27 paydays: coverage over-reads
+            # the cap on 30 windows, the count test on 28).  What fixes it is
+            # the ENGINE pricing the tail, which is the salary-path step.
+            #
+            # The exposure is bounded by window shape rather than argued
+            # away: over the same 730 anchors, NO window of 40 or 63 paydays
+            # over-reads under either rule, capped or uncapped.
             last = self.employee_by_payday[max(self.employee_by_payday)]
             first = self.employee_by_payday[min(self.employee_by_payday)]
             return (first, last)
@@ -263,13 +284,18 @@ class AccountPayrollFeed:
 
         **The EMPLOYEE hold asks this**, and two adversarial passes measured
         it wrong when it was asked of the CADENCE instead.  (The gross hold
-        asks nothing of years; it holds at the nearest priced payday, because
-        a gross is never skipped.)  ``periods_per_year`` is a constant; the number wanted is
+        asks nothing of years; it holds at the nearest priced payday,
+        because a gross is never skipped.)  ``periods_per_year`` is a
+        constant; the number wanted is
         how many paydays THIS calendar year holds, and a biweekly year holds
         27 about one year in eleven (26 x 14 is 364 days, so the extra day
         accumulates).  Dividing such a year by the cadence overstates the
         whole tail, and a ``>=`` count test grades it COMPLETE on 26 of its
-        27 observed, understating a front-loaded capped deduction.  The two
+        27 observed, understating a front-loaded capped deduction.  This rule
+        is exact on both: two adversarial passes graded it against a rhythm
+        oracle over 200,000 randomised windows at cadences 1-45 with zero
+        mismatches, and its only refusals are windows of one payday, which
+        cannot establish an interval.  The two
         shapes are pinned by ``test_a_27_PAYDAY_year_is_divided_by_27`` and
         ``test_a_27_PAYDAY_year_seen_26_times_is_NOT_complete`` in
         ``TestBuildContributionTimeline``.
