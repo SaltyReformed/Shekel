@@ -73,7 +73,23 @@ CAPS = {
     # calibration would allow 8 x 3.4 = 27 more; 1200 is the minimum that
     # clears the 20-line headroom and does not exceed what the document
     # carried before the registries left.
-    "balance": 1200,
+    # **RAISED 1200 -> 1280 by the developer, 2026-09-05**, on rule 4's terms
+    # and WITH an archive rather than instead of one.  The cap BOUND minting
+    # `balance:X-bs`: the README sat at exactly 1180, its effective ceiling,
+    # with 50 open steps occupying 805 lines and rule 5 forbidding a trim of
+    # any of them.  **Rule 5's escape was spent FIRST and found nearly empty**
+    # -- 41 shipped entries, all already pointers, and a census of what a live
+    # sentence depends on leaves TEN archivable (X-am, X-au-c, X-au-g-2a,
+    # X-aw, X-bd, X-be-2, X-be-3, X-bh-1, X-bh-2, X-i3-b), about 11 lines,
+    # against the 6-8 one step needed and the 50 still owing.  `X-br-1` is NOT
+    # among them despite naming no step: its entry carries an "a later step
+    # must obey" clause, which rule 5 protects and a name-based census cannot
+    # see.  The calibration that set the last two raises -- bank_import's 3.4
+    # lines per open step -- gives 50 x 3.4 = 170 of room and would allow
+    # 1350; 1280 is well under it.  It is the FIRST raise above the 1,200 this
+    # document carried before the registries left, and it is taken together
+    # with the archive rather than as a substitute for it.
+    "balance": 1280,
     # **RAISED 850 -> 900 by the developer, 2026-09-03**, on rule 4's terms and
     # by the same calibration that raised the balance README.  The cap BOUND
     # while minting `recurrence:R7d-h`: the document sat at 843 with 23 open
