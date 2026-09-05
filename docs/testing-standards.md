@@ -24,10 +24,11 @@ must-knows; a fact lives in one tier and the other tiers point at it.
 
 - **Invoke via `./scripts/test.sh`, not bare `pytest`.** The wrapper resolves the test DSNs out of
   `.env`, defaults the marker expression, and forwards all arguments verbatim.
-  **It restarts `shekel-dev-test-db` only when `RESTART_TEST_DB` is set, to any non-empty value**
-  (see "Catalog fragmentation and the test-runner wrapper" below for what the restart buys and why
-  it is opt-in), and falls through to plain pytest when the container is absent (CI, fresh
-  checkout).
+  **It restarts `shekel-dev-test-db` only when `RESTART_TEST_DB` is truthy** --
+  `1`/`true`/`yes`/`on` restart, `0`/`false`/`no`/`off` and unset do not, and anything else exits 2
+  rather than being guessed at. See "Catalog fragmentation and the test-runner wrapper" below for
+  what the restart buys and why it is opt-in. The wrapper falls through to plain pytest when the
+  container is absent (CI, fresh checkout).
 - **Container-spawning deploy tests are excluded by default.** The `tests/test_deploy` integration
   tests that drive a real `docker` daemon are marked `@pytest.mark.docker`, and `./scripts/test.sh`
   defaults to `-m "not docker"` so a routine local run never spawns containers on the host's
@@ -36,10 +37,13 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   bare `pytest` reaches the system daemon outside CI. Opt in locally with
   `SHEKEL_ALLOW_HOST_DOCKER=1 PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/...`.
   Full rationale and the daemon-isolation plan: `docs/test-harness-isolation.md`.
-- **Full suite:** ~11,800 tests, ~4.5-5 min at the default `-n 12` parallelism (set in `pytest.ini`
+- **Full suite:** ~13,000 tests, ~6-8 min at the default `-n 12` parallelism (set in `pytest.ini`
   `addopts`). Measured 2026-08-30: 11,788 passed in 278-296 s over four runs, ~18 s run-to-run
-  variance. Do not quote these figures without their date; the wrapper's own output is the current
-  measurement.
+  variance. Measured 2026-09-04 on `chore/test-restart-default`: 13,019 passed in 370 s and 477 s,
+  both under the suite slot with `RESTART_TEST_DB=1`, so contention explains neither.
+  **Do not quote any of these without their date** -- the spread across five runs in six days is
+  wide enough that a bare number is not evidence, and the count moves with the branch. The wrapper's
+  own output is the current measurement.
 - **Concurrent invocations are serialized by the suite slot** (`scripts/suite_slot.sh`, PR #199,
   2026-09-02): `acquire <name>` before a gating run, `release <name>` after, `status` to inspect.
   The postmaster is SHARED. A `RESTART_TEST_DB=1` run attempts a hygiene restart first, and its
@@ -134,17 +138,18 @@ Escape hatches:
   [test.sh] not restarting shekel-dev-test-db (Up 14 minutes (healthy)) -- set RESTART_TEST_DB=1 to force the hygiene restart
   ```
 
-  It is not printed on every run: with docker absent, or the container absent or stopped, there is
-  no uptime to report and the wrapper says which of those it found -- the stopped case loudly,
-  because pytest is about to fail to connect and the old opt-out default used to start such a
-  container silently.
+  It is not printed on every run. There are four states and the wrapper names which one it found:
+  docker absent, container absent, container up, or container not up -- and the last splits again,
+  because a PAUSED container reports as `Up 5 minutes (Paused)` and would otherwise read as healthy
+  while pytest HANGS against a stopped postmaster. The not-running cases are said loudly: pytest is
+  about to fail to connect, and unlike the old opt-out default nothing starts the container for you.
   **The `~15 ms` CREATE/DROP cutoff this section named as the trigger is WITHDRAWN, not moved**: the
-  table above reads 14.6 ms on a FRESHLY restarted container and 15.6 ms after one run, so the
-  threshold fired immediately and meant either "restart every time" or nothing -- and those figures
-  were taken under `STRATEGY FILE_COPY`, which the clone no longer uses. No replacement threshold is
-  offered here, because re-deriving one under `WAL_LOG` belongs to the work that removes the shared
-  cluster rather than to this wrapper: until then uptime is the signal and a gating run is the
-  occasion.
+  table above reads 14.6 ms on a FRESHLY restarted container and 15.6 ms after ONE run, so the
+  threshold fired after a single run and meant "restart every time" in the clothes of a
+  measurement -- and those figures were taken under `STRATEGY FILE_COPY`, which the clone no longer
+  uses. No replacement threshold is offered here, because re-deriving one under `WAL_LOG` belongs to
+  the work that removes the shared cluster rather than to this wrapper: until then uptime is the
+  signal and a gating run is the occasion.
 - `TEST_DB_CONTAINER=other-container-name ./scripts/test.sh` -- point at a different test-db
   container (e.g. when running against a staging cluster on a different port). The wrapper answered
   to the bare `DB_CONTAINER` until 2026-09-04, which is the same environment variable

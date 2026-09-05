@@ -25,10 +25,12 @@
 #
 #     TREAT THOSE FIGURES AS A SHAPE, NOT A SCALE.  They were
 #     measured at ``c1e9c775`` (2026-05-20) against ~5,504 tests,
-#     when the clone used ``STRATEGY FILE_COPY``; the suite is
-#     ~11,788 now (docs/testing-standards.md, measured 2026-08-30,
-#     so roughly double) and the clone uses ``WAL_LOG``
-#     (tests/conftest.py).  The DRIFT is real; every absolute number
+#     when the clone used ``STRATEGY FILE_COPY``; this branch's own
+#     gate collected 13,019 on 2026-09-04, about 2.4x, and the clone
+#     uses ``WAL_LOG`` (tests/conftest.py).  Re-derive the ratio from
+#     the run in front of you rather than trusting this sentence --
+#     its first draft said "a fifth", its second quoted a count older
+#     than the gate in the same commit.  The DRIFT is real; every absolute number
 #     describing it is from a different suite on a different clone
 #     strategy, and re-measuring it belongs to the work that removes
 #     the shared cluster entirely.
@@ -37,8 +39,10 @@
 #     ``docs/testing-standards.md`` withdraws it rather than
 #     re-pinning it: a CREATE/DROP round-trip "past ~15 ms" was once
 #     offered as the signal to restart, and the same table reads
-#     14.6 ms on a FRESHLY restarted container and 15.6 ms after one
-#     run.  It fired immediately or never.
+#     14.6 ms on a FRESHLY restarted container and 15.6 ms after ONE
+#     run.  So it fired after a single run -- the cutoff sits inside
+#     one run's worth of movement, which makes it "restart every
+#     time" wearing the clothes of a measurement.
 #
 # Why it is OPT-IN, and was not always (inverted 2026-09-04)
 #     The restart used to happen on EVERY invocation unless
@@ -67,8 +71,10 @@
 #     when it skips the restart -- uptime when the container is up,
 #     and the exit status when it is not.
 #
-# Restarts ONLY when ``RESTART_TEST_DB`` is set to a non-empty value, and
-# even then skips -- loudly -- when:
+# Restarts ONLY when ``RESTART_TEST_DB`` is truthy -- ``1``/``true``/
+# ``yes``/``on``; the falsy words do not restart and an unrecognised value
+# exits 2 (the full table is under "Environment variables read" below).
+# Even when truthy it skips -- loudly -- when:
 #   * ``docker`` is not on PATH, or the container does not exist
 #     (CI, fresh checkout) -- runs pytest directly so the same
 #     wrapper works in both environments.
@@ -258,28 +264,52 @@ if [ -z "$_restart_requested" ]; then
     # and the stopped case is called out, because the old opt-out default
     # silently STARTED such a container and this one does not.
     _db_status=""
+    _have_docker=""
     if command -v docker >/dev/null 2>&1; then
+        _have_docker=yes
         _db_status="$(docker ps -a --filter "name=^${TEST_DB_CONTAINER}$" \
             --format '{{.Status}}' 2>/dev/null | head -n1 || true)"
     fi
-    case "$_db_status" in
-        '')
-            echo "[test.sh] not restarting $TEST_DB_CONTAINER (no such" \
-                "container, or docker unavailable) -- set RESTART_TEST_DB=1" \
-                "to force the hygiene restart" >&2
-            ;;
-        Up*)
-            echo "[test.sh] not restarting $TEST_DB_CONTAINER ($_db_status)" \
-                "-- set RESTART_TEST_DB=1 to force the hygiene restart" >&2
-            ;;
-        *)
-            echo "[test.sh] $TEST_DB_CONTAINER is NOT RUNNING ($_db_status)." \
-                "pytest will fail to connect.  Start it with" \
-                "'docker start $TEST_DB_CONTAINER', or run with" \
-                "RESTART_TEST_DB=1, which starts it as part of the restart." >&2
-            ;;
-    esac
-    unset _db_status
+    # FOUR states, not three.  An earlier version collapsed "docker is not
+    # installed" and "the container does not exist" into one message while
+    # two documents claimed the wrapper told them apart -- so either the
+    # code or the docs had to move, and the code already knows the answer.
+    #
+    # ``*'(Paused)'*`` MUST precede ``Up*``: docker renders a paused
+    # container as ``Up 5 minutes (Paused)``, so it matches ``Up*`` and was
+    # reported as healthy while its postmaster is SIGSTOPped -- pytest then
+    # HANGS rather than failing, which is the worst of the four outcomes and
+    # exactly what this branch exists to prevent.
+    if [ -z "$_have_docker" ]; then
+        echo "[test.sh] not restarting $TEST_DB_CONTAINER (docker is not on" \
+            "PATH) -- set RESTART_TEST_DB=1 to force the hygiene restart" >&2
+    else
+        case "$_db_status" in
+            '')
+                echo "[test.sh] not restarting $TEST_DB_CONTAINER (no such" \
+                    "container) -- set RESTART_TEST_DB=1 to force the" \
+                    "hygiene restart" >&2
+                ;;
+            *'(Paused)'*)
+                echo "[test.sh] $TEST_DB_CONTAINER is PAUSED ($_db_status)." \
+                    "pytest will HANG rather than fail.  Resume it with" \
+                    "'docker unpause $TEST_DB_CONTAINER'." >&2
+                ;;
+            Up*)
+                echo "[test.sh] not restarting $TEST_DB_CONTAINER" \
+                    "($_db_status) -- set RESTART_TEST_DB=1 to force the" \
+                    "hygiene restart" >&2
+                ;;
+            *)
+                echo "[test.sh] $TEST_DB_CONTAINER is NOT RUNNING" \
+                    "($_db_status).  pytest will fail to connect.  Start it" \
+                    "with 'docker start $TEST_DB_CONTAINER', or run with" \
+                    "RESTART_TEST_DB=1, which starts it as part of the" \
+                    "restart." >&2
+                ;;
+        esac
+    fi
+    unset _db_status _have_docker
 elif ! command -v docker >/dev/null 2>&1; then
     echo "[test.sh] docker not on PATH -- skipping container restart" >&2
 elif ! docker inspect "$TEST_DB_CONTAINER" >/dev/null 2>&1; then

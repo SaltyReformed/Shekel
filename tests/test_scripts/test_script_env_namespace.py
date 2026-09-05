@@ -1,4 +1,4 @@
-"""The test runner shares no operator variable with any other shell script.
+r"""The test runner shares no operator variable with any other shell script.
 
 ``scripts/test.sh`` read the bare ``DB_CONTAINER`` from the environment to
 name the test-db container.  ``scripts/backup.sh``, ``scripts/restore.sh``
@@ -49,11 +49,15 @@ What the extractor matches, and which way it errs
     not narrow the pattern back.  Nothing else catches that shape either:
     shellcheck flags UNQUOTED expansions, not unbraced ones -- SC2250 is
     optional and this repo's ``.shellcheckrc`` does not enable it, and
-    ``scripts/test.sh`` itself expands ``"$TEST_DB_CONTAINER"`` unbraced in
-    nine places while shellcheck exits clean.  (Seven was this docstring's
-    own first answer, counted before the change added two more echo lines
-    and never re-counted -- exactly the class of claim this module's
-    reviewers kept finding.)
+    ``scripts/test.sh`` itself expands ``"$TEST_DB_CONTAINER"`` unbraced
+    throughout while shellcheck exits clean; count them with
+    ``grep -c '\$TEST_DB_CONTAINER' scripts/test.sh`` rather than trusting a
+    number here.  This sentence carried a literal count twice and was wrong
+    both times -- "seven", then "nine" against an actual twelve, each written
+    just after editing the very file being counted.  A figure that must be
+    re-derived on every edit of its own subject does not belong in prose, and
+    the argument never needed it: what matters is that the form is used at
+    all and that nothing else flags it.
 
     Case is the filter that keeps this quiet enough to live with.  Operator
     -settable variables in these scripts are ALL-CAPS by convention and
@@ -145,6 +149,26 @@ def _other_shell_scripts() -> list[Path]:
     return sorted(found - {_TEST_RUNNER})
 
 
+def _names_in_source(source: str) -> set[str]:
+    """Return the upper-case names expanded or assigned in shell source.
+
+    Split out from :func:`_upper_case_names` so the UNION of the two regexes
+    is reachable from a test without a file on disk.  It was not, and the
+    consequence was measured: substituting a never-matching pattern for
+    ``_ENV_WRITE`` left all of this module's tests green, so the capability
+    added to catch the write bridge was itself unguarded and could have been
+    narrowed or deleted by anyone without breaking a thing.
+
+    Args:
+        source: Shell script text.
+
+    Returns:
+        Upper-case expanded and assigned names, minus shell-owned ones.
+    """
+    found = set(_ENV_READ.findall(source)) | set(_ENV_WRITE.findall(source))
+    return found - _SHELL_OWNED
+
+
 def _upper_case_names(relative_path: Path) -> set[str]:
     """Return the upper-case names a shell script expands or assigns.
 
@@ -168,9 +192,9 @@ def _upper_case_names(relative_path: Path) -> set[str]:
         draft filtered for it and documented the filter as live, which was
         dead code describing itself as load-bearing.
     """
-    source = (_REPO_ROOT / relative_path).read_text(encoding="utf-8")
-    found = set(_ENV_READ.findall(source)) | set(_ENV_WRITE.findall(source))
-    return found - _SHELL_OWNED
+    return _names_in_source(
+        (_REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    )
 
 
 class TestScriptEnvNamespace:
@@ -243,6 +267,37 @@ class TestScriptEnvNamespace:
             f"extractor matched {sorted(found)}; it must see both expansion "
             "forms, because a back-compat shim is written unbraced"
         )
+
+    def test_extractor_sees_assignment_targets(self) -> None:
+        """The WRITE half of the union is live, and is exercised here.
+
+        ``_ENV_WRITE`` exists to catch the bridge a read-only extractor
+        cannot see::
+
+            export DB_CONTAINER="$TEST_DB_CONTAINER"
+
+        A review measured that deleting it changed nothing any test asserted
+        -- the runner's name set was byte-identical and all tests stayed
+        green -- so the capability was present but unguarded.  These
+        assertions fail if it is removed, narrowed to exports only, or
+        allowed to match lower-case locals.
+        """
+        assert set(_ENV_WRITE.findall("export FOO=1\n  BAR=2\nbaz=3\n")) == {
+            "FOO",
+            "BAR",
+        }, "the assignment regex must see plain and exported ALL-CAPS targets"
+
+        # The union, not just the regex: a name that is only ever ASSIGNED
+        # must still reach the disjointness comparison.  The left-hand side
+        # here is deliberately lower-case -- an upper-case one would itself
+        # be an assignment target and muddy which regex contributed what,
+        # which is exactly how this assertion was wrong on first writing.
+        assert _names_in_source(
+            'local_x="$READ_ONLY"\nexport WRITE_ONLY=1\n'
+        ) == {
+            "READ_ONLY",
+            "WRITE_ONLY",
+        }, "_names_in_source must union expansions with assignment targets"
 
     @pytest.mark.parametrize(
         "other", _other_shell_scripts(), ids=lambda p: p.as_posix()

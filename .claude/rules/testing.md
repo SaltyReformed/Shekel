@@ -22,8 +22,10 @@ change here updates that mirror in the same commit.
   opt-OUT, so a careless `=0` used to land on "skip" and must not now land on "restart the
   shared container". The restart is fragmentation hygiene, not a correctness gate: ask for
   it before a gating full-suite run. A run that skips the restart reports the container's
-  state -- its uptime when it is up, and which of docker-absent / container-absent /
-  container-stopped it found when it is not. That is the only drift signal there is:
+  state -- its uptime when it is up, and otherwise which of docker-absent, container-absent,
+  container-paused or container-not-running it found (paused is called out separately
+  because it reports as `Up ... (Paused)` and would otherwise read as healthy while pytest
+  hangs). That is the only drift signal there is:
   `docs/testing-standards.md` withdraws the `~15 ms` CREATE/DROP cutoff that once served as
   the trigger, as self-refuting.
 - **It also defaults to `-m "not docker"`, which DESELECTS 28 container-spawning
