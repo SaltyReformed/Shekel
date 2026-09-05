@@ -128,6 +128,13 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
                           whole rule; in one sentence, it is the FLOOR on
                           the backward payday rhythm and ``NULL`` means NOT
                           STATED, which counts only the recorded paydays.
+      ``shift_id`` -- what payroll does when a payday lands on a day no
+                          money moves on, keyed to ``ref.business_day_shifts``
+                          (``none`` / ``prior`` / ``next``).  ``NOT NULL``,
+                          and every row starts at ``none``, so the behaviour
+                          is off until an owner answers.  See the column
+                          comment below for why it carries no CHECK and no
+                          default.
       ``user_id`` -- from :class:`UserScopedMixin` (CASCADE FK to
                           ``auth.users.id``).
       ``created_at`` -- from :class:`CreatedAtMixin`.
@@ -212,6 +219,70 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
     # a RECORD boundary, and writing it here would state as fact exactly the
     # guess ledger row N-390 measured at $14,103.84 against a true $31,733.64.
     history_opens_on = db.Column(db.Date, nullable=True)
+    # What payroll does when a payday lands on a weekend or a federal holiday
+    # (plan step pay_calendar:C14-b, rulings R-PC47 and R-PC56).  The
+    # vocabulary is the EXISTING ref.business_day_shifts seeded at
+    # recurrence:R2, which budget.recurrence_rules.shift_id already keys to,
+    # so a bill's cash date and a payday ask one question of one table.
+    #
+    # It carries NO server_default, and the reason is the same one that keeps
+    # every other ref comparison out of the schema: which integer means
+    # ``none`` is SEED DATA, not a schema constant, so a default written into
+    # the DDL would be a literal nobody can re-derive -- and the failure would
+    # be silent in the money-moving direction, a row defaulting to ``prior``
+    # displacing paydays its owner never asked to move.  The rule "a new
+    # schedule displaces nothing" is a business rule, so it lives at the one
+    # door that creates a row (``pay_schedule_service.upsert_schedule``),
+    # which resolves the id through ``ref_cache`` exactly as
+    # ``recurrence._authoring`` does for the same table.  A writer that
+    # forgets therefore gets a NOT NULL violation rather than a wrong
+    # convention.
+    #
+    # It carries NO CHECK either, and that is a DELIBERATE absence the
+    # developer ruled on 2026-09-05 rather than an omission (**R-PC59**).
+    # A displacing
+    # convention needs a cadence longer than the longest run of consecutive
+    # closed days, or two nominal paydays displace onto one day and
+    # ``pay_calendar._derive.derive_periods`` refuses the whole calendar.
+    # That floor is DERIVED from the holiday set -- see
+    # :func:`app.utils.business_days.shortest_collision_free_cadence`, which
+    # proves it is the longest closed run plus one -- and the holiday set is
+    # not fixed (``business_days.JUNETEENTH_FIRST_YEAR`` records it changing
+    # once inside this application's own calendar).  A CHECK expression must
+    # be IMMUTABLE, so a constraint could only freeze the number where nothing
+    # can recompute it.  The refusal is therefore
+    # ``pay_schedule_service.reject_shift_on_short_cadence``, asked by
+    # ``upsert_schedule`` -- the column's ONE writer, which writes the cadence
+    # and the convention in a single statement so the pair is judged against
+    # the state the operation leaves behind.
+    #
+    # A CHECK could not have been the primary refusal in any case, because it
+    # cannot name a FIELD: a constraint violation arrives as an IntegrityError
+    # with a constraint name, where a form needs the message attached to the
+    # control the owner chose.  That is what
+    # ``schemas.validation.pay_periods.validate_derivable_rhythm`` does, and it
+    # is the same reason plan step X-ad-a moved the cadence BOUND out from
+    # behind ``ck_pay_schedule_cadence_range`` and into the write door.
+    #
+    # **What a CHECK would still leave undone, stated because an earlier draft
+    # of this comment claimed the opposite about PostgreSQL and was wrong.**
+    # ``ADD CONSTRAINT`` without ``NOT VALID`` DOES scan every existing row, so
+    # a migration that re-adds the constraint at a new floor fails loudly on a
+    # row that has become illegal.  What is not re-evaluated is an IN-PLACE
+    # constraint over rows nobody updates.  The honest statement of the gap is
+    # therefore narrower and it applies to the DOOR as much as to a CHECK: a
+    # refusal asked only on write cannot see a stored row that a LATER holiday
+    # change made illegal, and nothing reconciles ``budget.pay_schedule``
+    # today.  That is a finding this step reports rather than a property it
+    # claims (adversarial design review, 2026-09-05).
+    shift_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.business_day_shifts.id", ondelete="RESTRICT",
+            name="fk_pay_schedule_shift_id",
+        ),
+        nullable=False,
+    )
     # user_id (UserScopedMixin) and created_at (CreatedAtMixin) render
     # at the table tail; see the mixin docstrings for the DDL contract.
 

@@ -20,6 +20,7 @@ from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service, credit_workflow, pay_period_write
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
+    rhythm_of,
     settle_day_columns,
     settlement_columns,
 )
@@ -753,7 +754,7 @@ class TestCarryForward:
                 user_id=user2.id,
                 first_payday=date(2026, 6, 1),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 

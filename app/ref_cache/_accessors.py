@@ -254,6 +254,46 @@ def business_day_shift_id(member):
     return cache().enum_ids[BusinessDayShiftEnum][member]
 
 
+def business_day_shift_member(shift_id):
+    """Return the BusinessDayShiftEnum member an id names, or ``None``.
+
+    :func:`business_day_shift_id`'s INVERSE, and the only inverse this module
+    carries.  It is here rather than in a domain module because this
+    vocabulary is the one two arcs share (``pay_calendar:R-PC47``): the pay
+    schedule's payday convention and a recurrence rule's cash-date shift are
+    one question of one table, so a second implementation of "which member is
+    this id" would be the drift that ruling exists to prevent.  The recurrence
+    axes that are NOT shared keep their own lookups in
+    ``app.services.recurrence._vocabulary``.
+
+    A linear scan of three members rather than a stored inverse map, for
+    ``modelled_unit``'s reason: the value is resolved when a schedule form is
+    read or written, never per row of a grid.
+
+    ``None`` rather than a raise, because both askers are reading something a
+    user may repair -- a submitted id the form can refuse with a field error,
+    and a stored id an owner can re-answer -- rather than asserting an
+    invariant.
+
+    Args:
+        shift_id: A stored or submitted ``ref.business_day_shifts.id``.
+
+    Returns:
+        The matching ``BusinessDayShiftEnum`` member, or ``None`` -- either
+        because the id is not a row at all, or because it is a row this
+        application does not model.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+    """
+    require_init()
+    ids = cache().enum_ids[BusinessDayShiftEnum]
+    for member in BusinessDayShiftEnum:
+        if ids[member] == shift_id:
+            return member
+    return None
+
+
 def acct_type_icon(type_id):
     """Return the Bootstrap icon class for an account type, or a default.
 

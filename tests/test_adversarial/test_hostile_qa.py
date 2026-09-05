@@ -14,6 +14,7 @@ import pytest
 
 from app.enums import SettlementBasisEnum
 from tests._test_helpers import (
+    rhythm_of,
     default_settle_day,
     freeze_today,
     settle_day_columns,
@@ -994,7 +995,7 @@ class TestAuthEdgeCases:
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 

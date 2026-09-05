@@ -56,7 +56,7 @@ from app.services.pay_calendar import (
     calendar_at_schedule,
     calendar_for,
 )
-from tests._test_helpers import all_periods
+from tests._test_helpers import all_periods, rhythm_of
 
 #: ``seed_periods``' first payday, restated so the assertions below name a value
 #: rather than a bare literal.  Changing the fixture without changing this is
@@ -101,7 +101,7 @@ def _schedule_with_a_payday_jump(db_session, user_id):
         user_id=user_id,
         first_payday=FIRST_PAYDAY,
         num_periods=PERIOD_COUNT,
-        cadence_days=CADENCE,
+        rhythm=rhythm_of(CADENCE),
     )
     db_session.commit()
     return periods
@@ -157,7 +157,7 @@ class TestItLoadsTheOwnersWholeSchedule:
                 user_id=second,
                 first_payday=FIRST_PAYDAY + timedelta(days=7),
                 num_periods=3,
-                cadence_days=CADENCE,
+                rhythm=rhythm_of(CADENCE),
             )
             db.session.commit()
 
@@ -242,7 +242,7 @@ class TestItLoadsTheOwnersWholeSchedule:
                 synchronize_session=False,
             )
             db.session.commit()
-            pay_schedule_service.upsert_schedule(user_id, CADENCE + 7)
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7))
             db.session.commit()
 
             calendar = calendar_for(user_id)
@@ -335,7 +335,7 @@ class TestTheCadenceComesFromTheScheduleService:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_schedule_service.upsert_schedule(user_id, CADENCE + 7)
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7))
             db.session.commit()
 
             assert calendar_for(user_id).cadence_days == CADENCE + 7
@@ -366,7 +366,7 @@ class TestTheCadenceComesFromTheScheduleService:
             user_id = seed_user["user"].id
             before = calendar_for(user_id)
 
-            pay_schedule_service.upsert_schedule(user_id, CADENCE + 7)
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7))
             db.session.commit()
             after = calendar_for(user_id)
 
@@ -443,7 +443,7 @@ class TestTheDerivedCalendarDivergesFromTheStoredColumns:
 
             # LENGTHENED: the derived horizon runs a week further out, so
             # generation places rows in days it did not reach before.
-            pay_schedule_service.upsert_schedule(user_id, CADENCE + 7)
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7))
             db.session.commit()
             assert calendar_for(user_id).horizon() == (
                 baseline + timedelta(days=7)
@@ -452,7 +452,7 @@ class TestTheDerivedCalendarDivergesFromTheStoredColumns:
             # SHORTENED: eleven days of the last paycheck stop being covered by
             # any period at all, and the day that was the horizon is now past
             # the end of the schedule.
-            pay_schedule_service.upsert_schedule(user_id, 3)
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(3))
             db.session.commit()
             shorter = calendar_for(user_id)
             assert shorter.horizon() == baseline - timedelta(days=11)

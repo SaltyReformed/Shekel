@@ -35,6 +35,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
+    rhythm_of,
     all_periods,
     pay_periods_hydrated,
     an_asserted_day,
@@ -209,7 +210,7 @@ def _create_other_user_with_template():
         user_id=other_user.id,
         first_payday=date(2026, 1, 2),
         num_periods=3,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
 
@@ -2596,7 +2597,7 @@ def _create_second_user_transfer(second_user_data):
         user_id=second_user_data["user"].id,
         first_payday=_date(2026, 1, 2),
         num_periods=3,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
 

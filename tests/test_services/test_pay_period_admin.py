@@ -46,6 +46,7 @@ from app.services.pay_period_locks import PeriodLockReason
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    rhythm_of,
     add_txn,
     assert_pay_period_invariants,
     bare_expense_template,
@@ -70,7 +71,7 @@ def _make_future_periods(db_session, seed_user, count=5):
         user_id=seed_user["user"].id,
         first_payday=_FUTURE_START,
         num_periods=count,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db_session.commit()
     return periods
@@ -550,7 +551,7 @@ class TestAnOwnerWithNoPaydaysReachesEveryDoor:
             user_id = bare_user_with_cadence["user"].id
             created = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=date(2026, 9, 4), num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert [period.start_date for period in created] == [
@@ -565,7 +566,7 @@ class TestAnOwnerWithNoPaydaysReachesEveryDoor:
             user_id = bare_user_with_cadence["user"].id
             created = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=date(2026, 9, 4), num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert len(created) == 2
@@ -633,7 +634,7 @@ class TestAnOwnerWithNoPaydaysReachesEveryDoor:
 
             created = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=date(2026, 9, 4), num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 

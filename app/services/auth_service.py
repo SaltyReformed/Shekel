@@ -736,12 +736,25 @@ class RegistrationSpec:
             :meth:`~app.services.pay_calendar.PayCalendar.filing_period`'s
             clamp -- which exists for a loan opened years before the owner's
             first payday, not for a balance asserted today.
-        cadence_days: Days between the owner's paydays.  Bounded by
-            ``ck_pay_schedule_cadence_range``; persisted as the owner's
-            schedule so extend and the rolling top-up have a cadence to
-            continue from.  *They used to infer one where it was absent --
-            pay-calendar finding **P8** -- which plan step C4-b-2 closed by
-            making the absence unstorable.*
+        rhythm: How often the owner is paid and what their payroll does when
+            a payday lands on a weekend or a federal holiday
+            (:class:`~app.services.pay_schedule_service.Rhythm`).  Persisted
+            as the owner's schedule, so extend and the rolling top-up have
+            both halves to continue from.  *They used to infer a cadence where
+            it was absent -- pay-calendar finding **P8** -- which plan step
+            C4-b-2 closed by making the absence unstorable.*  It arrives as
+            the PAIR rather than as two fields since plan step **C14-b**
+            (ruling **R-PC56**: the convention is asked wherever a cadence
+            is), because the two carry a joint rule: a convention that
+            displaces a payday needs a cadence longer than the longest run of
+            closed days, which
+            :func:`~app.services.pay_schedule_service.reject_shift_on_short_cadence`
+            refuses in :func:`register_user`'s up-front block.  Neither half
+            has a default, and the rule is sharpest for the convention:
+            ``NONE`` is both the commonest answer and the value that means
+            *nobody has told us*, so a default would state as fact what no
+            owner was asked -- the error ruling ``balance:R-IF`` was written
+            to correct.
         num_periods: How many periods to generate forward from
             *first_payday*.
         history_opens_on: How far back the owner's paychecks reach, or ``None``
@@ -760,7 +773,7 @@ class RegistrationSpec:
     password: str
     display_name: str
     first_payday: date
-    cadence_days: int
+    rhythm: pay_schedule_service.Rhythm
     num_periods: int
     history_opens_on: "date | None"
 
@@ -827,12 +840,19 @@ def register_user(spec: RegistrationSpec):
     # module's own question about the day.  Asking them late would let a bad
     # cadence or a zero horizon refuse several statements after the ``User``
     # row exists, under a message about accounts rather than about the input.
-    pay_schedule_service.reject_out_of_range_cadence(spec.cadence_days)
+    pay_schedule_service.reject_out_of_range_cadence(spec.rhythm.cadence_days)
+    # The rhythm is refused as a PAIR before the ``User`` row exists.
+    # ``record_paydays`` re-asks it as the writer's own rule; asking here is
+    # what keeps this block the whole of registration's refusals, exactly as
+    # the history-opening pair below.
+    pay_schedule_service.reject_shift_on_short_cadence(spec.rhythm)
     pay_schedule_service.reject_out_of_range_history_opening(
         spec.history_opens_on,
     )
     pay_period_write.reject_out_of_range_batch_size(spec.num_periods)
-    _reject_impossible_first_payday(spec.first_payday, spec.cadence_days, today)
+    _reject_impossible_first_payday(
+        spec.first_payday, spec.rhythm.cadence_days, today,
+    )
     # Against the payday the FORM states rather than the one the schedule will
     # record, which are the same day here and are asked of one shared rule
     # (see that function).  Asking it now is what keeps this block the whole
@@ -878,7 +898,7 @@ def register_user(spec: RegistrationSpec):
         user_id=user.id,
         first_payday=spec.first_payday,
         num_periods=spec.num_periods,
-        cadence_days=spec.cadence_days,
+        rhythm=spec.rhythm,
     )
     # How far back those paychecks reach (plan step balance:X-bh-2, ruling
     # balance:R-IA) -- AFTER the batch, because that call is what creates the

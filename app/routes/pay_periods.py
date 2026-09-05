@@ -34,6 +34,7 @@ from app.schemas.validation import (
     PayPeriodTruncateSchema,
     PayScheduleSchema,
 )
+from app import ref_cache
 from app.services import pay_period_admin, pay_period_write, pay_schedule_service
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,9 @@ def generate():
             user_id=current_user.id,
             first_payday=data["start_date"],
             num_periods=data["num_periods"],
-            cadence_days=data["cadence_days"],
+            rhythm=pay_schedule_service.Rhythm(
+                cadence_days=data["cadence_days"], shift=data["shift"],
+            ),
         )
         # POPULATE, like every other door that creates a pay period (ruling
         # **R-R38**), and this door needed saying out loud: it reads as
@@ -114,14 +117,24 @@ def generate():
         # land BETWEEN two existing ones is rejected.  Surfaced on the
         # start_date field, mirroring the schema 422 -- and that attribution
         # is PROVABLE rather than assumed.  ``record_paydays`` refuses for
-        # FOUR reasons -- an undatable payday, a batch size out of range, a
-        # cadence out of range, and the forward-only floor -- and the first
-        # three cannot reach this line: ``fields.Date`` guarantees a plain
-        # ``date``, and ``PayPeriodGenerateSchema`` bounds the batch size and
-        # the cadence to exactly the ranges the writer and the column accept,
-        # so the schema's own 422 answers them first.  The floor is what is
-        # left.  Widen either field and this line starts rendering a cadence
+        # FIVE reasons -- an undatable payday, a batch size out of range, a
+        # cadence out of range, a convention the cadence cannot carry, and the
+        # forward-only floor -- and the first four cannot reach this line:
+        # ``fields.Date`` guarantees a plain ``date``, and
+        # ``PayPeriodGenerateSchema`` bounds the batch size and the cadence to
+        # exactly the ranges the writer and the column accept AND asks the
+        # cadence-convention pair through ``validate_derivable_rhythm``, so the
+        # schema's own 422 answers them first.  The floor is what is left.
+        # Widen any of those fields and this line starts rendering their
         # message under the date box.
+        #
+        # *The FOURTH reason arrived at plan step ``pay_calendar:C14-b``, and
+        # this comment's own warning is what caught it*: that step's first
+        # draft refused the pair at the write door alone, so a two-day cadence
+        # chosen with an early-pay convention rendered "Days between paydays
+        # must be at least 4..." beneath "First Payday".  The schema-level
+        # cross-field rule is what put the message back on the control the
+        # owner would have to change.
         #
         # *Both halves of that sentence were false until plan step
         # ``pay_calendar:C4-c`` corrected them* (adversarial review,
@@ -275,7 +288,10 @@ def regenerate():
     try:
         new_periods = pay_period_admin.regenerate_pay_periods(
             current_user.id, data["new_start_date"], data["num_periods"],
-            data["cadence_days"], confirm_discard=data["confirm_discard"],
+            pay_schedule_service.Rhythm(
+                cadence_days=data["cadence_days"], shift=data["shift"],
+            ),
+            confirm_discard=data["confirm_discard"],
         )
         # The rebuilt tail comes back EMPTY; this fills it.  See the extend
         # route for why the pass may only be opened here (ruling R-R38).
@@ -303,6 +319,13 @@ def regenerate():
                 "new_start_date": data["new_start_date"].isoformat(),
                 "num_periods": data["num_periods"],
                 "cadence_days": data["cadence_days"],
+                # Back to the WIRE spelling, because the confirm banner
+                # re-POSTs each of these as a hidden input and this door
+                # requires the field: the schema hands out an enum member and
+                # a member rendered into ``value=""`` is not one this form can
+                # submit back.  Omitting it would refuse every discard-confirm
+                # rather than only mis-stating one.
+                "shift": ref_cache.business_day_shift_id(data["shift"]),
             },
         }}, status=422)
 
@@ -338,7 +361,9 @@ def reset():
     try:
         new_periods = pay_period_admin.reset_pay_periods(
             current_user.id, data["new_start_date"], data["num_periods"],
-            data["cadence_days"],
+            pay_schedule_service.Rhythm(
+                cadence_days=data["cadence_days"], shift=data["shift"],
+            ),
         )
         # LAST, after the wipe, the rebuild and both posting re-syncs -- see
         # ``reset_pay_periods`` for why the re-syncs cannot see what this

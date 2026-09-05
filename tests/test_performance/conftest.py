@@ -16,6 +16,7 @@ from app.models.ref import AccountType
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today
 from app.services import account_service, pay_period_write
+from tests._test_helpers import rhythm_of
 
 # A 2-year horizon of biweekly paychecks.
 PERIOD_COUNT = 52
@@ -55,7 +56,7 @@ def perf_user(app, db):
         user_id=user.id,
         first_payday=display_today() - timedelta(days=CADENCE_DAYS * (PERIOD_COUNT // 2)),
         num_periods=PERIOD_COUNT,
-        cadence_days=CADENCE_DAYS,
+        rhythm=rhythm_of(CADENCE_DAYS),
     )
     _db.session.flush()
 

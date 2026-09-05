@@ -82,7 +82,7 @@ from app.utils.log_events import (
     EVT_TRANSFER_SOFT_DELETED,
     EVT_TRANSFER_UPDATED,
 )
-from tests._test_helpers import make_every_period_rule
+from tests._test_helpers import make_every_period_rule, rhythm_of
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -149,7 +149,7 @@ class TestPayPeriodServiceLogging:
                 user_id=seed_user["user"].id,
                 first_payday=date(2027, 1, 1),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             assert len(created) == 3
 
@@ -915,7 +915,7 @@ class TestRecurrenceEngineLogging:
             user_id=seed_second_user["user"].id,
             first_payday=date(2027, 6, 1),
             num_periods=1,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         db.session.flush()
 

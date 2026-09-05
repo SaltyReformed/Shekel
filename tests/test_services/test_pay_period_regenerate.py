@@ -47,6 +47,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    rhythm_of,
     add_txn,
     all_periods,
     assert_pay_period_invariants,
@@ -82,7 +83,7 @@ def _spanning_periods(db_session, seed_user, count=8):
         user_id=seed_user["user"].id,
         first_payday=_SPAN_START,
         num_periods=count,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db_session.commit()
     return periods
@@ -138,7 +139,7 @@ class TestRegenerateHappyPath:
             user_id = seed_user["user"].id
             # Index 1 starts ON the frozen today -- the current period.
             periods = pay_period_write.record_paydays(
-                user_id, FROZEN_TODAY, num_periods=4, cadence_days=14,
+                user_id, FROZEN_TODAY, num_periods=4, rhythm=rhythm_of(14),
             )
             db.session.commit()
             today_index = derived_span(periods[0]).period_index
@@ -147,7 +148,7 @@ class TestRegenerateHappyPath:
 
             pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -175,7 +176,7 @@ class TestRegenerateHappyPath:
 
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -207,7 +208,7 @@ class TestRegenerateHappyPath:
 
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             for period in new_periods:
@@ -228,7 +229,7 @@ class TestRegenerateHappyPath:
 
             new_periods = _regenerate_and_populate(
                 user_id, new_start_date=new_start, num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             for period in new_periods:
@@ -246,7 +247,7 @@ class TestRegenerateHappyPath:
 
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=2,
-                cadence_days=7,
+                rhythm=rhythm_of(7),
             )
             db.session.commit()
 
@@ -283,7 +284,7 @@ class TestRegenerateHappyPath:
 
             _regenerate_and_populate(
                 user_id, new_start_date=new_start, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -333,13 +334,13 @@ class TestRegenerateWhenTheWholeScheduleIsRebuildable:
         with app.app_context():
             old = pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 3),
-                num_periods=4, cadence_days=14,
+                num_periods=4, rhythm=rhythm_of(14),
             )
             db.session.commit()
             old_ids = {p.id for p in old}
 
             new_periods = pay_period_admin.regenerate_pay_periods(
-                user_id, date(2026, 8, 7), 3, 14,
+                user_id, date(2026, 8, 7), 3, rhythm_of(14),
             )
             db.session.commit()
 
@@ -369,13 +370,13 @@ class TestRegenerateWhenTheWholeScheduleIsRebuildable:
         with app.app_context():
             old = pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=4, cadence_days=14,
+                num_periods=4, rhythm=rhythm_of(14),
             )
             db.session.commit()
             old_ids = {p.id for p in old}
 
             new_periods = pay_period_admin.regenerate_pay_periods(
-                user_id, date(2026, 7, 3), 2, 14,
+                user_id, date(2026, 7, 3), 2, rhythm_of(14),
             )
             db.session.commit()
 
@@ -407,7 +408,7 @@ class TestRegenerateRefusals:
             with pytest.raises(PayPeriodLocked):
                 pay_period_admin.regenerate_pay_periods(
                     user_id, new_start_date=new_start, num_periods=3,
-                    cadence_days=14,
+                    rhythm=rhythm_of(14),
                 )
             db.session.rollback()
             assert _count_periods(db.session, user_id) == before
@@ -424,14 +425,14 @@ class TestRegenerateRefusals:
             with pytest.raises(PayPeriodDiscardRequired):
                 pay_period_admin.regenerate_pay_periods(
                     user_id, new_start_date=new_start, num_periods=3,
-                    cadence_days=14,
+                    rhythm=rhythm_of(14),
                 )
             db.session.rollback()
 
             # With confirmation it rebuilds the tail (discarding the row).
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=3,
-                cadence_days=14, confirm_discard=True,
+                rhythm=rhythm_of(14), confirm_discard=True,
             )
             db.session.commit()
             assert [derived_span(p).period_index for p in new_periods] == [5, 6, 7]
@@ -467,7 +468,7 @@ class TestRegenerateRefusals:
             with pytest.raises(ValidationError):
                 pay_period_admin.regenerate_pay_periods(
                     user_id, new_start_date=bad_start, num_periods=3,
-                    cadence_days=14,
+                    rhythm=rhythm_of(14),
                 )
             db.session.rollback()
             assert _count_periods(db.session, user_id) == before
@@ -524,7 +525,7 @@ class TestRegenerateResolvesItsFactsOnce:
 
             pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=date(2026, 7, 10), num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -568,7 +569,7 @@ class TestRegenerateResolvesItsFactsOnce:
 
             pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=owner_day + timedelta(days=14),
-                num_periods=3, cadence_days=14,
+                num_periods=3, rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert seen == [owner_day]

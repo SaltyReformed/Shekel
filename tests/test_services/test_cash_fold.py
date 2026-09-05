@@ -62,6 +62,7 @@ from app.services.cash_ledger import (
 )
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    rhythm_of,
     account_never_asserted,
     add_entry,
     add_txn,
@@ -1812,7 +1813,7 @@ class TestARowFiledOutsideThePassesCalendarIsRefused:
             user_id=seed_user["user"].id,
             first_payday=date(2026, 1, 2),
             num_periods=11,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         assert len(appended) == 1
         repopulated = add_txn(
@@ -1857,7 +1858,7 @@ class TestARowFiledOutsideThePassesCalendarIsRefused:
             user_id=seed_user["user"].id,
             first_payday=date(2026, 1, 2),
             num_periods=11,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         add_txn(
             db.session, seed_user, appended[0], "repopulated bill", "250.00",

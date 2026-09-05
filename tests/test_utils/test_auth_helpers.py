@@ -39,6 +39,7 @@ from app.utils.log_events import (
 )
 from app.utils.session_helpers import FRESH_LOGIN_AT_KEY
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import rhythm_of
 
 
 class TestGetOr404:
@@ -135,7 +136,7 @@ class TestGetOwnedViaParent:
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 3, 1),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -580,7 +581,7 @@ class TestAccessDeniedLogging:
             user_id=second_user["user"].id,
             first_payday=date(2026, 3, 1),
             num_periods=2,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         db.session.flush()
 
@@ -758,7 +759,7 @@ class TestAccessDeniedLogging:
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 3, 1),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
             txn = self._make_owned_txn(db, second_user, periods2[0])

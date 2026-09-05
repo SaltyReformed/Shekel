@@ -36,6 +36,7 @@ from app.services import balance_at, pay_period_write, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
+    rhythm_of,
     create_account_of_type,
     create_hysa_account,
     create_loan_account,
@@ -416,7 +417,7 @@ class TestDashboard:
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -464,7 +465,7 @@ class TestDashboard:
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -513,7 +514,7 @@ class TestDashboard:
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 

@@ -100,6 +100,7 @@ from app.services import (
     account_posting_service,
     loan_posting_service,
     pay_period_write,
+    pay_schedule_service,
     user_write_lock,
 )
 from app.services._recurrence_common import log_resource_access_denied
@@ -192,6 +193,16 @@ def extend_pay_periods(user_id, num_periods):
     # value was not ``None`` HERE because the refusal above excluded the only
     # calendar that could carry one, which was true and was not a property.
     cadence_days = calendar.cadence_days
+    # The convention those paydays land under, which the calendar does NOT
+    # carry: nothing in that pure package uses it until plan step C14-e, so
+    # widening it would be a value the derivation held for nobody.  Extend
+    # CONTINUES a rhythm rather than stating one -- the same reading that
+    # denies this door a cadence question (finding P29 above) -- so it reads
+    # the stored answer and hands it straight back.
+    rhythm = pay_schedule_service.Rhythm(
+        cadence_days=cadence_days,
+        shift=pay_schedule_service.resolve_shift(user_id),
+    )
     # The calendar's OWN answer to "where does the next paycheck land", not this
     # door's arithmetic on it.  The two are equal -- the first day past the
     # horizon falls in the period opening one cadence after the last payday --
@@ -203,7 +214,7 @@ def extend_pay_periods(user_id, num_periods):
         calendar.horizon() + timedelta(days=1),
     ).start_date
     return pay_period_write.record_paydays(
-        user_id, next_payday, num_periods, cadence_days,
+        user_id, next_payday, num_periods, rhythm,
     )
 
 
@@ -486,7 +497,7 @@ def _gate_deletable_tail(
 
 
 def regenerate_pay_periods(
-    user_id, new_start_date, num_periods, cadence_days, confirm_discard=False,
+    user_id, new_start_date, num_periods, rhythm, confirm_discard=False,
 ):
     """Rebuild the not-yet-started, unlocked tail from a corrected start.
 
@@ -529,8 +540,12 @@ def regenerate_pay_periods(
             step ``pay_calendar:C4-c`` dropped -- and so accepted only the
             single day after it.
         num_periods: How many periods to generate.
-        cadence_days: Days between paydays for the rebuilt tail; also
-            persisted as the user's forecast cadence, by the writer.
+        rhythm: How often the rebuilt tail is paid and what payroll does
+            when one of its paydays lands on a closed day
+            (:class:`~app.services.pay_schedule_service.Rhythm`); also
+            persisted as the user's forecast rhythm, by the writer.  A PAIR
+            rather than a bare cadence since plan step **C14-b**, because the
+            two carry a joint rule the writer judges together.
         confirm_discard: Forwarded to the truncate step -- when False and
             the rebuildable tail holds unrecoverable rows, raise
             :class:`PayPeriodDiscardRequired` and change nothing.
@@ -582,7 +597,7 @@ def regenerate_pay_periods(
     # of the payday set the operation leaves behind.
     doomed = _gate_deletable_tail(saved, kept, confirm_discard, locks)
     return pay_period_write.record_paydays(
-        user_id, new_start_date, num_periods, cadence_days,
+        user_id, new_start_date, num_periods, rhythm,
         retiring_ids={period.period_id for period in doomed},
     )
 
@@ -608,7 +623,7 @@ def can_reset_pay_periods(user_id: int) -> bool:
     return _settled_transaction_count(user_id) == 0
 
 
-def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
+def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     """Wipe and rebuild the user's WHOLE schedule, re-anchoring accounts.
 
     The bounded first-time-setup correction.  Unlike regenerate -- which
@@ -712,8 +727,11 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
         user_id: The owning user's id.
         new_start_date: First payday of the rebuilt schedule.
         num_periods: How many periods to generate.
-        cadence_days: Days between paydays for the new schedule; also
-            persisted as the user's cadence, by the writer.
+        rhythm: How often the new schedule is paid and what payroll does
+            when one of its paydays lands on a closed day
+            (:class:`~app.services.pay_schedule_service.Rhythm`); also
+            persisted as the user's rhythm, by the writer.  See
+            :func:`regenerate_pay_periods` for why it is a pair.
 
     Returns:
         The list of newly created :class:`~app.models.pay_period.PayPeriod`
@@ -755,7 +773,7 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     # materialises the end state rather than the period-less moment between
     # them.
     new_periods = pay_period_write.record_paydays(
-        user_id, new_start_date, num_periods, cadence_days,
+        user_id, new_start_date, num_periods, rhythm,
         retiring_ids=pay_period_write.owner_period_ids(user_id),
     )
     # Re-post the loan genesis (opening / true-up) corrections the period

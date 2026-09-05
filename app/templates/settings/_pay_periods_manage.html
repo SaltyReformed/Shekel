@@ -1,4 +1,4 @@
-{% from "_form_macros.html" import render_field %}
+{% from "_form_macros.html" import render_field, render_select %}
 {# Manage an existing pay-period schedule: a read-only period list with
    lock badges, plus the extend / truncate / regenerate actions.  Included
    by settings/_pay_periods.html only when the user already has periods.
@@ -141,6 +141,21 @@
           {{ render_field("cadence_days", "Days between paydays",
                           type="number", value="14", required=true,
                           input_attrs='min="1" max="365"') }}
+          {# The rhythm's second half (plan step pay_calendar:C14-b, ruling
+             R-PC56).  PRESELECTED to the owner's stored answer, never to
+             "none": this form posts the whole rhythm, so a control that
+             defaulted to none would silently switch a chosen convention off
+             on every regenerate the owner ran for an unrelated reason.
+             ``request.form`` comes first so a refused submission re-renders
+             the owner's own answer rather than snapping back -- see the
+             generate card for why that ordering matters most to THIS rule. #}
+          {{ render_select("shift", PAYDAY_SHIFT_LABEL,
+                           PAYDAY_SHIFT_OPTIONS,
+                           selected_value=(request.form.get('shift')
+                                           or (pp_schedule.shift_id
+                                               if pp_schedule else SHIFT_NONE)),
+                           help_text=PAYDAY_SHIFT_HELP,
+                           required=true) }}
           {# Neutral outline: rebuilding the tail is not an archive /
              deactivate action, so it may not wear amber (D5); the
              discard-confirm gate carries the caution when hand-entered
@@ -291,6 +306,17 @@
         {{ render_field("cadence_days", "Days between paydays",
                         type="number", value="14", required=true,
                         input_attrs='min="1" max="365"', classes="rs") }}
+      </div>
+      <div class="col-sm-6">
+        {# Preselected to the stored answer, for the reason the regenerate
+           card above gives. #}
+        {{ render_select("shift", PAYDAY_SHIFT_LABEL,
+                         PAYDAY_SHIFT_OPTIONS,
+                         selected_value=(request.form.get('shift')
+                                         or (pp_schedule.shift_id
+                                             if pp_schedule else SHIFT_NONE)),
+                         help_text=PAYDAY_SHIFT_HELP,
+                         required=true, classes="rs") }}
       </div>
       <div class="col-12">
         <div class="form-check">

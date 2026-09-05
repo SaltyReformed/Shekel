@@ -45,6 +45,7 @@ from app.services.recurring_transfer_query import (
 )
 from app.services.template_amount_service import owns_its_amount
 from tests._test_helpers import (
+    rhythm_of,
     add_escrow_line,
     create_loan_account,
     loan_params_for,
@@ -418,7 +419,7 @@ class TestPayoffDoesNotMoveWithMaterialisation:
             user_id=seed_user["user"].id,
             first_payday=date(2026, 1, 2),
             num_periods=20,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         db.session.flush()
         transfer_recurrence.generate_for_template(
@@ -539,7 +540,7 @@ class TestPayoffDoesNotMoveWithMaterialisation:
                 date(2026, 1, 2) if first_payday is None else first_payday
             ),
             num_periods=num_periods,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         db.session.flush()
         transfer_recurrence.generate_for_template(
