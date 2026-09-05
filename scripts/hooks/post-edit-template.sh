@@ -75,6 +75,28 @@ if [ -n "$HX_GET_STATE" ]; then
     WARNINGS+="$HX_GET_STATE"$'\n\n'
 fi
 
+# --- Check 5: inline style attribute (caused bank_import:N-405) ---
+# The app serves `style-src 'self'` with no `unsafe-inline`, so the browser
+# REFUSES a style attribute and the declaration silently never applies -- a
+# rule that never fires is indistinguishable from one that was not needed.
+#
+# djlint's SHK01 (.djlint_rules.yaml) is the ENFORCING gate; pre-commit and CI
+# both run it and this hook cannot block a commit. This grep is the in-loop
+# half, the same split the Python gate already keeps between the per-edit hook
+# and CI's pylint -- and the ledger row for N-405 names this file's silence as
+# the shape worth closing, not just the instance.
+#
+# The pattern skips over quoted attribute values so a `>` inside an earlier
+# attribute cannot end the match early: 23 tags in app/templates carry one
+# today, as the `class="...{% if x > 0 %}..."` idiom. Deliberately NOT anchored
+# on a Jinja expression -- that is djlint H021's blind spot, not this one's.
+INLINE_STYLE=$(grep -nP '<[a-z](?:"[^"]*"|'"'"'[^'"'"']*'"'"'|[^>"'"'"'])*?\sstyle\s*=' "$FILE")
+if [ -n "$INLINE_STYLE" ]; then
+    WARNINGS+="INLINE STYLE: the CSP is style-src 'self', so the browser blocks"$'\n'
+    WARNINGS+="this and the declaration never applies. Use a class in app/static/css/."$'\n'
+    WARNINGS+="$INLINE_STYLE"$'\n\n'
+fi
+
 if [ -n "$WARNINGS" ]; then
     {
         echo "Template issues in $FILE -- fix before continuing:"

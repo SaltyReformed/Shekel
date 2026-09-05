@@ -98,6 +98,16 @@ uses deliberate, commented `!important`). CSS formatter off.
   `{% endblock %}` -- a one-time naming pass is genuinely useful in a
   13.4k-line tree, then keep the rule on). Keep H021 (inline styles --
   the audit's CSP-dead class), H037, T002, T028, H014.
+- **H021 alone does not close the CSP-dead class, measured 2026-09-04**
+  (finding `bank_import:N-405`): it refuses an inline style UNLESS a Jinja
+  expression sits between `style=` and the tag's own `>`, so the merchants
+  search box shipped one through pre-commit and CI, green over all 159
+  templates. The blind spot is a minority case -- roughly 20% of tags carry
+  a Jinja expression at all, an upper bound -- so H021 stays and
+  `.djlint_rules.yaml`'s `SHK01` covers the rest;
+  `tests/test_arch/test_an_inline_style_is_refused_by_a_gate.py` proves it
+  still fires, and `scripts/hooks/post-edit-template.sh` carries the
+  in-loop half.
 - Pair with a tiny in-repo syntax check using the already-pinned jinja2
   (`create_app().jinja_env.parse()` per changed template) -- zero new
   dependencies, catches template syntax errors pre-render.
