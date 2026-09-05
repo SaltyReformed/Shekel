@@ -285,18 +285,29 @@ if [ -z "$_restart_requested" ]; then
         # container "does not exist", which is not established.
         # ``if cmd`` suspends errexit for cmd, so a non-zero status here is a
         # branch rather than an abort.
-        if _db_raw="$(docker ps -a --filter "name=^${TEST_DB_CONTAINER}$" \
-            --format '{{.Status}}' 2>/dev/null)"; then
+        # ``--filter name=`` is a REGEX match, not a literal one, and the
+        # ``^...$`` anchoring hides that rather than fixing it: with
+        # TEST_DB_CONTAINER=rev8.test.db the dots matched ``rev8-test-db``
+        # and this branch reported a DIFFERENT container's status as though
+        # it were the one asked for -- while the restart path, which uses
+        # exact-name ``docker inspect``, said the same name did not exist.
+        # Two paths, contradictory answers, for one operator-set value.
+        # ``.``, ``-`` and ``_`` are all legal in docker names.
+        #
+        # So: let the filter NARROW, then match the name exactly here.  The
+        # loop is a herestring rather than a pipe deliberately -- a pipe
+        # into a reader that stops early is the SIGPIPE-under-pipefail abort
+        # this file already had to remove once.
+        if _db_raw="$(docker ps -a --filter "name=${TEST_DB_CONTAINER}" \
+            --format '{{.Names}}|{{.Status}}' 2>/dev/null)"; then
             _daemon_ok=yes
-            # First line, via parameter expansion rather than ``| head -n1``.
-            # The pipe was a latent abort: ``head`` exits after one line,
-            # ``printf`` takes SIGPIPE, ``pipefail`` propagates 141 and
-            # ``errexit`` kills the wrapper with NO output and a non-pytest
-            # status.  Measured with a docker shim emitting ~429 KB.  An
-            # anchored ``name=^...$`` filter should never produce that much,
-            # which makes it robustness rather than a live bug -- but the
-            # failure mode is silent, and expansion costs nothing.
-            _db_status="${_db_raw%%$'\n'*}"
+            while IFS='|' read -r _row_name _row_status; do
+                if [ "$_row_name" = "$TEST_DB_CONTAINER" ]; then
+                    _db_status="$_row_status"
+                    break
+                fi
+            done <<<"$_db_raw"
+            unset _row_name _row_status
         else
             # Re-ask for the ERROR, on the failure path only.  The branch
             # below asserts a cause from an exit status; without this it
@@ -304,8 +315,8 @@ if [ -z "$_restart_requested" ]; then
             # it, and a DOCKER_HOST typo (a CLI configuration error, healthy
             # daemon) is indistinguishable from a daemon that is genuinely
             # down.  ``2>&1 >/dev/null`` keeps stderr and drops stdout.
-            _docker_err="$(docker ps -a --filter "name=^${TEST_DB_CONTAINER}$" \
-                --format '{{.Status}}' 2>&1 >/dev/null || true)"
+            _docker_err="$(docker ps -a --filter "name=${TEST_DB_CONTAINER}" \
+                --format '{{.Names}}' 2>&1 >/dev/null || true)"
             _docker_err="${_docker_err%%$'\n'*}"
         fi
         unset _db_raw
@@ -369,18 +380,21 @@ if [ -z "$_restart_requested" ]; then
     unset _db_status _have_docker _daemon_ok _docker_err
 elif ! command -v docker >/dev/null 2>&1; then
     echo "[test.sh] docker not on PATH -- skipping container restart" >&2
-elif ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
-    # Daemon reachability BEFORE existence.  ``docker inspect`` fails the
-    # same way for "no such container" and "cannot reach the daemon", so the
-    # restart path announced a missing container on evidence that did not
-    # establish it -- the same conflation the no-restart path above fixes,
-    # left behind in the branch a GATING run actually takes.  ``docker
-    # version`` asks the SERVER, so it fails exactly when the daemon is
-    # unreachable and succeeds otherwise.
-    echo "[test.sh] docker could not answer, so the state of" \
-        "$TEST_DB_CONTAINER is UNKNOWN -- not 'missing'; skipping restart" >&2
 elif ! docker inspect "$TEST_DB_CONTAINER" >/dev/null 2>&1; then
-    echo "[test.sh] container $TEST_DB_CONTAINER does not exist -- skipping restart" >&2
+    # ``docker inspect`` fails the same way for "no such container" and for
+    # "cannot reach the daemon", so this branch used to announce a missing
+    # container on evidence that did not establish one.  Asking the SERVER
+    # first was the previous fix and left a window: with a probe that
+    # succeeded and an inspect that then failed on an unreachable daemon,
+    # the answer was "does not exist" again.  Ask about the container first
+    # and interrogate the daemon only once that has failed -- which also
+    # spends one fewer daemon call on the healthy path.
+    if docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+        echo "[test.sh] container $TEST_DB_CONTAINER does not exist -- skipping restart" >&2
+    else
+        echo "[test.sh] docker could not answer, so the state of" \
+            "$TEST_DB_CONTAINER is UNKNOWN -- not 'missing'; skipping restart" >&2
+    fi
 elif _live_test_backends="$(docker exec "$TEST_DB_CONTAINER" \
     psql -U shekel_user -d postgres -tAc \
     "SELECT count(*) FROM pg_stat_activity

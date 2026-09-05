@@ -141,6 +141,29 @@ def _case_arms() -> list[str]:
     return [arm.replace("'", "").strip() for arm in arm_pattern.findall(body)]
 
 
+def _case_arm_bodies() -> dict[str, str]:
+    """Return each arm's glob mapped to the text of its body.
+
+    Returns:
+        Glob pattern (shell quoting removed) to the lines between that arm
+        and the next one, so a body can be asserted about on its own.
+    """
+    indent, body = _case_block_body()
+    arm_line = re.compile(
+        _ARM_TEMPLATE.format(indent=indent + " {4}"), re.M
+    )
+    matches = list(arm_line.finditer(body))
+    bodies: dict[str, str] = {}
+    for position, match in enumerate(matches):
+        end = (
+            matches[position + 1].start()
+            if position + 1 < len(matches)
+            else len(body)
+        )
+        bodies[match.group(1).replace("'", "").strip()] = body[match.end():end]
+    return bodies
+
+
 def _classify(status: str) -> str:
     """Classify a docker status string the way the ``case`` would.
 
@@ -269,6 +292,141 @@ class TestTestRunnerContainerStates:
         assert "no such container" not in result.stderr, (
             "same conflation on the no-restart path: "
             f"{result.stderr.strip()!r}"
+        )
+
+    @pytest.mark.parametrize("arm", ["*(Paused)*", "*"])
+    def test_not_running_arms_do_not_use_the_healthy_phrasing(
+        self, arm: str
+    ) -> None:
+        """Only the ``Up*`` arm may say "not restarting".
+
+        That phrase is the everything-is-fine line.  A container that is
+        paused or stopped is not fine, and the operator distinguishes the
+        cases by the wording alone.  Measured ungraded before this test:
+        copying the ``Up*`` arm's echo into the catch-all made a genuinely
+        stopped container print "not restarting <name> (Exited (137) 4
+        minutes ago) -- set RESTART_TEST_DB=1 ..." with the whole suite
+        still green.
+
+        Args:
+            arm: The glob of a not-running arm.
+        """
+        bodies = _case_arm_bodies()
+
+        assert arm in bodies, f"arm {arm!r} missing; bodies: {sorted(bodies)}"
+        assert "not restarting" not in bodies[arm], (
+            f"the {arm!r} arm uses the healthy 'not restarting' phrasing, so "
+            "a container in that state reads as fine. Only the Up* arm may "
+            "say it."
+        )
+        assert "not restarting" in bodies["Up*"], (
+            "the Up* arm no longer says 'not restarting', so this test is "
+            "asserting the absence of a phrase nothing uses"
+        )
+
+    def test_a_name_with_regex_metacharacters_matches_nothing_else(
+        self,
+    ) -> None:
+        """``--filter name=`` is a REGEX, so the name must be matched exactly.
+
+        With ``TEST_DB_CONTAINER=rev8.test.db`` the dots matched a real
+        ``rev8-test-db`` and the wrapper reported a DIFFERENT container's
+        status as though it were the one asked for -- while the restart
+        path, which uses exact-name ``docker inspect``, said the same name
+        did not exist. Two paths, contradictory answers, one operator-set
+        value; ``.``, ``-`` and ``_`` are all legal in docker names.
+
+        This builds its probe from a container that actually exists, by
+        replacing separators with dots, so the regex form would match it and
+        the exact form cannot. It only READS from docker -- it creates,
+        stops and removes nothing.
+        """
+        if shutil.which("docker") is None:
+            pytest.skip("no docker CLI; this asserts CLI-level behaviour")
+
+        listing = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if listing.returncode != 0:
+            pytest.skip("docker daemon unreachable; this needs a real listing")
+
+        real = next(
+            (
+                name
+                for name in listing.stdout.split()
+                if "-" in name or "_" in name
+            ),
+            None,
+        )
+        if real is None:
+            pytest.skip("no container with a separator in its name to probe")
+
+        probe = real.replace("-", ".").replace("_", ".")
+        exists = subprocess.run(
+            ["docker", "inspect", probe],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if exists.returncode == 0:
+            pytest.skip(f"{probe!r} is itself a real container")
+
+        result = subprocess.run(
+            [str(_TEST_RUNNER), "--version"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "TEST_DB_CONTAINER": probe, "RESTART_TEST_DB": ""},
+            cwd=str(_REPO_ROOT),
+            check=False,
+        )
+
+        assert "no such container" in result.stderr, (
+            f"{probe!r} does not exist, but the wrapper reported a state for "
+            f"it -- the filter is matching {real!r} as a regex instead of "
+            f"comparing the name exactly: {result.stderr.strip()!r}"
+        )
+
+    def test_the_daemon_error_is_quoted_not_summarised(self) -> None:
+        """The UNKNOWN message repeats what docker actually said.
+
+        The branch asserts a cause from an exit status; without docker's own
+        words a DOCKER_HOST typo (a CLI configuration error, healthy daemon)
+        is indistinguishable from a daemon that is down.  Measured ungraded
+        before this test: deleting the quoted error, and replacing it with a
+        constant, both left the suite green while changing live stderr.
+
+        The port from DOCKER_HOST is the tell -- it can only appear in the
+        output if docker's message is being passed through.
+        """
+        if shutil.which("docker") is None:
+            pytest.skip("no docker CLI; this asserts CLI-level behaviour")
+
+        port = "59997"
+        result = subprocess.run(
+            [str(_TEST_RUNNER), "--version"],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "DOCKER_HOST": f"tcp://127.0.0.1:{port}",
+                "TEST_DB_CONTAINER": "shekel-unreachable-probe",
+                "RESTART_TEST_DB": "",
+            },
+            cwd=str(_REPO_ROOT),
+            check=False,
+        )
+
+        assert "docker said:" in result.stderr, (
+            f"the UNKNOWN message no longer quotes docker: "
+            f"{result.stderr.strip()!r}"
+        )
+        assert port in result.stderr, (
+            "docker's own error is not being passed through -- the message "
+            "is a constant or a summary, so it cannot distinguish a dead "
+            f"daemon from a misconfigured DOCKER_HOST: {result.stderr.strip()!r}"
         )
 
     def test_the_classifier_is_found_and_has_every_arm(self) -> None:
