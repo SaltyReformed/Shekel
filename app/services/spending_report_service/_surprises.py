@@ -11,7 +11,7 @@ module already loaded.  All money is ``Decimal``.
 
 from app.models.transaction import Transaction
 from app.services import spending_analysis
-from app.services.row_valuation import owned_amount
+from app.services.cash_ledger import AmountBasis, resolve_transaction_amount
 from app.utils.money import ZERO
 
 from ._types import Surprise, Surprises
@@ -20,7 +20,9 @@ from ._types import Surprise, Surprises
 _MAX_SURPRISES = 5
 
 
-def _build_surprises(txns: list[Transaction]) -> Surprises:
+def _build_surprises(
+    txns: list[Transaction], basis: AmountBasis,
+) -> Surprises:
     """Build the estimate-surprises list and its net over the window.
 
     A surprise is a settled row whose resolved actual (via the shared
@@ -31,6 +33,10 @@ def _build_surprises(txns: list[Transaction]) -> Surprises:
 
     Args:
         txns: The window's settled expenses.
+        basis: The read pass's :class:`~app.services.cash_ledger.AmountBasis`,
+            built once by the caller.  It is REQUIRED rather than optional
+            because a row whose plan is derived cannot be priced without one,
+            and an optional basis would put the refusal back one branch later.
 
     Returns:
         The :class:`Surprises` (capped rows + full net).
@@ -39,15 +45,48 @@ def _build_surprises(txns: list[Transaction]) -> Surprises:
     net = ZERO
     for txn in txns:
         actual = spending_analysis.resolved_actual_amount(txn)
-        # The ESTIMATE half, through the accessor that asserts this window is
-        # settled-only (plan step X-au-c2b).  It read ``estimated_amount``, the
-        # COLUMN; ``owned_amount`` is the same figure for a row that owns it
-        # and a REFUSAL for one that does not, so a later cutover pointing a
-        # derived row at this list fails loudly instead of subtracting a
-        # ``None``.  It is deliberately not ``owned_contribution``: that
-        # answers the entered actual where there is one, which would make every
-        # surprise's delta zero by construction.
-        estimated = owned_amount(txn)
+        # The ESTIMATE half, through the amount model's ONE plan producer.
+        # It read ``owned_amount``, the cheap accessor that answers a row's own
+        # ``estimated_amount`` column and REFUSES a row whose plan is derived --
+        # chosen deliberately as a tripwire, so that the first cutover to point
+        # a derived row at this list would fail loudly rather than subtract a
+        # ``None``.  That tripwire FIRED: the amount-source cutovers declared
+        # 934 rows derived, 116 of them settled, and this list met one on real
+        # data.  Routing the reader to ``resolve_transaction_amount`` is what
+        # the tripwire was for; the refusal stays where it belongs, in
+        # ``owned_amount``, for the readers that genuinely own their rows.
+        #
+        # It reproduces what the cutovers emptied rather than re-pricing.
+        # Measured against the pre-cutover figures in ``system.audit_log`` on a
+        # production clone, 2026-09-05, by
+        # ``tests/manual/measure_settled_derived_plan_reproduction.py``: of the
+        # 116 settled rows the cutovers declared, the 78 EXPENSE ones -- 59
+        # template-priced and 19 transfer shadows -- ALL reproduce their stored
+        # plan, with no refusals.  The seven that differ are salary INCOME,
+        # which neither query feeding this list can return (both filter
+        # ``transaction_type_id`` to the expense type), and they differ because
+        # ``salary.calibration_overrides`` is REPLACED in place rather than
+        # effective-dated, so a past paycheck re-derives under today's
+        # calibration -- findings **N-441** and **N-535**, owned by salary:S1.
+        #
+        # *The headline was WRONG in a first draft of this comment, which said
+        # "109 of 109 settled EXPENSE rows".  109 was the count over every
+        # settled declared row, income included, and stating it as an expense
+        # denominator inflated the population this reader actually sees by
+        # every income row that happened to agree.  An adversarial review
+        # caught it by reconciling against the cutovers' own censuses.  The
+        # probe now partitions by rule and by type, which is why it is a
+        # committed artifact rather than a number.*
+        #
+        # A back-dated price version can still move an ALREADY-SETTLED row's
+        # resolved plan -- the template form's "Amount effective from" accepts a
+        # past date -- so this is a measurement of today's data, not an
+        # invariant the schema holds.
+        #
+        # It is deliberately not ``owned_contribution``: that answers the
+        # entered actual where there is one, which would make every surprise's
+        # delta zero by construction.
+        estimated = resolve_transaction_amount(txn, basis)
         delta = actual - estimated
         if delta == ZERO:
             continue

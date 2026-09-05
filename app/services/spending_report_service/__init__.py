@@ -83,6 +83,7 @@ or a template names, so no consumer reaches into a submodule.
 from app.models.transaction import Transaction
 from app.services import spending_analysis
 from app.services.account_resolver import resolve_analytics_account
+from app.services.cash_ledger import amount_basis
 from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -215,5 +216,18 @@ def compute_spending_report(
         series=series,
         breakdown=_build_breakdown(current_by_cat, prior_by_cat),
         changes=_build_changes(current_by_cat, prior_by_cat),
-        surprises=_build_surprises(txns),
+        # ONE basis for the pass.  The surprises list needs it to price a
+        # row whose plan the amount-source cutovers declared derived;
+        # every other consumer here values through
+        # ``row_valuation.owned_contribution``, which answers a settled
+        # row from its SETTLEMENT record and never reaches the amount
+        # model, so this is the package's only basis and costs no query
+        # (both of its derivations are lazy).
+        #
+        # It is built at the call rather than carried on ``_ScopeIds``
+        # beside the calendar, which is where a SECOND consumer would want
+        # it -- the calendar rides there for exactly that reason (C2-f1).
+        # With one consumer there is nothing yet to keep in step; the day a
+        # second appears in this package it belongs on the scope object.
+        surprises=_build_surprises(txns, amount_basis(user_id, scenario.id)),
     )
