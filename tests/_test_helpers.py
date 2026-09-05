@@ -6,6 +6,7 @@ test file.  Import functions from here in test modules that need them.
 """
 
 import importlib.util
+import inspect
 import os
 import pathlib
 import re
@@ -23,7 +24,9 @@ from datetime import (
 from decimal import Decimal
 from app.enums import BusinessDayShiftEnum
 from app.models.amount_ownership import AmountOwnership
-from app.services import pay_schedule_service
+from app.services import pay_calendar, pay_schedule_service
+from app.services.pay_calendar import _derive as pay_calendar_derive
+from app.utils.business_days import shift_to_business_day
 
 
 # The synthetic split-loan fixture shared verbatim by the three parallel
@@ -2718,6 +2721,69 @@ def rhythm_of(cadence_days, shift=BusinessDayShiftEnum.NONE):
     return pay_schedule_service.Rhythm(
         cadence_days=cadence_days, shift=shift,
     )
+
+
+def displace_paydays_under(monkeypatch, shift):
+    """Give the application plan step ``pay_calendar:C14-e``'s producer.
+
+    **The SIMULATION every pre-C14-e case is graded against, and it is a
+    substitution rather than a fixture.**  With the convention still at
+    ``none``, ``pay_calendar.projected_payday`` answers the nominal rhythm,
+    every payday sits exactly on the arithmetic grid, and the neighbouring
+    candidates ``project_period_after`` offers can never win -- so a test
+    driving the real function would grade the estimate and nothing else.  What
+    ``C14-e`` changes is that ONE body: the nominal day displaced onto a
+    business day under the owner's convention.  Substituting exactly that and
+    then calling the REAL derivation, writer and admin doors grades the window,
+    the end rule, the selector and the floor against the mechanism itself.
+
+    It replaces a COLLABORATOR, never the code under test:
+    :func:`~app.utils.business_days.shift_to_business_day` is the shipped
+    displacement from plan step ``C14-a``, not a stand-in for one.
+
+    **BOTH bindings are patched, and that is the whole reason this helper is
+    shared rather than copied.**  ``from ._derive import projected_payday`` in
+    the package's ``__init__`` makes a SECOND name for one function, so
+    patching either alone leaves half the application displaced and half of it
+    nominal -- a world no convention can produce, and one a green assertion
+    could not tell from the real thing.  ``pay_calendar._derive`` is what
+    ``derive_periods`` and ``project_period_after`` call; ``pay_calendar`` is
+    what ``pay_period_write._reject_backward_payday`` calls since ``C14-d``.
+
+    Args:
+        monkeypatch: pytest's patcher.
+        shift: The :class:`~app.enums.BusinessDayShiftEnum` member to displace
+            under.  ``NONE`` is legal and is the identity, which is what makes
+            it usable as a case's own control.
+
+    Returns:
+        The substituted producer, so a caller can state the day it expects
+        without re-deriving the displacement by hand.
+    """
+    def _displaced(anchor, cadence_days, steps):
+        """Displace the nominal rhythm day onto a business day."""
+        return shift_to_business_day(
+            anchor + _real_timedelta(days=steps * cadence_days), shift,
+        )
+
+    # ``monkeypatch.setattr`` checks that the attribute EXISTS and never that
+    # the double matches it, so the day ``C14-e`` gives the real producer the
+    # convention argument it must take, every case here would keep passing
+    # against a producer that never shipped.  Asserted rather than trusted, on
+    # an adversarial review's finding: this is the substitution's own
+    # expiry date, and it should be loud.
+    shipped = list(
+        inspect.signature(pay_calendar.projected_payday).parameters
+    )
+    assert shipped == list(inspect.signature(_displaced).parameters), (
+        f"pay_calendar.projected_payday now takes {shipped}; this double "
+        f"still takes {list(inspect.signature(_displaced).parameters)}, so it "
+        f"no longer simulates the producer C14-e ships.  Update the double "
+        f"and every caller of this helper together."
+    )
+    for module in (pay_calendar, pay_calendar_derive):
+        monkeypatch.setattr(module, "projected_payday", _displaced)
+    return _displaced
 
 
 def registration_spec(**overrides):

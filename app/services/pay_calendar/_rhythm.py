@@ -123,7 +123,7 @@ from datetime import date, timedelta
 from itertools import takewhile
 
 from ._calendar import PayCalendar
-from ._derive import cadence_steps_to
+from ._grid import cadence_steps_to
 from ._searches import paydays_between
 from ._views import projected_paychecks
 
@@ -285,8 +285,11 @@ def _paydays_between(
     periods at all -- a fabricated period is a thing a consumer could try to
     file into, which is exactly what ruling ``pay_calendar:R-PC14`` refuses.
     What the two DO share is the arithmetic: both step the progression through
-    :func:`~._derive.cadence_steps_to`, so there is one statement of where a
-    paycheck lands at a cadence and two directions of reading it.
+    :func:`~._grid.cadence_steps_to`, so there is one statement of where a
+    paycheck lands at a cadence and two directions of reading it.  *That
+    function moved out of* :mod:`._derive` *at plan step ``C14-d``, which split
+    the NOMINAL grid from the projection that displaces it; the arithmetic is
+    unchanged and this module reads the grid, which is what it always read.*
 
     **It reads every payday the calendar HOLDS, saved or not**, where the
     producers it replaced read :meth:`~._calendar.PayCalendar.saved`.  For a

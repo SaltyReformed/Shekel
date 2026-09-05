@@ -130,12 +130,12 @@ owns the transaction), so a refusal raised here leaves nothing durable behind.
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.services import pay_schedule_service
+from app.services import pay_calendar, pay_schedule_service
 from app.utils.log_events import (
     BUSINESS,
     EVT_PAY_PERIODS_GENERATED,
@@ -632,6 +632,21 @@ def _requested_paydays(
 ) -> "list[date]":
     """Return the paydays a batch asks for, whether or not they already exist.
 
+    **It asks the GRID producer rather than restating its arithmetic** (plan
+    step C14-d).  ``first_payday + timedelta(days=cadence_days * step)`` was
+    the fourth spelling of the payday rhythm, in the module whose OTHER
+    spelling this step deleted, and an adversarial review of ``C14-d`` found it
+    missing from the census that step corrected.  The body is
+    :func:`~app.services.pay_calendar.nominal_payday` verbatim, so routing it
+    moves no date and makes the census true by construction rather than by
+    prose.
+
+    **It stays NOMINAL, and that is not this function's decision to revisit.**
+    Whether the writer should RECORD each of these days displaced onto a
+    business day is ``C14-e``'s question and it moves money -- ledger row
+    **PC-497**.  Asking the grid rather than the projection leaves that question
+    exactly where it was: the grid producer is the one C14-e does not change.
+
     Args:
         first_payday: The batch's first payday.
         num_periods: How many paydays the batch covers.
@@ -641,7 +656,7 @@ def _requested_paydays(
         *num_periods* days, ascending, ``cadence_days`` apart.
     """
     return [
-        first_payday + timedelta(days=cadence_days * step)
+        pay_calendar.nominal_payday(first_payday, cadence_days, step)
         for step in range(num_periods)
     ]
 
@@ -670,27 +685,76 @@ def _reject_backward_payday(
     left empty (income understated for the whole horizon).  **When C6 answers
     them, this function is what it deletes.**
 
-    **The floor is ONE CADENCE after the latest payday, and an adversarial
-    review of this step is why it is not two days.**  The first cut bounded at
-    ``latest_payday + MIN_MATERIALISABLE_CADENCE_DAYS``, on the reasoning that
-    the only insert worth refusing is one before an existing payday.  That is
-    wrong by the length of a paycheck: the LAST period runs to
-    ``latest_payday + cadence_days - 1``, so every day in
-    ``[latest_payday + 2, latest_payday + cadence_days - 1]`` splits it -- and
-    P10's BOTH damage arms are then reachable through a door P10 says is closed.
-    Measured on the two-period fortnightly schedule: recording 2026-01-23 shrank
-    the 2026-01-16 paycheck from 01-29 to 01-22 and moved a row due 01-25 from
-    rendering on 01-25 to rendering on 01-22, while ``/pay-periods/generate``
-    left the split-off half EMPTY and ``regenerate`` repopulated it beside the
-    row the shrunk half kept -- one monthly billed twice in what had been one
-    paycheck.
+    **The floor is WHERE THE LAST PAYCHECK ENDS, and since plan step C14-d it
+    asks the derivation rather than restating it.**  It is
+    ``projected_payday(latest_payday, cadence_days, 1)`` -- the same call
+    :func:`~app.services.pay_calendar.derive_periods` makes to close the last
+    saved period, whose ``end_date`` is that day minus one.  So the first day
+    NOT inside a paycheck the owner already has is the floor by construction,
+    and the two cannot come apart.
 
-    **It refuses exactly what the guard it replaces refused**, then, and the
-    change is which values it reads: the latest PAYDAY and the stored CADENCE,
-    both of which survived plan step C4-c, rather than the ``end_date`` column
-    that step dropped.  On any schedule this app can write those two spellings
-    select the same set, because the last period's end IS
-    ``payday + cadence - 1``.
+    *That was a maintained agreement until C14-d, and the docstring said so:
+    "on any schedule this app can write those two spellings select the same
+    set, because the last period's end IS ``payday + cadence - 1``".  A rule
+    that two places must always agree is rule 14's tell -- one value with two
+    homes -- and the remedy is to delete a home rather than keep them in step.
+    The home deleted here is this function's own ``latest_payday +
+    cadence_days``, one of the five spellings*
+    :func:`~app.services.pay_calendar.projected_payday` *censuses -- and this
+    module held TWO of them:* :func:`_requested_paydays` *routes to the grid
+    producer in the same step, so two of the five go and the census names
+    three.*
+
+    **Why it moves ``$0.00``, and the reason is STRUCTURAL rather than a fact
+    about stored data** -- an adversarial review of this step corrected a first
+    draft that rested it on every row holding ``none``, which any owner can
+    falsify in one POST through the four doors ``C14-b`` shipped.  The real
+    reason is that :func:`~app.services.pay_calendar.projected_payday` takes no
+    convention and nothing in the pay-calendar package reads one until
+    ``C14-e``, so it IS the grid today and no stored value can move a date
+    through it.
+
+    **What the change buys is measured, not asserted** (probe over production's
+    own schedule, 1,951 paydays from 2026-03-26 at cadence 14 out to
+    ``CALENDAR_DATE_MAX``, 2026-09-05).  Both spellings refuse the same **0**
+    paydays with the convention at ``none``.  Under ``prior`` the open-coded
+    floor refuses **58** of the owner's own future paydays -- the R-PC47 case
+    exactly: a payday nominally
+    2026-01-01 is really paid 2025-12-31, and ``latest + cadence`` puts the
+    floor on the nominal day and refuses the real one -- and the producer call
+    refuses **0**.
+
+    **What ``C14-e`` must not get wrong here** (adversarial review of this
+    step).  When the producer starts taking a convention, this floor must read
+    the STORED one and not :attr:`rhythm.shift
+    <app.services.pay_schedule_service.Rhythm.shift>`.  The rhythm is what the
+    operation LEAVES BEHIND, and a batch that changes the convention would
+    otherwise compute its floor under the new one while
+    :func:`~app.services.pay_calendar.derive_periods` still closes the existing
+    calendar under the old -- which is the disagreement between fence and
+    boundary this step exists to end, reintroduced through the argument list.
+
+    **Under ``next`` it still refuses those 58, and that is ledger row N-495
+    rather than a half-fix.**  Those refusals are the ones whose ANCHOR was
+    itself displaced: ``projected_payday`` steps from the last RECORDED payday,
+    so a payday payroll moved forward carries its whole projection forward with
+    it, and the floor inherits exactly the error the derived end has.  That is
+    the point of asking the producer -- the fence can no longer be wrong in a
+    way the calendar is not -- and the one home left to repair is the anchor,
+    which **N-495** owns and ``C14-e`` may not fix without widening ``C14-c``'s
+    probe window.
+
+    **Why it is not two days, and an adversarial review of C3-b is why.**  That
+    step's first cut bounded at ``latest_payday +
+    MIN_MATERIALISABLE_CADENCE_DAYS``, on the reasoning that the only insert
+    worth refusing is one before an existing payday.  That is wrong by the
+    length of a paycheck, and P10's BOTH damage arms are then reachable through
+    a door P10 says is closed.  Measured on the two-period fortnightly
+    schedule: recording 2026-01-23 shrank the 2026-01-16 paycheck from 01-29 to
+    01-22 and moved a row due 01-25 from rendering on 01-25 to rendering on
+    01-22, while ``/pay-periods/generate`` left the split-off half EMPTY and
+    ``regenerate`` repopulated it beside the row the shrunk half kept -- one
+    monthly billed twice in what had been one paycheck.
 
     Args:
         surviving_paydays: The paydays the owner keeps once this operation's
@@ -700,7 +764,8 @@ def _reject_backward_payday(
             it would actually add.
         cadence_days: The owner's stored cadence, which sets how far the last
             paycheck reaches.  ``None`` only beside an empty payday set, where
-            there is no floor to apply.
+            there is no floor to apply -- the early return below is what makes
+            that safe, and it has to be, because the producer takes an ``int``.
 
     Raises:
         ValidationError: The earliest new payday falls before the floor.
@@ -708,14 +773,14 @@ def _reject_backward_payday(
     if not surviving_paydays or not new_paydays:
         return
     latest_payday = max(surviving_paydays)
-    floor = latest_payday + timedelta(days=cadence_days)
+    floor = pay_calendar.projected_payday(latest_payday, cadence_days, 1)
     earliest_new = min(new_paydays)
     if earliest_new < floor:
         raise ValidationError(
-            f"A new payday must fall on or after {floor.isoformat()} -- one "
-            f"full pay cycle ({cadence_days} days) after your latest recorded "
-            f"payday ({latest_payday.isoformat()}); got "
-            f"{earliest_new.isoformat()}.  An earlier date lands inside a "
+            f"A new payday must fall on or after {floor.isoformat()} -- the "
+            f"day the next paycheck opens after your latest recorded payday "
+            f"({latest_payday.isoformat()}, at a {cadence_days}-day cycle); "
+            f"got {earliest_new.isoformat()}.  An earlier date lands inside a "
             f"paycheck you already have and would split it in half, which this "
             f"app cannot yet do safely.  Choose a later date, or rebuild the "
             f"tail from the payday you want."

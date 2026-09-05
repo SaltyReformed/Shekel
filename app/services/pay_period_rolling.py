@@ -143,6 +143,13 @@ def top_up_rolling_window(user_id, as_of=None):
     # one.  That is the only refusal this comment can prove, and a first draft
     # of it claimed all of them -- caught by an adversarial review of the
     # coverage-rule deletion, which reached the 500 by running it.
+    # **It stops being true at plan step ``pay_calendar:C14-e``** (ledger row
+    # **pay_calendar:PC-497**, opened by ``C14-d``).  From that step the floor
+    # is the last paycheck's DISPLACED end while ``extend_pay_periods`` offers
+    # the NOMINAL grid day, and under a forward convention the nominal day
+    # falls inside that paycheck -- so the floor refuses, here, with no
+    # handler, on both of the app's main screens.  Corrected in advance rather
+    # than left to be discovered: this sentence has been wrong once before.
     # **The CADENCE refusal that used to reach this line is gone** (plan step
     # ``pay_calendar:C4-c``, closing ledger row **pay_calendar:P33**).  The
     # writer refused a stored cadence below 2 while a stored ``end_date`` had
