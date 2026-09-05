@@ -126,12 +126,21 @@ end.
    `(arc, id)`, so two arcs may hold one bare id and a citation of an ambiguous one MUST name its
    arc (rule 10). Since `balance:X-ao-2a` no arc document DECLARES one; each points.
 
-10. **The arc is a COLUMN, never a prefix.** The key is `(arc, id)` and it is unique across the
-    corpus. Bare ids keep their exact spelling, because a rename would orphan every citation in
-    commit messages (immutable), code comments and the archived as-built records.
+10. **The arc is a COLUMN and the KEY is `(arc, id)`**, unique across the corpus. Bare ids keep
+    their exact spelling, because a rename would orphan every citation in commit messages
+    (immutable), code comments and the archived as-built records.
     **Where a bare id is ambiguous the citation must name its arc**: `D4` alone names three
     different findings -- `loan_arc_as_built_2026-07-26.md:564`,
     `implementation_plan_posting_ledger_loan_payments.md:353` and the recurrence arc's live row.
+    **A NEW finding id CARRIES ITS ARC'S PREFIX** (developer, 2026-09-05), continuing that arc's own
+    count: balance BAL-462, bank_import BI-477, pay_calendar PC-497, recurrence REC-515, salary
+    SAL-547, credit_card CC-352. This does not change the KEY; it makes the id self-describing where
+    the COLUMN cannot follow it -- a commit message, a code comment, an archived record -- so the
+    ambiguity above becomes unrepresentable for everything minted from here, rather than a rule the
+    writer must remember. Nothing already filed is renamed, and the seven families that predate this
+    (`N-`, `P`, `D`, `F-`, `FU-`, `E`, `X`) are correct as they stand. Rejected: reserved numeric
+    RANGES, which encode the arc unreadably and run out -- balance's would have held about 24 of its
+    88 open steps.
 
 11. **An identity class shares a tick state, and a fork binds both its remedies and its row.** `C2`,
     `X-l` and `R-F12` are ONE step under three names; ticking one without the others is a failure.
