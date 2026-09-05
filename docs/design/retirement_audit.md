@@ -554,8 +554,14 @@ through `1d9eed7c`; suite 6947 passed, pylint 10.00/10):
   `is None`; closes the LOW-05 carry-open's display half (the bracket-fallback product question
   stays open).
 - **L5b (fixed):** lever outcome lines now carry the shortfall dollars per the locked anatomy.
-- **L2/L4 (documented):** needed-path interior frame mix (endpoints exact) and the mixed
-  flat+percentage cola split artifact, each with docstring notes and a pinning test.
+- **L2 (documented):** needed-path interior frame mix (endpoints exact), with a docstring note and a
+  pinning test.
+- **L4 (FIXED, not documented):** the mixed flat+percentage cola artifact was recorded here as a
+  split-at-cutoff compounding-order problem and was not one -- it was the raise walk applying all of
+  one raise's occurrences at that raise's sort position instead of in date order. Fixed by making
+  the walk chronological; the two-phase split was then removed separately and the artifact did not
+  return. Its pinning test now asserts the invariance
+  (`test_mixed_flat_and_percentage_colas_horizon_invariant`) and carries the superseded values.
 - **L3 (recorded, deferred):** extends finding D8 -- with two pensions of different dates in unlucky
   order, the retained salary series may not match the resolved (max) retirement date. Latent until a
   second pension exists; belongs to the same future multi-profile pass as D8.

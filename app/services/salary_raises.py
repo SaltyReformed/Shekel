@@ -16,9 +16,62 @@ The ``raises`` argument is an iterable of duck-typed raise objects rather than
 ``SalaryRaise`` rows, which is what lets the pension projector extrapolate over
 fabricated ones (deep-hunt #83).
 """
+from dataclasses import dataclass
 from decimal import Decimal
 
 from app.utils.money import round_money
+
+
+@dataclass(frozen=True)
+class TerminatedRaise:
+    """A raise-like value carrying the last year it is believed to happen.
+
+    A recorded raise is a FACT; a raise marked recurring is partly a
+    FORECAST, and a forecast decays -- nobody should assert a merit raise
+    forty years out.  ``terminal_year`` is where that decay is expressed,
+    and it travels ON the raise so :func:`apply_raises` can apply it in the
+    same pass as everything else, instead of a consumer running a second
+    projection beside it.
+
+    It carries the five fields :func:`apply_raises` already reads plus
+    :attr:`terminal_year`, so it satisfies that function's duck-typed
+    contract with no adapter.  It replaced
+    ``pension_calculator._HorizonRaise``, which expressed the same idea by
+    RE-ANCHORING a raise's effective year past a cutoff -- a trick that
+    needed a floor to stop a future-scheduled COLA being pulled backward
+    into years before it existed (finding H1).  Nothing here moves an
+    effective year, so that floor has no subject.
+
+    **What this does NOT do**, stated because an earlier draft of this
+    class claimed otherwise: it does not give the application one horizon.
+    :func:`get_raise_event` in this module walks the same rows to badge a
+    raise on the salary surfaces and knows nothing about termination, so a
+    stored ``terminal_year`` would have to teach it too; and the paycheck
+    engine's callers pass ORM rows, which carry no such column, so the
+    engine and the pension projection still answer differently past a
+    cutoff.  Closing that is the model-election question, which is unruled.
+
+    Attributes:
+        effective_year: The year the raise first applies.
+        effective_month: The month within that year it first applies.
+        is_recurring: Whether it compounds once a year from
+            :attr:`effective_year` onward, as opposed to applying once.
+        percentage: The fractional rate, e.g. ``Decimal("0.03")`` for 3%.
+        flat_amount: The flat addition, for a raise that is not a
+            percentage.  A raise is exactly one method
+            (``ck_salary_raises_one_method``).
+        terminal_year: The LAST year the raise is believed to happen, or
+            ``None`` for indefinitely.  A recurring raise stops accruing
+            applications after it; a one-time raise dated beyond it never
+            applies at all.
+    """
+
+    effective_year: int
+    effective_month: int
+    is_recurring: bool
+    percentage: "Decimal | None"
+    flat_amount: "Decimal | None"
+    terminal_year: "int | None" = None
 
 
 def apply_raises(base_salary, raises, as_of):
@@ -64,15 +117,23 @@ def apply_raises(base_salary, raises, as_of):
     - Its effective_year is on or before ``as_of``'s year (recurring
       raises compound once per year from ``effective_year`` onward)
     - Its effective_month is on or before ``as_of``'s month (for that year)
+    - It has not TERMINATED first -- see ``terminal_year`` below.  A
+      terminated raise still applies; it stops accruing FURTHER
+      applications after its last believed year.
 
     Args:
         base_salary: The pre-raise annual salary -- a Decimal, or any
             value ``Decimal(str(...))`` accepts.
         raises: An iterable of raise objects, each exposing
             ``effective_year``, ``effective_month``, ``is_recurring``,
-            ``percentage``, and ``flat_amount``.  A falsy/empty value
-            returns ``base_salary`` unchanged (unquantized, matching the
-            prior behavior).
+            ``percentage``, and ``flat_amount``, and OPTIONALLY
+            ``terminal_year`` -- the last year the raise is believed to
+            happen, ``None`` or absent meaning indefinitely.
+            :class:`TerminatedRaise` is the value that carries one; a plain
+            :class:`~app.models.salary_raise.SalaryRaise` row has no such
+            column, so every caller that predates it is unchanged.  A
+            falsy/empty value returns ``base_salary`` unchanged
+            (unquantized, matching the prior behavior).
         as_of: The :class:`datetime.date` the salary is evaluated at;
             only its ``year`` and ``month`` are consulted (day ignored).
 
@@ -133,20 +194,29 @@ def _applications(raises, period_year, period_month):
         eff_year = raise_obj.effective_year
         eff_month = raise_obj.effective_month
         method_rank = 0 if raise_obj.flat_amount else 1
+        # ``None`` (or absent) means the raise is believed indefinitely,
+        # which is what a plain SalaryRaise row gets -- it carries no such
+        # column, so the paycheck engine's own callers are unaffected.
+        terminal_year = getattr(raise_obj, "terminal_year", None)
 
         if raise_obj.is_recurring:
             # Recurring raises compound each year at the specified month.
             # The last year that has landed is the caller's own, unless the
-            # effective month has not been reached in it yet.
+            # effective month has not been reached in it yet -- and never
+            # past the last year the raise is believed to happen.
             last_year = (
                 period_year if period_month >= eff_month else period_year - 1
             )
+            if terminal_year is not None:
+                last_year = min(last_year, terminal_year)
             for year in range(eff_year, last_year + 1):
                 yield year, eff_month, method_rank, raise_obj
-        elif (period_year > eff_year) or (
-            period_year == eff_year and period_month >= eff_month
-        ):
-            # One-time raise: it lands once, on its own effective date.
+        elif (
+            (period_year > eff_year)
+            or (period_year == eff_year and period_month >= eff_month)
+        ) and (terminal_year is None or eff_year <= terminal_year):
+            # One-time raise: it lands once, on its own effective date, and
+            # only if that date falls within the years it is believed for.
             yield eff_year, eff_month, method_rank, raise_obj
 
 
@@ -203,4 +273,4 @@ def get_raise_event(profile, period):
 
     return ", ".join(events)
 
-__all__ = ["apply_raises", "get_raise_event"]
+__all__ = ["TerminatedRaise", "apply_raises", "get_raise_event"]
