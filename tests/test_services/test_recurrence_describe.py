@@ -37,11 +37,19 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.services.recurrence import (
+    DERIVED_STOP_KINDS,
+    EMPTY,
     END_BOUND_KINDS,
+    INDEFINITE,
     NEVER_ENDS,
+    ClosesOn,
+    Closing,
+    DerivedStop,
+    Empty,
     EndBound,
     EndBoundColumns,
     EndsOnDate,
+    Indefinite,
     NeverEnds,
     RecurrenceDescription,
     RecurrenceDescriptionError,
@@ -345,7 +353,7 @@ class TestItRefusesWhatItCannotWord:
             starts_on=date(2026, 4, 22),
             placement=_CONTAIN,
             shift=BusinessDayShiftEnum.NONE,
-            end_bound=NEVER_ENDS,
+            closing=Closing(authored=NEVER_ENDS),
             nominal_day=None,
         )
 
@@ -375,7 +383,7 @@ class TestItRefusesWhatItCannotWord:
             starts_on=date(2026, 4, 22),
             placement=_CONTAIN,
             shift=BusinessDayShiftEnum.NONE,
-            end_bound=NEVER_ENDS,
+            closing=Closing(authored=NEVER_ENDS),
             nominal_day=None,
         )
 
@@ -402,7 +410,7 @@ class TestItRefusesWhatItCannotWord:
             starts_on=date(2026, 4, 22),
             placement="the paycheck before",
             shift=BusinessDayShiftEnum.NONE,
-            end_bound=NEVER_ENDS,
+            closing=Closing(authored=NEVER_ENDS),
             nominal_day=None,
         )
 
@@ -489,6 +497,14 @@ class TestTheStopLineIsTotalOverTheShapes:
     review of this step measured that a fourth shape would have rendered NO
     stop line at all, and a cell showing none reads as a commitment that never
     ends.
+
+    **This grades the AUTHORED set** (``_authored_phrase``), which is the job
+    ``_stops_phrase`` held until plan step R7d-d split a definition's stops
+    into the one its owner wrote and the one its destination imposes.
+    :class:`TestTheDerivedStopIsTotalOverItsShapes` holds the identical
+    contract for the second set, and
+    :class:`TestTheTwoStopsAreWordedTogether` holds what happens when both
+    bind.
     """
 
     def test_a_description_has_ONE_field_for_when_it_stops(self):
@@ -514,7 +530,7 @@ class TestTheStopLineIsTotalOverTheShapes:
         """
         bound = sample_bound(kind)
 
-        phrase = _describe._stops_phrase(bound)  # pylint: disable=protected-access
+        phrase = _describe._authored_phrase(bound)  # pylint: disable=protected-access
 
         if isinstance(bound, NeverEnds):
             assert phrase is None
@@ -580,7 +596,7 @@ class TestTheStopLineIsTotalOverTheShapes:
                 return cls()
 
         with pytest.raises(RecurrenceDescriptionError, match="no wording"):
-            _describe._stops_phrase(  # pylint: disable=protected-access
+            _describe._authored_phrase(  # pylint: disable=protected-access
                 _StopsWhenTheLoanClears(),
             )
 
@@ -617,7 +633,7 @@ class TestTheDeferredCollapseNamesItsPlacement:
             starts_on=date(2026, 3, 1),
             placement=advance,
             shift=BusinessDayShiftEnum.NONE,
-            end_bound=NEVER_ENDS,
+            closing=Closing(authored=NEVER_ENDS),
             nominal_day=None,
         )
 
@@ -635,3 +651,186 @@ class TestTheDeferredCollapseNamesItsPlacement:
         )
 
         assert describe(resolved).cadence == "Monthly (first paycheck)"
+
+
+#: One instance of each DERIVED stop shape, for the same reason
+#: ``test_recurrence_bounds._SAMPLES`` holds one of each authored shape: a
+#: property is asserted over the CLOSED SET rather than over the shapes that
+#: existed when the sweep was written.  Held total by
+#: :meth:`TestTheDerivedStopIsTotalOverItsShapes.test_every_shape_is_sampled`.
+_DERIVED_SAMPLES: dict[type[DerivedStop], DerivedStop] = {
+    Indefinite: INDEFINITE,
+    ClosesOn: ClosesOn(on=date(2029, 2, 22)),
+    Empty: EMPTY,
+}
+
+
+class TestTheDerivedStopIsTotalOverItsShapes:
+    """A stop the definition did not author must be worded, or RAISE.
+
+    The identical contract :class:`TestTheStopLineIsTotalOverTheShapes` holds
+    for the authored set, restated for the second one -- and with a sharper
+    consequence.  A missing authored shape renders a blank second line; a
+    missing DERIVED shape falls through to the authored phrase alone, so a
+    definition its destination has already stopped goes on reading as a live
+    commitment with a future date beside it.
+    """
+
+    def test_every_shape_is_sampled(self):
+        """A shape left out of the table narrows every sweep below in silence."""
+        assert set(DERIVED_STOP_KINDS) == set(_DERIVED_SAMPLES)
+
+    @pytest.mark.parametrize("kind", DERIVED_STOP_KINDS)
+    def test_every_shape_is_worded(self, kind):
+        """Over the CLOSED SET, not over the four shapes someone listed.
+
+        ``Indefinite`` is the one that legitimately words nothing of its own:
+        a destination that stops nothing leaves the cell saying exactly what
+        the owner's own bound says, which here is nothing at all.
+        """
+        closing = Closing(
+            authored=NEVER_ENDS, derived=_DERIVED_SAMPLES[kind],
+        )
+
+        phrase = _describe._stops_phrase(closing)  # pylint: disable=protected-access
+
+        if kind is Indefinite:
+            assert phrase is None
+        else:
+            assert phrase, f"{kind.__name__} rendered no stop line"
+
+    def test_an_unworded_derived_shape_raises(self):
+        """The half-finished edit a second SUPPLIER of a derived stop makes.
+
+        A savings goal that is met, a card that is closed and a lease that ends
+        would each supply a shape, and one added without copy must fail here
+        rather than falling back to the authored bound -- which on a definition
+        the destination has stopped is the surface saying money keeps moving.
+        """
+        class _StopsWhenTheGoalIsMet(DerivedStop):
+            """A stand-in for a shape a later supplier adds."""
+
+            def admits(self, occurrence):
+                """Admit everything.
+
+                Args:
+                    occurrence: Unread.
+
+                Returns:
+                    Always ``True``.
+                """
+                return True
+
+        with pytest.raises(RecurrenceDescriptionError, match="no wording"):
+            _describe._stops_phrase(  # pylint: disable=protected-access
+                Closing(
+                    authored=NEVER_ENDS, derived=_StopsWhenTheGoalIsMet(),
+                ),
+            )
+
+
+class TestTheTwoStopsAreWordedTogether:
+    """What the cell says when a definition is stopped by both, or by neither.
+
+    Plan step R7d-d.  The AUTHORED bound and the DERIVED stop are both real, so
+    the phrase answers for both; each branch below is one of the ways they can
+    combine, and the pair of dates is the only one where the two are
+    comparable as values.
+    """
+
+    def _described(self, *, authored, derived):
+        """Return the stop line for one combination.
+
+        Args:
+            authored: The bound the owner stated.
+            derived: The stop the destination imposes, or ``None``.
+
+        Returns:
+            The phrase, or ``None``.
+        """
+        return describe(resolved_value(
+            unit=RecurrenceUnitEnum.MONTH,
+            starts_on=date(2026, 4, 22),
+            end_bound=authored,
+            derived=derived,
+        )).stops
+
+    def test_no_derived_stop_words_the_authored_bound_alone(self):
+        """The 41-of-46 case: nothing outside the rule bounds it.
+
+        Every definition whose destination is not a configured loan is here,
+        and its cell must read exactly as it read before this step -- which is
+        what makes "no rendered character changes" a claim the suite can hold
+        rather than one a commit body asserts.
+        """
+        assert self._described(
+            authored=EndsOnDate(on=date(2027, 3, 1)), derived=None,
+        ) == "until Mar 01, 2027"
+
+    def test_an_indefinite_destination_words_the_authored_bound_alone(self):
+        """A loan that never pays off adds no stop, so it changes no wording.
+
+        Negative amortization, or an underpayment too severe to clear the
+        plan's post-contractual extension.  The definition keeps firing and the
+        cell keeps saying whatever the owner said.
+        """
+        assert self._described(
+            authored=EndsOnDate(on=date(2027, 3, 1)), derived=INDEFINITE,
+        ) == "until Mar 01, 2027"
+
+    def test_an_unbounded_rule_takes_the_derived_date(self):
+        """The state every live loan payment is in once R7d-g NULLs the column.
+
+        The owner authored nothing; the loan's payoff is the whole answer, and
+        it is worded as any other stop date is.
+        """
+        assert self._described(
+            authored=NEVER_ENDS, derived=ClosesOn(on=date(2029, 2, 22)),
+        ) == "until Feb 22, 2029"
+
+    def test_two_dates_are_worded_as_the_EARLIER_of_the_two(self):
+        """They are the same kind of statement, so one of them is the answer.
+
+        Whichever comes first is when the definition stops.  Saying both would
+        state one fact twice, and saying the later one would tell the owner
+        money keeps moving after it has stopped.
+        """
+        assert self._described(
+            authored=EndsOnDate(on=date(2027, 3, 1)),
+            derived=ClosesOn(on=date(2029, 2, 22)),
+        ) == "until Mar 01, 2027"
+
+    def test_the_earlier_date_is_taken_whichever_side_holds_it(self):
+        """The mirror of the case above -- the loan is the one that binds.
+
+        Written as its own case because a ``min`` and a "prefer the authored
+        one" read identically on the assertion above, and only differ here.
+        """
+        assert self._described(
+            authored=EndsOnDate(on=date(2030, 1, 1)),
+            derived=ClosesOn(on=date(2029, 2, 22)),
+        ) == "until Feb 22, 2029"
+
+    def test_a_count_and_a_date_are_BOTH_said(self):
+        """The two are incomparable as values, so neither may be dropped.
+
+        "For twelve of them" and "until the loan clears" cannot be ordered
+        without walking the occurrences; both bind, so both are stated.
+        Picking one would be a guess, and the row's own "Next" column already
+        shows which is biting.
+        """
+        assert self._described(
+            authored=EndsAfterOccurrences(count=12),
+            derived=ClosesOn(on=date(2029, 2, 22)),
+        ) == "for 12 occurrences, or until Feb 22, 2029"
+
+    def test_a_destination_that_closed_first_says_it_never_runs(self):
+        """The window ``[first occurrence, earlier date]`` -- nought occurrences.
+
+        Naming the window's closing date would read as a stop that had once
+        been a start, about a definition not one occurrence of which is ever
+        emitted.
+        """
+        assert self._described(
+            authored=NEVER_ENDS, derived=EMPTY,
+        ) == "never runs"

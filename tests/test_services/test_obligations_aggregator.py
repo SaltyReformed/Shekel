@@ -40,6 +40,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator, recurring_view
+from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, PayCalendar, calendar_for
 from app.services.recurrence import RecurrenceResolutionError
 from app.utils.money import MONTHS_PER_YEAR
@@ -710,7 +711,7 @@ class TestASpentCountLeavesTheObligationsTotal:
 
             view = recurring_view.build_view(
                 [], [template], [],
-                calendar_for(seed_user["user"].id), date.today(),
+                BalanceContext.build(seed_user["user"].id, date.today()),
             )
             row = view.expenses.rows[0]
 

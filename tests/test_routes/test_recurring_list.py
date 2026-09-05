@@ -24,8 +24,15 @@ from app.models.ref import AccountType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
+from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.utils.dates import month_name
-from tests._test_helpers import make_cadence_rule
+from tests._test_helpers import (
+    create_loan_account,
+    insert_trueup_event,
+    loan_params_for,
+    make_cadence_rule,
+    make_loan_payment_template,
+)
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     MONTHLY,
@@ -544,3 +551,45 @@ class TestTheRenderedRecurrenceCell:
         html = auth_client.get("/templates").data.decode()
 
         assert "One-time" in self._row_markup(html, "Retired One Off")
+
+    def test_a_retired_loan_payments_stop_line_is_the_loans_closing_date(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The cell names when the LOAN closed, with nothing stored to name it.
+
+        Plan step R7d-d.  Before it the second line came from the cached
+        ``end_date`` column; here that column is NULL (asserted), the loan was
+        trued to ``$0.00`` on 2026-02-15, and the page still says so.  The date
+        is DERIVED through the composed door -- read backward over the loan's
+        own events (plan step ``recurrence:R7d-h``) -- so it does not move
+        with the day the page is rendered, which is what lets this route test
+        run on the ambient clock: on any day from 2026-02-15 on, that loan
+        closed on that day.
+        """
+        loan = create_loan_account(
+            seed_user, db.session, name="Retired Van",
+            principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
+            origination_date=date(2026, 1, 1), payment_day=1,
+        )
+        insert_trueup_event(
+            loan_params_for(db.session, loan.id), Decimal("0.00"),
+            anchor_date=date(2026, 2, 15),
+        )
+        tpl = make_loan_payment_template(
+            db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
+        )
+        # The production door for the opening bound: the first contractual
+        # installment (2026-02-01) precedes the closing, so the stop is a date
+        # and not "never runs".
+        bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+        tpl.name = "Retired Van Payment"
+        db.session.commit()
+        assert tpl.recurrence_rule.end_date is None, (
+            "precondition: nothing stored could have supplied the stop line"
+        )
+
+        html = auth_client.get("/templates").data.decode()
+        row = self._row_markup(html, "Retired Van Payment")
+
+        assert "Monthly (day 1)" in row
+        assert "until Feb 15, 2026" in row
