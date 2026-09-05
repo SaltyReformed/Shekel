@@ -901,17 +901,26 @@ class TestTheDestinationsStopReachesTheRow:
     def test_an_ARCHIVED_loan_payments_cached_column_is_still_read_as_authored(
         self, seed_user, seed_periods_52,
     ):
-        """The interim's one remaining reader of the cache, pinned until R7d-g.
+        """The Archived drawer still reads the cache, pinned as the interim it is.
 
         Ruling **R-R56** keys on the account's ACTIVE recurring transfer, and an
         archived loan payment is no longer that -- so the column the chokepoints
         wrote while it was active is read in the Archived drawer as its owner's
         bound, and a cache EARLIER than the derived stop still binds the drawer
-        row.  The schema records who wrote a bound nowhere, so no predicate can
-        tell this cache from an owner's date; plan step R7d-g NULLs the column,
-        and its census must include archived loan payments, at which point this
-        case flips to the payoff and trips here rather than moving the drawer
-        silently.
+        row.  The drawer is one of three readers of the cache left on this
+        surface (the monthly equivalent and generation are the others); the
+        schema records who wrote a bound nowhere, so no predicate can tell this
+        cache from an owner's date, and plan step R7d-g must DECIDE archived
+        loan payments rather than sweep them (ledger row D56).
+
+        **What trips this is a predicate change, not R7d-g.**  The case writes
+        the stale column itself, so R7d-g's migration does not reach it; it
+        fails the day the door starts reading an archived definition's column
+        as the cache -- which is the thing to notice, because an archived
+        SECOND transfer's column can be an owner's word.  Read beside
+        :meth:`test_the_archived_drawer_names_the_same_stop`, which holds that
+        the drawer composes the derived stop at all; alone this could not tell
+        "composed, and the authored minimum wins" from "never composed".
         """
         loan = _loan(seed_user)
         tpl = make_loan_payment_template(db.session, seed_user, loan)

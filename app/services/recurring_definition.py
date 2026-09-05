@@ -57,12 +57,12 @@ The one policy it APPLIES is a developer ruling (**R-R56**, 2026-09-04): **a
 closing bound the APP writes is read as the cache it is, not as the owner's
 word.**  Until plan step R7d-g deletes the stored copy, ten chokepoints write a
 loan payment's derived payoff into ``budget.recurrence_rules.end_date`` -- the
-authored bound's own column -- and the form locks the control, so for the
+authored bound's own column -- and the EDIT form locks the control, so for the
 definition :func:`~app.services.loan_recurrence_sync.owns_validity_window`
-names, that column holds no authored fact at all.  Composed as authored it
-would be ANDed with the fresh derivation, and where the cache is EARLIER (plan
-ledger row **D35**'s measured shape: ``2029-01-22`` stored against
-``2029-02-22`` derived) the stale date would still bind.  So the door composes
+names, that column is the app's to write.  Composed as authored it would be
+ANDed with the fresh derivation, and where the cache is EARLIER (plan ledger
+row **D35**'s measured shape: ``2029-01-22`` stored against ``2029-02-22``
+derived) the stale date would still bind.  So the door composes
 ``authored=NEVER_ENDS`` for that definition and the derived stop is the whole
 answer.  A second recurring transfer into the same loan keeps whatever its
 owner authored -- for as long as an older active transfer is the loan's
@@ -70,18 +70,30 @@ payment; archive that one and the second is promoted, its column is written by
 the next chokepoint, and this door reads it as the cache from then on, which
 is what the sync will make it.
 
-**Two limits, stated because the schema records who wrote a bound nowhere.**
-The predicate answers "does the app write this bound NOW", so an ARCHIVED loan
-payment -- no longer the account's active transfer -- has the column the app
-wrote while it was active read as its owner's bound in the Archived drawer,
-and a cache EARLIER than the derived stop still binds that drawer row until
-plan step R7d-g NULLs it (R7d-g's census must therefore cover archived loan
-payments, not the active one alone).  And **R7d-g deletes this arm with the
-column** only while the form's Ends control stays locked for the definition
-the app bounds: once nothing stores that bound, ``end_bound_from_columns``
-reads ``NEVER_ENDS`` on its own and the arm is dead code; if R7d-f unlocks the
-control instead, the arm must go WITH the unlock or it discards an owner's
-word.  Either way it is a fence around the stored copy and not a design.
+**Three limits, stated because the schema records who wrote a bound nowhere.**
+(1) The predicate answers "does the app write this bound", not "did it write
+the value there now".  The generic create form (``POST /transfers``) cannot
+lock the Ends control -- the destination is unknown at render -- and
+``settle_first_occurrence`` refuses only a bound BEFORE the derived start, so
+an owner CAN author a closing bound on a loan-destination transfer there; no
+chokepoint runs on that path, so the column holds the owner's word until the
+first settle overwrites it with the payoff (the closing-bound twin of the
+opening-bound defect plan step R7c-b fixed; a ledger row through the
+coordinator).  For that window this door already reads the column as the cache
+the sync will make it, so the Recurring row names the payoff while generation
+still honours the owner's date.  (2) An ARCHIVED loan payment -- no longer the
+account's active transfer -- has the column the app wrote while it was active
+read as its owner's bound in the Archived drawer, and a cache EARLIER than the
+derived stop still binds that drawer row until plan step R7d-g NULLs it.  R7d-g
+must DECIDE archived loan payments rather than sweep them (plan ledger row
+**D56**: a NULL-every-loan-payment predicate cannot tell an authored bound from
+the cache, so its migration is scoped to the rows the sync wrote).  (3)
+**R7d-g deletes this arm with the column** only while the edit form's lock
+stands: once nothing stores that bound, ``end_bound_from_columns`` reads
+``NEVER_ENDS`` on its own and the arm is dead code; if R7d-f unlocks the edit
+control as the create form already is, the arm must go WITH the unlock or it
+discards an owner's word.  Either way it is a fence around the stored copy and
+not a design.
 
 Flask-isolated (``CLAUDE.md`` Architecture): it takes a template and a read
 pass and returns plain values, reads no ``request`` / ``session``, opens no

@@ -184,7 +184,9 @@ class RecurrenceDescription:
             does not reach this phrase for the ACTIVE loan payment the app
             bounds (the door reads it as the cache it is, ruling **R-R56**),
             but it does for an ARCHIVED one, whose column the app wrote while
-            it was active, until R7d-g NULLs it.
+            it was active, until R7d-g NULLs it; and a bound an owner authored
+            on the generic create form is read as the cache before the first
+            chokepoint writes it.
 
             **It was two fields, ``until`` and ``after_occurrences``, with a
             ``__post_init__`` refusing the pair, until plan step R7b-3.**  That

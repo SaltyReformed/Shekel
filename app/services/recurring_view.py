@@ -79,17 +79,22 @@ shape, ``2029-01-22`` stored against ``2029-02-22`` derived) the row names
 authored while an older active transfer is the loan's payment.  The phrase and
 the next date read ONE value, so they cannot disagree with each other.
 
-Two cells still read the column, and each is named rather than denied.  The
-ARCHIVED drawer: an archived loan payment is no longer the account's active
-transfer, so the predicate that names the app-written bound does not name it
-and the column the app wrote while it was active is read as its owner's bound
--- a cache earlier than the derived stop binds that drawer row until R7d-g
-NULLs it, and R7d-g's census must cover archived loan payments.  The MONTHLY
-EQUIVALENT: ``template_monthly_or_none`` -> ``has_ended`` reads the rule's own
-columns, so on D35's shape the row shows the derived stop and a next date
-beside a BLANK monthly figure for the one installment between the cached
-date's last occurrence and the derived one; plan step R7d-e moves that reader
-onto the door.  R7d-g deletes the stored copy and the door's arm with it.
+Three limits stand, each named rather than denied.  The ARCHIVED drawer: an
+archived loan payment is no longer the account's active transfer, so the
+predicate that names the app-written bound does not name it and the column the
+app wrote while it was active is read as its owner's bound -- a cache earlier
+than the derived stop binds that drawer row until R7d-g NULLs it, and R7d-g
+must decide archived loan payments rather than sweep them (ledger row D56).
+The MONTHLY EQUIVALENT: ``template_monthly_or_none`` -> ``has_ended`` reads the
+rule's own columns, so on D35's shape the row shows the derived stop and a next
+date beside a BLANK monthly figure for the one installment the derived stop
+adds past the cached date; plan step R7d-e moves that reader onto the door.
+The CREATE form: ``POST /transfers`` cannot lock the Ends control, so a closing
+bound an owner authors there on a loan-destination transfer sits in the column
+until the first chokepoint overwrites it, and the door reads it as the cache
+from the start -- the row names the payoff while generation honours the
+owner's date for that window.  R7d-g deletes the stored copy and the door's
+arm with it.
 
 **It takes the READ PASS** (:class:`~app.services.balance_at.BalanceContext`),
 which carries the owner's whole schedule as a ``PayCalendar`` (plan step
@@ -709,8 +714,8 @@ def build_archived_rows(
     payment is no longer that, so the column the chokepoints wrote while it was
     active is read here as its owner's bound and a cache earlier than the
     derived stop still binds the drawer row.  The schema records who wrote a
-    bound nowhere; deleting the stored copy is the remedy, and R7d-g's census
-    must include archived loan payments.
+    bound nowhere; deleting the stored copy is the remedy, and R7d-g must
+    decide archived loan payments rather than sweep them (ledger row D56).
 
     Args:
         templates: The user's archived templates of one kind, in the order the
