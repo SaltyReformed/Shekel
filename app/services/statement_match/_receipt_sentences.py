@@ -113,8 +113,9 @@ def created_summary(recorded) -> str:
 
     **It names both days only when they differ.**  A purchase carries the day
     it was MADE beside the day the bank TOOK it (ruling **R-FW**), and on 179
-    of the developer's 361 recorded lines -- measured 2026-08-19 at ``46bec314``
-    on data this repository does not hold -- the source states no made-day
+    of the developer's 361-line export -- measured 2026-08-18 at ``140f1f24``,
+    ruling **R-FW**'s own commit, on data this repository does not hold -- the
+    source states no made-day
     -- so printing "made on" unconditionally would report the clearing day as a
     swipe day on half of every statement, which is the exact substitution R-FW
     rejected.
