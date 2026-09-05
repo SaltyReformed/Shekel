@@ -32,6 +32,7 @@ from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
+    rhythm_of,
     write_past_the_amount_seam,
     add_anchor_history,
     an_entered_day,
@@ -418,7 +419,7 @@ class TestCreateTransferValidation:
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -654,7 +655,7 @@ class TestUpdateTransfer:
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 6, 1),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 

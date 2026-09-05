@@ -23,7 +23,7 @@ from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app.services import pay_period_write
 from app.services import account_service
-from tests._test_helpers import pay_periods_hydrated
+from tests._test_helpers import pay_periods_hydrated, rhythm_of
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -51,7 +51,7 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
         user_id=other_user.id,
         first_payday=date(2026, 1, 2),
         num_periods=3,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
 

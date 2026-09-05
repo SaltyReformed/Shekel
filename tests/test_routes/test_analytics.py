@@ -27,6 +27,7 @@ from app.services import account_service, pay_period_write, status_seam
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
+    rhythm_of,
     default_settle_day,
     settle_day_columns,
     settlement_columns,
@@ -1357,7 +1358,7 @@ class TestCalendarYearView:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 

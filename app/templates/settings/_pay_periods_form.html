@@ -1,4 +1,4 @@
-{% from "_form_macros.html" import render_field, render_errors, form_card %}
+{% from "_form_macros.html" import render_field, render_select, render_errors, form_card %}
 {# Shared Generate-Pay-Periods card (polyglot audit TPLB/TPL-09):
    included by settings/_pay_periods.html (settings tab) and
    pay_periods/generate.html (standalone page).  The form_card title is
@@ -36,6 +36,39 @@
                    value=config['DEFAULT_PAY_CADENCE_DAYS'],
                    input_attrs='min="%s" max="%s"'|format(CADENCE_DAYS_MIN, CADENCE_DAYS_MAX),
                    help_text="14 = biweekly (most common).",
+                   errors=errors) }}
+
+  {# What payroll does when one of these paydays lands on a closed day (plan
+     step pay_calendar:C14-b, ruling R-PC56 -- asked wherever a cadence is).
+     The option list is ONE list, PAYDAY_SHIFT_OPTIONS, so four forms cannot
+     word the same three choices differently.
+
+     ``pp_schedule`` is the settings tab's context and is ABSENT on the
+     standalone /pay-periods/generate page, so the current answer is read
+     where there is one and falls back to "pay on that day anyway" where
+     there is not.  That fallback is the honest one for a first-time owner
+     and the ``is defined`` guard is cheap insurance rather than the thing
+     that prevents a reset: it guards the NAME, and since this app does not
+     configure ``StrictUndefined``, a bare truth test would behave
+     identically on both an absent name and a ``None`` row.  What prevents a
+     silent reset is the ``or`` chain below.  A first draft of this comment
+     credited the guard with that, and an adversarial review of 2026-09-05
+     measured it false.
+
+     ``request.form`` comes FIRST because this card is what a 422 re-renders,
+     and the cross-field rhythm rule is the first refusal whose only repair is
+     this control: an owner told "pick a longer cadence or turn this off"
+     beside a select that had silently snapped back to "pay on that day
+     anyway" is being asked to fix something the page no longer shows them.
+     An adversarial review of 2026-09-05 found the three-source order missing
+     here; ``auth/register.html`` already had it. #}
+  {{ render_select("shift", PAYDAY_SHIFT_LABEL,
+                   PAYDAY_SHIFT_OPTIONS,
+                   selected_value=(request.form.get('shift')
+                                   or (pp_schedule.shift_id
+                                       if pp_schedule is defined and pp_schedule
+                                       else SHIFT_NONE)),
+                   help_text=PAYDAY_SHIFT_HELP,
                    errors=errors) }}
 
   <button type="submit" class="btn btn-primary">

@@ -45,6 +45,7 @@ from app.services import (
 )
 from app.services.retirement_plan import load_retirement_inputs, picture_at
 from tests._test_helpers import (
+    rhythm_of,
     all_periods,
     current_pay_period,
     derived_span,
@@ -1548,7 +1549,7 @@ class TestTheProjectionAxisIsTheOwnersOwnCalendar:
                 user_id=user_id,
                 first_payday=as_of - timedelta(days=150),
                 num_periods=10,
-                cadence_days=30,
+                rhythm=rhythm_of(30),
             )
             db.session.commit()
 
@@ -1588,7 +1589,7 @@ class TestTheProjectionAxisIsTheOwnersOwnCalendar:
                 user_id=user_id,
                 first_payday=as_of - timedelta(days=60),
                 num_periods=4,
-                cadence_days=30,
+                rhythm=rhythm_of(30),
             )
             db.session.commit()
             last_saved_end = saved[-1].start_date + timedelta(days=29)

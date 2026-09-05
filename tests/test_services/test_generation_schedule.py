@@ -86,6 +86,7 @@ from app.services.pay_calendar import (
     saved_paydays_in_month_through,
 )
 from tests._test_helpers import (
+    rhythm_of,
     counting_calls,
     counting_read_passes,
     create_account_of_type,
@@ -222,7 +223,7 @@ def _append_period(seed_user, seed_periods):
         user_id=seed_user["user"].id,
         first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
         num_periods=1,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
     return created

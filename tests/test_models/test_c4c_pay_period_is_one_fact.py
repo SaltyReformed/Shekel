@@ -82,6 +82,7 @@ from app.services import pay_period_write
 from app.services.pay_calendar import calendar_for
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
+    rhythm_of,
     load_migration_module,
     run_migration_callable as _run,
 )
@@ -206,7 +207,7 @@ def _off_cadence_calendar(db, user_id):
     """
     pay_period_write.record_paydays(
         user_id=user_id, first_payday=date(2026, 1, 2),
-        num_periods=2, cadence_days=14,
+        num_periods=2, rhythm=rhythm_of(14),
     )
     db.session.commit()
     # The forward-only floor is the latest payday plus the STORED cadence
@@ -214,7 +215,7 @@ def _off_cadence_calendar(db, user_id):
     # cadence becomes 7 while the gap it leaves behind is 35 days.
     pay_period_write.record_paydays(
         user_id=user_id, first_payday=date(2026, 2, 20),
-        num_periods=1, cadence_days=7,
+        num_periods=1, rhythm=rhythm_of(7),
     )
     db.session.commit()
     return [date(2026, 1, 2), date(2026, 1, 16), date(2026, 2, 20)], 7
@@ -343,7 +344,7 @@ class TestTheDowngradeRebuildsTheDerivation:
         user = _owner(db, "single@shekel.local")
         pay_period_write.record_paydays(
             user_id=user.id, first_payday=date(2026, 4, 3),
-            num_periods=1, cadence_days=9,
+            num_periods=1, rhythm=rhythm_of(9),
         )
         db.session.commit()
 
@@ -394,7 +395,7 @@ class TestTheDowngradeRebuildsTheDerivation:
         _off_cadence_calendar(db, first.id)
         pay_period_write.record_paydays(
             user_id=second.id, first_payday=date(2026, 6, 5),
-            num_periods=3, cadence_days=14,
+            num_periods=3, rhythm=rhythm_of(14),
         )
         db.session.commit()
 
@@ -439,7 +440,7 @@ class TestTheDowngradeRebuildsTheDerivation:
         _off_cadence_calendar(db, first.id)
         pay_period_write.record_paydays(
             user_id=second.id, first_payday=date(2026, 6, 5),
-            num_periods=3, cadence_days=14,
+            num_periods=3, rhythm=rhythm_of(14),
         )
         db.session.commit()
 
@@ -668,7 +669,7 @@ class TestTheDowngradeIsNotUnconditionallyLossless:
         user = _owner(db, "oneday@shekel.local")
         pay_period_write.record_paydays(
             user_id=user.id, first_payday=date(2026, 3, 2),
-            num_periods=3, cadence_days=1,
+            num_periods=3, rhythm=rhythm_of(1),
         )
         db.session.commit()
 
@@ -697,7 +698,7 @@ class TestTheDowngradeIsNotUnconditionallyLossless:
         user = _owner(db, "oneday-both@shekel.local")
         pay_period_write.record_paydays(
             user_id=user.id, first_payday=date(2026, 3, 2),
-            num_periods=2, cadence_days=1,
+            num_periods=2, rhythm=rhythm_of(1),
         )
         db.session.commit()
 
@@ -722,7 +723,7 @@ class TestTheDowngradeIsNotUnconditionallyLossless:
         user = _owner(db, "oneday-rollback@shekel.local")
         pay_period_write.record_paydays(
             user_id=user.id, first_payday=date(2026, 3, 2),
-            num_periods=3, cadence_days=1,
+            num_periods=3, rhythm=rhythm_of(1),
         )
         db.session.commit()
 

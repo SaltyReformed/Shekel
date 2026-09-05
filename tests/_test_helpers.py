@@ -21,7 +21,9 @@ from datetime import (
     timezone as _real_timezone,
 )
 from decimal import Decimal
+from app.enums import BusinessDayShiftEnum
 from app.models.amount_ownership import AmountOwnership
+from app.services import pay_schedule_service
 
 
 # The synthetic split-loan fixture shared verbatim by the three parallel
@@ -2331,6 +2333,55 @@ def restore_pay_period_derived_columns(db_session):
     )
 
 
+def relax_pay_schedule_shift_not_null(db_session):
+    """Let ``budget.pay_schedule.shift_id`` be omitted, for one test.
+
+    :func:`restore_pay_period_derived_columns`' MIRROR, and the mirror is the
+    point.  That helper exists because a later revision REMOVED columns an
+    older statement reads; this one exists because plan step
+    ``pay_calendar:C14-b`` ADDED a ``NOT NULL`` column an older statement does
+    not write.  Both break the same assumption -- that head's schema is a
+    superset an old statement can still run against -- and it holds for READS
+    and not for an insert into a table that has since gained a required
+    column.
+
+    Concretely: ``af8254074bef``'s backfill is
+    ``INSERT INTO budget.pay_schedule (user_id, cadence_days) SELECT ...``, and
+    at head PostgreSQL refuses that row with a ``NotNullViolation`` naming a
+    column the statement predates by 95 revisions.
+
+    **It drops the NOT NULL rather than running C14-b's ``downgrade()``, and
+    the difference was measured rather than reasoned.**  The downgrade removes
+    the COLUMN, and every reader in the test then breaks instead: the mapper at
+    head still selects ``shift_id``, so the assertions that read the backfilled
+    row back through the ORM die on ``UndefinedColumn``.  What the old
+    statement needs is not the column's absence but permission to omit it, and
+    that is the smaller change -- it leaves the column, the foreign key and
+    every ORM reader intact.  Hand-written DDL here therefore duplicates no
+    migration statement: it relaxes one constraint for the length of a test
+    rather than restating a schema change.
+
+    Everything :func:`restore_pay_period_derived_columns` says about scope
+    applies unchanged -- the database is left at head minus one constraint
+    rather than at any particular revision, no restore is needed because the
+    ``db`` fixture re-clones per test, and the call belongs on the session
+    holding the table's locks.  This is the same latent category error ledger
+    row ``balance:P79`` records, met from the other direction.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that currently holds
+            this table's locks.
+    """
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import text
+
+    db_session.commit()
+    db_session.execute(text(
+        "ALTER TABLE budget.pay_schedule ALTER COLUMN shift_id DROP NOT NULL"
+    ))
+    db_session.commit()
+
+
 def run_migration_callable(callable_, db_session):
     """Run one migration ``upgrade``/``downgrade`` against the test connection.
 
@@ -2562,6 +2613,7 @@ def register_form_data(**overrides):
         A ``dict`` suitable for ``client.post("/register", data=...)``.
     """
     # pylint: disable=import-outside-toplevel
+    from app import ref_cache
     from app.config import BaseConfig
     from app.utils.dates import display_today
     body = {
@@ -2571,6 +2623,13 @@ def register_form_data(**overrides):
         "confirm_password": "securepass123",
         "last_payday": display_today().isoformat(),
         "cadence_days": str(BaseConfig.DEFAULT_PAY_CADENCE_DAYS),
+        # The payday convention the form's <select> renders (plan step
+        # pay_calendar:C14-b), as the ``ref.business_day_shifts`` id that
+        # control's chosen <option> carries -- a browser posts an id, not an
+        # enum member, and a body that posted anything else would exercise a
+        # payload no browser can produce.  ``none`` is what the page
+        # preselects for a new owner.
+        "shift": str(ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE)),
         "num_periods": str(BaseConfig.DEFAULT_PAY_PERIOD_HORIZON),
         # EMPTY, because that is what a browser submits for the optional
         # pay-history date nobody touched (plan step balance:X-bh-2): an HTML
@@ -2584,6 +2643,83 @@ def register_form_data(**overrides):
     return body
 
 
+def shift_form_value(shift=BusinessDayShiftEnum.NONE):
+    """Return what a schedule form's payday-convention ``<select>`` posts.
+
+    The ``ref.business_day_shifts`` id, as a string, because that is what a
+    browser sends for the chosen ``<option>`` -- the four schedule forms render
+    the control from ``PAYDAY_SHIFT_OPTIONS``, whose values are ids (plan step
+    ``pay_calendar:C14-b``).  A test body that posted a member name or omitted
+    the key would exercise a payload no browser can produce, which is the
+    defect class ``register_form_data``'s own docstring records.
+
+    Args:
+        shift: The convention the control is set to, defaulting to
+            :attr:`~app.enums.BusinessDayShiftEnum.NONE` -- what every form
+            preselects for an owner who has stated nothing.
+
+    Returns:
+        str -- the id to put in a form body.
+    """
+    return str(shift_id_of(shift))
+
+
+def shift_id_of(shift=BusinessDayShiftEnum.NONE):
+    """Return the ``ref.business_day_shifts.id`` a member is stored as.
+
+    For the handful of tests that build a
+    :class:`~app.models.pay_schedule.PaySchedule` row DIRECTLY rather than
+    through ``pay_schedule_service.upsert_schedule`` -- constraint cases, which
+    need a row the database will accept in every respect except the one under
+    test.  ``shift_id`` is ``NOT NULL`` with no server default (plan step
+    ``pay_calendar:C14-b``), so a row built without it fails on the wrong
+    constraint and the case passes for the wrong reason.
+
+    Args:
+        shift: The convention, defaulting to
+            :attr:`~app.enums.BusinessDayShiftEnum.NONE`.
+
+    Returns:
+        int -- the ``ref`` id.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+
+    return ref_cache.business_day_shift_id(shift)
+
+
+def rhythm_of(cadence_days, shift=BusinessDayShiftEnum.NONE):
+    """Return a :class:`~app.services.pay_schedule_service.Rhythm`.
+
+    Plan step ``pay_calendar:C14-b`` made the pay-schedule writers take the
+    cadence and the payday convention as ONE value, because the two carry a
+    joint rule and a row written through two statements passes through a state
+    neither statement means.  Most tests in this suite are about the paydays
+    rather than the convention, so this defaults the second half to ``none`` --
+    which is what every schedule holds until an owner answers (**R-PC56**) and
+    therefore what those tests were already exercising.
+
+    A helper rather than the constructor spelled out at each of the call sites,
+    for the reason ``seed_periods`` gives of the batch it wraps: the default is
+    stated ONCE, so the day a test needs a real convention it passes one and
+    every other case keeps reading as a cadence.
+
+    Args:
+        cadence_days: Days between the paydays.
+        shift: The convention, defaulting to
+            :attr:`~app.enums.BusinessDayShiftEnum.NONE`.  Pass a displacing
+            member only in a test that is ABOUT the convention -- the write
+            door refuses one on a cadence below
+            :func:`~app.utils.business_days.shortest_collision_free_cadence`.
+
+    Returns:
+        The rhythm.
+    """
+    return pay_schedule_service.Rhythm(
+        cadence_days=cadence_days, shift=shift,
+    )
+
+
 def registration_spec(**overrides):
     """Return a complete, valid :class:`RegistrationSpec` for service tests.
 
@@ -2592,24 +2728,50 @@ def registration_spec(**overrides):
     pay-calendar half arrived at plan step X-ad-a, and the tests that call it
     directly should not each restate what a valid sign-up looks like.
 
+    **``cadence_days`` and ``shift`` stay spellable as overrides**, though the
+    spec itself carries the pair as one
+    :class:`~app.services.pay_schedule_service.Rhythm` since plan step
+    ``pay_calendar:C14-b``.  A case about the cadence is not a case about the
+    convention, and making every such case name both halves would have put the
+    default in each of them; assembled here, the default is stated once.  Pass
+    ``rhythm=`` directly to state the pair outright.
+
     Args:
         **overrides: Spec fields to replace.  ``first_payday`` defaults to the
             user's today -- see :func:`register_form_data` for why the clock
-            matters.
+            matters.  ``cadence_days`` and ``shift`` are accepted as halves of
+            the rhythm and may not be combined with an explicit ``rhythm``.
 
     Returns:
         The :class:`~app.services.auth_service.RegistrationSpec`.
+
+    Raises:
+        TypeError: Both ``rhythm`` and one of its halves were given, which
+            would leave which one wins to the order this function happens to
+            apply them in.
     """
     # pylint: disable=import-outside-toplevel
     from app.config import BaseConfig
     from app.services.auth_service import RegistrationSpec
     from app.utils.dates import display_today
+    halves = {
+        key: overrides.pop(key)
+        for key in ("cadence_days", "shift") if key in overrides
+    }
+    if halves and "rhythm" in overrides:
+        raise TypeError(
+            f"registration_spec() got rhythm and {sorted(halves)}; state the "
+            f"pair one way or the other."
+        )
     fields = {
         "email": "newuser@example.com",
         "password": "securepass123",
         "display_name": "New User",
         "first_payday": display_today(),
-        "cadence_days": BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
+        "rhythm": rhythm_of(
+            halves.get("cadence_days", BaseConfig.DEFAULT_PAY_CADENCE_DAYS),
+            halves.get("shift", BusinessDayShiftEnum.NONE),
+        ),
         "num_periods": BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
         # The column's own default (plan step balance:X-bh-2): a sign-up that
         # skips the question has stated NOTHING, and the engine counts only
@@ -7122,7 +7284,7 @@ def open_owner_calendar(user_id, first_payday, num_periods=1, cadence_days=14):
         user_id=user_id,
         first_payday=first_payday,
         num_periods=num_periods,
-        cadence_days=cadence_days,
+        rhythm=rhythm_of(cadence_days),
     )
 
 
@@ -7240,7 +7402,7 @@ def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
         f"Ask for a later first payday, or open that account's books earlier."
     )
     pay_period_admin.reset_pay_periods(
-        user_id, first_payday, num_periods, cadence_days,
+        user_id, first_payday, num_periods, rhythm_of(cadence_days),
     )
     # The door is one transaction its ROUTE commits, so a test caller commits
     # it, and expires: the caller may hold rows the wipe deleted.
@@ -7295,7 +7457,7 @@ def rebuild_calendar_from_spans(user_id, spans):
             user_id=user_id,
             first_payday=start,
             num_periods=1,
-            cadence_days=cadence_days,
+            rhythm=rhythm_of(cadence_days),
         )
     # COMMIT the appends too.  :func:`rebuild_calendar` commits the opening
     # payday because the door it wraps leaves the transaction to its caller,

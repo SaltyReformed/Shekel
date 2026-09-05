@@ -47,6 +47,7 @@ from scripts.integrity_check import (
 )
 from tests.conftest import SEED_USER_CADENCE_DAYS
 from tests._test_helpers import (
+    rhythm_of,
     all_periods,
     assert_pay_period_invariants,
     capture_sql_statements,
@@ -96,7 +97,7 @@ def _future_periods(db_session, seed_user, count, start=_FUTURE_START):
         user_id=seed_user["user"].id,
         first_payday=start,
         num_periods=count,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db_session.commit()
     return periods
@@ -104,7 +105,7 @@ def _future_periods(db_session, seed_user, count, start=_FUTURE_START):
 
 def _enable_rolling(db_session, user_id, target):
     """Give the user a schedule row with rolling on at ``target``."""
-    pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+    pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
     pay_schedule_service.set_rolling(user_id, enabled=True, target_periods=target)
     db_session.commit()
 
@@ -169,7 +170,7 @@ class TestTopUpFastPaths:
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
             # Row exists but rolling is off (the column default).
-            pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
             db.session.commit()
             before = _count_periods(db.session, user_id)
             result, statements = capture_sql_statements(
@@ -206,7 +207,7 @@ class TestTopUpFastPaths:
             # 06-08..06-21 contains the frozen today (06-15).
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 6, 8),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
             _enable_rolling(db.session, user_id, target=1)
@@ -426,7 +427,7 @@ class TestTheTopUpCountsOnTheOwnersDay:
         with app.app_context():
             user_id = seed_user["user"].id
             pay_period_write.record_paydays(
-                user_id, date(2026, 7, 3), 4, cadence_days,
+                user_id, date(2026, 7, 3), 4, rhythm_of(cadence_days),
             )
             db.session.commit()
 
@@ -490,9 +491,9 @@ class TestTheCadenceThreadedIsTheOWNERSStoredOne:
             The owner's user id.
         """
         user_id = seed_user["user"].id
-        pay_period_write.record_paydays(user_id, _FUTURE_START, 3, 14)
+        pay_period_write.record_paydays(user_id, _FUTURE_START, 3, rhythm_of(14))
         pay_schedule_service.upsert_schedule(
-            user_id, cadence_days=self._STORED_CADENCE,
+            user_id, rhythm=rhythm_of(self._STORED_CADENCE),
         )
         db_session.commit()
         return user_id

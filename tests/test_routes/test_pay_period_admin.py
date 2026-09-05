@@ -16,7 +16,8 @@ from decimal import Decimal
 
 import pytest
 
-from app.enums import StatusEnum
+from app.enums import BusinessDayShiftEnum, StatusEnum
+from app.utils.dates import display_today
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.services import (
@@ -28,6 +29,8 @@ from app.routes import settings as settings_routes
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from tests._test_helpers import (
+    shift_form_value,
+    rhythm_of,
     add_txn,
     all_periods,
     create_savings_account,
@@ -55,7 +58,7 @@ def _future_periods(db_session, seed_user, count=6):
         user_id=seed_user["user"].id,
         first_payday=date(2026, 7, 3),
         num_periods=count,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db_session.commit()
     return periods
@@ -178,6 +181,64 @@ class TestTruncateRoute:
             )
             assert _period_count(db.session, seed_user["user"].id) == before
 
+    def test_the_regenerate_confirm_panel_round_trips_every_param(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The panel's hidden inputs are re-POSTable, ``shift`` included.
+
+        **Plan step ``pay_calendar:C14-b`` made this reachable to get wrong.**
+        The regenerate schema REQUIRES ``shift``, and the confirm banner
+        re-posts the params dict the 422 handed it as hidden inputs -- so a
+        params dict that omitted the field, or that echoed the enum MEMBER
+        rather than the wire id a browser sends, would refuse every
+        discard-confirm with "shift: Missing data for required field" while
+        every other test stayed green.  The route converts the member back to
+        its id for exactly this reason and nothing graded that conversion:
+        the truncate twin above round-trips params that were all wire-native
+        strings already.
+
+        The values are parsed back out of the 422 body rather than passed by
+        hand, for that test's reason -- passing them by hand tests the service
+        twice and the round trip never.
+        """
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=6)
+            add_txn(db.session, seed_user, all_periods(
+                seed_user["user"].id,
+            )[-1], "Cash", "50.00")
+            db.session.commit()
+            start = (display_today() + timedelta(days=28)).isoformat()
+
+            confirm = auth_client.post("/pay-periods/regenerate", data={
+                "new_start_date": start,
+                "num_periods": "3",
+                "cadence_days": "14",
+                "shift": shift_form_value(BusinessDayShiftEnum.PRIOR),
+            })
+            assert confirm.status_code == 422
+
+            echoed = dict(re.findall(
+                rb'<input type="hidden" name="([a-z_]+)" value="([^"]*)"',
+                confirm.data,
+            ))
+            assert b"shift" in echoed, (
+                "the confirm panel dropped the shift the owner chose, so the "
+                "re-post cannot satisfy the regenerate schema"
+            )
+            assert echoed[b"shift"] == shift_form_value(
+                BusinessDayShiftEnum.PRIOR,
+            ).encode(), "the panel echoed something a browser would not post"
+
+            resp = auth_client.post("/pay-periods/regenerate", data={
+                key.decode(): value.decode() for key, value in echoed.items()
+            } | {"confirm_discard": "true"})
+
+            assert resp.status_code == 302
+            db.session.expire_all()
+            assert pay_schedule_service.resolve_shift(
+                seed_user["user"].id,
+            ) is BusinessDayShiftEnum.PRIOR
+
     def test_confirm_discard_proceeds(self, app, db, auth_client, seed_user):
         """Re-posting what the confirm PANEL rendered completes the truncate.
 
@@ -261,6 +322,7 @@ class TestRegenerateRoute:
                     "new_start_date": "2026-08-01",
                     "num_periods": "3",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                 },
             )
             assert resp.status_code == 302
@@ -282,6 +344,7 @@ class TestGenerateRoute:
                     "start_date": "2027-01-01",
                     "num_periods": "4",
                     "cadence_days": "10",
+                    "shift": shift_form_value(),
                 },
             )
             assert resp.status_code == 302
@@ -299,7 +362,7 @@ class TestScheduleRoute:
         """A valid post enables rolling and stores the target on the row."""
         with app.app_context():
             # A schedule row must exist first (generation captures cadence).
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             db.session.commit()
             resp = auth_client.post(
                 "/pay-periods/schedule",
@@ -319,7 +382,7 @@ class TestScheduleRoute:
     ):
         """target_periods = 0 fails validation; the row stays unchanged."""
         with app.app_context():
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             db.session.commit()
             resp = auth_client.post(
                 "/pay-periods/schedule",
@@ -413,7 +476,7 @@ class TestHistoryRoute:
         from a flush -- in a new instance.
         """
         with app.app_context():
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             db.session.commit()
 
             resp = auth_client.post(
@@ -441,7 +504,7 @@ class TestHistoryRoute:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_schedule_service.upsert_schedule(user_id, 14)
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(14))
             pay_schedule_service.set_history_opening(user_id, date(2023, 6, 3))
             db.session.commit()
 
@@ -467,7 +530,7 @@ class TestHistoryRoute:
         from an ordinary browser rather than from a crafted post.
         """
         with app.app_context():
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             db.session.commit()
 
             resp = auth_client.post(
@@ -495,7 +558,7 @@ class TestHistoryRoute:
                 user_id=user_id,
                 first_payday=date(2026, 7, 3),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             opening = min(p.start_date for p in all_periods(user_id))
@@ -590,6 +653,7 @@ class TestResetRoute:
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                     "confirm": "true",
                 },
             )
@@ -615,6 +679,7 @@ class TestResetRoute:
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                 },
                 follow_redirects=True,
             )
@@ -639,6 +704,7 @@ class TestResetRoute:
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                     "confirm": "true",
                 },
                 follow_redirects=True,
@@ -658,7 +724,8 @@ class TestResetRoute:
             resp = auth_client.post(
                 "/pay-periods/reset",
                 data={
-                    "num_periods": "4", "cadence_days": "14", "confirm": "true",
+                    "num_periods": "4", "cadence_days": "14",
+                    "shift": shift_form_value(), "confirm": "true",
                 },
                 follow_redirects=True,
             )
@@ -675,6 +742,7 @@ class TestResetRoute:
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                     "confirm": "true",
                 },
             )
@@ -693,9 +761,9 @@ class TestRollingTriggerHooks:
         """
         pay_period_write.record_paydays(
             user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
-            num_periods=2, cadence_days=14,
+            num_periods=2, rhythm=rhythm_of(14),
         )
-        pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+        pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
         pay_schedule_service.set_rolling(
             seed_user["user"].id, enabled=True, target_periods=target,
         )
@@ -726,9 +794,9 @@ class TestRollingTriggerHooks:
         with app.app_context():
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
-                num_periods=2, cadence_days=14,
+                num_periods=2, rhythm=rhythm_of(14),
             )
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             db.session.commit()
             before = _period_count(db.session, seed_user["user"].id)
             resp = auth_client.get("/grid")
@@ -845,7 +913,7 @@ class TestOwnerOnlyAndUi:
         """The rolling controls reflect the saved schedule (checked + target)."""
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             pay_schedule_service.set_rolling(
                 seed_user["user"].id, enabled=True, target_periods=40,
             )
@@ -924,11 +992,11 @@ class TestTheManageListIsTheDerivation:
         with app.app_context():
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id, first_payday=date(2026, 7, 3),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id, first_payday=date(2026, 7, 24),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -1088,6 +1156,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
                     "new_start_date": "2026-08-01",
                     "num_periods": "3",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                 },
             )
             assert resp.status_code == 302
@@ -1121,6 +1190,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                     "confirm": "true",
                 },
             )
@@ -1155,6 +1225,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
                     "start_date": (latest + timedelta(days=14)).isoformat(),
                     "num_periods": "3",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                 },
             )
             assert resp.status_code == 302
@@ -1175,10 +1246,10 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
         """A rolling owner short of *target*, holding an every-period template."""
         pay_period_write.record_paydays(
             user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
-            num_periods=2, cadence_days=14,
+            num_periods=2, rhythm=rhythm_of(14),
         )
         make_expense_template(db_session, seed_user, amount="1200.00")
-        pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+        pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
         pay_schedule_service.set_rolling(
             seed_user["user"].id, enabled=True, target_periods=target,
         )

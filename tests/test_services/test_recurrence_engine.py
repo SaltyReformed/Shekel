@@ -69,6 +69,7 @@ from tests.oracles.recurrence_baseline import (
     ANNUAL,
 )
 from tests._test_helpers import (
+    rhythm_of,
     all_periods,
     an_entered_day,
     derived_span,
@@ -1123,7 +1124,7 @@ class TestGenerateForTemplate:
                 user_id=seed_user["user"].id,
                 first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=4,
-                cadence_days=90,
+                rhythm=rhythm_of(90),
             )
             db.session.flush()
             template = self._make_template_with_rule(
@@ -1207,7 +1208,7 @@ class TestGenerateForTemplate:
                 user_id=seed_user["user"].id,
                 first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=4,
-                cadence_days=90,
+                rhythm=rhythm_of(90),
             )
             db.session.flush()
             template = self._make_template_with_rule(
@@ -1251,7 +1252,7 @@ class TestGenerateForTemplate:
                 user_id=seed_user["user"].id,
                 first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=4,
-                cadence_days=90,
+                rhythm=rhythm_of(90),
             )
             db.session.flush()
             template = self._make_template_with_rule(
@@ -1595,7 +1596,7 @@ class TestALegacyScheduleHole:
             user_id=seed_user["user"].id,
             first_payday=later_start,
             num_periods=6,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         return (
             later,
@@ -1654,7 +1655,7 @@ class TestALegacyScheduleHole:
                 user_id=seed_user["user"].id,
                 first_payday=later_start,
                 num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             assert later[0].start_date == later_start
 
@@ -2027,7 +2028,7 @@ class TestALegacyScheduleHole:
                 user_id=seed_user["user"].id,
                 first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=1,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
             last = tail[-1]
@@ -3368,7 +3369,7 @@ class TestResolveConflicts:
             periods_b = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
                 first_payday=seed_periods[0].start_date,
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             template_b = self._make_template_with_rule(
                 second_user, EVERY_PERIOD, category_key="Rent",

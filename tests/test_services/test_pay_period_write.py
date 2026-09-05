@@ -58,6 +58,7 @@ from app.services import (
 from app.schemas.validation import PayPeriodGenerateSchema
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    rhythm_of,
     add_txn,
     all_periods,
     capture_sql_statements,
@@ -114,7 +115,7 @@ class TestItRecordsPaydays:
                 user_id=bare_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=5,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -140,7 +141,7 @@ class TestItRecordsPaydays:
                 user_id=bare_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -160,13 +161,13 @@ class TestItRecordsPaydays:
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=2, cadence_days=14,
+                num_periods=2, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
             again = pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=4, cadence_days=14,
+                num_periods=4, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -184,13 +185,13 @@ class TestItRecordsPaydays:
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=3, cadence_days=14,
+                num_periods=3, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
             new = pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 2, 13),
-                num_periods=2, cadence_days=14,
+                num_periods=2, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -206,7 +207,7 @@ class TestItRecordsPaydays:
         with app.app_context():
             periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id, first_payday=date(2026, 1, 2),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -222,7 +223,7 @@ class TestItRecordsPaydays:
             start = date(2026, 1, 2)
             periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id, first_payday=start,
-                num_periods=104, cadence_days=14,
+                num_periods=104, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -248,7 +249,7 @@ class TestItRecordsPaydays:
                 with pytest.raises(ValidationError, match="must be a date"):
                     pay_period_write.record_paydays(
                         user_id=bare_user["user"].id, first_payday=bad,
-                        num_periods=1, cadence_days=14,
+                        num_periods=1, rhythm=rhythm_of(14),
                     )
             db.session.rollback()
 
@@ -275,7 +276,7 @@ class TestTheForwardOnlyFloor:
         """Record 2026-01-02 and 2026-01-16; coverage runs to 2026-01-29."""
         return pay_period_write.record_paydays(
             user_id=user_id, first_payday=date(2026, 1, 2),
-            num_periods=2, cadence_days=14,
+            num_periods=2, rhythm=rhythm_of(14),
         )
 
     def test_a_payday_between_two_existing_ones_is_refused(
@@ -290,7 +291,7 @@ class TestTheForwardOnlyFloor:
             with pytest.raises(ValidationError, match="on or after 2026-01-30"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 1, 9),
-                    num_periods=4, cadence_days=14,
+                    num_periods=4, rhythm=rhythm_of(14),
                 )
             db.session.rollback()
             assert len(all_periods(user_id)) == 2
@@ -316,13 +317,13 @@ class TestTheForwardOnlyFloor:
             with pytest.raises(ValidationError, match="on or after 2026-01-30"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 1, 29),
-                    num_periods=1, cadence_days=14,
+                    num_periods=1, rhythm=rhythm_of(14),
                 )
             db.session.rollback()
 
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 30),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert _paydays(user_id) == [
@@ -357,7 +358,7 @@ class TestTheForwardOnlyFloor:
             with pytest.raises(ValidationError, match="on or after 2026-01-30"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 1, 23),
-                    num_periods=2, cadence_days=7,
+                    num_periods=2, rhythm=rhythm_of(7),
                 )
             db.session.rollback()
 
@@ -384,7 +385,7 @@ class TestTheForwardOnlyFloor:
 
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 30),
-                num_periods=3, cadence_days=7,
+                num_periods=3, rhythm=rhythm_of(7),
             )
             db.session.commit()
 
@@ -402,7 +403,7 @@ class TestTheForwardOnlyFloor:
         with app.app_context():
             periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id, first_payday=date(2020, 3, 1),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert periods[0].start_date == date(2020, 3, 1)
@@ -445,14 +446,14 @@ class TestAWriteTouchesNoRowItDidNotName:
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=3, cadence_days=14,
+                num_periods=3, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
             created, statements = capture_sql_statements(
                 lambda: pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 2, 20),
-                    num_periods=1, cadence_days=7,
+                    num_periods=1, rhythm=rhythm_of(7),
                 ),
             )
             db.session.commit()
@@ -488,7 +489,7 @@ class TestAWriteTouchesNoRowItDidNotName:
             user_id = bare_user["user"].id
             created = pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=4, cadence_days=14,
+                num_periods=4, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -568,11 +569,11 @@ class TestTheDerivedHorizonFollowsTheStoredCadence:
             user_id = bare_user["user"].id
             created = pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=2, cadence_days=14,
+                num_periods=2, rhythm=rhythm_of(14),
             )
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 2, 11),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert _paydays(user_id)[1] == (
@@ -601,7 +602,7 @@ class TestTheDerivedHorizonFollowsTheStoredCadence:
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=2, cadence_days=14,
+                num_periods=2, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -609,7 +610,7 @@ class TestTheDerivedHorizonFollowsTheStoredCadence:
             # finding P12 names.  Two would step by 30 and create a new one.
             created = pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=1, cadence_days=30,
+                num_periods=1, rhythm=rhythm_of(30),
             )
             db.session.commit()
 
@@ -692,7 +693,7 @@ class TestACoverageWithdrawalIsAccepted:
 
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 5, 22),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -723,7 +724,7 @@ class TestACoverageWithdrawalIsAccepted:
             row_id, home_period_id = row.id, seed_periods[-1].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 1),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert _paydays(user_id)[-2] == (
@@ -765,7 +766,7 @@ class TestACoverageWithdrawalIsAccepted:
             )
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 1),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -815,7 +816,7 @@ class TestACoverageWithdrawalIsAccepted:
             ).update({"settled_on": date(2026, 6, 15)}, synchronize_session=False)
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 1),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -883,7 +884,7 @@ class TestACoverageWithdrawalIsAccepted:
                 "WARNING", logger="app.services.pay_period_write",
             ):
                 pay_period_admin.regenerate_pay_periods(
-                    user_id, date(2026, 3, 27), 8, 14, confirm_discard=True,
+                    user_id, date(2026, 3, 27), 8, rhythm_of(14), confirm_discard=True,
                 )
             db.session.commit()
 
@@ -978,7 +979,7 @@ class TestTheCadenceRule:
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=1, cadence_days=7,
+                num_periods=1, rhythm=rhythm_of(7),
             )
             db.session.commit()
 
@@ -1002,13 +1003,13 @@ class TestTheCadenceRule:
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=1, cadence_days=14,
+                num_periods=1, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
             created = pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=1, cadence_days=30,
+                num_periods=1, rhythm=rhythm_of(30),
             )
             db.session.commit()
 
@@ -1032,14 +1033,14 @@ class TestTheCadenceRule:
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=2, cadence_days=14,
+                num_periods=2, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
             with pytest.raises(ValidationError):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 1, 20),
-                    num_periods=2, cadence_days=7,
+                    num_periods=2, rhythm=rhythm_of(7),
                 )
             db.session.rollback()
 
@@ -1059,7 +1060,7 @@ class TestTheCadenceRule:
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=2, cadence_days=14,
+                num_periods=2, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -1109,7 +1110,7 @@ class TestTheWriterBoundsWhatOneCallMayCreate:
                 user_id=bare_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=3,
-                cadence_days=1,
+                rhythm=rhythm_of(1),
             )
             db.session.commit()
 
@@ -1138,7 +1139,7 @@ class TestTheWriterBoundsWhatOneCallMayCreate:
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 1, 2),
-                num_periods=2, cadence_days=1,
+                num_periods=2, rhythm=rhythm_of(1),
             )
             pay_schedule_service.set_rolling(
                 user_id, enabled=True, target_periods=4,
@@ -1164,7 +1165,7 @@ class TestTheWriterBoundsWhatOneCallMayCreate:
                 user_id=bare_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=2,
-                cadence_days=2,
+                rhythm=rhythm_of(2),
             )
             db.session.commit()
             assert _paydays(bare_user["user"].id) == [
@@ -1188,7 +1189,7 @@ class TestTheWriterBoundsWhatOneCallMayCreate:
                     user_id=bare_user["user"].id,
                     first_payday=date(2026, 1, 2),
                     num_periods=count,
-                    cadence_days=14,
+                    rhythm=rhythm_of(14),
                 )
             db.session.rollback()
             assert all_periods(
@@ -1214,6 +1215,16 @@ class TestTheWriterBoundsWhatOneCallMayCreate:
         schema bounds the cadence and the batch to exactly what the writer
         accepts, so the only ``ValidationError`` that can reach that handler is
         the forward-only one it renders on ``start_date``.
+
+        **That last sentence needed a SECOND rule to stay true**, added at plan
+        step ``pay_calendar:C14-b``.  The writer gained a fifth refusal -- a
+        payday convention the cadence beside it cannot carry -- which no bound
+        on either field alone can answer, so the schema gained
+        ``validate_derivable_rhythm`` to ask it as a cross-field rule.  The
+        payload below therefore threads the schema's own ``shift`` into the
+        rhythm rather than defaulting one: a test that supplied ``none`` by
+        hand would grade the cadence agreement and leave the pair rule
+        untested at exactly the boundary this case exists to hold.
         """
         with app.app_context():
             loaded = PayPeriodGenerateSchema().load({
@@ -1225,7 +1236,7 @@ class TestTheWriterBoundsWhatOneCallMayCreate:
                 user_id=bare_user["user"].id,
                 first_payday=loaded["start_date"],
                 num_periods=loaded["num_periods"],
-                cadence_days=loaded["cadence_days"],
+                rhythm=rhythm_of(loaded["cadence_days"], loaded["shift"]),
             )
             db.session.commit()
 
@@ -1250,7 +1261,7 @@ class TestTheWriterBoundsWhatOneCallMayCreate:
                     user_id=user_id,
                     first_payday=date(2026, 1, 2),
                     num_periods=2,
-                    cadence_days=366,
+                    rhythm=rhythm_of(366),
                 )
             db.session.rollback()
             assert all_periods(user_id) == []
@@ -1376,7 +1387,7 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
         with app.app_context():
             user_id = seed_user["user"].id
             created = pay_period_write.record_paydays(
-                user_id, date(2026, 1, 2), 5, 14,
+                user_id, date(2026, 1, 2), 5, rhythm_of(14),
             )
             db.session.flush()
             doomed = {period.id for period in created[2:]}
@@ -1431,12 +1442,12 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_period_write.record_paydays(user_id, date(2026, 1, 2), 3, 14)
+            pay_period_write.record_paydays(user_id, date(2026, 1, 2), 3, rhythm_of(14))
             db.session.flush()
             foreign = seed_second_periods[4]
 
             pay_period_write.record_paydays(
-                user_id, date(2026, 3, 6), 2, 14,
+                user_id, date(2026, 3, 6), 2, rhythm_of(14),
                 retiring_ids={foreign.id},
             )
             db.session.flush()
@@ -1455,7 +1466,7 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
         with app.app_context():
             user_id = seed_user["user"].id
             created = pay_period_write.record_paydays(
-                user_id, date(2026, 1, 2), 4, 14,
+                user_id, date(2026, 1, 2), 4, rhythm_of(14),
             )
             db.session.flush()
             before = _paydays(user_id)
@@ -1481,7 +1492,7 @@ class TestTheOwnerIdReader:
         with app.app_context():
             user_id = seed_user["user"].id
             created = pay_period_write.record_paydays(
-                user_id, date(2026, 1, 2), 4, 14,
+                user_id, date(2026, 1, 2), 4, rhythm_of(14),
             )
             db.session.flush()
 
@@ -1511,7 +1522,7 @@ class TestTheOwnerIdReader:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_period_write.record_paydays(user_id, date(2026, 1, 2), 3, 14)
+            pay_period_write.record_paydays(user_id, date(2026, 1, 2), 3, rhythm_of(14))
             db.session.flush()
 
             ids, statements = capture_sql_statements(
@@ -1537,7 +1548,7 @@ class TestTheRetiredCountIsTheIntersection:
         with app.app_context():
             user_id = seed_user["user"].id
             created = pay_period_write.record_paydays(
-                user_id, date(2026, 1, 2), 5, 14,
+                user_id, date(2026, 1, 2), 5, rhythm_of(14),
             )
             db.session.flush()
             mine = {created[3].id, created[4].id}
@@ -1572,14 +1583,14 @@ class TestTheRetiredCountIsTheIntersection:
         with app.app_context():
             user_id = seed_user["user"].id
             created = pay_period_write.record_paydays(
-                user_id, date(2026, 1, 2), 4, 14,
+                user_id, date(2026, 1, 2), 4, rhythm_of(14),
             )
             db.session.flush()
             mixed = {created[3].id, seed_second_periods[2].id}
 
             with caplog.at_level(logging.INFO):
                 pay_period_write.record_paydays(
-                    user_id, date(2026, 3, 6), 2, 14, retiring_ids=mixed,
+                    user_id, date(2026, 3, 6), 2, rhythm_of(14), retiring_ids=mixed,
                 )
             retired = [
                 record.retired for record in caplog.records

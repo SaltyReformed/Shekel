@@ -53,7 +53,7 @@ from app.services.pay_calendar import (
     PayCalendarError,
     derive_periods,
 )
-from tests._test_helpers import all_periods
+from tests._test_helpers import all_periods, rhythm_of
 from tests.oracles.pay_calendar_derivation import (
     IRREGULAR_SHAPES,
     cadence_control,
@@ -588,7 +588,7 @@ class TestTheWritersOwnScheduleDerives:
                 user_id=bare_user["user"].id,
                 first_payday=_LIVE_FIRST_PAYDAY,
                 num_periods=_LIVE_PERIOD_COUNT,
-                cadence_days=_LIVE_CADENCE_DAYS,
+                rhythm=rhythm_of(_LIVE_CADENCE_DAYS),
             )
             db.session.commit()
 
@@ -634,7 +634,7 @@ class TestTheWritersOwnScheduleDerives:
                 user_id=bare_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=6,
-                cadence_days=cadence_days,
+                rhythm=rhythm_of(cadence_days),
             )
             db.session.commit()
 
@@ -663,14 +663,14 @@ class TestTheWritersOwnScheduleDerives:
                 user_id=user_id,
                 first_payday=date(2026, 1, 2),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
             pay_period_write.record_paydays(
                 user_id=user_id,
                 first_payday=first[-1].start_date + timedelta(days=14),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 

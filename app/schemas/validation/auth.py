@@ -15,11 +15,14 @@ from marshmallow import (
 )
 
 from app.config import BaseConfig
+from app.enums import BusinessDayShiftEnum
 from app.schemas.validation._helpers import BaseSchema, _clear_nullable_empties
 from app.schemas.validation.pay_periods import (
     cadence_days_field,
     history_opens_on_field,
     num_periods_field,
+    shift_field,
+    validate_derivable_rhythm,
 )
 
 
@@ -275,6 +278,7 @@ class RegisterSchema(_AuthFormSchema):
     cadence_days = cadence_days_field(
         load_default=BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
     )
+    shift = shift_field(load_default=BusinessDayShiftEnum.NONE)
     num_periods = num_periods_field(
         load_default=BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
     )
@@ -313,6 +317,28 @@ class RegisterSchema(_AuthFormSchema):
                 "Password and confirmation do not match.",
                 "confirm_password",
             )
+
+    @validates_schema
+    def validate_rhythm(self, data, **kwargs):
+        """Refuse a cadence and convention no calendar can derive.
+
+        The fourth of the four doors ruling **R-PC56** names, sharing the
+        pay-period schemas' own cross-field rule so sign-up and the settings
+        forms refuse the same pairs with the same wording.
+
+        **Not for field attribution, and a first draft of this docstring
+        claimed it was** (adversarial review, 2026-09-05).  On the three
+        pay-period doors the rule buys exactly that -- the message lands on
+        the ``shift`` control instead of under ``start_date``.  Registration
+        renders no field errors at all: ``routes/auth/credentials.register``
+        catches the marshmallow error and flashes
+        ``_first_validation_message``, so this refusal reads identically to
+        the one ``auth_service.register_user``'s up-front block would have
+        raised.  What it buys HERE is that all four doors refuse the same
+        pairs through one predicate rather than three of them through the
+        schema and the fourth through a service the schema does not reach.
+        """
+        validate_derivable_rhythm(data)
 
 
 class ChangePasswordSchema(BaseSchema):

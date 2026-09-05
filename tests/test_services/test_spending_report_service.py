@@ -64,6 +64,7 @@ from app.services.spending_report_service._window import (
     _spent_total,
 )
 from tests._test_helpers import (
+    rhythm_of,
     add_entry,
     create_envelope_txn,
     default_settle_day,
@@ -769,7 +770,7 @@ class TestTheChartReadsTheDerivedOrdinal:
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=10,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
             foreign = (

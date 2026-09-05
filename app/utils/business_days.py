@@ -67,6 +67,7 @@ from datetime import date, timedelta
 from functools import cache
 
 from app.enums import BusinessDayShiftEnum
+from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
 # ``datetime.date.weekday()`` indices, named because the arithmetic below
 # reads as nonsense against bare integers: a holiday that is "the fourth
@@ -297,3 +298,67 @@ def shift_to_business_day(day: date, shift: BusinessDayShiftEnum) -> date:
     while not is_business_day(landing):
         landing += step
     return landing
+
+
+@cache
+def shortest_collision_free_cadence() -> int:
+    """Return the shortest cadence a displacing convention can be carried at.
+
+    **The floor is a THEOREM about this calendar, not a measurement of it**,
+    which is why it is computed here rather than written down anywhere.  Under
+    :attr:`~app.enums.BusinessDayShiftEnum.NEXT`,
+    :func:`shift_to_business_day` answers the first open day at or after its
+    argument, so two nominal days ``d`` and ``d + cadence`` land on the SAME
+    day exactly when every day from ``d`` to ``d + cadence - 1`` is closed --
+    that is, exactly when the calendar holds a closed run of length
+    ``cadence``.  ``PRIOR`` is the mirror image, reading backward.  So a
+    collision is possible if and only if the cadence is no longer than the
+    longest run of consecutive closed days, and the shortest safe cadence is
+    that run plus one.  Both directions are also monotone, so an ORDER
+    inversion is not a separate hazard: a pair either collides or keeps its
+    order.
+
+    It matters because ``pay_calendar._derive.derive_periods`` refuses a
+    repeated payday outright -- it would place two periods on one opening day
+    and give the earlier of them an end before its own start -- so a schedule
+    whose cadence is under this floor would make its owner's whole calendar
+    raise the moment a convention were chosen.
+    :func:`app.services.pay_schedule_service.reject_shift_on_short_cadence`
+    is the door that refuses that pairing, and it asks HERE for the number
+    rather than holding one.
+
+    **Nothing may hard-code the answer, and that is this function's whole
+    reason.**  The value depends on the holiday set, which is not fixed: this
+    module's own :data:`JUNETEENTH_FIRST_YEAR` records the set changing once
+    inside the window the application admits.  A floor frozen into a CHECK
+    constraint or a module constant would be a second home for a derived
+    number, and the stale one would fail SILENTLY -- in the direction that
+    admits a colliding schedule rather than the one that refuses a legal
+    one.
+
+    **The window is the application's own calendar, and that is exact rather
+    than conservative.**  A collision needs two NOMINAL paydays, and both are
+    bounded: the rhythm runs forward no further than
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX` and backward no further than
+    ``budget.pay_schedule.history_opens_on``, which
+    ``ck_pay_schedule_history_opens_range`` holds at or above
+    :data:`~app.utils.dates.CALENDAR_DATE_MIN`.  So the closed run a colliding
+    pair straddles lies wholly inside that window, and a run reaching past
+    either end cannot be straddled by two paydays this application can hold.
+
+    Returns:
+        int -- the shortest cadence in days at which no two nominal days can
+        be displaced onto one.  ``4`` for the calendar as it stands, the
+        longest closed run being the three days ending 2000-01-17.
+
+        Cached: it is a pure function of the holiday set with no arguments,
+        and computing it walks every day of the application's calendar.
+    """
+    longest_closed_run = 0
+    run = 0
+    day = CALENDAR_DATE_MIN
+    while day <= CALENDAR_DATE_MAX:
+        run = 0 if is_business_day(day) else run + 1
+        longest_closed_run = max(longest_closed_run, run)
+        day += timedelta(days=1)
+    return longest_closed_run + 1

@@ -32,6 +32,7 @@ from app.services import (
     status_seam,
 )
 from tests._test_helpers import (
+    rhythm_of,
     last_covered_day,
     settle_day_columns,
     settlement_columns,
@@ -1021,11 +1022,11 @@ class TestTheBadgeReadsTheOWNERSStoredCadence:
                     if entry.name == "Every 2nd"
                 ]
 
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             db.session.commit()
             assert _badges() == [False]
 
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 30)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(30))
             db.session.commit()
             assert _badges() == [True]
 
@@ -1107,7 +1108,7 @@ class TestThirdPaycheckDetection:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -1143,7 +1144,7 @@ class TestThirdPaycheckDetection:
                 user_id=seed_user["user"].id,
                 first_payday=date(2025, 7, 4),
                 num_periods=40,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -1169,7 +1170,7 @@ class TestThirdPaycheckDetection:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -1210,7 +1211,7 @@ class TestThirdPaycheckDetection:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -1264,7 +1265,7 @@ class TestThirdPaycheckDetection:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -1335,7 +1336,7 @@ class TestYearOverview:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -1432,7 +1433,7 @@ class TestEdgeCases:
                 user_id=seed_user["user"].id,
                 first_payday=date(2028, 2, 18),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             db.session.commit()

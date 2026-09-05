@@ -73,6 +73,7 @@ from app.services.recurrence import (
 # assertion pass while looking at a different function than the one under test.
 from app.services.recurrence import _authoring
 from tests._test_helpers import (
+    rhythm_of,
     bare_expense_template,
     create_loan_account,
     create_savings_account,
@@ -759,7 +760,7 @@ class TestScheduleRebuildRepoint:
         before = authored_columns(rule)
 
         new_periods = pay_period_admin.reset_pay_periods(
-            user_id, date(2027, 3, 5), num_periods=10, cadence_days=14,
+            user_id, date(2027, 3, 5), num_periods=10, rhythm=rhythm_of(14),
         )
         db.session.flush()
 
@@ -826,7 +827,7 @@ class TestScheduleRebuildRepoint:
         db.session.flush()
 
         pay_period_admin.reset_pay_periods(
-            user_id, date(2026, 1, 2), num_periods=10, cadence_days=14,
+            user_id, date(2026, 1, 2), num_periods=10, rhythm=rhythm_of(14),
         )
         db.session.flush()
 
@@ -865,7 +866,7 @@ class TestScheduleRebuildRepoint:
         assert resolved_for(rule).offset_periods == 2  # index 2 % interval 3
 
         pay_period_admin.reset_pay_periods(
-            user_id, date(2027, 3, 5), num_periods=10, cadence_days=14,
+            user_id, date(2027, 3, 5), num_periods=10, rhythm=rhythm_of(14),
         )
         db.session.flush()
 
@@ -920,7 +921,7 @@ class TestScheduleRebuildRepoint:
         before = authored_columns(rule)
 
         pay_period_admin.reset_pay_periods(
-            user_id, date(2027, 3, 5), num_periods=10, cadence_days=14,
+            user_id, date(2027, 3, 5), num_periods=10, rhythm=rhythm_of(14),
         )
         db.session.flush()
 

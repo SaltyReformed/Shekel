@@ -49,6 +49,7 @@ from app.services import pay_period_write, transfer_service
 from app.services import account_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import rhythm_of
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -153,7 +154,7 @@ def _seed_second_user_transfer_assets():
         user_id=other.id,
         first_payday=date(2026, 1, 2),
         num_periods=2,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
 

@@ -48,6 +48,7 @@ from app.services import pay_schedule_service
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
     open_owner_calendar,
+    relax_pay_schedule_shift_not_null,
     restore_pay_period_derived_columns,
 )
 
@@ -407,6 +408,22 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
     statement rebuilds; it does not claim to place the database at this
     revision, and its docstring says which claim it does not make (ledger row
     **P79**).
+
+    **Every case that drives the BACKFILL also relaxes the ``shift_id`` plan
+    step ``pay_calendar:C14-b`` added**, which is the same problem from the
+    other side.  That step made the payday convention ``NOT NULL``, and this
+    revision's backfill is
+    ``INSERT INTO budget.pay_schedule (user_id, cadence_days) SELECT ...`` --
+    written 10 revisions before the column existed, so at HEAD PostgreSQL
+    refuses the row with a ``NotNullViolation`` instead of reaching the state
+    under test.  :func:`~tests._test_helpers.relax_pay_schedule_shift_not_null`
+    drops that one constraint for the length of the case.  Between the two
+    helpers the "HEAD is a superset an old statement can still run against"
+    assumption is MADE true rather than assumed: it holds for READS, and not
+    for an insert into a table that has since gained a required column.
+    :meth:`test_the_key_is_what_blocks_dropping_the_schedule_table` does NOT
+    take it, and that is the distinction rather than an oversight -- it drives
+    the downgrade alone and never reaches the insert.
     """
 
     def test_down_then_up_restores_the_key_unchanged(self, app, db):
@@ -422,6 +439,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
 
         with app.app_context():
             restore_pay_period_derived_columns(db.session)
+            relax_pay_schedule_shift_not_null(db.session)
             _run(_M_C4B2.downgrade, db.session)
             assert _key_row(db.session) is None
 
@@ -454,6 +472,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
 
         with app.app_context():
             restore_pay_period_derived_columns(db.session)
+            relax_pay_schedule_shift_not_null(db.session)
             _run(_M_C4B2.downgrade, db.session)
             last = (
                 db.session.query(PayPeriod).filter_by(user_id=user.id)
@@ -507,6 +526,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
 
         with app.app_context():
             restore_pay_period_derived_columns(db.session)
+            relax_pay_schedule_shift_not_null(db.session)
             _run(_M_C4B2.downgrade, db.session)
             db.session.query(PaySchedule).filter_by(
                 user_id=user.id,
@@ -539,6 +559,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
         """
         with app.app_context():
             restore_pay_period_derived_columns(db.session)
+            relax_pay_schedule_shift_not_null(db.session)
             _run(_M_C4B2.downgrade, db.session)
             user = User(
                 email="uninferable@shekel.local",
