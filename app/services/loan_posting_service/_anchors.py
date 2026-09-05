@@ -40,7 +40,7 @@ GROWS A PERIOD around an anchor that had none.
 period that OPENED on or before the anchor date when none contains it, so a
 loan asserted past the end of the user's schedule files against that clamp; the
 next ``extend_pay_periods`` -- or the rolling-window top-up
-(``pay_period_admin.top_up_rolling_window``, which appends through the same
+(``pay_period_rolling.top_up_rolling_window``, which appends through the same
 function on an ordinary grid or dashboard load) -- then creates the period
 that really contains it.  A period-blind key compared the two as equal, so the
 delta was zero and the correction sat in the clamped period permanently, with

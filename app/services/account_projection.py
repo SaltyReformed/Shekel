@@ -63,7 +63,7 @@ class AccountProjectionKind(Enum):
     4. :data:`INVESTMENT` -- growth engine
        (:func:`app.services.growth_engine.project_balance`).
     5. :data:`PLAIN` -- the generic entries-aware producer
-       (:func:`app.services.balance_at._cash_fold.cash_period_balances`).
+       (:func:`app.services.balance_at._cash_fold.period_balances`).
     """
 
     AMORTIZING = "amortizing"

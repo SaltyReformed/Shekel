@@ -82,7 +82,7 @@ class ContributionRecord:
             represents a period where no contribution was made (only
             growth accrues) -- not the same as a missing entry, which
             falls back to periodic_contribution.
-        is_confirmed: True if the contribution is Paid/Settled
+        is_confirmed: True if the contribution is Paid/Received
             (historical fact).  False if Projected (future commitment).
     """
 
@@ -187,16 +187,25 @@ def calculate_employer_contribution(
             - flat_percentage: Decimal (for flat_percentage type)
             - match_percentage: Decimal (for match type)
             - match_cap_percentage: Decimal (for match type)
-            - gross_biweekly: Decimal (gross pay per period)
+            - gross_biweekly: Decimal (gross pay per period).  **No builder
+              emits this key since plan step salary:R14-b** (ledger row
+              **N-538**): ``investment_projection
+              .employer_contribution_params`` is its only producer and that
+              step removed it, so the
+            fallback below reads a MISSING key and answers ``$0``.  Every
+            production caller supplies ``gross_override`` (or ``salary_basis``,
+            which becomes it); a caller that forgets gets silence rather than
+            an error, which is why the row exists.
         employee_contribution: Decimal amount the employee contributed.
-        gross_override: Optional Decimal per-period gross that replaces
-            the constant ``employer_params["gross_biweekly"]`` for this
-            period (P1b / finding D3 / fork F3).  ``None`` (the default)
-            keeps the constant-base behavior every existing caller relies
-            on; the retirement projection passes a per-period gross grown
-            with the salary path so the flat-percentage employer
-            contribution tracks the projected salary rather than freezing
-            at today's gross.
+        gross_override: The per-period gross a percentage is taken OF
+            (P1b / finding D3 / fork F3).  **Effectively required since plan
+            step salary:R14-b**: it replaced the constant
+            ``employer_params["gross_biweekly"]``, which no builder emits any
+            more, so ``None`` no longer means "keep the constant base" -- it
+            means a basis of ``$0`` and therefore no employer money at all.
+            Every production caller passes one, directly or through
+            ``project_balance``'s ``salary_basis``.  Making that structural
+            rather than documented is ledger row **N-538**.
 
     Returns:
         Decimal employer contribution amount.
@@ -331,10 +340,10 @@ def span_return_rate(
     The date door onto :func:`growth_rate_for_days`, and it exists so the
     ``+ 1`` is written once.  Pay periods carry an inclusive last day: a
     standard 14-calendar-day period runs ``start`` .. ``start + 13`` and the
-    next one starts the following day (since plan step C3-b
-    :func:`app.services.pay_period_write.record_paydays` stores ``next payday
-    - 1`` for every period but the last, and ``start + cadence_days - 1`` for
-    that one).  The span is therefore ``(last_day - first_day).days + 1`` --
+    next one starts the following day -- every period ends the day before its
+    NEXT payday, which for the last one is the PROJECTED payday rather than a
+    recorded neighbour (one rule since plan step ``pay_calendar:C14-c``).  The
+    span is therefore ``(last_day - first_day).days + 1`` --
     14 for a standard biweekly period, not 13.  Counting exclusively (the old
     ``end - start`` without the ``+ 1``) dropped one calendar day per period;
     because consecutive periods tile the calendar with no gaps, that lost 1 day
@@ -357,9 +366,11 @@ def span_return_rate(
         ValueError: *last_day* precedes *first_day*.  **No call path in
         ``app/`` can produce one** since plan step C2-e -- every period reaching
         here is a
-        :class:`~app.services.pay_calendar.DerivedPeriod`, whose end is either
-        the next payday minus a day or ``start + cadence_days - 1`` and so is
-        never below its own start, and its one date-pair caller
+        :class:`~app.services.pay_calendar.DerivedPeriod`, whose end is the day
+        before its next payday and so is never below its own start -- a
+        cadence carrying a displacing convention is held to a floor no two
+        paydays can be displaced onto one day under (ruling
+        **pay_calendar:R-PC59**) -- and its one date-pair caller
         (``property_equity_chart``) selects strictly forward dates.  It is a
         boundary guard on a public function, not a live branch -- the same
         standing :meth:`~app.services.pay_calendar.PayCalendar.overlapping`'s
@@ -388,11 +399,12 @@ class _PeriodInputs:
             :func:`calculate_employer_contribution`).
         annual_contribution_limit: Decimal annual cap, normalized once, or
             ``None`` for accounts with no IRS limit.
-        salary_basis: Optional per-period gross resolver (P1b / fork F3).
-            When set, ``period -> Decimal gross_biweekly`` supplies the
-            employer-contribution base for each period, overriding the
-            constant ``employer_params["gross_biweekly"]``; ``None`` keeps
-            the constant-base behavior every non-retirement consumer uses.
+        salary_basis: Per-period gross resolver (P1b / fork F3),
+            ``period -> Decimal gross_biweekly``, supplying the
+            employer-contribution base for each period.  **Every consumer
+            that configures an employer contribution passes one since plan
+            step salary:R14-b**; ``None`` no longer means a constant base,
+            because there is no constant left to fall back to (**N-538**).
     """
 
     assumed_annual_return: Decimal
@@ -493,10 +505,12 @@ def _project_one_period(
     )
 
     # Step 3: Employer contribution on the capped employee amount.  P1b /
-    # fork F3: when a per-period salary basis is supplied, this period's
-    # gross overrides the constant ``employer_params["gross_biweekly"]`` so
-    # the flat-percentage employer contribution grows with the projected
-    # salary instead of freezing at today's gross.
+    # fork F3: the per-period salary basis supplies this period's gross, so
+    # the flat-percentage employer contribution tracks the paycheck rather
+    # than freezing at one.  It REPLACED a constant
+    # ``employer_params["gross_biweekly"]`` that no builder emits since plan
+    # step salary:R14-b, so a caller that omits the basis now gets a $0
+    # basis rather than a constant one -- ledger row N-538.
     gross_override = (
         inputs.salary_basis(period)
         if inputs.salary_basis is not None
@@ -583,12 +597,14 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
                                   distinct from a missing entry.  None or [] uses the static
                                   periodic_contribution for all periods.
         salary_basis:             Optional ``period -> Decimal gross_biweekly`` resolver
-                                  (P1b / fork F3).  When set, it supplies the per-period
-                                  employer-contribution base, overriding the constant
-                                  ``employer_params["gross_biweekly"]`` so the flat-percentage
-                                  employer contribution grows with the projected salary; None
-                                  (the default) keeps the constant-base behavior every
-                                  non-retirement consumer relies on.
+                                  (P1b / fork F3).  Supplies the per-period
+                                  employer-contribution base so the flat-percentage employer
+                                  contribution tracks the paycheck.  It replaced a constant
+                                  ``employer_params["gross_biweekly"]`` that no builder emits
+                                  since plan step salary:R14-b, so None no longer means a
+                                  constant base -- it means a $0 basis (ledger row N-538).
+                                  Every consumer configuring an employer contribution passes
+                                  one.
 
     Returns:
         List of ProjectedBalance, one per period.

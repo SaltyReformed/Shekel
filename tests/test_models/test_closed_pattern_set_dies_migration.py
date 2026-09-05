@@ -81,7 +81,7 @@ from app.services.recurrence import (
     RecurrenceResolutionError,
     scheduling_day_of_month,
 )
-from tests._test_helpers import load_migration_module
+from tests._test_helpers import bare_expense_template, load_migration_module
 
 _MIGRATION_FILENAME = "d9f5c1a48b73_the_closed_pattern_set_dies.py"
 _MIGRATION = load_migration_module(_MIGRATION_FILENAME)
@@ -92,16 +92,20 @@ _DERIVED_SCHEDULING_DAY = _MIGRATION._DERIVED_SCHEDULING_DAY
 # pylint: enable=protected-access
 
 
-def _plant_rule(user_id, unit, placement, *, starts_on, nominal_day=None,
+def _plant_rule(seed_user, unit, placement, *, starts_on, nominal_day=None,
                 interval_n=1):
-    """Add and flush a rule with the stated cadence.
+    """Add and flush a rule with the stated cadence, on its own definition.
 
     Constructed rather than authored, for the reason the picker suite's own
     fixture is: ``author_rule`` resolves before it writes, and several of the
     cadences below exist precisely to be REFUSED.
 
+    **It takes the fixture dict rather than a user id, since plan step R-F6**:
+    the owning FK is on ``budget.recurrence_rules``, so a planted rule needs a
+    definition to belong to and this builds a cadence-less one to be it.
+
     Args:
-        user_id: The owner.
+        seed_user: The ``seed_user`` fixture dict, whose user owns the rule.
         unit: A :class:`~app.enums.RecurrenceUnitEnum` member.
         placement: A :class:`~app.enums.PeriodPlacementEnum` member.
         starts_on: The rule's first occurrence.
@@ -112,7 +116,9 @@ def _plant_rule(user_id, unit, placement, *, starts_on, nominal_day=None,
         The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
     rule = RecurrenceRule(
-        user_id=user_id,
+        transaction_template_id=bare_expense_template(
+            db.session, seed_user,
+        ).id,
         interval_n=interval_n,
         unit_id=ref_cache.recurrence_unit_id(unit),
         placement_id=ref_cache.period_placement_id(placement),
@@ -241,7 +247,7 @@ class TestTheDowngradeRefusesWhatItCannotEncode:
         """
         with app.app_context():
             rule = _plant_rule(
-                seed_user["user"].id,
+                seed_user,
                 RecurrenceUnitEnum.MONTH,
                 PeriodPlacementEnum.CONTAINING_DATE,
                 starts_on=date(2026, 3, 15),
@@ -265,7 +271,7 @@ class TestTheDowngradeRefusesWhatItCannotEncode:
         """
         with app.app_context():
             rule = _plant_rule(
-                seed_user["user"].id,
+                seed_user,
                 RecurrenceUnitEnum.WEEK,
                 PeriodPlacementEnum.CONTAINING_DATE,
                 starts_on=date(2026, 3, 15),
@@ -343,7 +349,7 @@ class TestTheSqlDerivationIsThePythonOne:
         """
         with app.app_context():
             rule = _plant_rule(
-                seed_user["user"].id, unit, placement,
+                seed_user, unit, placement,
                 starts_on=starts_on, nominal_day=nominal_day,
             )
 
@@ -375,7 +381,7 @@ class TestTheSqlDerivationIsThePythonOne:
         """
         with app.app_context():
             rule = _plant_rule(
-                seed_user["user"].id,
+                seed_user,
                 RecurrenceUnitEnum.MONTH,
                 PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
                 starts_on=date(2026, 3, 15),
@@ -389,7 +395,7 @@ class TestTheSqlDerivationIsThePythonOne:
         """The other half of the same guard: a real day, not just non-None."""
         with app.app_context():
             rule = _plant_rule(
-                seed_user["user"].id,
+                seed_user,
                 RecurrenceUnitEnum.MONTH,
                 PeriodPlacementEnum.CONTAINING_DATE,
                 starts_on=date(2026, 4, 30),
@@ -426,7 +432,7 @@ class TestTheSqlDerivationIsThePythonOne:
         """
         with app.app_context():
             rule = _plant_rule(
-                seed_user["user"].id,
+                seed_user,
                 RecurrenceUnitEnum.WEEK,
                 PeriodPlacementEnum.CONTAINING_DATE,
                 starts_on=date(2026, 3, 15),

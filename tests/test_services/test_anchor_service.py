@@ -55,10 +55,13 @@ from app.services.balance_at import BalanceContext, cash_balance_at
 from app.utils.dates import display_today
 from tests._test_helpers import (
     create_settled_cash_transaction,
+    current_pay_period,
     freeze_today,
     insert_origination_rate,
+    settle_day_columns,
 )
 from app.services import cash_ledger
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_checking_account(seed_user, anchor_balance="1000.00", observed_on=None):
@@ -136,6 +139,7 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
 
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -143,7 +147,7 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
         name="Groceries",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("500.00")),
     )
     db.session.add(txn)
     db.session.flush()
@@ -155,7 +159,7 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
         description="Past-dated debit",
         purchased_on=date.today() - timedelta(days=1),
         is_credit=False,
-        settled_on=None,
+        **settle_day_columns(None),
     )
     db.session.add(entry)
     db.session.commit()
@@ -187,7 +191,7 @@ class TestApplyAnchorTrueUpCommitted:
             )
             db.session.commit()
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             # An unrelated past-dated checking debit -- must stay
@@ -273,7 +277,7 @@ class TestApplyAnchorTrueUpCommitted:
         """
         with app.app_context():
             account = db.session.get(Account, seed_user["account"].id)
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             entry = _make_projected_expense_with_past_dated_entry(

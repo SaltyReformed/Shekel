@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "_acct_macros.html" import acct_glyph %}
+{% from "_nav_macros.html" import back_link %}
+{% block title %}{{ account.name }} -- Reconcile -- Shekel{% endblock title %}
+
+{# What each bank line IS -- plan step bank_import:X-gj-1b, rulings
+   bank_import:R-HP..R-HX.  One page on four verbs.
+
+   THIS PAGE MOVES MONEY, through doors that already exist: OK'ing a card and
+   pressing Apply settles rows onto the bank's day, re-prices one the bank
+   contradicts, and records spending or income the books did not have.  It
+   says so on the cards rather than in a banner -- the locked direction
+   carries NO alert banner on this page or on any of the statement pages.
+
+   THE PAGE IS THE HEADER; the whole reconcilable surface is
+   _statement_reconcile_body.html, which the Apply POST re-renders on its own
+   so its answer IS the screen carrying its receipt.  The split is the one all
+   three sibling statement surfaces keep, and for the same reason: a per-item
+   receipt overflows the 4 KB a browser stores for the signed session cookie a
+   flash rides in.
+
+   Context (accounts.statement_reconcile): account, page, show_all, chips,
+   categories, outcome/rules/error/unacted (all None on a plain render). #}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
+    <span class="acctd-type-tag">Reconcile</span>
+  </div>
+  <div class="d-flex align-items-center gap-2 flex-wrap">
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('accounts.statements', account_id=account.id) }}">
+      <i class="bi bi-upload"></i> Import a statement
+    </a>
+    {# WHERE YOUR MERCHANTS GO (plan step bank_import:X-gk, ruling
+       bank_import:R-IC).  It pointed at the REGISTER until that step, and the
+       register shows only the merchants already ANSWERED for -- so a button
+       labelled "Merchant rules" led to a page that could not show 32 of this
+       account's 62 merchants, and could not be used to answer for any of
+       them. #}
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('accounts.statement_merchants', account_id=account.id) }}">
+      <i class="bi bi-signpost-split"></i> Merchant rules
+    </a>
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('accounts.statement_agreement', account_id=account.id) }}">
+      <i class="bi bi-columns-gap"></i> Books vs bank
+    </a>
+    {{ back_link(url_for('accounts.cash_detail', account_id=account.id), 'Account') }}
+  </div>
+</div>
+
+{% include "accounts/_statement_reconcile_body.html" %}
+{% endblock content %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/statement_reconcile.js') }}"></script>
+{% endblock scripts %}

@@ -11,7 +11,7 @@ revert withdraws the assertion while KEEPING what moved.
 
 Two CHECKs state the half of that which is expressible:
 ``ck_transactions_settled_amount_needs_basis`` (a stored figure names its
-provenance) and ``ck_transactions_settle_day_needs_basis`` (a row asserting a
+provenance) and ``ck_transactions_settle_day_needs_a_record`` (a row asserting a
 settle DAY records what moved).  Both are IMPLICATIONS.  A draft of this step
 made the second a BICONDITIONAL, ``ck_transactions_settlement_recorded``, so
 that releasing the assertion had to destroy the figure -- and the full-edit
@@ -67,11 +67,16 @@ from app.enums import AmountSourceEnum, SettlementBasisEnum, StatusEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.ref import TransactionType
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.services.posting_reads import settled_figure_clause
 from app.services.row_valuation import settled_figure
 from app.services.status_seam import Settlement, apply_status_change
-from tests._test_helpers import load_migration_module
+from tests._test_helpers import (
+    load_migration_module,
+    settle_day_columns,
+)
+from app.services.amount_ownership import declare_derived
 
 _MIGRATION = load_migration_module("e4b8a71c0f36_settlement_record.py")
 
@@ -102,6 +107,7 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     fields = {
+        "user_id": seed_periods[0].user_id,
         "pay_period_id": seed_periods[0].id,
         "scenario_id": seed_user["scenario"].id,
         "account_id": seed_user["account"].id,
@@ -112,6 +118,19 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         "estimated_amount": Decimal("300.00"),
     }
     fields.update(overrides)
+    # **The settle DAY carries its basis unless the caller states one** (plan
+    # step **X-az**).  These builders write bare columns on purpose -- a control
+    # routed through a door would grade the door -- but a row is only bare on
+    # the axis its test is ABOUT: a day with no basis violates
+    # ``ck_*_settle_day_basis_pairing`` before it can reach the constraint the
+    # test is grading, so the pair is completed here and a test that means to
+    # break it says ``settled_day_basis_id`` outright.
+    if "settled_day_basis_id" not in overrides:
+        fields.update(settle_day_columns(fields.get("settled_on")))
+    # **The amount-ownership pair is ONE attribute** (plan step X-au-k), so the
+    # figure this builder splats becomes the row's OWNERSHIP at the last
+    # moment -- after every line above that reads it as a column.
+    fields["amount_ownership"] = AmountOwnership.own(fields.pop("estimated_amount"))
     return Transaction(**fields)
 
 
@@ -128,7 +147,7 @@ class TestTheRecordIsOneFactInThreeColumns:
     together and made every revert destroy the user's figure.
 
     What replaced it is the surviving IMPLICATION,
-    ``ck_transactions_settle_day_needs_basis`` -- a row asserting a settle DAY
+    ``ck_transactions_settle_day_needs_a_record`` -- a row asserting a settle DAY
     must record what moved, while a row recording what moved need not assert a
     day.  That admits the retained state below and refuses the row on which this
     app's two tiers disagree (developer, 2026-08-17).
@@ -146,7 +165,7 @@ class TestTheRecordIsOneFactInThreeColumns:
 
         The row carries NO settle day, which is what isolates the constraint
         under test: with one, it would break
-        ``ck_transactions_settle_day_needs_basis`` as well and PostgreSQL would
+        ``ck_transactions_settle_day_needs_a_record`` as well and PostgreSQL would
         name whichever it evaluated first, so the assertion below would be
         grading the evaluation order rather than the rule.
         """
@@ -191,7 +210,7 @@ class TestTheRecordIsOneFactInThreeColumns:
             ))
             with pytest.raises(sqlalchemy.exc.IntegrityError) as exc:
                 db.session.flush()
-            assert "ck_transactions_settle_day_needs_basis" in str(exc.value)
+            assert "ck_transactions_settle_day_needs_a_record" in str(exc.value)
             db.session.rollback()
 
     def test_a_figure_with_no_settle_day_is_the_REVERTED_state(
@@ -242,7 +261,7 @@ class TestTheRecordIsOneFactInThreeColumns:
         below can only be built the way it is built here -- around both doors.
 
         **The row carries no settle DAY, and that is what leaves this reachable
-        at all.**  ``ck_transactions_settle_day_needs_basis`` now refuses the
+        at all.**  ``ck_transactions_settle_day_needs_a_record`` now refuses the
         DATED half of this state outright (the test above), so what survives for
         the reader to catch is the UNDATED one: a settled status with neither a
         day nor a record.  That is exactly the row
@@ -579,7 +598,7 @@ class TestTheUpgradeRefusesASettledRowWithNoFigure:
         rather than of the state being tested.**  The guard's SELECT reads three
         columns -- ``status_id``, ``actual_amount``, ``estimated_amount`` -- and
         never the day, so a day would add nothing it grades.  What it WOULD do
-        is break ``ck_transactions_settle_day_needs_basis``, a constraint this
+        is break ``ck_transactions_settle_day_needs_a_record``, a constraint this
         very revision creates and whose absence is the pre-upgrade shape this
         test is standing in for: the ORM flush below runs against the migrated
         test database, where it already exists, so the fixture would be refused
@@ -593,10 +612,7 @@ class TestTheUpgradeRefusesASettledRowWithNoFigure:
                 settled_amount=None,
                 settled_basis_id=None,
             )
-            txn.estimated_amount = None
-            txn.amount_source_id = ref_cache.amount_source_id(
-                AmountSourceEnum.TEMPLATE,
-            )
+            declare_derived(txn, AmountSourceEnum.TEMPLATE)
             db.session.add(txn)
             db.session.flush()
             txn_id = txn.id
@@ -635,7 +651,7 @@ class TestTheSQLTierDispatchesOnTheSameColumnAsPython:
         """The one row the two expressions disagree about.
 
         It carries no settle DAY, which is what makes it storable at all:
-        ``ck_transactions_settle_day_needs_basis`` refuses the dated half of
+        ``ck_transactions_settle_day_needs_a_record`` refuses the dated half of
         this state, so what survives for the readers to disagree about is the
         undated one.  ``row_valuation.settled_figure`` RAISES for it; the
         assertion below is that SQL does not quietly answer ``0``.

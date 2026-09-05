@@ -5,37 +5,81 @@ Hand-confirmed tests for :mod:`app.services.spending_report_service`: the
 category breakdown and its shares, window filtering, the estimate-surprises
 kernel (capped list + net), the hero band (vs-prior / vs-average with
 None-safety and per-window-type prior arithmetic), the trailing window
-series (the chart / hero one-source identity), the window-over-window
-deltas (items, groups, and the By-change rows with their zero-current
-rider), and the empty / no-account contracts.  Every value assertion
-carries the arithmetic that produces it.
+series (the chart / hero one-source identity, and the twelve windows it
+is derived from), the window-over-window deltas (items, groups, and the
+By-change rows with their zero-current rider), and the empty / no-account
+contracts.  Every value assertion carries the arithmetic that produces it.
+
+**The chart's windows are DERIVED off the owner's pay calendar** since plan
+step C2-f3d; ``TestTheChartReadsTheDerivedOrdinal`` is that step's firing
+control, and it fails on the ``period_index`` queries it replaced.
 """
 
-from datetime import date
+from contextlib import contextmanager
+from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+from sqlalchemy import event
+
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services import spending_report_service
-# The privates these tests exercise moved into the package's submodules at plan
-# step X-au-c2b, when finding **N-270**'s 1000-line ceiling forced the split;
-# they are imported from where they live rather than re-exported, so the test
-# names the module that owns each rule.
-from app.services.spending_report_service._surprises import _MAX_SURPRISES
-from app.services.spending_report_service._window import (
-    _CHART_WINDOW_COUNT,
-    _shift_month,
-    _shift_window,
+from app.services import (
+    pay_period_write,
+    spending_analysis,
+    spending_report_service,
+    status_seam,
 )
+from app.services.pay_calendar import PayCalendar
+from app.services.cash_ledger import amount_basis
+from app.services.row_valuation import owned_contribution
 from app.services.spending_report_service import (
     Comparison,
     SpendingWindow,
     compute_spending_report,
 )
-from tests._test_helpers import default_settle_day, settlement_columns
+# The privates these tests exercise moved into the package's submodules at plan
+# step X-au-c2b, when finding **N-270**'s 1000-line ceiling forced the split;
+# they are imported from where they live rather than re-exported, so the test
+# names the module that owns each rule.
+from app.services.spending_report_service._hero import (
+    _TRAILING_WINDOW_COUNT,
+)
+from app.services.spending_report_service._surprises import (
+    _MAX_SURPRISES, _build_surprises,
+)
+from app.services.spending_report_service._breakdown import (
+    _build_breakdown,
+    _build_changes,
+    _totals_by_category,
+)
+from app.services.spending_report_service._types import _CategoryTotal
+from app.services.spending_report_service._types import _ScopeIds
+from app.services.spending_report_service._window import (
+    _CHART_WINDOW_COUNT,
+    _series_windows,
+    _shift_month,
+    _spent_total,
+)
+from tests._test_helpers import (
+    rhythm_of,
+    add_entry,
+    create_envelope_txn,
+    create_savings_account,
+    create_settled_transfer,
+    make_expense_template,
+    state_template_price,
+    default_settle_day,
+    last_covered_day,
+    pay_periods_hydrated,
+    settle_day_columns,
+    settlement_columns,
+    settlement_if_settling,
+)
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -67,16 +111,17 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     )
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=ref_cache.status_id(status_enum),
         name=name,
         category_id=cat_id,
         transaction_type_id=ref_cache.txn_type_id(type_enum),
-        estimated_amount=planned,
+        amount_ownership=AmountOwnership.own(planned),
         due_date=due_date or period.start_date,
         is_deleted=is_deleted,
-        settled_on=settled_day,
+        **settle_day_columns(settled_day),
         **settlement_columns(
             settled_day, planned,
             submitted=Decimal(str(actual)) if actual is not None else None,
@@ -90,6 +135,46 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 def _pp_window(period):
     """Return a pay-period SpendingWindow for a period."""
     return SpendingWindow(window_type="pay_period", period_id=period.id)
+
+
+@contextmanager
+def _pay_period_selects(engine):
+    """Capture every statement this block SELECTs FROM ``budget.pay_periods``.
+
+    The engine rather than the session, because what is being counted is
+    round trips to the database: a ``db.session.get`` served out of the
+    identity map issues none, which is exactly how the retired ordinal
+    walk's own row load stayed invisible while it ran eleven queries beside
+    it (plan step C2-f3d).
+
+    **It matches the FROM clause and so a JOIN is invisible to it**, which is
+    deliberate and was measured at plan step C2-f3e: a query JOINing the table
+    is captured as ZERO statements even while it hydrates ten ``PayPeriod``
+    entities.  That is the right scope for the question here -- the assertions
+    below count reads of the table as a SUBJECT, and
+    ``query_settled_expenses_in_span`` KEEPS its join for the COALESCE
+    attribution filter -- but it means this probe cannot grade a
+    join-filtered read, and :func:`~tests._test_helpers.pay_periods_hydrated`
+    beside it is what sees those.
+
+    Args:
+        engine: The SQLAlchemy engine to listen on, normally ``db.engine``.
+
+    Yields:
+        The list of flattened SQL statements, appended to as the block runs.
+    """
+    captured = []
+
+    def _record(_conn, _cursor, statement, _params, _context, _executemany):
+        flattened = " ".join(statement.split())
+        if "FROM budget.pay_periods" in flattened:
+            captured.append(flattened)
+
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        yield captured
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
 
 
 def _group(report, group_name):
@@ -162,6 +247,49 @@ class TestBreakdown:
             assert [i.item_name for i in auto.items] == ["Car Payment", "Gas"]
             assert auto.items[0].amount == Decimal("300.00")
             assert auto.items[1].amount == Decimal("100.00")
+
+    def test_tied_items_in_one_group_order_by_name_not_by_insertion(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Two categories that spent the SAME are ordered by the data (**P74**).
+
+        The item list starts in the query's row order -- ``current_by_cat`` is
+        a dict built by iterating it, and ``list.sort`` is stable -- so before
+        this ruling a tie was decided by the plan.
+
+        **The two are created in REVERSE alphabetical order on purpose**, so
+        the insertion order and the correct order disagree: a rank keyed on
+        ``amount`` alone leaves ``Zephyr`` first, and the total key puts
+        ``Awning`` there.  ``item_name`` is unique within a group by the
+        ``(user_id, group_name, item_name)`` constraint, so it totally orders
+        this list while also reading alphabetically to a person.
+        """
+        with app.app_context():
+            for name in ("Zephyr", "Awning"):
+                cat = Category(
+                    user_id=seed_user["user"].id,
+                    group_name="Home", item_name=name,
+                )
+                db.session.add(cat)
+                db.session.flush()
+                seed_user["categories"][name] = cat
+                _txn(
+                    db, seed_user, seed_periods[0], f"T{name}", name, "75.00",
+                )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[0]),
+            )
+            home = _group(report, "Home")
+            tied = [
+                i.item_name for i in home.items
+                if i.amount == Decimal("75.00")
+            ]
+            assert tied == ["Awning", "Zephyr"], (
+                "a tied item ranking must be a function of the data, not of "
+                "the order the rows happened to be inserted in"
+            )
 
     def test_window_filters_non_measured_rows(self, app, seed_user, seed_periods, db):
         """Only settled expenses in the window count.
@@ -420,11 +548,31 @@ class TestHero:
             assert timing["avg_days_before_due"] == Decimal("0.00")
 
 
-# ── Prior-window arithmetic ──────────────────────────────────────────
+# ── The chart's twelve windows (plan step C2-f3d) ────────────────────
 
 
-class TestPriorWindowArithmetic:
-    """Month/year prior-window stepping (including the year rollover)."""
+def _calendar_scope(paydays, cadence_days=14, user_id=1):
+    """Return a ``_ScopeIds`` whose calendar is *paydays*, with no database.
+
+    ``_series_windows`` reads the scope's CALENDAR and nothing else, so the
+    three window arms are exercised over hand-written paydays rather than
+    through a fixture -- which is what lets the cases below name an exact
+    expected id list per slot.  The account and scenario ids are never read
+    on this path.
+    """
+    return _ScopeIds(
+        user_id=user_id, account_id=1, scenario_id=1,
+        calendar=PayCalendar.from_paydays(paydays, cadence_days, user_id, history_opens_on=None),
+    )
+
+
+class TestSeriesWindows:
+    """The twelve chart windows, derived in one pass off the calendar.
+
+    ``_shift_month`` is exercised here rather than in a class of its own: it
+    is the month arm's one primitive and has no other caller since plan step
+    C2-f3d deleted ``_shift_window``.
+    """
 
     def test_shift_month_january_rolls_to_prior_december(self):
         """One month before January 2026 is December 2025."""
@@ -434,15 +582,326 @@ class TestPriorWindowArithmetic:
         # Thirteen months before June 2026 is May 2025.
         assert _shift_month(2026, 6, 13) == (2025, 5)
 
-    def test_shift_year(self, app, seed_user, seed_periods, db):
-        """A year window steps back to the prior calendar year."""
-        with app.app_context():
-            prior = _shift_window(
-                seed_user["user"].id,
-                SpendingWindow(window_type="year", year=2026), 1,
+    def test_year_series_is_twelve_descending_years(self):
+        """A year window's series is 2015..2026, the chosen year last."""
+        scope = _calendar_scope([(1, date(2026, 1, 2))])
+        chosen = SpendingWindow(window_type="year", year=2026)
+
+        windows = _series_windows(scope, chosen)
+
+        assert len(windows) == _CHART_WINDOW_COUNT
+        assert [w.year for w in windows] == list(range(2015, 2027))
+        assert {w.window_type for w in windows} == {"year"}
+        assert windows[-1] == chosen
+
+    def test_month_series_rolls_the_year(self):
+        """March 2026 trails back to April 2025, twelve slots inclusive."""
+        scope = _calendar_scope([(1, date(2026, 1, 2))])
+        chosen = SpendingWindow(window_type="month", month=3, year=2026)
+
+        windows = _series_windows(scope, chosen)
+
+        assert [(w.year, w.month) for w in windows] == [
+            (2025, 4), (2025, 5), (2025, 6), (2025, 7), (2025, 8),
+            (2025, 9), (2025, 10), (2025, 11), (2025, 12),
+            (2026, 1), (2026, 2), (2026, 3),
+        ]
+        assert windows[-1] == chosen
+
+    def test_pay_period_series_is_the_twelve_preceding_paychecks(self):
+        """With 20 paydays, viewing #14 gives ids 3..14 and no blank slot.
+
+        Paydays are ids 1..20 on a 14-day cadence from 2026-01-02, so the
+        calendar's derived ordinals are 0..19 in that same order.  Viewing
+        the period with ordinal 13 (id 14) fills every slot: ordinals
+        2..13, which are ids 3..14.
+        """
+        paydays = [
+            (n + 1, date(2026, 1, 2) + timedelta(days=14 * n))
+            for n in range(20)
+        ]
+        chosen = SpendingWindow(window_type="pay_period", period_id=14)
+
+        windows = _series_windows(_calendar_scope(paydays), chosen)
+
+        assert len(windows) == _CHART_WINDOW_COUNT
+        assert [w.period_id for w in windows] == list(range(3, 15))
+        assert windows[-1] == chosen
+
+    def test_pay_period_series_pads_before_the_first_payday(self):
+        """A schedule shorter than the chart leaves the LEADING slots blank.
+
+        Four paydays, viewing the third (ordinal 2, id 3): the two earlier
+        paychecks fill slots 9 and 10, the chosen one slot 11, and the nine
+        slots below the owner's first payday are ``None`` rather than
+        shortening the series -- which is what keeps ``series[-2]`` the
+        prior window for every owner.
+        """
+        paydays = [
+            (n + 1, date(2026, 1, 2) + timedelta(days=14 * n))
+            for n in range(4)
+        ]
+        chosen = SpendingWindow(window_type="pay_period", period_id=3)
+
+        windows = _series_windows(_calendar_scope(paydays), chosen)
+
+        assert [w.period_id if w else None for w in windows] == (
+            [None] * 9 + [1, 2, 3]
+        )
+
+    def test_pay_period_series_of_the_first_paycheck_has_no_prior(self):
+        """The earliest paycheck fills one slot; the other eleven are blank."""
+        paydays = [
+            (n + 1, date(2026, 1, 2) + timedelta(days=14 * n))
+            for n in range(4)
+        ]
+        chosen = SpendingWindow(window_type="pay_period", period_id=1)
+
+        windows = _series_windows(_calendar_scope(paydays), chosen)
+
+        assert windows[:-1] == [None] * (_CHART_WINDOW_COUNT - 1)
+        assert windows[-1] == chosen
+
+    def test_an_unmatched_period_id_leaves_every_earlier_slot_blank(self):
+        """An id naming none of this calendar's periods resolves no predecessor.
+
+        The ``None`` branch, stated at the unit level over a hand-written
+        calendar; the case that MATTERS -- an id belonging to another owner
+        rather than to nobody -- takes the same branch and is asserted
+        end to end by
+        ``TestTheChartReadsTheDerivedOrdinal.test_another_owners_period_id_buys_no_bar_of_this_owners_money``,
+        which is where the money is.
+        """
+        paydays = [
+            (n + 1, date(2026, 1, 2) + timedelta(days=14 * n))
+            for n in range(4)
+        ]
+        chosen = SpendingWindow(window_type="pay_period", period_id=9999)
+
+        windows = _series_windows(_calendar_scope(paydays), chosen)
+
+        assert windows == [None] * (_CHART_WINDOW_COUNT - 1) + [chosen]
+
+    def test_the_series_never_reaches_past_the_chosen_window(self):
+        """No slot names a paycheck LATER than the chosen one.
+
+        The chart is retrospective: ``viewed_index`` is the last bar, so a
+        later period appearing anywhere in the list would draw future
+        spending beside the window the user asked for.
+        """
+        paydays = [
+            (n + 1, date(2026, 1, 2) + timedelta(days=14 * n))
+            for n in range(20)
+        ]
+        scope = _calendar_scope(paydays)
+
+        for period_id in range(1, 21):
+            windows = _series_windows(
+                scope,
+                SpendingWindow(window_type="pay_period", period_id=period_id),
             )
-            assert prior.window_type == "year"
-            assert prior.year == 2025
+            assert [w.period_id for w in windows if w is not None] == [
+                earlier for earlier in range(1, period_id + 1)
+            ][-_CHART_WINDOW_COUNT:]
+
+
+class TestTheChartAndTheHeroCountTheSameWindows:
+    """The two window counts are held in step by a test, not by a comment.
+
+    Both modules state the relation and both say it is unenforced.  It was:
+    mutation testing of plan step C2-f3d set ``_TRAILING_WINDOW_COUNT`` to 12
+    and the whole 10,236-test suite stayed green, while the vs-average chip
+    silently began averaging over a window the chart does not draw -- a wrong
+    figure given quietly, which is this project's worst failure shape.  The
+    precedent is ``test_pay_schedule.TestTheCadenceBoundHasOneValue``, which
+    holds the two cadence bounds equal the same way.
+    """
+
+    def test_the_average_reads_fewer_windows_than_the_chart_draws(self):
+        """vs-average must derive from bars the chart actually draws.
+
+        ``_build_hero`` averages ``series[-(N + 1):-1]``, so the baseline
+        stays inside the drawn series only while ``_TRAILING_WINDOW_COUNT``
+        is strictly below ``_CHART_WINDOW_COUNT``.
+        """
+        assert 1 <= _TRAILING_WINDOW_COUNT < _CHART_WINDOW_COUNT
+
+    def test_the_chart_has_room_for_a_chosen_window_and_a_prior(self):
+        """``[-1]`` and ``[-2]`` are named positions, so the count is >= 2.
+
+        ``_series_windows``, ``_build_series``, ``_build_hero`` and the
+        chart's ``compare_index`` all index the last two slots directly.
+        """
+        assert _CHART_WINDOW_COUNT >= 2
+
+
+class TestTheChartReadsTheDerivedOrdinal:
+    """The chart's paychecks come from payday order.
+
+    **Two firing controls for plan step C2-f3d went at plan step
+    ``pay_calendar:C4-c``, and neither was replaced.**  The retired walk
+    selected each bar with ``WHERE period_index = <chosen> - <steps>``, so a
+    stored ordinal out of payday order put the wrong paycheck in a bar
+    silently, and a HOLE in the stored ordinal moved a MONEY figure -- the
+    vs-average baseline read ``$1,300.00`` against a true ``$1,250.00``.  Both
+    cases built their state by writing ``budget.pay_periods.period_index``
+    directly, and C4-c dropped that column: the ordinal is a row's position in
+    payday order, so it cannot be scrambled and it cannot gap.
+
+    What survives here is the ownership case, which is about the chosen
+    period's OWNER rather than about its ordinal.
+    """
+
+    def test_another_owners_period_id_buys_no_bar_of_this_owners_money(
+        self, app, seed_user, second_user, seed_periods, db,
+    ):
+        """A FOREIGN period id resolves nothing, chips included.
+
+        The walk read the chosen id with an unscoped ``db.session.get``, so
+        another owner's period supplied an ordinal and THIS owner's paychecks
+        were listed beneath it: five bars of real money under a window whose
+        own total is ``None``, with both hero chips priced off them
+        (measured on the merge base: vs-prior ``$500.00``, vs-average
+        ``$300.00``, each at ``-100%``).  The calendar holds one owner's
+        periods, so the id now matches none and every slot is blank.
+
+        Unreachable from ``/analytics/spending``, which exposes only month
+        and year -- this pins the door rather than closing a live leak, and
+        it is the ownership case ``9999`` cannot make because an id belonging
+        to NOBODY takes the same branch as one belonging to someone else.
+        """
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=second_user["user"].id,
+                first_payday=date(2026, 1, 2),
+                num_periods=10,
+                rhythm=rhythm_of(14),
+            )
+            db.session.flush()
+            foreign = (
+                db.session.query(PayPeriod)
+                .filter_by(user_id=second_user["user"].id)
+                .order_by(PayPeriod.start_date)
+                .all()
+            )
+            for idx in range(5):
+                _txn(db, seed_user, seed_periods[idx], f"P{idx}", "Rent",
+                     f"{(idx + 1) * 100}.00")
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id,
+                SpendingWindow(window_type="pay_period",
+                               period_id=foreign[5].id),
+            )
+
+            assert [point.window for point in report.series[:-1]] == (
+                [None] * (_CHART_WINDOW_COUNT - 1)
+            )
+            assert report.series[-1].window.period_id == foreign[5].id
+            assert report.series[-1].total is None
+            assert report.hero.spent_total == Decimal("0")
+            assert report.hero.vs_prior.baseline is None
+            assert report.hero.vs_average.baseline is None
+            assert report.breakdown == [] and report.changes == []
+
+    def test_the_report_reads_pay_periods_exactly_once(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A report reads one ``budget.pay_periods`` row set and hydrates none.
+
+        **Measured on the merge base at TWELVE statements for this fixture and
+        TWENTY-THREE on a clone of production**, and the difference is the
+        point: the retired walk's eleven ``db.session.get`` calls issued no
+        statement whenever the chosen window's own rows had already hydrated
+        that period, and eleven statements when it had no rows to do so (the
+        identity map holds weak references).  Either way the eleven
+        ``period_index`` queries beside them always ran.
+
+        **The two assertions catch different things and neither is redundant**
+        (mutation testing of this step measured the gap).  A statement count
+        alone is order-dependent and JOIN-blind: nine per-bar
+        ``db.session.get`` calls placed AFTER the row loads emit no statement,
+        and an eager load renders as ``LEFT OUTER JOIN budget.pay_periods``
+        inside the transactions query, which the capture predicate cannot see.
+        The identity map sees both -- a report that resolves a paycheck any
+        way at all leaves the ORM entity behind, and this path is meant to
+        leave none, because the calendar is loaded as a column tuple.
+
+        ONE statement is the count for an owner with a ``budget.pay_schedule``
+        row, which every owner a live door creates has had since plan step
+        X-ad-a.  A legacy owner without one (plan finding **P8**) reads TWO,
+        because ``pay_schedule_service.resolve_cadence`` infers the cadence
+        from a second ``budget.pay_periods`` query -- one that C4-c deleted with
+        the column it orders by.  ``seed_user`` has the row.
+        """
+        with app.app_context():
+            for idx in range(10):
+                _txn(db, seed_user, seed_periods[idx], f"P{idx}", "Rent",
+                     "100.00")
+            db.session.commit()
+            with _pay_period_selects(db.engine) as selects, \
+                    pay_periods_hydrated() as hydrated:
+                compute_spending_report(
+                    seed_user["user"].id, _pp_window(seed_periods[9]),
+                )
+
+            assert len(selects) == 1, "\n".join(selects)
+            # The one surviving read may not be an ORDINAL search: C4-c dropped
+            # that column, and ``_loader.calendar_for`` selects id + start_date
+            # precisely so it already runs against the schema C4 leaves.
+            assert "period_index" not in selects[0]
+            assert hydrated == [], (
+                f"the report hydrated {len(hydrated)} PayPeriod row(s); "
+                f"it resolves every paycheck from the calendar it already "
+                f"holds, which is loaded as a column tuple"
+            )
+
+    def test_no_settled_expense_query_loads_a_pay_period(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Neither window query hydrates ``Transaction.pay_period``.
+
+        The other half of the guard above, and it needs its own case because
+        the statement counter cannot see this one: an eager load rides INSIDE
+        the transactions query as a ``JOIN budget.pay_periods``, so re-adding
+        one emits no statement of its own and moves no count.  What it does
+        move is the identity map, which is what this asserts.
+
+        Nothing on this read path asks a row which paycheck it sits in, so
+        both queries were carrying a per-row ``PayPeriod`` for nobody.  The
+        span query keeps its JOIN -- the COALESCE attribution filter runs on
+        it -- and drops only the hydration.
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "A", "Rent", "100.00")
+            _txn(db, seed_user, seed_periods[1], "B", "Rent", "200.00")
+            db.session.commit()
+
+            with pay_periods_hydrated() as hydrated:
+                by_period = spending_analysis.query_settled_expenses(
+                    seed_user["scenario"].id,
+                    [seed_periods[0].id, seed_periods[1].id],
+                    seed_user["account"].id,
+                )
+                by_span = spending_analysis.query_settled_expenses_in_span(
+                    seed_user["scenario"].id, seed_user["account"].id,
+                    seed_user["user"].id,
+                    seed_periods[0].start_date, last_covered_day(seed_periods[1]),
+                )
+
+            # Both queries must actually return rows, or "nothing was
+            # hydrated" is true of a query that loaded nothing at all.
+            assert len(by_period) == 2 and len(by_span) == 2
+            assert hydrated == [], (
+                "a settled-expense query hydrated a PayPeriod.  This asserts "
+                "the QUERY's loader, not that nothing downstream reads the "
+                "relationship: since the surprises list began pricing through "
+                "cash_ledger (2026-09-05), rule 4's loan arm reads "
+                "txn.pay_period, so the old 'no consumer reads it' wording was "
+                "made false by that change and is corrected here rather than "
+                "left standing"
+            )
 
 
 # ── Trailing series (the chart / hero one-source identity) ──────────
@@ -506,6 +965,38 @@ class TestSeries:
             assert series[9].total == Decimal("1200.00")
             assert series[10].total == Decimal("0")   # Feb: tracked, no spend
             assert series[11].total == Decimal("300.00")  # March (viewed)
+
+    def test_year_window_series_end_to_end(self, app, seed_user,
+                                           seed_periods, db):
+        """A YEAR window produces a full twelve-point series through the report.
+
+        The arm had no end-to-end case: the only ``window_type="year"`` outside
+        ``tests/manual/`` was the unit test on ``_series_windows``.  It is
+        unrenderable by the S-P1 deferral (the route exposes month only) and
+        computable, which is exactly the pair that goes untested by accident.
+
+        ``seed_periods`` spans 2026-01-02..2026-05-21 with 1200 spent in
+        January, so 2026 totals 1200.00, 2025 and earlier overlap no pay
+        period and are ``None``.
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "JanRent", "Rent", "1200.00",
+                 due_date=date(2026, 1, 10))
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id,
+                SpendingWindow(window_type="year", year=2026),
+            )
+
+            assert [p.window.year for p in report.series] == list(
+                range(2015, 2027)
+            )
+            assert report.series[-1].total == Decimal("1200.00")
+            assert [p.total for p in report.series[:-1]] == [None] * 11
+            assert report.hero.spent_total == Decimal("1200.00")
+            assert report.hero.vs_prior.baseline is None
+            assert report.hero.vs_average.baseline is None
 
     def test_hero_baselines_read_the_series(self, app, seed_user,
                                             seed_periods, db):
@@ -660,6 +1151,86 @@ class TestDeltas:
                 "Car Payment", "Rent",
             ]
 
+    def test_tied_groups_order_by_name_not_by_the_query_plan(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Two groups that spent the SAME are ordered by the data (**P74**).
+
+        Neither settled-expense query carries an ``ORDER BY``; the per-category
+        totals land in a dict in whatever order the database returned them,
+        ``items_by_group`` is built by iterating that dict, and ``list.sort``
+        is stable -- so before this ruling a tie was broken by the query plan,
+        and an edit to either SELECT list could silently reorder the screen.
+
+        ``Home`` and ``Auto`` both spend ``$100.00``.  ``Auto`` sorts first
+        because ``A`` precedes ``H``, not because of anything the planner did.
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "R", "Rent", "100.00")
+            _txn(db, seed_user, seed_periods[0], "C", "Car Payment", "100.00")
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[0]),
+            )
+            tied = [
+                row.group_name for row in report.breakdown
+                if row.amount == Decimal("100.00")
+            ]
+            assert tied == ["Auto", "Home"], (
+                "a tied group ranking must be a function of the data"
+            )
+
+    def test_tied_surprises_order_by_id_so_the_CAP_is_deterministic(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The five shown surprises are chosen by the data, not the plan (**P74**).
+
+        This is the worst of the three unstable ranks because a CAP follows it:
+        keyed on ``abs(delta)`` alone, two rows that missed their estimate by
+        the same amount were separated only by the order the query happened to
+        return them in, so at the boundary the DATABASE decided which row is on
+        the screen rather than merely in what order.
+
+        **The reducer is fed a REVERSED list on purpose, and the first version
+        of this test did not do that and was a tautology**: driven through
+        ``compute_spending_report`` the rows arrive in id order anyway, so a
+        stable sort with no tiebreaker produced the same answer as a total one
+        and the test passed against the defect it names.  Reversing the input
+        is what makes the two orderings distinguishable -- an unstable rank
+        drops the LOWEST id, a total one drops the highest.
+        """
+        with app.app_context():
+            for n in range(6):
+                _txn(
+                    db, seed_user, seed_periods[0], f"S{n}", "Groceries",
+                    "50.00", actual="60.00",
+                )
+            db.session.commit()
+
+            rows = (
+                db.session.query(Transaction)
+                .filter_by(pay_period_id=seed_periods[0].id)
+                .order_by(Transaction.id.desc())
+                .all()
+            )
+            surprises = _build_surprises(
+                rows,
+                amount_basis(
+                    seed_user["user"].id, seed_user["scenario"].id,
+                ),
+            )
+
+            ids = [row.transaction_id for row in surprises.rows]
+            assert len(ids) == _MAX_SURPRISES, "the cap is five"
+            assert ids == sorted(ids), (
+                "tied surprises must rank by a total key: fed in reverse, an "
+                "unstable rank keeps reverse order and drops the wrong row"
+            )
+            assert surprises.net == Decimal("60.00"), (
+                "the net sums EVERY surprise, not the shown five"
+            )
+
 
 # ── Scope facts, empty window, and the None contract ────────────────
 
@@ -759,3 +1330,550 @@ class TestComparison:
         assert cmp.baseline == Decimal("0")
         assert cmp.delta == Decimal("100.00")
         assert cmp.pct is None
+
+    def test_of_NEGATIVE_baseline_reports_no_percent(self):
+        """A refund-dominated prior window has no percent CHANGE to state.
+
+        Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``.  A
+        window's spend could not be negative while ``_spent_total`` took an
+        ``abs()`` per row; a merchant credit files as a NEGATIVE purchase now,
+        so a window whose refunds exceeded its purchases comes to a negative
+        total and can be a baseline.
+
+        **The ratio against one reports the wrong DIRECTION.**  Spend rising
+        from ``-50.00`` to ``100.00`` is a rise of ``150.00``, and
+        ``150 / -50`` is ``-300%`` -- a fall of three hundred percent printed
+        over a rise, on the hero chip the owner reads.  Asserts the figures
+        SURVIVE beside the missing percent, because suppressing the delta too
+        would hide a real movement.
+        """
+        cmp = Comparison.of(Decimal("100.00"), Decimal("-50.00"))
+
+        assert cmp.baseline == Decimal("-50.00")
+        assert cmp.delta == Decimal("150.00")
+        assert cmp.pct is None
+
+    def test_of_POSITIVE_baseline_still_reports_its_percent(self):
+        """The control, without which the case above grades a chip that never
+        computes a percent at all."""
+        cmp = Comparison.of(Decimal("150.00"), Decimal("100.00"))
+
+        assert cmp.delta == Decimal("50.00")
+        assert cmp.pct == Decimal("50.00")
+
+
+class TestARefundReducesSpendRatherThanAddingToIt:
+    """A REFUND-dominated envelope must not report as SPENDING.
+
+    Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``.  A merchant
+    credit files as a NEGATIVE purchase against the envelope its merchant rule
+    names, so a settled envelope's own figure -- ``sum(entries)`` on the
+    ``purchases`` basis -- can be negative.
+
+    **This class exists because an ``abs()`` was hiding exactly that**, at
+    ``_breakdown._totals_by_category`` and ``_window._spent_total``.  Both were
+    a provable no-op while ``ck_transaction_entries_positive_amount`` said
+    ``amount > 0``, and both became a SIGN FLIP when that CHECK moved.
+    Measured before the fix: ``-86.67`` reported as ``+86.67``, a `$173.34`
+    error on a window in which the account RECEIVED the money.
+
+    **The three shapes are asserted together deliberately.**  Only the
+    refund-DOMINATED one inverts under ``abs()``; a partly-refunded envelope
+    nets correctly either way.  A case staging only the ordinary or the
+    partly-refunded shape would pass with the defect restored, which is why the
+    boundary is pinned rather than a single example.
+    """
+
+    def _settled_envelope(self, db, seed_user, period, name, amounts):
+        """Settle an envelope worth exactly the entries handed to it."""
+        txn = create_envelope_txn(
+            seed_user, db.session, period, name, Decimal("0.00"),
+        )
+        for amount in amounts:
+            add_entry(
+                db.session, seed_user, txn, Decimal(amount),
+                period.start_date,
+            )
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.DONE),
+            settlement=settlement_if_settling(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            ),
+        )
+        db.session.flush()
+        return txn
+
+    def test_the_three_shapes_carry_their_own_signs(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Ordinary, partly refunded, and refund dominated.
+
+        Asserts the WINDOW total as well as the per-row figures, because the
+        defect was in the summing and a per-row assertion alone would not have
+        seen it.
+        """
+        with app.app_context():
+            period = seed_periods[0]
+            ordinary = self._settled_envelope(
+                db, seed_user, period, "Ordinary", ["100.00"],
+            )
+            partly = self._settled_envelope(
+                db, seed_user, period, "Partly refunded",
+                ["100.00", "-30.00"],
+            )
+            dominated = self._settled_envelope(
+                db, seed_user, period, "Refund dominated", ["-86.67"],
+            )
+            db.session.commit()
+
+            assert owned_contribution(ordinary) == Decimal("100.00")
+            assert owned_contribution(partly) == Decimal("70.00")
+            # The one the ``abs()`` inverted.
+            assert owned_contribution(dominated) == Decimal("-86.67")
+
+            # 100.00 + 70.00 - 86.67.  Under the defect this read 256.67.
+            assert _spent_total(
+                [ordinary, partly, dominated],
+            ) == Decimal("83.33")
+
+    def test_a_refunded_category_total_is_NEGATIVE(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The per-category figure a refund-dominated window reports.
+
+        A refund REDUCES what a category cost, which is what *did I stay in
+        budget* has to mean.  Under the ``abs()`` this read ``+86.67`` and the
+        category appeared as the window's largest spend.
+        """
+        with app.app_context():
+            period = seed_periods[0]
+            dominated = self._settled_envelope(
+                db, seed_user, period, "Refund dominated", ["-86.67"],
+            )
+            db.session.commit()
+
+            totals = _totals_by_category([dominated])
+
+            assert totals[dominated.category_id].amount == Decimal("-86.67")
+
+
+class TestTheShareIsASliceOfWhatMoved:
+    """The "Where It Went" percent divides by MAGNITUDES, not by the net.
+
+    Developer ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``.  Ruling
+    **bank_import:R-II** let a category's refunds carry its window total below
+    zero, and ``_share``'s denominator was the window's NET -- which refunds
+    pull toward zero while a numerator does not.  Measured before the fix on
+    ``Groceries 600.00`` beside ``Electronics -500.00``: a net of ``100.00``,
+    so ``analytics/_spending.html`` printed **600%** and **-500%** beside
+    figures of ``$600.00`` and ``-$500.00``.  The bars did not show it -- they
+    scale to the largest row and floor at zero -- so the picture read correctly
+    over numbers that did not.
+
+    ``_share_base`` sums the categories' MAGNITUDES, which bounds every share
+    in ``[-1, 1]`` outright.  These cases are built from ``_CategoryTotal``
+    maps rather than from rows, because the defect is in the REDUCTION: a
+    database-backed case would grade the query beside it and could pass on a
+    window the query happened not to produce.
+    """
+
+    def _totals(self, *triples):
+        """Return a ``{category_id: _CategoryTotal}`` map from label triples.
+
+        Ids start at 1 so none of them is ``0``, which is the Uncategorized
+        bucket and carries its own labelling rule.
+        """
+        return {
+            index: _CategoryTotal(
+                group_name=group, item_name=item, amount=Decimal(amount),
+            )
+            for index, (group, item, amount) in enumerate(triples, start=1)
+        }
+
+    def test_a_refunded_category_cannot_push_a_share_past_one(self):
+        """600.00 beside -500.00: 55% and -45%, never 600% and -500%.
+
+        The denominator is ``600 + 500 = 1100``, so the shares are
+        ``600/1100 = 0.5455`` and ``-500/1100 = -0.4545`` (hand-computed, and
+        quantized here so the assertion does not restate the producer's own
+        division).  Restoring the net denominator makes them ``6`` and ``-5``
+        and fails all four assertions.
+        """
+        rows = _build_breakdown(
+            self._totals(
+                ("Food", "Groceries", "600.00"),
+                ("Tech", "Electronics", "-500.00"),
+            ),
+            {},
+        )
+        by_group = {row.group_name: row for row in rows}
+        cents = Decimal("0.0001")
+
+        assert by_group["Food"].share.quantize(cents) == Decimal("0.5455")
+        assert by_group["Tech"].share.quantize(cents) == Decimal("-0.4545")
+        # The item shares divide by the same base, so the drill-down agrees
+        # with the group line above it.
+        assert by_group["Food"].items[0].share.quantize(cents) == Decimal(
+            "0.5455",
+        )
+        assert by_group["Tech"].items[0].share.quantize(cents) == Decimal(
+            "-0.4545",
+        )
+
+    def test_a_MIXED_SIGN_group_divides_by_the_same_base_as_its_items(self):
+        """The case the bound's own argument turns on, and none staged it.
+
+        Plan step ``bank_import:X-gj-2b-3``, found by adversarial test-quality
+        review.  Every other case here gives each category its own group, so
+        ``group_amount == items[0].amount`` and the group-level ``_share`` is
+        never distinguished from the item-level one -- the four assertions
+        above are two numbers asserted twice.
+
+        A mixed-sign group is where ``|group| < sum of its items' magnitudes``
+        is a STRICT inequality, which is exactly what makes the ``[-1, 1]``
+        bound hold for groups: ``Food`` sums to ``100.00`` while holding
+        ``600.00`` and ``-500.00``, so its share is ``100/1100`` and its items
+        are ``600/1100`` and ``-500/1100``.  Nothing here would notice if
+        ``_group_row`` divided by something else.
+        """
+        rows = _build_breakdown(
+            self._totals(
+                ("Food", "Groceries", "600.00"),
+                ("Food", "Electronics", "-500.00"),
+            ),
+            {},
+        )
+        cents = Decimal("0.0001")
+
+        assert len(rows) == 1, "both categories belong to ONE group"
+        assert rows[0].amount == Decimal("100.00")
+        assert rows[0].share.quantize(cents) == Decimal("0.0909")
+        by_item = {item.item_name: item for item in rows[0].items}
+        assert by_item["Groceries"].share.quantize(cents) == Decimal("0.5455")
+        assert by_item["Electronics"].share.quantize(cents) == Decimal("-0.4545")
+        # THE BOUND, over every row this window renders.
+        assert all(
+            abs(share) <= 1
+            for share in [rows[0].share] + [i.share for i in rows[0].items]
+        )
+
+    def test_a_window_with_no_refunds_is_unchanged(self):
+        """The control the ruling turned on: magnitudes ARE the net there.
+
+        ``Groceries 600.00`` and ``Dining 400.00`` sum to ``1000.00`` either
+        way, so an ordinary month renders exactly what it always did.  Without
+        this case the class above would pass on an implementation that divided
+        by anything at all, including a constant.
+        """
+        rows = _build_breakdown(
+            self._totals(
+                ("Food", "Groceries", "600.00"),
+                ("Fun", "Dining", "400.00"),
+            ),
+            {},
+        )
+        by_group = {row.group_name: row for row in rows}
+
+        assert by_group["Food"].share == Decimal("0.6")
+        assert by_group["Fun"].share == Decimal("0.4")
+
+    def test_a_window_that_nets_to_zero_still_states_its_shares(self):
+        """``600.00`` against ``-600.00``: a net of ZERO, and real shares.
+
+        The old guard returned ``0`` for every share of a non-positive total,
+        so this whole window rendered ``0%`` on both rows.  The magnitude base
+        is ``1200.00`` and neither row is zero, which is the honest reading:
+        half of what moved went out and half came back.
+        """
+        rows = _build_breakdown(
+            self._totals(
+                ("Food", "Groceries", "600.00"),
+                ("Tech", "Electronics", "-600.00"),
+            ),
+            {},
+        )
+        by_group = {row.group_name: row for row in rows}
+
+        assert by_group["Food"].share == Decimal("0.5")
+        assert by_group["Tech"].share == Decimal("-0.5")
+
+    def test_a_window_that_moved_nothing_has_no_shares(self):
+        """The only base a sum of magnitudes can take that has no shares.
+
+        A category present and worth exactly ``0.00`` -- an envelope settled
+        with no purchases -- is the reachable shape, and the division is
+        skipped rather than raising.
+        """
+        rows = _build_breakdown(
+            self._totals(("Food", "Groceries", "0.00")), {},
+        )
+
+        assert rows[0].share == Decimal("0")
+        assert rows[0].items[0].share == Decimal("0")
+
+
+class TestNewMeansTheCategoryWasNotThereBefore:
+    """The "new" badge asks PRESENCE, and a zero total is not absence.
+
+    Plan step ``bank_import:X-gj-2b-3``.  All three ``is_new`` fields read
+    ``prior_amount == ZERO``, which is a different question from *the prior
+    window held no row for this*.  Two reachable shapes total zero while being
+    present: an envelope settled with NO purchases contributes ``0`` and is in
+    the window's map, and since ruling **bank_import:R-II** so does one whose
+    refunds exactly cancelled its purchases.  Both rendered the badge on a
+    category that had been there all along.
+
+    The maps' KEYS are what record which categories a window held, so absence
+    is read off them.
+    """
+
+    def _one(self, amount):
+        """Return a one-category map worth *amount*, under a stable label."""
+        return {
+            7: _CategoryTotal(
+                group_name="Food", item_name="Groceries",
+                amount=Decimal(amount),
+            ),
+        }
+
+    def test_a_category_that_broke_even_before_is_not_new(self):
+        """Prior window HELD it at ``0.00``; the badge must not render.
+
+        Asserts the delta beside it, because the two read the same prior
+        figure and only one of them changed: the delta is still ``100.00``.
+        """
+        rows = _build_breakdown(self._one("100.00"), self._one("0.00"))
+
+        assert rows[0].is_new is False
+        assert rows[0].items[0].is_new is False
+        assert rows[0].items[0].delta == Decimal("100.00")
+
+    def test_a_category_absent_before_is_new(self):
+        """The control: a category the prior window did not hold at all."""
+        rows = _build_breakdown(self._one("100.00"), {})
+
+        assert rows[0].is_new is True
+        assert rows[0].items[0].is_new is True
+
+    def test_a_group_whose_only_category_broke_even_before_is_not_new(self):
+        """The GROUP arm has its own map and its own defect.
+
+        Its prior side was a ``defaultdict`` summed per group, so an absent
+        group and a group that summed to zero were the same value.  A category
+        that changed groups is the shape that separates them: the prior window
+        held ``Food: Groceries`` at ``0.00``, so the group is not new even
+        though this window's category id is different.
+        """
+        rows = _build_breakdown(
+            {8: _CategoryTotal("Food", "Takeout", Decimal("40.00"))},
+            self._one("0.00"),
+        )
+
+        assert rows[0].group_name == "Food"
+        assert rows[0].is_new is False
+        # The ITEM is new -- category 8 was not in the prior window -- which is
+        # what makes this case grade the group arm rather than the item one.
+        assert rows[0].items[0].is_new is True
+
+    def test_a_change_row_for_a_category_that_broke_even_before_is_not_new(
+        self,
+    ):
+        """The By-change lens's own arm, over the same two maps."""
+        changes = _build_changes(self._one("100.00"), self._one("0.00"))
+
+        assert len(changes) == 1
+        assert changes[0].is_new is False
+
+    def test_a_change_row_that_breaks_even_NOW_is_still_new(self):
+        """The half the old spelling got wrong in the other direction.
+
+        ``prior_amount == ZERO and current_amount > ZERO`` withheld the badge
+        from a category that appeared this window and netted to zero -- a
+        purchase and its refund in one window, which is exactly what ruling
+        **bank_import:R-II** files.  The row exists only because one of the two
+        windows held it, so the prior window's absence is the whole test.
+        """
+        changes = _build_changes(self._one("0.00"), {})
+
+        assert len(changes) == 1
+        assert changes[0].is_new is True
+
+
+class TestASettledRowWhosePlanIsDerivedIsPriced:
+    """A settled row carrying no figure of its OWN still has a plan."""
+
+    def test_a_settled_shadow_is_priced_from_its_parent_not_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The estimate is the PARENT's figure, and the delta is real.
+
+        Regression for the release blocker measured on a production clone
+        2026-09-05.  The amount-source cutovers declare a row DERIVED and empty
+        its ``estimated_amount``; 116 of the rows they declared on production
+        are SETTLED, and a settled EXPENSE is exactly what this window loads.
+        This list read ``owned_amount``, the cheap accessor that answers a row's
+        own column and REFUSES one carrying none -- so the first derived row it
+        met raised ``AmountUnresolvable`` and ``/analytics/spending`` returned
+        500 for every window.  Measured: 200 on the shipped image, 500 on the
+        candidate, across 323 routes the only regression.
+
+        **It asserts the FIGURE, not the absence of an exception.**  A test that
+        only proved this returns at all would pass against a fix that priced the
+        row wrongly, and the production symptom the sibling defect carries is
+        ``+$9.81`` on a paycheck -- exactly the size that never looks wrong on a
+        page.  So the estimate is pinned to the parent's ``$321.00`` and the
+        delta to the ``$79.00`` the settlement actually recorded.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Surprises Savings",
+                Decimal("1000.00"),
+            )
+            xfer = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
+                amount=Decimal("321.00"), settled_amount=Decimal("400.00"),
+            )
+            db.session.commit()
+
+            expense_leg = (
+                db.session.query(Transaction)
+                .filter_by(
+                    transfer_id=xfer.id,
+                    transaction_type_id=ref_cache.txn_type_id(
+                        TxnTypeEnum.EXPENSE,
+                    ),
+                )
+                .one()
+            )
+            assert expense_leg.estimated_amount is None, (
+                "the precondition this regression needs: the shadow stores no "
+                "plan of its own, so a column read cannot answer it"
+            )
+
+            surprises = _build_surprises(
+                [expense_leg],
+                amount_basis(seed_user["user"].id, seed_user["scenario"].id),
+            )
+
+            assert len(surprises.rows) == 1, (
+                "a settled row whose actual differs from its plan is a surprise "
+                "whether or not the plan is stored"
+            )
+            row = surprises.rows[0]
+            assert row.estimated == Decimal("321.00"), (
+                "the plan is the parent transfer's figure, resolved live -- not "
+                "the settled amount (which would zero every delta) and not a "
+                "refusal"
+            )
+            assert row.actual == Decimal("400.00")
+            assert row.delta == Decimal("79.00")
+            assert surprises.net == Decimal("79.00")
+
+    def test_the_whole_report_renders_it_rather_than_500ing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Through ``compute_spending_report``, which is the door that 500'd.
+
+        The sibling above pins the reducer; this pins the WIRING.  The
+        production symptom was a 500 from ``/analytics/spending``, and a test
+        that only calls ``_build_surprises`` directly proves the reducer can
+        price a derived row while proving nothing about the basis being built
+        and threaded in ``compute_spending_report`` -- which is the line the
+        fix actually added.  Raised by an adversarial review of the fix.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "E2E Savings", Decimal("1000.00"),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
+                amount=Decimal("321.00"), settled_amount=Decimal("400.00"),
+            )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[0]),
+            )
+
+            assert report is not None
+            shadow = [
+                row for row in report.surprises.rows
+                if row.delta == Decimal("79.00")
+            ]
+            assert len(shadow) == 1, (
+                "the settled derived shadow reaches the rendered report, and "
+                "before the fix this call raised AmountUnresolvable instead"
+            )
+            assert shadow[0].estimated == Decimal("321.00")
+
+    def test_a_template_priced_row_reads_the_version_for_its_own_due_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The rule that prices 59 of production's 78 affected rows.
+
+        The transfer shadow above is rule 5.  Rule 3 -- a row generated from a
+        recurring definition, priced by that definition's dated series -- is a
+        different path (``_rule_within_definition`` -> ``_stated_amount`` ->
+        ``amount_as_of``) with refusal arms the transfer path never reaches, and
+        it is the DOMINANT shape among the settled rows the cutovers declared.
+        Raised by an adversarial review, which observed the first test covered
+        the minority shape.
+
+        It asserts the series is read on the ROW'S OWN DUE DATE and not at its
+        newest version: the definition is re-priced to ``$200.00`` effective
+        after this row's due date, so a resolver reading the latest version
+        would answer ``$200.00`` and make the delta ``-$50.00`` instead of
+        ``+$25.00``.
+        """
+        with app.app_context():
+            period = seed_periods[0]
+            template = make_expense_template(
+                db.session, seed_user, amount="100.00",
+            )
+            db.session.flush()
+            state_template_price(
+                template, Decimal("100.00"),
+                effective_on=period.start_date - timedelta(days=30),
+            )
+            state_template_price(
+                template, Decimal("200.00"),
+                effective_on=period.start_date + timedelta(days=60),
+            )
+            db.session.flush()
+
+            due = period.start_date
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                user_id=period.user_id,
+                pay_period_id=period.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                name="Series Priced",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                template_id=template.id,
+                due_date=due,
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+                ),
+                **settle_day_columns(due),
+                **settlement_columns(due, Decimal("125.00")),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            surprises = _build_surprises(
+                [txn],
+                amount_basis(seed_user["user"].id, seed_user["scenario"].id),
+            )
+
+            assert len(surprises.rows) == 1
+            row = surprises.rows[0]
+            assert row.estimated == Decimal("100.00"), (
+                "the plan is the series version in effect on the row's OWN due "
+                "date; reading the newest version would answer $200.00"
+            )
+            assert row.actual == Decimal("125.00")
+            assert row.delta == Decimal("25.00")

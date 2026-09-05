@@ -40,6 +40,7 @@ from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
 from app.services.amortization_engine import RateChangeRecord
 from app.services.rate_period_engine import monthly_due_date
+from app.utils.amount_relationships import pricing_load_options
 from app.utils.balance_predicates import (
     balance_excluded_status_ids,
     is_projected_clause,
@@ -580,8 +581,8 @@ def projected_income_shadows(
 
     **Complementary with the settled set, so no payment is counted twice.**
     :func:`query_shadow_income` already drops Credit / Cancelled, and every
-    remaining status other than PROJECTED is settled (``Paid`` / ``Received`` /
-    ``Settled`` -- :func:`~app.utils.balance_predicates.settled_status_ids`), so a
+    remaining status other than PROJECTED is settled (``Paid`` / ``Received``
+    -- :func:`~app.utils.balance_predicates.settled_status_ids`), so a
     shadow is in EXACTLY ONE of :func:`settled_income_shadows` (ACTUAL, the fold's
     past) and this (PLANNED, the fold's projected future).  That is what lets the
     C6c settled-slot de-dup delete: a settled payment and a projected one can never
@@ -589,7 +590,8 @@ def projected_income_shadows(
 
     Carries no period bound and NO cash: the plan builder resolves each shadow's
     live D3 cash
-    (:meth:`~app.services.loan_payment_service.LoanPricing.live_cash`), its due
+    (amount rule 4, via :func:`app.services.cash_ledger.amounts_by_id`),
+    its due
     date (:func:`loan_payment_due_date`), and its escrow as the plan is assembled.
     ``pay_period`` and ``status`` are eager-loaded by :func:`query_shadow_income`.
 
@@ -628,8 +630,9 @@ def installment_for(
     plan step C9b) must decide "which installment would this be?" before any row
     is written, and a guard keying on a rule of its own would refuse a different
     set of payments than the fold erases -- the boundary-predicate drift this
-    architecture keeps paying for.  Same shape as ``split_payment_cash``
-    factored out of ``split_one_payment`` (C6a).
+    architecture keeps paying for.  Same shape as the ONE allocation
+    (``app.utils.money.apply_payment_cash``) factored out of the four walks that
+    had each restated it (X-au-g-2c-3a).
 
     Pure: no I/O, no clock.
 
@@ -652,7 +655,7 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
 
     The project's SINGLE derivation of "which contractual installment is this
     payment?" -- read by the fold's event stream
-    (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`),
+    (:func:`app.services.loan_ledger.loan_event_stream`),
     the payment-history table
     (:func:`app.services.loan_posting_service.confirmed_loan_payment_history`),
     and the settled-payment guards below, so no two of them can disagree on a
@@ -706,9 +709,11 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     generated row its own ``due_on``.
 
     This value is a POSTING INPUT, not display metadata: the fold's event stream
-    (``loan_ledger.merge_anchor_and_payment_events``) orders
-    payments by it and applies its strict ``anchor_date < due_date`` post-anchor
-    boundary against it, so moving it moves the POSTED balance.  Any writer of
+    (``loan_ledger.loan_event_stream``) DATES every payment by it, the replay
+    (``loan_ledger.replay_loan_events``) orders on that date and applies its
+    strict ``anchor_date < due_date`` post-anchor boundary against it, and the
+    charge calendar keys its accrual periods off it -- so moving it moves the
+    POSTED balance.  Any writer of
     ``due_date`` must therefore follow it with a posting reconcile --
     ``transfer_service._POSTING_RELEVANT_FIELDS`` is what enforces that.
 
@@ -817,7 +822,7 @@ def latest_settled_payment_due_date(
     Keys on the payment's DUE date -- contract time, the EXACT date the fold's
     walk (:func:`app.services.loan_ledger.walk_loan_ledger`) and the settle-time
     cash freeze
-    (:func:`app.services.loan_payment_service._shadow_live_amount`) resolve each
+    (:func:`app.services.cash_ledger._loan_installment._shadow_live_amount`) resolve each
     payment's escrow at (ruling D5, finding N-34).  It is the SAME
     :func:`_settled_payment_due_dates` derivation the anchor-ordering guards
     read, so the escrow guard, the walk, and the tax figure provably agree on
@@ -834,7 +839,7 @@ def latest_settled_payment_due_date(
     earlier installment is the same structural property the tracking-start guard
     carries; a settled payment's escrow is additionally frozen by
     capture-on-settle
-    (:meth:`~app.services.loan_payment_service.LoanPricing.live_cash`).
+    (amount rule 4, via :func:`app.services.cash_ledger.amounts_by_id`).
 
     Args:
         account_id: The loan account whose settled payments to scan.
@@ -869,22 +874,47 @@ def query_shadow_income(account_id: int, scenario_id: int):
     differ: the payment history covers every period and orders by period
     start; the year-end feeds filter to a specific set of period IDs.
 
+    **``pay_period`` comes from the amount model's own set now rather than from
+    a second option here** (plan step X-au-g-2c-2).  It was this loader's
+    ``joinedload``, and this loader's alone -- ``loan_payment_due_date`` reads
+    the period on every call, and every caller of that derivation came through
+    here.  A derived shadow is priced by rule 4 on the grid and in the cash fold
+    too, so the obligation belongs to the rules; stating it in both places is
+    not merely duplication but an ERROR -- SQLAlchemy refuses two loader
+    strategies for one path, which is how this was found.
+
+    **The AMOUNT MODEL's own load comes with them since plan step
+    X-au-g-2c-2**, taken from
+    :func:`~app.utils.amount_relationships.pricing_load_options` rather than
+    spelled here, so a rule that starts reading a new relationship does not
+    leave this loader behind.  It is imported from the ``utils`` leaf rather
+    than from ``cash_ledger``, which re-exports it, because THIS module is one
+    of the loan term primitives that package imports -- the arrow plan step
+    X-au-g-2a made run one way, and ``cyclic-import`` traces a call-time import
+    too.  Every row this query returns is a transfer SHADOW by its own
+    predicate, and a shadow is DERIVED now -- it stores no figure and is priced
+    through ``transfer -> template -> settings`` -- so without it
+    ``get_payment_history`` would walk to the parent once per payment.  That is
+    the obligation the balance README named as one of two this step must not
+    discover mid-build.
+
     Args:
         account_id: The account receiving the transfers.
         scenario_id: The active budget scenario.
 
     Returns:
-        A SQLAlchemy ``Query`` over ``Transaction`` filtered to the
-        account's shadow income (status + pay_period eager-loaded), NOT yet
-        executed -- callers chain ``.filter`` / ``.join`` / ``.order_by`` /
-        ``.all`` as their surface requires.
+        A SQLAlchemy ``Query`` over ``Transaction`` filtered to the account's
+        shadow income (``status``, ``pay_period`` and the amount model's own
+        relationships eager-loaded), NOT yet executed -- callers chain
+        ``.filter`` / ``.join`` / ``.order_by`` / ``.all`` as their surface
+        requires.
     """
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     return (
         db.session.query(Transaction)
         .options(
             joinedload(Transaction.status),
-            joinedload(Transaction.pay_period),
+            *pricing_load_options(),
         )
         .filter(
             Transaction.account_id == account_id,

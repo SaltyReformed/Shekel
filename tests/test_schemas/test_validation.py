@@ -20,6 +20,7 @@ from app.schemas.validation import (
     DeductionCreateSchema,
     FicaConfigSchema,
     InlineTransactionCreateSchema,
+    PayHistorySchema,
     PayPeriodGenerateSchema,
     RaiseCreateSchema,
     SalaryProfileCreateSchema,
@@ -96,9 +97,15 @@ class TestTransactionUpdateSchema:
         assert "estimated_amount" not in data
 
     def test_valid_partial_update(self):
-        """Partial update with valid fields loads correctly."""
+        """Partial update with valid fields loads correctly.
+
+        Carries the rendered-figure companion because ruling **R-JR** makes a
+        figure without one MALFORMED -- see
+        ``TestTheSchemasRefuseAFigureWithNoCompanion`` for that half.
+        """
         data = TransactionUpdateSchema().load({
             "estimated_amount": "200.00",
+            "estimated_amount_as_rendered": "150.00",
         })
         assert data["estimated_amount"] == Decimal("200.00")
 
@@ -398,9 +405,14 @@ class TestTransferUpdateSchema:
     """Tests for TransferUpdateSchema."""
 
     def test_valid_partial_update(self):
-        """Partial update with amount loads correctly."""
+        """Partial update with amount loads correctly.
+
+        Carries the rendered-figure companion because ruling **R-JR** makes a
+        figure without one MALFORMED.
+        """
         data = TransferUpdateSchema().load({
             "amount": "250.00",
+            "amount_as_rendered": "200.00",
         })
         assert data["amount"] == Decimal("250.00")
 
@@ -784,7 +796,6 @@ class TestSalaryProfileCreateSchema:
             "state_code": "NC",
         })
         assert data["annual_salary"] == Decimal("75000.00")
-        assert data["pay_periods_per_year"] == 26  # Default.
 
     def test_missing_required_field(self):
         """Missing annual_salary raises ValidationError."""
@@ -796,17 +807,26 @@ class TestSalaryProfileCreateSchema:
             })
         assert "annual_salary" in exc.value.messages
 
-    def test_invalid_pay_periods_per_year(self):
-        """pay_periods_per_year=10 fails OneOf validation."""
-        with pytest.raises(ValidationError) as exc:
-            SalaryProfileCreateSchema().load({
-                "name": "Bad",
-                "annual_salary": "75000.00",
-                "filing_status_id": "1",
-                "state_code": "NC",
-                "pay_periods_per_year": "10",
-            })
-        assert "pay_periods_per_year" in exc.value.messages
+    def test_pay_periods_per_year_cannot_be_submitted(self):
+        """A submitted paycheck count reaches no column (R-F16).
+
+        Input: a valid payload carrying ``pay_periods_per_year``, the field
+        this schema offered as a 12 / 24 / 26 / 52 dropdown until plan step
+        R-F16 dropped the column behind it.
+        Expected: the key is absent from the loaded data -- ``BaseSchema``'s
+        ``unknown = EXCLUDE`` drops it -- so a stale client, a replayed form or
+        a hand-crafted POST cannot reinstate a second answer to "how often am
+        I paid" beside ``budget.pay_schedule.cadence_days``.  The count derives
+        from the cadence and from nothing a salary form submits.
+        """
+        data = SalaryProfileCreateSchema().load({
+            "name": "Stale client",
+            "annual_salary": "75000.00",
+            "filing_status_id": "1",
+            "state_code": "NC",
+            "pay_periods_per_year": "52",
+        })
+        assert "pay_periods_per_year" not in data
 
     def test_state_code_length(self):
         """state_code must be exactly 2 characters."""
@@ -1027,6 +1047,21 @@ class TestPayPeriodGenerateSchema:
             })
         assert "cadence_days" in exc.value.messages
 
+    def test_a_one_day_cadence_is_ACCEPTED(self):
+        """The floor is the COLUMN's, and 0 alone could not tell them apart.
+
+        This field's floor was ``max(CADENCE_DAYS_MIN, 2)`` between plan steps
+        X-ad-a and ``pay_calendar:C4-c``, because a one-day period could not be
+        written into the stored ``end_date`` ``ck_pay_periods_date_order``
+        bounded.  The case above rejects 0, which fails at EITHER floor, so it
+        was green against both and the docstring's "Range(1-365)" was false of
+        the code while it said so.  1 is the value that separates them.
+        """
+        assert PayPeriodGenerateSchema().load({
+            "start_date": "2026-03-01",
+            "cadence_days": "1",
+        })["cadence_days"] == 1
+
     def test_missing_start_date(self):
         """Missing start_date raises ValidationError."""
         with pytest.raises(ValidationError) as exc:
@@ -1034,6 +1069,55 @@ class TestPayPeriodGenerateSchema:
                 "num_periods": "10",
             })
         assert "start_date" in exc.value.messages
+
+
+# ── PayHistorySchema ─────────────────────────────────────────────────
+
+
+class TestPayHistorySchema:
+    """Tests for PayHistorySchema (plan step **balance:X-bh-2**).
+
+    The pay-periods settings door onto ``budget.pay_schedule.history_opens_on``.
+    One optional field, and all three of its input shapes matter because the
+    route indexes the loaded payload directly.
+    """
+
+    def test_an_omitted_key_loads_as_None(self):
+        """``load_default=None`` is what keeps an absent key from 500ing.
+
+        An adversarial review of this step deleted that default and the whole
+        suite -- 817 cases -- stayed green, because every route test posts the
+        key, empty or filled.  Without it the payload loads ``{}`` and the
+        route's ``data["history_opens_on"]`` raises ``KeyError``: an unhandled
+        500 on a door an ordinary crafted POST reaches.  ``RegisterSchema``
+        had this exact case; its sibling did not, and the asymmetry was the
+        tell.
+        """
+        assert PayHistorySchema().load({})["history_opens_on"] is None
+
+    def test_an_empty_string_loads_as_None(self):
+        """What a browser submits for the control nobody touched."""
+        assert PayHistorySchema().load(
+            {"history_opens_on": ""},
+        )["history_opens_on"] is None
+
+    def test_a_stated_day_loads_as_a_date(self):
+        """THE CONTROL: the field is read, not merely tolerated."""
+        from datetime import date
+        assert PayHistorySchema().load(
+            {"history_opens_on": "2024-06-03"},
+        )["history_opens_on"] == date(2024, 6, 3)
+
+    def test_a_day_outside_the_apps_calendar_is_refused(self):
+        """The schema refuses what ``ck_pay_schedule_history_opens_range`` would.
+
+        An ``<input type="date">`` accepts a five-digit year, so the CHECK is
+        reachable from an ordinary browser and must never be the thing a user
+        meets.
+        """
+        with pytest.raises(ValidationError) as exc:
+            PayHistorySchema().load({"history_opens_on": "9999-01-01"})
+        assert "history_opens_on" in exc.value.messages
 
 
 # ── CategoryCreateSchema ─────────────────────────────────────────────

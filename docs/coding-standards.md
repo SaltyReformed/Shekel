@@ -4,6 +4,10 @@ These standards apply to all code in the Shekel project. They are referenced fro
 loaded when working on code. Every rule here exists because its absence caused a real bug or a real
 quality problem in this project.
 
+**This file is the rationale tier and the one home for a rule's full statement.** CLAUDE.md states a
+rule in one line and points; `.claude/rules/coding.md` and `.claude/rules/database.md` carry the
+path-scoped must-knows; a fact lives in one tier and the other tiers point at it.
+
 ---
 
 ## Python
@@ -90,17 +94,22 @@ quality problem in this project.
   - **Definition-scoped** -- the directive sits on a `def`/`class` line (`too-many-*`,
     `too-many-instance-attributes`, a per-method `no-self-argument`): put the rationale in that
     symbol's **docstring** as a trailing note. It survives line-number drift, shows in `help()`, and
-    reads alongside the contract. Format: `` Pylint: ``<rule>`` (<count>/<limit>) --
-    <why it is intentional/irreducible>. ``
+    reads alongside the contract. Format:
+    `` Pylint: ``<rule>`` (<count>/<limit>) -- <why it is intentional/irreducible>. ``
   - **Statement-scoped** -- the directive sits on any other line (`broad-except`,
-    `protected-access`, `import-outside-toplevel`, a module-level `too-many-lines`): put the
-    rationale in a comment **immediately above** the disabled line. Format: `` # Pylint: ``<rule>``
-    -- <why>. ``
+    `protected-access`, `import-outside-toplevel`): put the rationale in a comment
+    **immediately above** the disabled line. Format: `` # Pylint: ``<rule>`` -- <why>. ``
 
   The rationale must name every rule the directive disables. `(<count>/<limit>)` is required for the
   count-based smells (`too-many-*`) and omitted where there is no count (e.g. `broad-except`). The
   `shekel-disable-rationale` checker enforces marker presence, location, and rule-naming; the
   `(<count>/<limit>)` shape is a documented convention, not machine-checked.
+- **A module at the 1,000-line ceiling is SPLIT, not exempted.** `max-module-lines` is pylint's own
+  default -- it is set in no config file here -- and the `C0302` refusal is the notice: the session
+  whose commit breaks a module is the session that splits it. A module-level `too-many-lines`
+  disable is NOT available, whatever rationale it carries. The RATING is blind to this, since one
+  `C0302` across ~500 modules still rounds to 10.00/10, so the signal is pylint's exit code (bit 16)
+  and never the score. Ruling `balance:R-IR`, 2026-09-01.
 - **snake_case** for all variables, functions, modules, and database columns.
 - **No unused imports.** Fix immediately.
 - **Import organization.** Three sections separated by blank lines: standard library, third-party,
@@ -215,7 +224,7 @@ canonical table list lives in `app/audit_infrastructure.py:AUDITED_TABLES`.
 
 ### Reference Tables
 
-- **IDs for logic, strings for display only.** Enums in `app/enums.py`. Cache in `app/ref_cache.py`.
+- **IDs for logic, strings for display only.** Enums in `app/enums.py`. Cache in `app/ref_cache/`.
   NEVER compare against string `name` columns. Use boolean columns for grouping logic. Use FK
   references for category groupings, not bare strings.
 

@@ -15,10 +15,10 @@ from sqlalchemy.exc import IntegrityError
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.account import Account
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -31,6 +31,7 @@ from app.routes.transactions._helpers import (
     _create_schema,
     _inline_create_schema,
     _resolve_owned_fks,
+    _resolve_owned_period,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,12 +118,23 @@ def create_inline():
     # write.  Order matches the historical per-FK checks so the first
     # invalid id returns the same 404 body as before; the resolved
     # Category drives the derived transaction name below.
+    #
+    # **The pay period is NOT one of these specs** since plan step
+    # ``pay_calendar:C13-b``: it goes to :func:`._helpers._resolve_owned_period`
+    # below, which asks the owner's derived CALENDAR.  Ordered AFTER the three
+    # table-backed probes, the way ``_resolve_grid_cell`` orders its two, so a
+    # request naming a foreign account, category or scenario is refused before
+    # a derivation runs.  The only message order this moves is the period
+    # against the SCENARIO -- account and category already preceded it -- and a
+    # payload with one bad id reads exactly as before.
     objs, err = _resolve_owned_fks([
         (Account, data["account_id"], "Not found"),
         (Category, data["category_id"], "Category not found"),
-        (PayPeriod, data["pay_period_id"], "Pay period not found"),
         (Scenario, data["scenario_id"], "Not found"),
     ])
+    if err is not None:
+        return err
+    _, err = _resolve_owned_period(data["pay_period_id"])
     if err is not None:
         return err
     loan_refusal = _reject_transaction_on_loan(objs[Account])
@@ -136,9 +148,30 @@ def create_inline():
     # dropped; assign Projected unconditionally.
     data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
 
+    # **The row's OWNER, which is a column since plan step
+    # ``pay_calendar:C13-a``.**  ``user_id`` is not a schema field on either
+    # create schema and never will be -- it is not the submitter's to state --
+    # so it is assigned here from the session, exactly as ``status_id`` above
+    # is.  ``_resolve_owned_fks`` has already proved that the submitted
+    # account, category, pay period and scenario are all ``current_user``'s, so
+    # this is the same value all four of them carry; if it were not, the two
+    # composite keys would refuse the INSERT rather than store a row whose
+    # parents disagree.
+    data["user_id"] = current_user.id
+
     # A typed name wins; an omitted or blank one (the pre_load hook
     # drops empty submits) falls back to the category display name.
     data.setdefault("name", category.display_name)
+
+    # **The submitted figure becomes the row's OWNERSHIP before the splat**
+    # (plan step **X-au-k**).  ``estimated_amount`` is read-only on the model
+    # now, so a bare ``Transaction(**data)`` carrying it raises
+    # ``AttributeError``: the pair a row's amount lives in is ONE attribute,
+    # and a born row states it exactly as any other write door does.  A created
+    # row always OWNS its figure -- no relation prices a row that does not
+    # exist yet -- and the key is always present, because
+    # ``estimated_amount`` is ``required=True`` on both create schemas.
+    data["amount_ownership"] = AmountOwnership.own(data.pop("estimated_amount"))
 
     txn = Transaction(**data)
     db.session.add(txn)
@@ -176,12 +209,23 @@ def create_transaction():
     # a foreign category_id otherwise satisfies the FK constraint (the row
     # exists) and links another user's category onto this transaction.
     # The resolved Account is checked for the loan-kind refusal below.
+    #
+    # **The pay period is NOT one of these specs** since plan step
+    # ``pay_calendar:C13-b``: it goes to :func:`._helpers._resolve_owned_period`
+    # below, which asks the owner's derived CALENDAR.  Ordered AFTER the three
+    # table-backed probes, the way ``_resolve_grid_cell`` orders its two, so a
+    # request naming a foreign account, category or scenario is refused before
+    # a derivation runs.  The only message order this moves is the period
+    # against the SCENARIO -- account and category already preceded it -- and a
+    # payload with one bad id reads exactly as before.
     objs, err = _resolve_owned_fks([
         (Account, data["account_id"], "Not found"),
         (Category, data["category_id"], "Category not found"),
-        (PayPeriod, data["pay_period_id"], "Pay period not found"),
         (Scenario, data["scenario_id"], "Not found"),
     ])
+    if err is not None:
+        return err
+    _, err = _resolve_owned_period(data["pay_period_id"])
     if err is not None:
         return err
     loan_refusal = _reject_transaction_on_loan(objs[Account])
@@ -192,6 +236,27 @@ def create_transaction():
     # so any submitted value was dropped; assign Projected unconditionally so
     # the only route to a settled status remains the status seam.
     data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
+
+    # **The row's OWNER, which is a column since plan step
+    # ``pay_calendar:C13-a``.**  ``user_id`` is not a schema field on either
+    # create schema and never will be -- it is not the submitter's to state --
+    # so it is assigned here from the session, exactly as ``status_id`` above
+    # is.  ``_resolve_owned_fks`` has already proved that the submitted
+    # account, category, pay period and scenario are all ``current_user``'s, so
+    # this is the same value all four of them carry; if it were not, the two
+    # composite keys would refuse the INSERT rather than store a row whose
+    # parents disagree.
+    data["user_id"] = current_user.id
+
+    # **The submitted figure becomes the row's OWNERSHIP before the splat**
+    # (plan step **X-au-k**).  ``estimated_amount`` is read-only on the model
+    # now, so a bare ``Transaction(**data)`` carrying it raises
+    # ``AttributeError``: the pair a row's amount lives in is ONE attribute,
+    # and a born row states it exactly as any other write door does.  A created
+    # row always OWNS its figure -- no relation prices a row that does not
+    # exist yet -- and the key is always present, because
+    # ``estimated_amount`` is ``required=True`` on both create schemas.
+    data["amount_ownership"] = AmountOwnership.own(data.pop("estimated_amount"))
 
     txn = Transaction(**data)
     db.session.add(txn)

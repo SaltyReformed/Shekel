@@ -240,13 +240,6 @@ EVT_RATE_LIMIT_EXCEEDED = _register(
     "rate_limit_exceeded", ACCESS,
     "Flask-Limiter rejected a request that exceeded its per-IP quota.",
 )
-EVT_RECURRENCE_CADENCE_UNSUPPORTED = _register(
-    "recurrence_cadence_unsupported", ERROR,
-    "Generation refused: a recurring definition falls more than once inside one\n"
-    "pay period, and budget.transactions holds one row per (template, period,\n"
-    "scenario).  Reachable only at a pay cadence of 30 days or more; plan step R5\n"
-    "re-keys the index onto the occurrence and the refusal goes with it.",
-)
 EVT_BASELINE_MISSING = _register(
     "baseline_missing", ERROR,
     "A request asked the balance seam for a figure for a user with no "
@@ -254,6 +247,16 @@ EVT_BASELINE_MISSING = _register(
     "returned instead of the balance.  No code path produces this state, so "
     "every occurrence is either data changed outside the app or a caller "
     "resolving the wrong user -- alert on it.",
+)
+
+EVT_PAY_CALENDAR_UNDERIVABLE = _register(
+    "pay_calendar_underivable", ERROR,
+    "A request needed a user's pay calendar and it could not be derived; the "
+    "recovery page (or 204 for a fragment) was returned instead of a bare "
+    "500.  Two states reach it and the message says which: an owner with no "
+    "budget.pay_schedule row -- ordinary, and repaired by generating a "
+    "schedule -- or a payday set that cannot define a calendar, which is a "
+    "broken invariant no write door produces.  Alert on the second.",
 )
 
 
@@ -396,18 +399,15 @@ EVT_PAY_PERIODS_GENERATED = _register(
     "pay_periods_generated", BUSINESS,
     "Pay-period service created one or more new biweekly periods.",
 )
-EVT_PAY_PERIODS_REMATERIALISED = _register(
-    "pay_periods_rematerialised", BUSINESS,
-    "A stored pay period's end_date or period_index disagreed with the owner's "
-    "own paydays and the writer rewrote it to match (plan step C3-b).  Those "
-    "two columns are derived from the payday set; a disagreement means the "
-    "schedule held a day no paycheck covered, or one covered twice, and the "
-    "row's money was reconciling wrongly until this fired -- possibly under "
-    "settled money.  Production is clean (61 paydays, 0 mismatches, measured "
-    "2026-08-10), so every occurrence names a schedule that had been quietly "
-    "wrong.  ALERT ON IT, and read the stored_* / derived_* fields to see what "
-    "moved.  Plan step C4 drops both columns, after which this event has no "
-    "subject.",
+
+
+# ── Business events: the salary profile lifecycle ──────────────────
+
+EVT_SALARY_ROWS_FROZEN = _register(
+    "salary_rows_frozen", BUSINESS,
+    "Archiving a salary profile recorded what each row it priced was last "
+    "worth, because the producer behind amount rule 2 is going away "
+    "(finding N-261, plan step balance:X-au-d).",
 )
 
 
@@ -420,15 +420,6 @@ EVT_RECURRENCE_REGENERATED = _register(
 EVT_RECURRENCE_CONFLICTS_RESOLVED = _register(
     "recurrence_conflicts_resolved", BUSINESS,
     "User resolved override/delete conflicts after a regeneration.",
-)
-EVT_RECURRENCE_RULE_NOT_EXCLUSIVE = _register(
-    "recurrence_rule_not_exclusive", BUSINESS,
-    "A template cleared its recurrence, but the rule row was not exclusively "
-    "its own (a foreign owner, or a second template referencing it), so the "
-    "rule was detached and KEPT rather than deleted.  Both template FKs are "
-    "ON DELETE SET NULL, so deleting it would have stripped the other "
-    "template's cadence silently.  1:1 is the invariant every writer upholds "
-    "and no constraint enforces; finding F-6 owns which side should.",
 )
 EVT_RESOLVE_CONFLICTS_SHADOW_REFUSED = _register(
     "resolve_conflicts_shadow_refused", BUSINESS,
@@ -477,7 +468,129 @@ EVT_STATEMENT_MATCHED = _register(
 
 EVT_STATEMENT_MATCH_RELEASED = _register(
     "statement_match_released", BUSINESS,
-    "An owner undid a match; the bank lines it explained are unexplained again.",
+    "An owner undid a match; the bank lines it explained are unexplained "
+    "again.  It MOVES MONEY where the act had CREATED a row -- a group's "
+    "recorded difference states nothing once the grouping is released, so "
+    "the release removes it and reverses its postings (plan step "
+    "bank_import:X-f6d-4).  ``removed_count`` is how many such rows went.",
+)
+
+EVT_STATEMENT_MATCH_WITHDRAWN = _register(
+    "statement_match_withdrawn", BUSINESS,
+    "A row left the books, so the accepted matches naming it (or one of its "
+    "purchases) were withdrawn and their bank lines are unexplained again.  "
+    "The SIBLING of statement_match_released and not the same act: a release "
+    "is the owner undoing a decision, and this is the decision losing its "
+    "subject.  It moves NO money of its own -- the door that removed the row "
+    "reversed its postings -- and rows the withdrawn acts had CREATED are "
+    "LEFT standing, which kept_row_count reports (plan step "
+    "bank_import:X-gb).",
+)
+
+EVT_STATEMENT_MATCH_LINELESS = _register(
+    "statement_match_lineless", ERROR,
+    "An accepted match names NO bank line, which the schema forbids: it "
+    "asserts nothing about a bank, so the review screen cannot render it, "
+    "while its app rows stay claimed and unmatchable.  Reaching this needs a "
+    "code defect -- one writer refuses an empty side, a foreign key refuses to "
+    "remove a line a match names, and a migration deleted the acts that "
+    "already held none -- so it is logged rather than rendered, and the row "
+    "named here is freed by deleting it.",
+)
+
+EVT_STATEMENT_LINE_SKIPPED = _register(
+    "statement_line_skipped", BUSINESS,
+    "An owner decided a bank line is explained by nothing they budget for, so "
+    "the Reconcile inbox stops asking about it (ruling bank_import:R-JG, plan "
+    "step bank_import:X-gj-4a).  It MOVES NO MONEY and can move none: the "
+    "bank's own record still shows the line, the app still records nothing "
+    "for it, and the books-versus-bank comparison still reports the "
+    "difference.  What it records is a decision about the WORK, which is why "
+    "it is a business event rather than a silent filter.",
+)
+
+EVT_STATEMENT_LINE_UNSKIPPED = _register(
+    "statement_line_unskipped", BUSINESS,
+    "An owner undid a skip; that bank line is waiting to be explained again.  "
+    "Its own event beside statement_line_skipped for the reason "
+    "statement_match_released is one beside statement_matched: undoing a "
+    "decision is a different act from making it, and a single event carrying "
+    "a direction would make 'how many lines did they skip' unanswerable "
+    "without reading the payload.",
+)
+
+EVT_STATEMENT_IMPORT_DELETED = _register(
+    "statement_import_deleted", BUSINESS,
+    "An owner deleted a recorded import: the lines it FIRST recorded are gone, "
+    "every match naming one of them was released, and the source-account "
+    "pairing went with it if that was the account's last import from that "
+    "source.  It moves NO money -- a settle day an accepted match wrote is the "
+    "app's own record and stays -- but it destroys what the BANK said, which "
+    "is the fact this whole arc exists to hold.",
+)
+
+EVT_STATEMENT_LINE_RECORDED = _register(
+    "statement_line_recorded", BUSINESS,
+    "A bank line the app had no row for became a purchase against a budget "
+    "line, which MOVES MONEY: the app now records a movement it did not have.",
+)
+
+EVT_STATEMENT_INCOME_RECORDED = _register(
+    "statement_income_recorded", BUSINESS,
+    "A bank line of money COMING IN that no app row explained became an "
+    "uncategorized income row, which MOVES MONEY: the app now records a "
+    "deposit it did not have (ruling bank_import:R-GW).  Its own event beside "
+    "``statement_line_recorded`` because the two doors record opposite "
+    "DIRECTIONS of movement into different shapes -- a purchase against a "
+    "container that reserves for it, and a top-level row that reserves "
+    "nothing -- so one event covering both would name neither.",
+)
+
+EVT_STATEMENT_RESIDUAL_RECORDED = _register(
+    "statement_residual_recorded", BUSINESS,
+    "A matched GROUP's difference was recorded as an ordinary uncategorized "
+    "row, which MOVES MONEY: the app now records a movement the bank showed "
+    "and no row of the owner's accounted for (ruling R-FN).  Its own event "
+    "beside the match that produced it, because it is a different act with a "
+    "different consequence -- a match re-dates and re-prices rows that already "
+    "existed, and this CREATES one, in the per-owner Uncategorized bucket that "
+    "nothing else in the app has ever written.",
+)
+
+EVT_STATEMENT_BATCH_APPLIED = _register(
+    "statement_batch_applied", BUSINESS,
+    "An owner applied a whole reviewed statement pass in one request.  It is "
+    "its own event beside the per-act ones rather than a replacement for them: "
+    "those say what each match and each recorded line did, and this says how "
+    "much of what was ticked actually landed -- which is the only place a "
+    "REFUSED item is counted at all.",
+)
+
+EVT_STATEMENT_RULES_FILED = _register(
+    "statement_rules_filed", BUSINESS,
+    "An import filed NEW swipe lines as purchases under the owner's own "
+    "standing merchant rules, with no press (ruling R-GH, plan step "
+    "bank_import:X-ge).  It MOVES MONEY, and it is the only door in the app "
+    "that does so without an act in the same request: the consent was given "
+    "when the rule was stated.  Its own event beside statement_imported, "
+    "because recording what the bank said and filing it into the budget are "
+    "different acts with different consequences -- the first moves no figure "
+    "and this one does.  ``withheld_count`` is the half a count of what "
+    "landed cannot report: lines a rule ANSWERS FOR that this pass refused to "
+    "file, because it could not finish searching for a counterpart or because "
+    "the destination is one the same statement already explains whole.",
+)
+
+EVT_MERCHANT_RULE_STATED = _register(
+    "merchant_rule_stated", BUSINESS,
+    "An owner said where one merchant's spending goes on one account -- a "
+    "recurring envelope's template, a new envelope, never a purchase, or ask "
+    "me every time.  It MOVES NO MONEY and can move none: a rule is read to "
+    "SUGGEST a destination, and the only thing that records a purchase is an "
+    "explicit destination submitted for one specific line.  Logged because "
+    "the decision governs where later money is filed, and because the row is "
+    "EDITED in place rather than superseded -- so this and the audit trail "
+    "are the only record of what was said before.",
 )
 
 

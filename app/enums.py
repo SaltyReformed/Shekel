@@ -18,6 +18,37 @@ class StatusEnum(enum.Enum):
 
     Values match ``ref.statuses.name`` after the Commit #1 migration
     renames the display names.
+
+    **The SETTLED BAND HAS TWO MEMBERS -- Paid and Received -- and a THIRD is
+    not how a row is frozen** (plan step **X-am**, ruling **balance:R-HA**,
+    closing finding **N-177**).  A sixth member ``SETTLED`` sat here as the
+    ARCHIVE: a terminal state the state machine gave no outgoing edge but
+    itself, reachable only from the full-edit popover's Status ``<select>``.
+    Nothing has ever carried it: 1,591 ``system.audit_log`` rows for the two
+    status-bearing tables since 2026-05-07, including 229 DELETEs and 208
+    status changes, name it NOWHERE -- which is what rules out a row that was
+    archived and hard-deleted between snapshots -- and every snapshot that
+    exists reads zero besides.  Its
+    only content beyond ``DONE`` was *and you may never revert*, since
+    ``is_immutable`` already locks a Paid row's fields.  It refused every act
+    that CORRECTS a row (revert, re-price, add or remove a purchase, match a
+    bank line) and permitted the one that DESTROYS it, because
+    ``transaction_service.deletion_refusal`` never named it.
+
+    **How firmly a settled row is known is PROVENANCE, and it already ships**:
+    ``settled_basis_id`` (how the FIGURE is known), ``settled_day_basis_id``
+    (how the DAY is known) and ``reconciled_by_id`` (which statement was seen
+    to show it) -- three columns answering three different questions, each
+    correctable without destroying the row.  A status member is a cruder fourth
+    answer to the same question and the only one with no way back.
+
+    ``pay_period_locks`` answers the neighbouring question -- whether a SPAN may
+    still be rewritten -- but it is a read-only CLASSIFIER rather than a second
+    place to store the fact, and it is not the row-level answer: no row-edit
+    door consults it, and its ``SETTLED_TXN`` reason is itself DERIVED from
+    ``settled_status_ids()``.  So the honest statement is narrower than *neither
+    is a status*: the settled BAND is load-bearing everywhere, and what X-am
+    refuses is a member INSIDE it whose distinct meaning is a lock.
     """
 
     PROJECTED = "Projected"
@@ -25,7 +56,6 @@ class StatusEnum(enum.Enum):
     RECEIVED = "Received"  # Income has been deposited
     CREDIT = "Credit"      # Paid via credit card, not checking
     CANCELLED = "Cancelled"
-    SETTLED = "Settled"    # Archived / fully reconciled
 
 
 class TxnTypeEnum(enum.Enum):
@@ -123,7 +153,7 @@ class RaiseTypeEnum(enum.Enum):
     raises apply only through the merit-horizon cutoff and then stop
     (their earned effect persists in the base).  The 2-year paycheck
     pipeline never consults this discrimination -- it applies every raise
-    uniformly via ``paycheck_calculator.apply_raises``.  Values match
+    uniformly via ``salary_raises.apply_raises``.  Values match
     ``ref.raise_types.name``; resolved to IDs via
     ``ref_cache.raise_type_id`` and compared by ID, never by name.
     """
@@ -276,6 +306,41 @@ class LoanAnchorSourceEnum(enum.Enum):
     # the year-end summary report negative principal paid on real data).
     # See ``app.services.loan_loaders.load_loan_anchor_facts``.
     TRACKING_START = "tracking_start"
+
+
+class AccountOpeningSourceEnum(enum.Enum):
+    """Where an ``account_openings`` row's figure CAME FROM (plan step X-f3c-2a).
+
+    An account's opening equity is what it held before its records begin, and
+    the two members answer the one question a reader of that figure has: did a
+    HUMAN state it, or did the app compute it?  The distinction is financial
+    rather than clerical.  A ``MIGRATION_DERIVED`` figure is the pre-X-f3c-2a
+    inferred rule frozen -- the earliest assertion minus the movements it
+    already contained -- and finding **N-275** measures one of them wrong by
+    ``$436.05`` (account 1's opening asserts ``$2,746.58`` for 2026-03-27 where
+    the bank's own closing that day is ``$3,182.63``).  A ``USER_DECLARED``
+    figure is one somebody actually asserted.  Reading which is which off the
+    row is what lets a later surface say "this opening has never been
+    confirmed" instead of presenting a guess and a fact identically.
+
+    Values match ``ref.account_opening_sources.name``.  The loan twin is
+    :class:`LoanAnchorSourceEnum`, and the shape is deliberately the same: a
+    typed provenance column on an append-only balance record, resolved through
+    ``ref_cache`` and compared by ID.
+    """
+
+    # The figure a human stated: an account's declared opening balance at
+    # creation -- which IS its opening equity, because a just-created account
+    # has no records for the assertion to already contain -- or an owner
+    # correcting that figure later (plan step X-f3c-2b-2a).  Both reach
+    # ``opening_service.stage_account_opening``, the table's ONE writer.
+    USER_DECLARED = "user_declared"
+    # The figure the X-f3c-2a migration computed for an account that already
+    # existed, from the posted ledger's own ``account_opening`` entry.  It
+    # reproduces what every balance already rested on, so the migration moves
+    # ``$0.00`` -- but it is a DERIVATION preserved, not an observation, which
+    # is exactly what N-275 is about.
+    MIGRATION_DERIVED = "migration_derived"
 
 
 class EmployerContributionTypeEnum(enum.Enum):
@@ -515,7 +580,7 @@ class AmountSourceEnum(enum.Enum):
     (``template_amount_service.is_salary_linked_template``), and a transfer
     template is a loan payment when it holds a
     :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row
-    (``loan_payment_service.loan_payment_config``).  Storing the refinement on
+    (``recurring_transfer_query.loan_payment_config``).  Storing the refinement on
     every generated row copies a definition-level fact onto each of its
     instances, and two LIVE routes then falsify the copy:
 
@@ -566,7 +631,7 @@ class StatementSourceEnum(enum.Enum):
     and a new parser, never a second path through the importer.
 
         secu_checking_csv -- State Employees' Credit Union's own transaction
-                             export, with the running-balance column included.
+                             export, as CSV.
 
     **A member names a FORMAT at an INSTITUTION, not an institution**, because
     one bank publishes one statement several ways and the ways do not carry the
@@ -654,3 +719,143 @@ class SettlementBasisEnum(enum.Enum):
     DERIVED = "derived"
     CORRECTED = "corrected"
     PURCHASES = "purchases"
+
+
+class SettledDayBasisEnum(enum.Enum):
+    """HOW a settled row's settle DAY is known (plan step **X-az**).
+
+    :class:`SettlementBasisEnum`'s twin one column over.  That one says how the
+    FIGURE beside ``settled_on`` is known; this one says how the DAY itself is.
+    Three writers put three different kinds of fact into that one column and
+    nothing said which (finding **N-332**):
+
+        observed  -- a bank statement showed the money posting on this day.  It
+                     is a POINT: the bank named the day, and an observation
+                     beats a belief.
+        asserted  -- the owner asserted a BALANCE for this day and this money
+                     was inside it, so the money moved on or before it.  It is
+                     an UPPER BOUND and not a point; the true posting day may
+                     be days earlier.
+        entered   -- the app's own record with no bank document behind it: the
+                     owner typed the day, or a settle door stamped the day the
+                     act happened.  A POINT, on the owner's word.
+
+    **The partition is over EVIDENCE, which is what makes it exhaustive.**  A
+    settle day is backed by a bank line, by a balance assertion, or by neither;
+    there is no fourth kind of evidence for it, so every writer lands in exactly
+    one member.  What separates ``entered`` from ``observed`` is not confidence
+    but provenance -- both are points, and a reader that wants to rank them can,
+    because the column now says which is which.
+
+    **Its whole reason for existing is that the difference decides a WINDOW.**
+    ``statement_match._offers.CandidateRow.expected_window`` bounds a purchase
+    by ``(purchased_on, settled_on)`` when the day is a bound and pins it to a
+    point when it is not, and it used to tell the two apart by testing whether
+    ``reconciled_by_id`` was populated.  That inference was exact over the three
+    writers of the day it happened to meet and blind to the third of them: a day
+    the owner typed read as a day the bank had shown.  Reading the bound as an
+    observation had already cost **50 duplicate purchases worth `$3,590.00`** on
+    the developer's dev database before ``f633d46a``, and inferring a fact from
+    another column being populated is the shape finding **N-241** deleted one
+    column over -- ``settled_basis_id`` exists precisely so that *"which one a
+    figure is stands in ``settled_basis_id`` rather than being inferred from a
+    column being populated"*.
+
+    **It does NOT replace ``reconciled_by_id``, and the two are not the same
+    question.**  That column names WHICH statement was seen to show this money;
+    this one says what kind of day the row records.  A row whose asserted day
+    the bank later CONFIRMS keeps its link and becomes ``observed`` -- one fact
+    changed, the other did not -- which the coupled reading could not express at
+    all.
+
+    Application code resolves these via ``ref_cache.settled_day_basis_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.  There is deliberately no member meaning *not settled*: a row
+    that carries no day carries no basis either, and the pairing CHECK is a
+    BICONDITIONAL over the two NULL-nesses, so no ref id is frozen into the
+    schema (the reason :class:`AmountSourceEnum` has no ``own`` member).
+    """
+
+    OBSERVED = "observed"
+    ASSERTED = "asserted"
+    ENTERED = "entered"
+
+
+class StatementBalanceEvidenceEnum(enum.Enum):
+    """How strongly an imported statement's balance is EVIDENCED (**X-f6e-1**).
+
+    A statement states a balance (``Balance as of 08/22/2026,2459.600000``) and
+    a list of lines.  What the app needs from it is an ANCHOR -- the account
+    held this much at the end of this day -- and what this says is how much
+    that anchor can be trusted.  Ruling **R-GF**.
+
+        file_chain     -- the file states a balance beside EVERY line, so it
+                          proves itself and needs nothing outside.  The only
+                          level that rests on this file alone.
+        corroborated   -- the figure agrees with a balance the app already
+                          holds which is ITSELF evidenced, so two independent
+                          statements say the same thing.
+        uncorroborated -- nothing confirms it.  The figure is taken at face
+                          value, which is what a FIRST import is and what any
+                          anchor rooted in one remains.
+
+    **It is the WEAKEST LINK in the chain behind the figure, and that is the
+    whole design rather than a caution.**  An anchor's day is often SOLVED
+    rather than stated -- ``stated - sum(lines up to d) == opening`` picks the
+    day out of the file's own lines -- and it is tempting to record that the
+    day was worked out and call the result corroborated.  It is not: a solved
+    day is only as good as the opening it was solved against, so an anchor
+    solved against an uncorroborated opening is uncorroborated too.  Recording
+    the minimum makes that true BY CONSTRUCTION.
+
+    **What it removes is a defect an adversarial review reproduced in two
+    clicks** (2026-08-23): re-uploading the identical file made the app walk
+    back from its own assumption, find that the file agreed with it, and record
+    the result as corroborated -- the assumption checking itself, with the
+    receipt turning from a warning to a green tick.  Under a weakest link no
+    re-upload can strengthen anything, because the chain still contains the
+    assumption.
+
+    **The partition is over EVIDENCE, which is what makes it exhaustive.**  A
+    figure is evidenced by its own file, by other files, or by nothing; there
+    is no fourth kind, so every import lands in exactly one member.
+
+    **There is deliberately no member meaning "this file states no balance"**,
+    for the reason :class:`SettledDayBasisEnum` has none meaning *not settled*:
+    that is the ABSENCE of a member rather than one of them, so it is a NULL
+    welded to ``balance_effective_on``'s by
+    ``ck_statement_imports_balance_evidence_paired`` and no ref id is frozen
+    into the schema.
+
+    Application code resolves these via ``ref_cache.statement_balance_evidence_id``
+    and ``ref_cache.statement_balance_evidence_member`` and compares against the
+    integer ID -- never the string ``name`` -- matching the project-wide
+    ``ref-table: IDs for logic, strings for display only`` invariant.
+    """
+
+    FILE_CHAIN = "file_chain"
+    CORROBORATED = "corroborated"
+    UNCORROBORATED = "uncorroborated"
+
+    @property
+    def strength(self) -> int:
+        """Return where this member sits on the evidence ladder, 0 the weakest.
+
+        **Declared once, here, because the ORDER is the meaning.**  A caller
+        that compared members by writing its own mapping would be a second
+        statement of the ladder, and the two would drift; the weakest-link rule
+        (:func:`app.services.statement_import.weaker_of`) is the only consumer
+        and it reads this.
+        """
+        return _EVIDENCE_STRENGTH[self]
+
+
+#: The evidence ladder, weakest first.  A module-level map rather than a body
+#: inside :attr:`StatementBalanceEvidenceEnum.strength` so the ORDER is
+#: readable as a list at a glance, which is what a ladder is.
+_EVIDENCE_STRENGTH = {
+    StatementBalanceEvidenceEnum.UNCORROBORATED: 0,
+    StatementBalanceEvidenceEnum.CORROBORATED: 1,
+    StatementBalanceEvidenceEnum.FILE_CHAIN: 2,
+}

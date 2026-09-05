@@ -57,9 +57,15 @@
           hx-target="#tab-content" hx-swap="innerHTML"
           hx-indicator="#tab-spinner"
           name="period_id">
+    {# ``periods`` are DerivedPeriod values off the render's one calendar
+       (plan step C2-f3a), so the option value is ``period_id`` -- the derived
+       type spells the ``budget.pay_periods.id`` that way, and a projected
+       period would carry ``None`` there (``saved()`` yields none).  The LABEL
+       is the report heading's own producer rather than a fourth spelling of
+       it: this option and the heading it swaps in sit on one screen (P47). #}
     {% for p in periods %}
-    <option value="{{ p.id }}" {{ 'selected' if p.id == period_id }}>
-      {{ p.start_date.strftime('%b %d') }} - {{ p.end_date.strftime('%b %d, %Y') }}
+    <option value="{{ p.period_id }}" {{ 'selected' if p.period_id == period_id }}>
+      {{ p.range_label }}
     </option>
     {% endfor %}
     {% if not periods %}

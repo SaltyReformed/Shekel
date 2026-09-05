@@ -5,11 +5,12 @@ less often than monthly.  Plan step **R7a-2b** made that a DERIVATION over the
 two-axis ``(interval_n, unit)`` reading, where it was a hand-enumerated set of
 three pattern names living in ``calendar_service``.
 
-**Its own module because it is the one part of the calendar that is about
-RECURRENCE rather than about calendars**, and because ``calendar_service`` sits
-at 891 of pylint's 1,000-line ceiling: the derivation needs its reasoning
-written down, and a cap is a forcing function rather than a ceiling to raise
-(``docs/plans/conventions.md`` rule 4).  Two facts moved here with it -- what
+**Its own module because it is the one part of the calendar that is about RECURRENCE
+rather than about calendars**, and because ``calendar_service`` sits at 857 of pylint's
+1,000-line ceiling (measured 2026-09-01; it read 891 undated, and the module has moved
+twice since): the derivation needs its reasoning written down, and a cap is a forcing
+function rather than a ceiling to raise (``docs/plans/conventions.md`` rule 4).  Two
+facts moved here with it -- what
 "infrequent" MEANS, and when the owner's pay cadence has to be resolved to
 answer -- and neither has a second home.
 
@@ -49,8 +50,11 @@ def badge_cadence(
 
     **The absence is provably not a missing value.** ``budget.transactions``
     carries ``pay_period_id NOT NULL``, so a transaction implies a pay period,
-    which implies ``pay_schedule_service.resolve_cadence`` answers (from the
-    stored row, or by inferring from that period's own length).  An owner with
+    which since plan step C4-b-2 implies a ``budget.pay_schedule`` row
+    (``fk_pay_periods_schedule``) and therefore a stored cadence.  *That second
+    link used to be "or by inferring from that period's own length", the arm
+    findings **P8** and **P35** were about; the key replaced an inference with
+    a guarantee.*  An owner with
     no transactions therefore cannot reach :func:`is_infrequent` at all, and
     is the only owner for whom this answers ``None``.  The type says
     "unreadable BECAUSE unread" rather than "unknown".
@@ -65,11 +69,16 @@ def badge_cadence(
 
     Raises:
         PayCalendarError: The owner has a repeating row and no resolvable
-            cadence.  Reachable only through plan finding **P8**: a
-            schedule-row-less owner's cadence is INFERRED from their last
-            period's stored length, which nothing bounds above.  The NOT NULL
-            ``pay_period_id`` guarantees a period exists, not that the value
-            derived from it is in range.
+            cadence.  *Its one named route was plan finding **P8** -- a
+            schedule-row-less owner's cadence INFERRED from their last period's
+            stored length, which nothing bounded above -- and plan step C4-b-2
+            closed it: ``fk_pay_periods_schedule`` forbids that owner and the
+            inference is deleted, so a repeating row's NOT NULL
+            ``pay_period_id`` now guarantees a schedule row behind it as well
+            as a period.*  Declared still, because this function RESOLVES the
+            cadence itself (:func:`~app.services.pay_calendar.cadence_for`
+            below) rather than reading one a caller hands it -- so the refusal
+            is its own to make and belongs in its own signature.
     """
     if not any(
         txn.template is not None and txn.template.recurrence_rule is not None

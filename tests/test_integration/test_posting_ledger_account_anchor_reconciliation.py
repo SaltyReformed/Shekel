@@ -108,7 +108,10 @@ from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    append_only_guard_lifted,
+    an_entered_day,
     create_account_of_type,
+    create_account_via_service,
     create_settled_cash_transaction,
     create_settled_transfer,
     ledger_account_of_kind,
@@ -116,7 +119,8 @@ from tests._test_helpers import (
     linked_ledger_account,
     load_migration_module,
     observed_day_of,
-    restamp_opening_assertion,
+    reassert_balance_on,
+    restate_account_opening,
 )
 from app.services.row_valuation import owned_contribution
 
@@ -502,6 +506,10 @@ def _assert_balance_at(account, balance, created_at) -> AccountAnchorHistory:
         # The civil day this assertion is the closing balance FOR, kept in step
         # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
         observed_on=observed_day_of(created_at),
+        # The ENTERED day, in step with the pinned instant (**N-299**).
+        # The column's default is the wall clock, which a row built to sit in
+        # the PAST must not inherit: it would claim to have been typed today.
+        recorded_on=observed_day_of(created_at),
     )
     _db.session.add(row)
     _db.session.flush()
@@ -956,7 +964,16 @@ class TestPreAnchorAbsorption:
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("500.00")
-            # The opening delta absorbed the spend (linked leg net +700.00).
+            # The OPENING books the account's opening equity ($500.00, the
+            # stored fact) and the $200.00 the records moved books separately
+            # as an ``account_trueup`` against the origination assertion.  The
+            # account's TOTAL is unchanged at $500.00, which is the property
+            # this test is about.
+            #
+            # *One $700.00 ``account_opening`` entry until plan step X-f3c-2a,
+            # which conflated capital brought on with a correction to it -- and
+            # that conflation is why a BACK-DATED assertion could re-elect the
+            # whole figure.*
             linked = linked_ledger_account(db.session, savings.id)
             opening_source = ref_cache.posting_source_id(
                 PostingSourceEnum.ACCOUNT_OPENING,
@@ -973,7 +990,7 @@ class TestPreAnchorAbsorption:
                 )
                 .scalar()
             )
-            assert opening_net == Decimal("700.00")
+            assert opening_net == Decimal("500.00")
             # Nothing rides on top: the spend is pre-assertion.
             latest_asserted_day, _latest = _latest_assertion(savings.id)
             assert _independent_post_assertion_source_effect(
@@ -1225,16 +1242,35 @@ class TestBackDatedTrueUpReBasesTheLedger:
         re-designation and asked for it to be blocked; it was ruled ALLOWED and
         graded instead, which is what this case is.
 
-        ``cash_anchor_facts`` marks the earliest row ``is_opening``, and that
-        flag chooses which correction books ``account_opening`` versus
-        ``account_trueup``.  So back-dating below the origination flips the flag,
-        REVERSES the original opening entry and re-posts it as a true-up.  The
-        money must not move: the linked ledger still lands on the latest anchor.
+        **What that ruling MEANT changed at plan step X-f3c-2a, and the money
+        did not.**  ``cash_anchor_facts`` still marks the earliest row
+        ``is_opening``, so the re-designation the 2026-08-04 ruling allows is
+        still visible on the FACTS -- and it no longer decides a posting.  Which
+        correction books ``account_opening`` is now read from the stored
+        ``budget.account_openings`` row (**R-GX**, **R-HE**), so the opening
+        entry stays where the books actually opened and the back-dated
+        assertion books an ordinary ``account_trueup`` on its own day.
+
+        *Until then the flag chose the posting: back-dating below the
+        origination REVERSED the original opening entry and re-posted it as a
+        true-up, moving the account's opening equity onto a day the owner had
+        merely typed a balance for.  An owner who genuinely means "my books
+        opened earlier, at $250" restates the opening record -- X-f3c-2b's
+        door -- rather than having a true-up re-designate it implicitly.*
+
+        The money must not move either way: the linked ledger still lands on
+        the latest anchor, which is what the totals below grade.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             opening_day = display_today() - timedelta(days=20)
-            savings = create_account_of_type(
+            # Built through the PRIMITIVE, so the books stay exactly where
+            # ``create_account`` put them (plan step X-f3c-2b): this case
+            # asserts WHICH DAY the ``account_opening`` entry is filed on, and
+            # the shared factory opens the books earlier -- right for a
+            # fixture that records movements, wrong for one whose subject is
+            # the day.
+            savings = create_account_via_service(
                 seed_user, db.session, "Savings", "Pre-opening Savings",
                 anchor_balance=Decimal("1000.00"), observed_on=opening_day,
             )
@@ -1293,12 +1329,16 @@ class TestBackDatedTrueUpReBasesTheLedger:
                 .group_by(JournalEntry.entry_date)
                 .all()
             )
-            # The earlier day now carries the whole opening; the old opening
-            # day's opening-sourced legs net to zero because they were reversed.
-            assert opening_by_day.get(earlier) == Decimal("250.00")
-            assert opening_by_day.get(opening_day, Decimal("0")) == Decimal("0")
-            # ...and the balance it used to carry is now booked as a TRUE-UP on
-            # its own day: 1000.00 asserted over a running 250.00 = +750.00.
+            # The OPENING stays where the books opened, carrying the stored
+            # opening equity ($1,000.00); the back-dated day gets no opening
+            # entry at all.  Nothing is reversed, because nothing was
+            # re-designated.
+            assert opening_by_day.get(opening_day) == Decimal("1000.00")
+            assert opening_by_day.get(earlier) is None
+            # The two assertions book TRUE-UPS that net to zero: the back-dated
+            # $250.00 corrects the books DOWN by $750.00 and the original
+            # $1,000.00 assertion corrects them back UP by $750.00.  Their sum
+            # is what keeps the account on $1,000.00.
             trueup_source = ref_cache.posting_source_id(
                 PostingSourceEnum.ACCOUNT_TRUEUP,
             )
@@ -1310,7 +1350,7 @@ class TestBackDatedTrueUpReBasesTheLedger:
                 Posting.ledger_account_id == linked.id,
                 JournalEntry.scenario_id == scenario_id,
                 JournalEntry.source_kind_id == trueup_source,
-            ).scalar() == Decimal("750.00")
+            ).scalar() == Decimal("0.00")
 
 
 # ---------------------------------------------------------------------------
@@ -1351,7 +1391,15 @@ class TestScenarioAndOwnerIsolation:
         with app.app_context():
             checking = seed_user["account"]
             opened = datetime(2026, 1, 2, 9, tzinfo=timezone.utc)
-            restamp_opening_assertion(db.session, checking, opened)
+            reassert_balance_on(db.session, checking, opened)
+            # **The BOOKS go back further than the restamp puts them** (plan
+            # step X-f3c-2b, ruling **R-HG**).  The second settle below is
+            # dated 2025-12-01 on purpose -- BEFORE the assertion, which is
+            # what makes the staleness arm fire -- and ``restamp_opening_
+            # assertion`` would open the books one day before the assertion,
+            # which is after it.  Before the ASSERTION and after the BOOKS is
+            # exactly the span this case needs, and is the production shape.
+            restate_account_opening(db.session, checking, date(2025, 11, 30))
             db.session.commit()
 
             whatif = Scenario(
@@ -1401,7 +1449,15 @@ class TestScenarioAndOwnerIsolation:
         with app.app_context():
             checking = seed_user["account"]
             opened = datetime(2026, 1, 2, 9, tzinfo=timezone.utc)
-            restamp_opening_assertion(db.session, checking, opened)
+            reassert_balance_on(db.session, checking, opened)
+            # **The BOOKS go back further than the restamp puts them** (plan
+            # step X-f3c-2b, ruling **R-HG**).  The second settle below is
+            # dated 2025-12-01 on purpose -- BEFORE the assertion, which is
+            # what makes the staleness arm fire -- and ``restamp_opening_
+            # assertion`` would open the books one day before the assertion,
+            # which is after it.  Before the ASSERTION and after the BOOKS is
+            # exactly the span this case needs, and is the production shape.
+            restate_account_opening(db.session, checking, date(2025, 11, 30))
             db.session.commit()
             scenario_id = seed_user["scenario"].id
 
@@ -1654,8 +1710,16 @@ class TestOracleIsNotVacuous:
             # Reconciled before tampering.
             _assert_account_anchors_reconcile(scenario_id)
 
-            # Tamper the latest anchor balance (history carries no balance
-            # trigger, so this commits); the posted ledger is unchanged.
+            # Tamper the latest anchor balance; the posted ledger is
+            # unchanged.
+            #
+            # **The append-only refusal is lifted for that one statement**
+            # (plan step X-f3c-2c).  This comment used to read "history carries
+            # no balance trigger, so this commits", which stopped being true:
+            # ``budget.refuse_append_only_change`` refuses every UPDATE on the
+            # table.  Tampering is the point here -- the case exists to prove
+            # the sweep CAN fail -- and the only way to corrupt an append-only
+            # row is to reach past the guard that makes it one.
             row_id = (
                 _db.session.query(AccountAnchorHistory.id)
                 .filter_by(account_id=savings.id)
@@ -1665,11 +1729,14 @@ class TestOracleIsNotVacuous:
                 )
                 .scalar()
             )
-            db.session.execute(_db.text(
-                "UPDATE budget.account_anchor_history "
-                "SET anchor_balance = 999 WHERE id = :i"
-            ), {"i": row_id})
-            db.session.commit()
+            with append_only_guard_lifted(
+                db.session, "budget.account_anchor_history",
+            ):
+                db.session.execute(_db.text(
+                    "UPDATE budget.account_anchor_history "
+                    "SET anchor_balance = 999 WHERE id = :i"
+                ), {"i": row_id})
+                db.session.commit()
 
             # Ledger unchanged (500), but the anchor truth drifted (999) -- the
             # absolute invariant no longer holds, so the real sweep raises.
@@ -1708,6 +1775,14 @@ class TestOracleIsNotVacuous:
             opening_source = ref_cache.posting_source_id(
                 PostingSourceEnum.ACCOUNT_OPENING,
             )
+            # The LATEST opening entry, and named as a choice rather than
+            # taken as the only one.  Since plan step X-f3c-2b the factory
+            # restates an account's books, and a restatement REVERSES the
+            # opening entry and re-posts it -- three opening-sourced entries
+            # where there used to be one, which is production's own shape
+            # after the same act.  Any of them carries a leg on this ledger,
+            # so the injection below is equally unbalanced whichever is
+            # picked; ``.scalar()`` over the set would simply raise.
             entry_id = (
                 _db.session.query(JournalEntry.id)
                 .join(Posting, Posting.journal_entry_id == JournalEntry.id)
@@ -1716,7 +1791,14 @@ class TestOracleIsNotVacuous:
                     JournalEntry.scenario_id == scenario_id,
                     JournalEntry.source_kind_id == opening_source,
                 )
+                .order_by(JournalEntry.id.desc())
+                .limit(1)
                 .scalar()
+            )
+            assert entry_id is not None, (
+                "no opening entry to inject into -- this class's whole name is "
+                "a promise that it is not vacuous, and a None here would "
+                "inject nothing and still pass"
             )
             _db.session.execute(_db.text(
                 "INSERT INTO budget.account_postings "
@@ -1799,10 +1881,7 @@ class TestSettledTransferAttributionMutation:
                 seed_user, db.session, "Savings", "Move Savings",
                 anchor_balance=Decimal("200.00"),
             )
-            period2 = PayPeriod(
-                user_id=user_id, start_date=date(2026, 2, 6),
-                end_date=date(2026, 2, 19), period_index=1,
-            )
+            period2 = PayPeriod(user_id=user_id, start_date=date(2026, 2, 6))
             db.session.add(period2)
             db.session.commit()
 
@@ -1877,7 +1956,7 @@ class TestSettledTransferAttributionMutation:
             # Move the settle day BEFORE both origination anchors (server-now 2026).
             transfer_service.update_transfer(
                 transfer.id, user_id,
-                settled_on=date(2024, 1, 5),
+                settle_day=an_entered_day(date(2024, 1, 5)),
             )
             db.session.commit()
 

@@ -44,6 +44,7 @@ from app.models.transfer import Transfer
 from app.models.ref import AccountType
 from app.services import transfer_service
 from app.services import account_service
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -59,6 +60,7 @@ def _create_projected_expense(seed_user, period):
         The created Transaction (committed, refreshed).
     """
     txn = Transaction(
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -66,7 +68,7 @@ def _create_projected_expense(seed_user, period):
         name="C-29 Bill",
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal("123.45"),
+        amount_ownership=AmountOwnership.own(Decimal("123.45")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -320,6 +322,7 @@ class TestUpdateTransactionAtomicityWithCrossUserFk:
                 data={
                     "pay_period_id": str(seed_second_periods[0].id),
                     "estimated_amount": "999.99",
+                    "estimated_amount_as_rendered": "123.45",
                 },
             )
             assert resp.status_code == 404
@@ -355,6 +358,7 @@ class TestUpdateTransactionAtomicityWithCrossUserFk:
                 data={
                     "category_id": str(seed_second_user["categories"]["Rent"].id),
                     "estimated_amount": "888.88",
+                    "estimated_amount_as_rendered": "123.45",
                 },
             )
             assert resp.status_code == 404
@@ -417,6 +421,7 @@ class TestUpdateTransactionTransferShadowFkOwnership:
                 data={
                     "pay_period_id": str(seed_second_periods[0].id),
                     "estimated_amount": "200.00",
+                    "estimated_amount_as_rendered": "123.45",
                 },
             )
             assert resp.status_code == 404

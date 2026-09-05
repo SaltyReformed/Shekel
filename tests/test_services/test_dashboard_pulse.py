@@ -32,16 +32,19 @@ import pytest
 
 from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum, StatusEnum, TxnTypeEnum
-from app.models.account import AccountAnchorHistory
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.services import account_service, cash_ledger, dashboard_service, pay_period_write
 from app.services.dashboard_service import _pulse
+from app.services.pay_calendar import PayCadence
 from app.services import transfer_service
-from app.services import balance_at, pay_period_service, savings_dashboard_service
+from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    rhythm_of,
+    last_covered_day,
+    account_never_asserted,
     add_anchor_history as _add_anchor_history,
     add_entry,
     create_envelope_txn,
@@ -50,12 +53,16 @@ from tests._test_helpers import (
     create_savings_account,
     dashboard_section,
     default_settle_day,
-    settlement_columns,
     make_investment_account,
     make_salary_profile,
     period_window,
+    reassert_balance_on,
     set_default_grid_account,
+    settle_instant_on,
+    settle_day_columns,
+    settlement_columns,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 _CURRENT_IDX = 5  # seed_periods index that contains the frozen today.
@@ -76,18 +83,19 @@ def _add_expense(
     status_id = ref_cache.status_id(status_enum)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,
         name=name,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         due_date=due_date,
         is_deleted=is_deleted,
         # A settled row must carry the day its money moved AND the record of
         # what moved -- one fact in three columns (plan steps X-f1 / X-au-c3),
         # both resolved by the shared helpers rather than restated.
-        settled_on=default_settle_day(period, status_id),
+        **settle_day_columns(default_settle_day(period, status_id)),
         **settlement_columns(
             default_settle_day(period, status_id), Decimal(str(amount)),
         ),
@@ -134,7 +142,7 @@ class TestPulseHero:
             assert hero["account_name"] == seed_user["account"].name
             assert hero["period_start_date"] == seed_periods[_CURRENT_IDX].start_date
             assert hero["period_start_date"] == date(2026, 3, 13)
-            assert hero["period_end_date"] == seed_periods[_CURRENT_IDX].end_date
+            assert hero["period_end_date"] == last_covered_day(seed_periods[_CURRENT_IDX])
             assert hero["period_end_date"] == date(2026, 3, 26)
 
     def test_hero_balance_is_the_current_periods_end(
@@ -202,7 +210,7 @@ class TestPulseHero:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -224,7 +232,7 @@ class TestPulseHero:
         """
         with app.app_context():
             _add_anchor_history(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 "1000.00", days_ago=5,
             )
             db.session.commit()
@@ -238,16 +246,18 @@ class TestPulseHero:
     def test_hero_staleness_stale(self, app, seed_user, seed_periods, db):
         """An anchor older than the threshold IS stale.
 
-        Clear the factory origination row first so the 20-days-ago row is
-        the latest.  20 > 14, so is_stale is True.
+        The seeded account asserts on the owner's bootstrap day, years
+        before the 20-days-ago row appended here, so that row is the latest.
+        20 > 14, so is_stale is True.
+
+        *It used to clear the origination row first; the table is append-only
+        since plan step X-f3c-2c and the row is dated years back rather than at
+        NOW, so neither the act nor its reason survives.*
         """
         with app.app_context():
             account = seed_user["account"]
-            db.session.query(AccountAnchorHistory).filter_by(
-                account_id=account.id,
-            ).delete()
             _add_anchor_history(
-                db.session, account, seed_periods[0], "1000.00", days_ago=20,
+                db.session, account, "1000.00", days_ago=20,
             )
             db.session.commit()
 
@@ -275,13 +285,17 @@ class TestPulseHero:
         R-EP deleted that too) was never exercised on this path.
         """
         with app.app_context():
-            db.session.query(AccountAnchorHistory).filter_by(
-                account_id=seed_user["account"].id,
-            ).delete()
+            # **Built rather than emptied** (plan step X-f3c-2c): an assertion
+            # is append-only at the database tier, so an account that has
+            # asserted nothing is one the assertion factory never touched.
+            account = account_never_asserted(
+                seed_user, db.session, name="Silent",
+                opening_equity=Decimal("0.00"),
+            )
             db.session.commit()
 
             last_observed = cash_ledger.reconciled_through(
-                seed_user["account"].id,
+                account.id,
             ).observed_day
             assert last_observed is None
             assert _pulse._anchor_is_stale(
@@ -290,6 +304,15 @@ class TestPulseHero:
 
 
 # ── Chart: 13-point shape, degradation, threshold ──────────────────
+
+
+#: The developer's own cadence, threaded into every ``_chart`` unit case.
+#:
+#: ``_chart`` took no cadence until plan step **R-F17** -- its window was the
+#: hardcoded ``_CHART_HORIZON_PERIODS = 13``.  Passing the real value object
+#: rather than a stand-in keeps these cases on the production derivation, and
+#: at 14 days it answers the same 13 points they were written against.
+_BIWEEKLY = PayCadence(cadence_days=14)
 
 
 class TestPulseChart:
@@ -310,27 +333,96 @@ class TestPulseChart:
         }
         return derived, end_balances
 
-    def test_chart_caps_at_13_points(self, app, seed_user, db):
-        """The chart slices to at most 13 points even with more periods.
+    def test_the_chart_window_follows_the_owners_cadence(
+        self, app, seed_user, db,
+    ):
+        """A WEEKLY owner gets 26 points, not 13 -- the same SIX MONTHS.
 
-        Generate 20 forward periods and assert the chart returns exactly
-        13 points (the current period plus the next 12).
+        Plan step **R-F17**, ledger row **F-17**.  The window was
+        ``_CHART_HORIZON_PERIODS = 13`` while ``dashboard/_pulse.html``'s
+        canvas announced "the next six months" to every screen reader beside
+        it: at this cadence 13 periods is 91 days, so the chart plotted three
+        months under a label saying six.  Both adversarial reviews of this step
+        found it by re-grepping the ledger row's own predicate rather than the
+        diff -- the row could not honestly close while it stood.
+
+        26 weekly periods is 182 days, the same span the biweekly owner's 13
+        cover, which is the whole point.
+        """
+        with app.app_context():
+            periods = pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=date(2026, 1, 2),
+                num_periods=40,
+                rhythm=rhythm_of(7),
+            )
+            db.session.commit()
+            forward, balances = self._periods_and_balances(periods)
+
+            chart = _pulse._chart(
+                forward, balances, None, PayCadence(cadence_days=7),
+            )
+
+            assert len(chart["points"]) == 26
+            # 26 x 7 == 182 == 13 x 14: one span, two cadences.
+            span = (
+                chart["points"][-1]["end_date"] - periods[0].start_date
+            ).days + 1
+            assert span == 182
+
+    def test_a_paycheck_longer_than_the_span_still_draws_one_point(
+        self, app, seed_user, db,
+    ):
+        """A 300-day cadence reaches no paycheck inside six months: draw one.
+
+        The same POLICY the mobile Plan tab keeps and the grid's range buttons
+        do NOT: a chart on the dashboard must draw something, where a button
+        may simply not be offered (ruling **R-R31**).
+        """
+        with app.app_context():
+            periods = pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=date(2026, 1, 2),
+                num_periods=4,
+                rhythm=rhythm_of(300),
+            )
+            db.session.commit()
+            forward, balances = self._periods_and_balances(periods)
+
+            assert PayCadence(cadence_days=300).paychecks_within(6) == 0
+            chart = _pulse._chart(
+                forward, balances, None, PayCadence(cadence_days=300),
+            )
+
+            assert len(chart["points"]) == 1
+
+    def test_chart_caps_at_the_owners_paychecks_in_the_span(
+        self, app, seed_user, db,
+    ):
+        """13 points at a BIWEEKLY cadence, even with more periods available.
+
+        Generate 20 forward periods and assert the chart returns exactly 13 --
+        which is how many paychecks fall inside
+        :data:`~app.services.dashboard_service._pulse._CHART_HORIZON_MONTHS`
+        for this owner, and exactly the ``_CHART_HORIZON_PERIODS = 13`` literal
+        that stood here until plan step **R-F17**.  13 x 14 = 182 days, so the
+        canvas's "next six months" aria-label is true for them.
         """
         with app.app_context():
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=20,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             forward, balances = self._periods_and_balances(periods)
 
-            chart = _pulse._chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None, _BIWEEKLY)
             assert len(chart["points"]) == 13
             # The points are the first 13 periods, in order.
             assert [pt["end_date"] for pt in chart["points"]] == [
-                p.end_date for p in periods[:13]
+                last_covered_day(p) for p in periods[:13]
             ]
 
     def test_chart_fewer_periods_degrades(self, app, seed_user, seed_periods, db):
@@ -345,7 +437,7 @@ class TestPulseChart:
             assert len(forward) == 5
             balances = {p.period_id: Decimal("250.00") for p in forward}
 
-            chart = _pulse._chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None, _BIWEEKLY)
             assert len(chart["points"]) == 5
             assert all(
                 pt["balance"] == Decimal("250.00") for pt in chart["points"]
@@ -364,8 +456,8 @@ class TestPulseChart:
             settings = seed_user["settings"]
 
             chart = _pulse._chart(
-                forward, balances, settings,
-            )
+                forward, balances, settings, _BIWEEKLY,
+)
             assert chart["low_balance_threshold"] == Decimal("500")
 
     def test_chart_threshold_tracks_configured_value(
@@ -385,8 +477,8 @@ class TestPulseChart:
             db.session.commit()
 
             chart = _pulse._chart(
-                forward, balances, settings,
-            )
+                forward, balances, settings, _BIWEEKLY,
+)
             assert chart["low_balance_threshold"] == Decimal("800")
 
     def test_chart_threshold_none_without_settings(
@@ -397,7 +489,7 @@ class TestPulseChart:
             forward = list(period_window(seed_periods[_CURRENT_IDX:]))
             balances = {p.period_id: Decimal("100.00") for p in forward}
 
-            chart = _pulse._chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None, _BIWEEKLY)
             assert chart["low_balance_threshold"] is None
 
 
@@ -422,7 +514,7 @@ class TestPulseTrough:
                 forward, balances, forward[0],
             )
             assert trough["balance"] == Decimal("300.00")
-            assert trough["end_date"] == seed_periods[_CURRENT_IDX + 2].end_date
+            assert trough["end_date"] == last_covered_day(seed_periods[_CURRENT_IDX + 2])
             # offset = period_index(7) - current period_index(5) = 2.
             assert trough["offset"] == 2
 
@@ -441,7 +533,7 @@ class TestPulseTrough:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=15,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -457,7 +549,7 @@ class TestPulseTrough:
             balances[dip_period.period_id] = Decimal("-250.00")
 
             # The chart sees only the first 13 -- all positive.
-            chart = _pulse._chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None, _BIWEEKLY)
             assert len(chart["points"]) == 13
             assert all(pt["balance"] > Decimal("0") for pt in chart["points"])
 
@@ -525,7 +617,7 @@ class TestPulsePeak:
                 forward, balances, forward[0],
             )
             assert peak["balance"] == Decimal("500.00")
-            assert peak["end_date"] == seed_periods[_CURRENT_IDX + 2].end_date
+            assert peak["end_date"] == last_covered_day(seed_periods[_CURRENT_IDX + 2])
             # offset = period_index(7) - current period_index(5) = 2.
             assert peak["offset"] == 2
 
@@ -549,7 +641,7 @@ class TestPulsePeak:
                 forward, balances, forward[0],
             )
             assert peak["balance"] == Decimal("500.00")
-            assert peak["end_date"] == seed_periods[_CURRENT_IDX].end_date
+            assert peak["end_date"] == last_covered_day(seed_periods[_CURRENT_IDX])
             # offset = period_index(5) - current period_index(5) = 0.
             assert peak["offset"] == 0
 
@@ -568,7 +660,7 @@ class TestPulsePeak:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=15,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -584,7 +676,7 @@ class TestPulsePeak:
             balances[rise_period.period_id] = Decimal("1250.00")
 
             # The chart sees only the first 13 -- all 500.00, none the peak.
-            chart = _pulse._chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None, _BIWEEKLY)
             assert len(chart["points"]) == 13
             assert all(
                 pt["balance"] == Decimal("500.00") for pt in chart["points"]
@@ -642,12 +734,13 @@ class TestPulsePeak:
             current = seed_periods[_CURRENT_IDX]
             income = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Paycheck",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             db.session.add(income)
             db.session.commit()
@@ -658,7 +751,7 @@ class TestPulsePeak:
             peak = result["peak"]
             # 1,000.00 anchor + 1,200.00 income = 2,200.00 end balance.
             assert peak["balance"] == Decimal("2200.00")
-            assert peak["end_date"] == current.end_date
+            assert peak["end_date"] == last_covered_day(current)
             # The current period is the first to reach the high; offset 0.
             assert peak["offset"] == 0
 
@@ -736,6 +829,41 @@ class TestPulseStillDue:
                 dashboard_section(seed_user["user"].id),
             )
             assert result["still_due"]["current_period"] == Decimal("0.00")
+
+    def test_a_REFUNDED_envelope_contributes_MORE_than_its_budget(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The floor is BELOW, and there is deliberately none above.
+
+        Developer ruling 2026-09-01, ruling **bank_import:R-II**, plan step
+        ``bank_import:X-gj-2b-3``.  Envelope `$100.00`, one `-$50.00` refund:
+
+            remaining = 100.00 - (-50.00) = 150.00, not floored.
+
+        Still-due reads `$150.00` against a `$100.00` plan, and that is the
+        ruled NET basis: the plan is `$100.00` of net spending and `-$50.00` of
+        it has happened, so `$150.00` may still be recorded.  Capping it at the
+        budget was refused with these numbers, because the dashboard would then
+        disagree with the reservation ``cash_ledger`` holds for the same row.
+
+        Asserted BESIDE the over-budget case above, which is the one that
+        makes the floor real: a producer with no floor at all would fail that
+        one and a producer clamped to `[0, budget]` would fail this one.
+        """
+        with app.app_context():
+            txn = _add_tracked_expense(
+                db.session, seed_user, seed_periods[_CURRENT_IDX],
+                "Groceries", "100.00",
+            )
+            _add_entry(
+                db.session, seed_user, txn, "-50.00", date(2026, 3, 18),
+            )
+            db.session.commit()
+
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
+            )
+            assert result["still_due"]["current_period"] == Decimal("150.00")
 
     def test_tracked_no_entries_contributes_full_estimate(
         self, app, seed_user, seed_periods, db,
@@ -833,7 +961,7 @@ class TestPulseStillDue:
             # template can label "Next period (Mar 27 - Apr 9): $X".
             assert still["next_period_start"] == seed_periods[_CURRENT_IDX + 1].start_date
             assert still["next_period_start"] == date(2026, 3, 27)
-            assert still["next_period_end"] == seed_periods[_CURRENT_IDX + 1].end_date
+            assert still["next_period_end"] == last_covered_day(seed_periods[_CURRENT_IDX + 1])
             assert still["next_period_end"] == date(2026, 4, 9)
 
     def test_still_due_next_period_dates_none_when_no_next(
@@ -852,7 +980,7 @@ class TestPulseStillDue:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -929,7 +1057,7 @@ class TestPulseStreet:
             current = seed_periods[_CURRENT_IDX]
             _add_expense(
                 db.session, seed_user, current,
-                "Due on end", "10.00", due_date=current.end_date,
+                "Due on end", "10.00", due_date=last_covered_day(current),
             )
             _add_expense(
                 db.session, seed_user, current,
@@ -1232,12 +1360,13 @@ class TestHeroChartIdentity:
             )
             income = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Paycheck",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             db.session.add(income)
             tracked = _add_tracked_expense(
@@ -1262,7 +1391,7 @@ class TestHeroChartIdentity:
             # And the first chart point is the current period's end date.
             assert (
                 result["chart"]["points"][0]["end_date"]
-                == current.end_date
+                == last_covered_day(current)
             )
 
 
@@ -1333,8 +1462,8 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
                 p["end_date"]: p["balance"] for p in section["chart"]["points"]
             }
             for period in seed_periods[_CURRENT_IDX:]:
-                assert points_by_date[period.end_date] == Decimal("50000.00")
-                assert points_by_date[period.end_date] != accrued[period.id]
+                assert points_by_date[last_covered_day(period)] == Decimal("50000.00")
+                assert points_by_date[last_covered_day(period)] != accrued[period.id]
 
             # The "lowest point ahead" is the flat cash $50,000.00, not the
             # interest-inflated minimum the kind-correct map would have shown.
@@ -1494,13 +1623,21 @@ class TestOneClockPerRender:
     ):
         """The hero's ``is_stale`` flag measures from the pass's day.
 
-        The seed account's anchor was asserted on 2026-01-02 and the default
-        threshold is 14 days.  A pass pinned to 2026-01-10 is 8 days out and
+        The account is asserted on 2026-01-02 here.  The seeded one carries
+        only its ORIGINATION assertion, dated on the bootstrap day before the
+        calendar (plan step X-f3c-2c), so the day this case turns on is one
+        the case states rather than one it inherits.  The default threshold is
+        14 days.  A pass pinned to 2026-01-10 is 8 days out and
         NOT stale; the frozen 2026-03-20 is 77 days out and stale.  The
         threshold sits between the two, so the flag has to flip -- which a
         producer reading its own clock could not do.
         """
         with app.app_context():
+            reassert_balance_on(
+                db.session, seed_user["account"],
+                settle_instant_on(date(2026, 1, 2)),
+            )
+            db.session.commit()
             observed = cash_ledger.reconciled_through(
                 seed_user["account"].id,
             ).observed_day
@@ -1518,69 +1655,27 @@ class TestOneClockPerRender:
             assert stale["hero"]["is_stale"] is True
 
 
-class TestPeriodIsDerivedNotStored:
-    """The region's period comes from the PAYDAYS, not from the stored span.
-
-    Until pay-calendar plan step **C2-f2e** the current period was
-    ``pay_period_service.get_current_period`` -- SQL matching
-    ``start_date <= today <= end_date`` over the two columns plan step **C4**
-    drops.  Where a stored ``end_date`` disagrees with the one the owner's
-    paydays imply (plan finding **P1**, the disagreement nothing reconciles)
-    that query and the calendar name DIFFERENT paychecks, and this page then
-    labelled one period's balance with another's dates.
-
-    **The disagreement has TWO directions and only one is covered here**
-    (C2-f2e's adversarial design review, 2026-08-18).  The case below is the
-    stored span being SHORTER than the derivation, where the derivation is the
-    generous answer and the pre-cutover tree blanked the page.  The inverse --
-    a derived end EARLIER than the stored one -- can only arise on the LAST
-    period, whose end is projected from ``budget.pay_schedule.cadence_days``,
-    and it is the direction where the new code refuses where the old answered.
-    It is not tested because it is not reachable through an app write door:
-    ``pay_schedule_service.upsert_schedule`` has one caller
-    (``pay_period_write._apply``), which runs only when the batch records a
-    payday and then rewrites the derivation onto every row.  It needs
-    hand-edited rows or legacy data, which is ledger row **P35**'s owner.
-    """
-
-    def test_a_wrong_stored_end_date_does_not_move_the_hero(
-        self, app, seed_user, seed_periods, db,
-    ):
-        """A doctored stored ``end_date`` changes nothing the hero renders.
-
-        Period 5 runs 2026-03-13 .. 2026-03-26 because period 6's payday is
-        2026-03-27 -- the derivation.  Rewriting period 5's stored ``end_date``
-        to 2026-03-19 (the day BEFORE the frozen today) leaves the paydays
-        untouched, so the calendar still places 2026-03-20 in period 5.  The
-        pre-cutover query would have found no period covering today at all and
-        the producer would have answered ``None``: a page that goes blank
-        because a derived column drifted.  **Measured, not argued** -- this
-        case was run verbatim against the merge base ``5ab457b7`` and failed on
-        ``result is not None``, with the region gone and the page rendering its
-        "No pay period covers today" CTA to an owner mid-paycheck.
-        """
-        with app.app_context():
-            stored = db.session.get(
-                type(seed_periods[_CURRENT_IDX]),
-                seed_periods[_CURRENT_IDX].id,
-            )
-            stored.end_date = date(2026, 3, 19)
-            db.session.commit()
-
-            # The premise, asserted rather than assumed: the stored span no
-            # longer covers the frozen today, so the retired reader answers
-            # nothing.
-            assert pay_period_service.get_current_period(
-                seed_user["user"].id, as_of=_TODAY,
-            ) is None
-
-            result = dashboard_service.compute_pulse_section(
-                dashboard_section(seed_user["user"].id, as_of=_TODAY),
-            )
-            assert result is not None
-            assert result["hero"]["period_start_date"] == date(2026, 3, 13)
-            assert result["hero"]["period_end_date"] == date(2026, 3, 26)
-            assert result["street"]["days_total"] == 13
+# **``TestPeriodIsDerivedNotStored`` was deleted whole at plan step
+# ``pay_calendar:C4-c``, and it is worth saying what it did rather than
+# leaving a gap.**  Its one case rewrote period 5's stored ``end_date`` to
+# the day before the frozen today and asserted the hero region still
+# rendered -- where the pre-cutover query matched
+# ``start_date <= today <= end_date`` against that column, found no period
+# covering today, and blanked the region to a "No pay period covers today"
+# CTA for an owner mid-paycheck.  It was plan step C2-f2e's grade.
+#
+# C4-c dropped the column, so the disagreement it planted is not merely
+# unreachable, it is SILENT: assigning to an attribute the model no longer
+# maps sets a plain Python attribute, writes no UPDATE, and survives
+# ``expire_all`` -- the *born dead* shape ``docs/plans/lessons.md`` names.
+# The case and its own premise assertion both went on passing while
+# measuring nothing, so it is deleted rather than left green.
+#
+# The class had documented that only ONE of the disagreement's two
+# directions was covered, the other needing hand-edited or legacy rows
+# (ledger row **P35**'s owner).  Neither direction exists now: there is one
+# span, computed on every read.  The hero's period is graded on ordinary
+# schedules by the classes above.
 
 
 # ── Tracks: savings goal trajectory passthrough + debt fraction ─────

@@ -16,6 +16,18 @@ its expected value by hand from the named factors -- no test
 inlines a literal 26/12 for the expectation, so a regression of
 the factor would surface here.
 
+**The aggregator takes the READ PASS since plan step R7d-e**, where it took
+the pass's day and calendar as two arguments: its expired filter reads what
+stops a definition through the composed door -- the rule's own bound AND its
+destination's derived stop -- and the door needs the pass to fold a loan.  The
+cases that state a synthetic schedule build the pass over it with
+:func:`~tests._test_helpers.read_pass_over_paydays` (the one seam the
+developer ruled for that, plan finding **P54**), so no hand-computed figure
+moved; the cases that need a loan behind the definition build the pass the
+route does.  The step's own money is ``test_obligations_derived_stop``: a
+retired loan's payment leaves both totals on the day the loan closed, where it
+used to leave on the day a chokepoint last rewrote a cached column.
+
 **One of those factors stopped being a constant at plan step R7a-2a.**
 ``PAY_PERIODS_PER_YEAR`` was a module-level ``Decimal("26")`` while
 ``budget.pay_schedule.cadence_days`` is user-selectable 1..365, so this
@@ -34,16 +46,17 @@ from types import SimpleNamespace
 import pytest
 
 from app import ref_cache
-from app.enums import RecurrenceUnitEnum, TxnTypeEnum
+from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator, recurring_view
-from app.services.pay_calendar import PayCadence, PayCalendar, calendar_for
+from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import PayCadence, calendar_for
 from app.services.recurrence import RecurrenceResolutionError
 from app.utils.money import MONTHS_PER_YEAR
-from tests._test_helpers import make_cadence_rule
+from tests._test_helpers import make_cadence_rule, read_pass_over_paydays
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     MONTHLY,
@@ -54,61 +67,114 @@ from tests.oracles.recurrence_baseline import (
 #: ``PAY_PERIODS_PER_YEAR`` constant assumed for every owner (R7a-2a).
 _BIWEEKLY = PayCadence(cadence_days=14)
 
-#: A schedule at that cadence, which is what the aggregator takes since plan
-#: step R7b-3 -- the CADENCE for the conversion, and the paydays for the one
-#: filter step that has to know when a count-bounded rule spent its count.
+#: A schedule at that cadence, carried by the READ PASS the aggregator takes
+#: since plan step R7d-e (the calendar itself since R7b-3) -- the CADENCE for
+#: the conversion, and the paydays for the filter step that has to know when a
+#: bounded rule spent its bound.
 #:
 #: Three years of paydays so a count bound has somewhere to be spent; the
-#: owner is the seed user's, because the count filter resolves the rule
-#: against this schedule and ``resolve`` refuses a rule paired with another
-#: owner's.  Every figure below is hand-computed against ``_BIWEEKLY``, which
-#: is ``.cadence`` of this value, so no assertion moves.
+#: owner is the seed user's, because the filter resolves the rule against this
+#: schedule and ``resolve`` refuses a rule paired with another owner's.  Every
+#: figure below is hand-computed against ``_BIWEEKLY``, which is ``.cadence``
+#: of this schedule, so no assertion moves.
 _SCHEDULE_START = date(2025, 1, 3)
 _SCHEDULE_PAYDAYS = 78
 
 
-def _biweekly_calendar(user_id: int = 1) -> PayCalendar:
-    """Return a three-year biweekly schedule for *user_id*.
+def _pass(as_of: date, cadence_days: int = 14, user_id: int = 1) -> BalanceContext:
+    """Return a read pass over a three-year synthetic schedule, pinned at *as_of*.
+
+    Built through the one seam the developer ruled for a pass over
+    hand-written paydays (plan finding **P54**), so it is a real frozen
+    :class:`~app.services.balance_at.BalanceContext` whose calendar memo is
+    this schedule and whose scenario is ``None`` -- which is enough for every
+    definition here that pays into no loan, because the composed door answers
+    "no derived stop" for those before it ever needs a scenario.
 
     Args:
-        user_id: The owner.  Only the count-bound filter reads it, and only
-            when a rule carries one.
+        as_of: The day the pass is pinned to -- the day the expired filter
+            asks about.
+        cadence_days: Days between paydays.  14 unless a case is about the
+            cadence itself.
+        user_id: The owner.  The rule's ``user_id`` must match it, or
+            ``resolve`` refuses the pairing.
 
     Returns:
-        The :class:`~app.services.pay_calendar.PayCalendar`.
+        The :class:`~app.services.balance_at.BalanceContext`.
     """
-    return PayCalendar.from_paydays(
+    return read_pass_over_paydays(
         paydays=[
-            (index + 1, _SCHEDULE_START + timedelta(days=14 * index))
+            _SCHEDULE_START + timedelta(days=cadence_days * index)
             for index in range(_SCHEDULE_PAYDAYS)
         ],
-        cadence_days=14,
+        cadence_days=cadence_days,
+        as_of=as_of,
         user_id=user_id,
+    )
+
+
+def _fake_template(
+    unit_id: int, interval_n: int, amount: Decimal | None, *,
+    end_date: date | None = None,
+) -> SimpleNamespace:
+    """Return a duck-typed template whose rule the composed door can READ.
+
+    The stand-in this module's conversion cases build in place of an ORM row.
+    It carries every column :func:`~app.services.recurrence.recurrence_spec`
+    reads -- not the four the retired filter happened to touch -- because the
+    aggregator resolves the rule through the door since plan step R7d-e, and
+    a stand-in that lists only what one reader touches stops being one the
+    moment the reader changes.  ``user_id`` is the pass's, ``starts_on`` is
+    the schedule's first payday and the placement is the containing one, so
+    the value resolves for every authorable unit.
+
+    Args:
+        unit_id: The ``ref.recurrence_units`` id -- possibly one the enum does
+            not model, which is the case that must REFUSE.
+        interval_n: The cadence interval.
+        amount: The template's ``default_amount``.
+        end_date: An authored closing date, or ``None``.
+
+    Returns:
+        The :class:`types.SimpleNamespace` template.
+    """
+    return SimpleNamespace(
+        recurrence_rule=SimpleNamespace(
+            user_id=1,
+            unit_id=unit_id,
+            interval_n=interval_n,
+            starts_on=_SCHEDULE_START,
+            nominal_day=None,
+            placement_id=ref_cache.period_placement_id(
+                PeriodPlacementEnum.CONTAINING_DATE,
+            ),
+            due_day_of_month=None,
+            end_date=end_date,
+            max_occurrences=None,
+        ),
+        default_amount=amount,
     )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _create_rule(seed_user, cadence, *, interval_n=1, end_date=None):
-    """Create and flush a RecurrenceRule for the seed user."""
-    return make_cadence_rule(
-        seed_user["user"].id, cadence,
-        interval_n=interval_n, end_date=end_date,
-    )
+def _create_expense(seed_user, cadence, amount, *, name="Expense",
+                    interval_n=1, end_date=None):
+    """Create and flush an expense TransactionTemplate with its cadence.
 
-
-def _create_expense(seed_user, rule, amount, *, name="Expense"):
-    """Create and flush an expense TransactionTemplate.
-
-    ``rule`` may be ``None`` -- that is how a definition says "does not
+    ``cadence`` may be ``None`` -- that is how a definition says "does not
     repeat" since plan step R2e-3.
+
+    **It authors the cadence itself, since plan step R-F6**: a rule carries
+    its owning template's FK, so it cannot be built before the template and a
+    separate ``_create_rule`` helper had nothing to hand back.  A caller that
+    needs the rule reads ``tmpl.recurrence_rule``.
     """
     tmpl = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id if rule is not None else None,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
         default_amount=amount,
@@ -116,6 +182,10 @@ def _create_expense(seed_user, rule, amount, *, name="Expense"):
     )
     db.session.add(tmpl)
     db.session.flush()
+    if cadence is not None:
+        make_cadence_rule(
+            tmpl, cadence, interval_n=interval_n, end_date=end_date,
+        )
     return tmpl
 
 
@@ -140,18 +210,14 @@ class TestObligationsAggregator:
         as_of = date(2026, 5, 20)
         expired_end = as_of - timedelta(days=1)
         with app.app_context():
-            rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-                end_date=expired_end,
-            )
             tmpl = _create_expense(
-                seed_user, rule, Decimal("100.00"),
-                name="Expired Biweekly",
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
+                name="Expired Biweekly", end_date=expired_end,
             )
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], as_of, _biweekly_calendar(),
+                [tmpl], _pass(as_of),
             )
 
             assert result == Decimal("0.00"), (
@@ -169,11 +235,8 @@ class TestObligationsAggregator:
         """
         as_of = date(2026, 5, 20)
         with app.app_context():
-            rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-            )
             tmpl = _create_expense(
-                seed_user, rule, Decimal("100.00"),
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
                 name="Active Biweekly",
             )
             db.session.commit()
@@ -182,7 +245,7 @@ class TestObligationsAggregator:
                 Decimal("100") * _BIWEEKLY.periods_per_year / MONTHS_PER_YEAR
             ).quantize(Decimal("0.01"))
             result = obligations_aggregator.committed_monthly(
-                [tmpl], as_of, _biweekly_calendar(),
+                [tmpl], _pass(as_of),
             )
 
             assert result == Decimal("216.67"), (
@@ -208,17 +271,14 @@ class TestObligationsAggregator:
                 seed_user, None, Decimal("5000.00"),
                 name="One-Time",
             )
-            recurring_rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-            )
             recurring_tmpl = _create_expense(
-                seed_user, recurring_rule, Decimal("100.00"),
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
                 name="Recurring",
             )
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [once_tmpl, recurring_tmpl], as_of, _biweekly_calendar(),
+                [once_tmpl, recurring_tmpl], _pass(as_of),
             )
 
             # Hand-computed: ONCE excluded -> $100 * 26 / 12 = $216.67.
@@ -247,18 +307,12 @@ class TestObligationsAggregator:
         aggregator, so they cannot diverge.
         """
         with app.app_context():
-            biweekly_rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-            )
-            monthly_rule = _create_rule(
-                seed_user, MONTHLY,
-            )
             _create_expense(
-                seed_user, biweekly_rule, Decimal("100.00"),
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
                 name="Biweekly Bill",
             )
             _create_expense(
-                seed_user, monthly_rule, Decimal("500.00"),
+                seed_user, MONTHLY, Decimal("500.00"),
                 name="Monthly Bill",
             )
             db.session.commit()
@@ -283,7 +337,7 @@ class TestObligationsAggregator:
                 .all()
             )
             agg_total = obligations_aggregator.committed_monthly(
-                templates, date.today(), _biweekly_calendar(),
+                templates, _pass(date.today()),
             )
             assert agg_total == Decimal("716.67"), (
                 f"Aggregator total must equal /obligations subtotal "
@@ -314,17 +368,10 @@ class TestObligationsAggregator:
             for member in RecurrenceUnitEnum
         ) + 1
         with app.app_context():
-            template = SimpleNamespace(
-                recurrence_rule=SimpleNamespace(
-                    end_date=None,
-                    max_occurrences=None,
-                    unit_id=surplus, interval_n=1,
-                ),
-                default_amount=Decimal("100.00"),
-            )
+            template = _fake_template(surplus, 1, Decimal("100.00"))
             with pytest.raises(RecurrenceResolutionError):
                 obligations_aggregator.committed_monthly(
-                    [template], date(2026, 5, 20), _biweekly_calendar(),
+                    [template], _pass(date(2026, 5, 20)),
                 )
 
     def test_the_three_surviving_filters_still_answer_none(self, app):
@@ -344,25 +391,14 @@ class TestObligationsAggregator:
             no_rule = SimpleNamespace(
                 recurrence_rule=None, default_amount=Decimal("100.00"),
             )
-            expired = SimpleNamespace(
-                recurrence_rule=SimpleNamespace(
-                    end_date=as_of - timedelta(days=1),
-                    max_occurrences=None,
-                    unit_id=every_period, interval_n=1,
-                ),
-                default_amount=Decimal("100.00"),
+            expired = _fake_template(
+                every_period, 1, Decimal("100.00"),
+                end_date=as_of - timedelta(days=1),
             )
-            zero = SimpleNamespace(
-                recurrence_rule=SimpleNamespace(
-                    end_date=None,
-                    max_occurrences=None,
-                    unit_id=every_period, interval_n=1,
-                ),
-                default_amount=Decimal("0.00"),
-            )
+            zero = _fake_template(every_period, 1, Decimal("0.00"))
             for template in (no_rule, expired, zero):
                 assert obligations_aggregator.template_monthly_or_none(
-                    template, as_of, _biweekly_calendar(),
+                    template, _pass(as_of),
                 ) is None
 
     def test_the_conversion_reproduces_every_retired_branch(self, app):
@@ -389,17 +425,12 @@ class TestObligationsAggregator:
         ]
         with app.app_context():
             for unit, interval_n, expected in cases:
-                template = SimpleNamespace(
-                    recurrence_rule=SimpleNamespace(
-                        end_date=None,
-                        max_occurrences=None,
-                        unit_id=ref_cache.recurrence_unit_id(unit),
-                        interval_n=interval_n,
-                    ),
-                    default_amount=Decimal("100.00"),
+                template = _fake_template(
+                    ref_cache.recurrence_unit_id(unit), interval_n,
+                    Decimal("100.00"),
                 )
                 assert obligations_aggregator.committed_monthly(
-                    [template], date(2026, 5, 20), _biweekly_calendar(),
+                    [template], _pass(date(2026, 5, 20)),
                 ) == Decimal(expected), (unit, interval_n)
 
     def test_the_conversion_side_paycheck_count_has_one_producer(self):
@@ -414,11 +445,12 @@ class TestObligationsAggregator:
         and no module-level number to drift from it", and this is where a
         reintroduced constant is caught.
 
-        **Named for the CONVERSION side, because it is not the whole story.**
-        ``salary.salary_profiles.pay_periods_per_year`` is a second, stored,
-        user-selected paycheck count on the PRODUCTION side -- the divisor the
-        paycheck engine uses -- and nothing ties the two together.  This test
-        does not and cannot assert against it; the developer ruled that second
+        **Named for the CONVERSION side, and since plan step R-F16 that is
+        the whole story.**  ``salary.salary_profiles.pay_periods_per_year`` was
+        a second, stored, user-selected paycheck count on the PRODUCTION side
+        -- the divisor the paycheck engine used -- with nothing tying the two
+        together.  That column is dropped and both sides now derive from
+        ``budget.pay_schedule.cadence_days``.  The developer ruled that second
         producer's removal into this arc on 2026-08-11, as the leaf after
         R7a-2a.  A name claiming "one producer" flat would be the false claim
         this file exists to catch.
@@ -457,31 +489,17 @@ class TestObligationsAggregator:
         #    CADENCE and an ORM round-trip would add a second variable to a
         #    test whose whole point is that only one thing changed.
         #    $100 every paycheck weekly = 100 * 52 / 12 = $433.33.
-        weekly_template = SimpleNamespace(
-            recurrence_rule=SimpleNamespace(
-                end_date=None,
-                max_occurrences=None,
-                unit_id=ref_cache.recurrence_unit_id(
-                    RecurrenceUnitEnum.PERIOD,
-                ),
-                interval_n=1,
-            ),
-            default_amount=Decimal("100.00"),
+        weekly_template = _fake_template(
+            ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD), 1,
+            Decimal("100.00"),
         )
-        weekly_calendar = PayCalendar.from_paydays(
-            paydays=[
-                (index + 1, _SCHEDULE_START + timedelta(days=7 * index))
-                for index in range(_SCHEDULE_PAYDAYS)
-            ],
-            cadence_days=7,
-            user_id=1,
-        )
-        assert weekly_calendar.cadence == _Cadence(cadence_days=7)
+        weekly = _pass(date(2026, 5, 20), cadence_days=7)
+        assert weekly.calendar().cadence == _Cadence(cadence_days=7)
         assert obligations_aggregator.committed_monthly(
-            [weekly_template], date(2026, 5, 20), weekly_calendar,
+            [weekly_template], weekly,
         ) == Decimal("433.33")
         assert obligations_aggregator.committed_monthly(
-            [weekly_template], date(2026, 5, 20), _biweekly_calendar(),
+            [weekly_template], _pass(date(2026, 5, 20)),
         ) == Decimal("216.67")
 
     def test_emergency_fund_baseline_excludes_expired(
@@ -502,13 +520,10 @@ class TestObligationsAggregator:
         $3,250 inflated value should appear.
         """
         with app.app_context():
-            rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-                end_date=date.today() - timedelta(days=1),
-            )
             _create_expense(
-                seed_user, rule, Decimal("1500.00"),
+                seed_user, EVERY_PERIOD, Decimal("1500.00"),
                 name="Expired Bill",
+                end_date=date.today() - timedelta(days=1),
             )
             db.session.commit()
 
@@ -554,14 +569,15 @@ class TestASpentCountLeavesTheObligationsTotal:
         Returns:
             The flushed template.
         """
-        rule = _create_rule(
-            seed_user, EVERY_PERIOD,
+        tmpl = _create_expense(
+            seed_user, EVERY_PERIOD, Decimal("100.00"), name=f"After {count}",
         )
-        rule.max_occurrences = count
+        # Reached through the OWNING template (plan step R-F6): the rule
+        # cannot be built before it, so a count bound is set on the row the
+        # template now holds.
+        tmpl.recurrence_rule.max_occurrences = count
         db.session.flush()
-        return _create_expense(
-            seed_user, rule, Decimal("100.00"), name=f"After {count}",
-        )
+        return tmpl
 
     def test_a_spent_count_contributes_nothing(
         self, app, seed_user, seed_periods,
@@ -574,10 +590,9 @@ class TestASpentCountLeavesTheObligationsTotal:
         with app.app_context():
             template = self._template(seed_user, count=1)
             db.session.commit()
-            calendar = calendar_for(seed_user["user"].id)
 
             assert obligations_aggregator.template_monthly_or_none(
-                template, date.today(), calendar,
+                template, BalanceContext.build(seed_user["user"].id),
             ) is None
 
     def test_a_count_with_occurrences_left_still_counts(
@@ -593,10 +608,9 @@ class TestASpentCountLeavesTheObligationsTotal:
         with app.app_context():
             template = self._template(seed_user, count=10_000)
             db.session.commit()
-            calendar = calendar_for(seed_user["user"].id)
 
             assert obligations_aggregator.template_monthly_or_none(
-                template, date.today(), calendar,
+                template, BalanceContext.build(seed_user["user"].id),
             ) == Decimal("100") * Decimal("26") / MONTHS_PER_YEAR
 
     def test_a_schedule_that_has_not_reached_the_count_leaves_it_live(
@@ -617,7 +631,8 @@ class TestASpentCountLeavesTheObligationsTotal:
             before_opening = calendar.opening_bound() - timedelta(days=1)
 
             assert obligations_aggregator.template_monthly_or_none(
-                template, before_opening, calendar,
+                template,
+                BalanceContext.build(seed_user["user"].id, before_opening),
             ) is not None
 
     def test_the_count_shape_is_live_on_the_day_its_last_occurrence_falls(
@@ -636,16 +651,17 @@ class TestASpentCountLeavesTheObligationsTotal:
         with app.app_context():
             template = self._template(seed_user, count=2)
             db.session.commit()
-            calendar = calendar_for(seed_user["user"].id)
-            second_payday = calendar.periods[1].start_date
+            owner = seed_user["user"].id
+            second_payday = calendar_for(owner).periods[1].start_date
 
             # ON the day the second (and last) occurrence falls: still live.
             assert obligations_aggregator.template_monthly_or_none(
-                template, second_payday, calendar,
+                template, BalanceContext.build(owner, second_payday),
             ) is not None
             # The day after: spent.
             assert obligations_aggregator.template_monthly_or_none(
-                template, second_payday + timedelta(days=1), calendar,
+                template,
+                BalanceContext.build(owner, second_payday + timedelta(days=1)),
             ) is None
 
     def test_the_date_shape_answers_from_OCCURRENCES_not_from_the_date(
@@ -664,22 +680,19 @@ class TestASpentCountLeavesTheObligationsTotal:
         BETWEEN paydays is the case that moved -- see the sibling below.
         """
         with app.app_context():
-            calendar = calendar_for(seed_user["user"].id)
-            payday = calendar.periods[1].start_date
-            rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-                end_date=payday,
-            )
+            owner = seed_user["user"].id
+            payday = calendar_for(owner).periods[1].start_date
             template = _create_expense(
-                seed_user, rule, Decimal("100.00"), name="Ends On A Payday",
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
+                name="Ends On A Payday", end_date=payday,
             )
             db.session.commit()
 
             assert obligations_aggregator.template_monthly_or_none(
-                template, payday, calendar,
+                template, BalanceContext.build(owner, payday),
             ) is not None
             assert obligations_aggregator.template_monthly_or_none(
-                template, payday + timedelta(days=1), calendar,
+                template, BalanceContext.build(owner, payday + timedelta(days=1)),
             ) is None
 
     def test_a_bound_between_occurrences_stops_at_the_LAST_one(
@@ -694,23 +707,23 @@ class TestASpentCountLeavesTheObligationsTotal:
         year end it was eleven months.
         """
         with app.app_context():
-            calendar = calendar_for(seed_user["user"].id)
+            owner = seed_user["user"].id
+            calendar = calendar_for(owner)
             last_fired = calendar.periods[1].start_date
             next_payday = calendar.periods[2].start_date
-            rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-                end_date=next_payday - timedelta(days=1),
-            )
             template = _create_expense(
-                seed_user, rule, Decimal("100.00"), name="Ends Mid-Cycle",
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
+                name="Ends Mid-Cycle",
+                end_date=next_payday - timedelta(days=1),
             )
             db.session.commit()
 
             assert obligations_aggregator.template_monthly_or_none(
-                template, last_fired, calendar,
+                template, BalanceContext.build(owner, last_fired),
             ) is not None
             assert obligations_aggregator.template_monthly_or_none(
-                template, last_fired + timedelta(days=1), calendar,
+                template,
+                BalanceContext.build(owner, last_fired + timedelta(days=1)),
             ) is None
 
     def test_the_recurring_surface_agrees_with_itself(
@@ -729,7 +742,7 @@ class TestASpentCountLeavesTheObligationsTotal:
 
             view = recurring_view.build_view(
                 [], [template], [],
-                calendar_for(seed_user["user"].id), date.today(),
+                BalanceContext.build(seed_user["user"].id, date.today()),
             )
             row = view.expenses.rows[0]
 

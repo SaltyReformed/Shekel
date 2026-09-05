@@ -33,11 +33,11 @@ from app.services import (
     anchor_service,
     balance_at,
     cash_ledger,
-    pay_period_service,
     posting_service,
     reconcile_service,
 )
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import calendar_for
 from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
     add_entry,
@@ -45,6 +45,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_envelope_txn,
     create_settled_cash_transaction,
+    current_pay_period,
     linked_ledger_account,
     observed_day_of,
     override_anchor,
@@ -73,7 +74,7 @@ _A_STATEMENT_DAY = date(2026, 1, 22)
 
 def _current_period(user_id):
     """Return the pay period containing today in the USER's zone."""
-    return pay_period_service.get_current_period(
+    return current_pay_period(
         user_id, as_of=display_today(),
     )
 
@@ -277,9 +278,11 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
         whose whole claim is that it records a fact and moves no money.
         """
         recorded = reconcile_service.record_settled_days(
-            seed_user["user"].id, account.id,
+            reconcile_service.Statement(
+                calendar_for(seed_user["user"].id), account.id,
+                cash_ledger.governing_anchor(account.id),
+            ),
             {entry.id for entry in envelope.entries},
-            cash_ledger.governing_anchor(account.id),
         )
         _db.session.commit()
         return recorded

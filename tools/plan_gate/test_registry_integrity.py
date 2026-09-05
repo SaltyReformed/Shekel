@@ -20,40 +20,19 @@ from __future__ import annotations
 import pathlib
 import re
 
-import pytest
-
 import _registry as registry
+import _row_width as row_width
+from _classes import decomposition_leaf_keys
 from _staging import (
     a_live_ledger_row,
+    a_prefix_trap,
     a_shipped_balance_row,
+    an_identity_class_with_leaves,
+    stage_an_open_leaf,
     an_open_step_key,
     row_of,
     with_cell,
 )
-
-
-def _a_live_fork():
-    """Return the first live fork, its ``steps.md`` line, and a remedy's line.
-
-    **The fork controls below used to NAME a specimen** --
-    ``| pay_calendar:P3 = balance:N-123 |`` and ``| balance | N-123 |`` -- and
-    that broke on 2026-08-10, when ``balance:X-ad-a`` shipped the remedy that
-    fork was ruled to, its defect row closed, and the fork line left the table.
-    Three controls went red for the single reason that the rule they grade had
-    WORKED.  A control anchored to one corpus row rots exactly like the prose
-    counts these registries exist to remove, so the specimen is now derived:
-    whichever fork is live gets graded, and the next one to be settled costs
-    this file nothing.
-
-    Returns:
-        ``(fork, fork line, one remedy's step line)``.
-    """
-    found = registry.forks()
-    assert found, "no fork in steps.md -- the controls below have no subject"
-    fork = found[0]
-    line = row_of("steps", f"| {fork.defect} |")
-    arc, ident = fork.remedy_keys()[0].split(":", 1)
-    return fork, line, row_of("steps", f"| {arc} | {ident} |")
 
 
 class TestThePremiseThatAnythingIsBeingRead:
@@ -69,7 +48,6 @@ class TestThePremiseThatAnythingIsBeingRead:
         # place the true numbers are written down.
         assert len(registry.ledger_rows()) >= 100
         assert len(registry.step_rows()) >= 70
-        assert len(registry.forks()) >= 1
 
     def test_every_arc_document_is_present(self):
         """Every arc document is present."""
@@ -187,11 +165,23 @@ class TestEveryFindingNamesALiveOwner:
 
         **Every control here stages a row a shipping step can close, so they
         get re-anchored**: this one off ``pay_calendar:P2`` at C2-b2, nine off
-        ``balance:N-128`` at C2-c.  Any live row with a BARE id cell serves.
+        ``balance:N-128`` at C2-c, and this one again off ``pay_calendar:P16``
+        at `R17` on 2026-08-28.  Three re-anchorings of one control is the
+        argument for deriving it: any live row with a BARE id cell serves, so
+        it now asks for that shape rather than naming a row the next tick
+        removes.  **The shipped step is derived from the ROW's OWN ARC**: rule
+        1 resolves an owner within the row's arc, so a `pay_calendar` step
+        named on a `balance` row fires the wrong arm ("names no step") and the
+        control passes for a reason that is not its subject.
         """
-        assert registry.arc_checkboxes("pay_calendar")["C1"], "C1 must be ticked"
-        line = row_of("ledger", "| pay_calendar | P16 |")
-        stage("ledger", line, with_cell(line, -1, "C1"))
+        prefix = a_live_ledger_row()
+        arc = prefix.split("|")[1].strip()
+        shipped = next(
+            row.ident for row in registry.step_rows()
+            if row.arc == arc and row.shipped
+        )
+        line = row_of("ledger", prefix)
+        stage("ledger", line, with_cell(line, -1, shipped))
         problems = registry.owner_violations()
         assert any("SHIPPED" in p and "rule 2" in p for p in problems), problems
 
@@ -245,7 +235,7 @@ class TestEveryFindingNamesALiveOwner:
         bare ``operator`` is indistinguishable from the "someone will get to
         it" values rule 1 retired by name.
         """
-        line = row_of("ledger", "| recurrence | F-4 |")
+        line = row_of("ledger", "| recurrence | D4 |")
         stage("ledger", line, with_cell(line, -1, "operator"))
         problems = registry.owner_violations()
         assert any("must state the question" in p for p in problems), problems
@@ -254,7 +244,7 @@ class TestEveryFindingNamesALiveOwner:
         """A fork with no date cannot be told from a fork nobody has taken."""
         # Re-anchored 2026-08-13 off `balance:N-25`, archived to the loan
         # arc's as-built; a control that names its subject cannot go quiet.
-        line = row_of("ledger", "| balance | N-138 |")
+        line = row_of("ledger", "| balance | FU-1")
         stage("ledger", line, with_cell(line, -1, "developer-decision (the fork)"))
         problems = registry.owner_violations()
         assert any("must carry the date" in p for p in problems), problems
@@ -340,84 +330,21 @@ class TestAnIdentityClassSharesOneTickState:
         assert "recurrence:R-F12" in keys["pay_calendar:C2"]
 
     def test_the_control_fires_when_one_name_ships_without_the_others(self, stage):
-        """The control fires when one name ships without the others."""
-        line = row_of("steps", "| pay_calendar | C2 |")
-        stage("steps", line, with_cell(line, 4, "SHIPPED"))
+        """The control fires when one name ships without the others.
+
+        The stage pushes a member AWAY from whatever its class shares.  It read
+        OPEN to SHIPPED until `pay_calendar:C2-f3e` ticked the whole class and
+        staging SHIPPED changed nothing: the property is DISAGREEMENT, never
+        one direction of it.
+        """
+        members, _leaves = an_identity_class_with_leaves()
+        rows = {row.key: row for row in registry.step_rows()}
+        arc, ident = members[0].split(":", 1)
+        line = row_of("steps", f"| {arc} | {ident} |")
+        opposite = "#1" if rows[members[0]].shipped else "SHIPPED"
+        stage("steps", line, with_cell(line, 4, opposite))
         problems = registry.alias_violations()
         assert any("ONE step under two names" in p for p in problems), problems
-
-
-class TestAForkBindsItsRemediesAndItsDefectRow:
-    """conventions.md rule 11, second half -- born of the P3 / N-123 collision.
-
-    **The controls STAGE an unruled fork rather than requiring the live corpus
-    to hold one.**  Every live fork has been ruled, so a control that asserted
-    "an unruled fork exists" would now be red -- and the tempting way to green
-    it is to relax the assertion, which is how a predicate quietly stops being
-    tested.  Staging the state proves the arm whether or not the developer
-    happens to have an open fork today.
-
-    **And the specimen is DERIVED, not named** (:func:`_a_live_fork`): naming
-    one made three of these controls fail on 2026-08-10 for the single reason
-    that the rule had worked and the fork had left the table.
-    """
-
-    def test_no_fork_is_violated_in_the_live_corpus(self):
-        """No fork has a premature tick, a dead defect row, or a stale owner."""
-        assert not registry.fork_violations()
-
-    def test_the_live_corpus_actually_contains_forks_to_grade(self):
-        """A rule with no subject in the corpus is untested by the clean case."""
-        found = registry.forks()
-        assert found, "no fork at all -- rule 11's second half grades nothing"
-        assert all(f.winner for f in found), (
-            "every live fork is expected to be RULED as of 2026-08-09"
-        )
-
-    def test_the_control_fires_when_a_remedy_ships_before_the_ruling(self, stage):
-        """Whichever remedy ships first decides for both arcs."""
-        _, ruling, remedy = _a_live_fork()
-        stage("steps", ruling, with_cell(ruling, -1, "**NOT YET RULED**"))
-        stage("steps", remedy, with_cell(remedy, 4, "SHIPPED"))
-        problems = registry.fork_violations()
-        assert any("NOT YET RULED" in p for p in problems), problems
-
-    @pytest.mark.parametrize("word", ["TBD", "pending", "?", "not yet ruled"])
-    def test_a_non_ruling_word_does_not_count_as_a_ruling(self, stage, word):
-        """Only NAMING a remedy is a ruling.
-
-        The predicate used to read "is the cell non-empty and not the exact
-        phrase NOT YET RULED", so every one of these words made ``is_ruled``
-        True -- and a True makes the whole fork arm skip.  This is the rule
-        that exists BECAUSE P3 / N-123 went unnoticed from April to 2026-08-09.
-        """
-        _, ruling, remedy = _a_live_fork()
-        stage("steps", ruling, with_cell(ruling, -1, word))
-        stage("steps", remedy, with_cell(remedy, 4, "SHIPPED"))
-        problems = registry.fork_violations()
-        assert any("NOT YET RULED" in p for p in problems), (word, problems)
-
-    def test_the_control_fires_when_a_ruled_fork_leaves_its_row_unpointed(self, stage):
-        """A ruling nobody re-points is a ruling that decided nothing.
-
-        Rule 2 re-points a row when its owner ships, but it only fires on a row
-        that NAMES a step -- and an open fork's row names ``developer-decision``
-        by design.  Without this arm the row could keep pointing at a decision
-        already taken, indefinitely, with every other gate green.
-        """
-        fork, _, _ = _a_live_fork()
-        arc, ident = fork.defect_keys()[0].split(":", 1)
-        line = row_of("ledger", f"| {arc} | {ident} |")
-        stage("ledger", line, with_cell(line, -1, "developer-decision (2026-08-09)"))
-        problems = registry.fork_violations()
-        assert any(f"RULED for {fork.winner}" in p for p in problems), problems
-
-    def test_the_control_fires_when_the_defect_names_no_live_row(self, stage):
-        """A fork about a row that does not exist decides nothing."""
-        _, ruling, _ = _a_live_fork()
-        stage("steps", ruling, with_cell(ruling, 0, "pay_calendar:P999"))
-        problems = registry.fork_violations()
-        assert any("names no live ledger.md row" in p for p in problems), problems
 
 
 class TestTheTwoAlsoRelationsMeanOppositeThings:
@@ -440,12 +367,17 @@ class TestTheTwoAlsoRelationsMeanOppositeThings:
     def test_the_control_fires_when_a_merged_target_is_still_live(self, stage):
         """`=` says the target was absorbed, so it must not still be a row.
 
-        Named ``pay_calendar:P2`` until that row closed at ``C2-b2``; the
+        Named ``pay_calendar:P2`` until that row closed at ``C2-b2``, then
+        ``pay_calendar:P16`` until `R17` closed that one on 2026-08-28.  The
         target only has to be a row that still EXISTS and whose id cell is
-        BARE, since the `also` grammar takes an unannotated id.
+        BARE, since the `also` grammar takes an unannotated id -- so it is
+        DERIVED now, and the subject is a second live row rather than a name.
         """
-        line = row_of("ledger", a_live_ledger_row())
-        stage("ledger", line, with_cell(line, 2, "= pay_calendar:P16"))
+        rows = [row_of("ledger", a_live_ledger_row())]
+        arc, ident = [cell.strip() for cell in rows[0].split("|")[1:3]]
+        target = f"{arc}:{ident}"
+        line = row_of("ledger", a_live_ledger_row(skip=1))
+        stage("ledger", line, with_cell(line, 2, f"= {target}"))
         problems = registry.also_violations()
         assert any("still its own live row" in p for p in problems), problems
 
@@ -568,12 +500,13 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
     def test_the_control_fires_on_a_cycle(self, stage):
         """The control fires on a cycle.
 
-        ``R5`` is already blocked by ``X-f4``; pointing ``X-f4`` back at ``R5``
-        closes the loop across two arcs, which is the shape no single arc
-        document could have seen.
+        ``CC0a`` is already blocked by ``X-f4``; pointing ``X-f4`` back at
+        ``CC0a`` closes the loop across two arcs, which is the shape no single
+        arc document could have seen.  (It staged ``R5`` until 2026-09-03, when
+        ruling R-R52 moved R5's gate off X-f4.)
         """
         line = row_of("steps", "| balance | X-f4 |")
-        stage("steps", line, with_cell(line, -1, "recurrence:R5"))
+        stage("steps", line, with_cell(line, -1, "credit_card:CC0a"))
         problems = registry.blocked_by_violations()
         assert any("CYCLE" in p for p in problems), problems
 
@@ -697,32 +630,19 @@ class TestAParentTicksWithTheLastOfItsLeaves:
     def test_a_prefix_derivation_would_have_fired_falsely_on_this_corpus(self):
         """The reason the parent set is DECLARED rather than derived.
 
-        ``R-F1`` is SHIPPED and is a string prefix of ``R-F10``, ``R-F12`` and
-        ``R-F13``, which are unrelated findings-steps.  Deriving parenthood
-        from the id alone would report failures the moment the arm was switched
-        on -- and the tempting fix is an exception list, which is finding
-        N-147's defect.  This control keeps that measurement alive: if the
-        corpus ever stops containing the trap, the reason for the design should
-        be re-read rather than assumed.
-
-        **It asserts that at least one prefix-sharer is OPEN, not that all
-        are.**  ``R-F10`` shipped at ``pay_calendar:C2-b2``, which turned an
-        ``all`` assertion red without the trap having gone anywhere -- a
-        control that fails when the corpus merely PROGRESSES is grading the
-        wrong thing.  What matters is that a shipped step still shares a prefix
-        with an open one, because that is the pair a derived arm would misread.
+        :func:`_staging.a_prefix_trap` carries the argument and RAISES when the
+        corpus stops holding the trap -- which is this control firing.
         """
-        rows = {row.ident: row for row in registry.step_rows()
-                if row.arc == "recurrence"}
-        assert rows["R-F1"].shipped
-        tempting = [i for i in rows if i != "R-F1" and i.startswith("R-F1")]
-        assert tempting, "the R-F1 prefix trap has left the corpus"
-        assert any(not rows[i].shipped for i in tempting), (
-            "the trap needs an OPEN prefix-sharer beside the shipped R-F1"
-        )
-        assert not rows["R-F1"].is_decomposed_parent, (
-            "R-F1 must NOT declare itself a parent -- it has no decomposition"
-        )
+        shipped, sharers = a_prefix_trap()
+        rows = registry.step_rows()
+        by_key = {row.key: row for row in rows}
+        # A PREFIX derivation would claim the sharers as this row's leaves...
+        derived = decomposition_leaf_keys(by_key[shipped], rows)
+        assert set(sharers) <= set(derived), (shipped, sharers, derived)
+        # ...and the DECLARED parent set is what stops the arm reporting it.
+        assert not any(
+            shipped in problem for problem in registry.decomposition_violations()
+        ), f"{shipped} is reported over {sharers}, which are unrelated steps"
 
     def test_the_control_fires_when_a_parent_ships_over_an_open_leaf(self, stage):
         """The control fires when a parent ships over an open leaf.
@@ -834,21 +754,22 @@ class TestAParentTicksWithTheLastOfItsLeaves:
         """A container's leaves may be filed under a SIBLING's name.
 
         **This arm re-spelled the leaf derivation inline, per-arc, until
-        2026-08-11.**  ``balance:X-l``, ``pay_calendar:C2`` and
-        ``recurrence:R-F12`` are ONE step under three names and every leaf of
-        the class is a ``pay_calendar:C2-*`` row, so shipping ``X-l`` over five
-        open leaves reported NOTHING: the arm looked for a `balance` row whose
-        id starts with `X-l` and there is none.  The class row `C2` happened to
-        cover it, which is why the hole was invisible -- one rename away from
-        being live.
+        2026-08-11**, so shipping a parent whose every leaf is filed under a
+        SIBLING's name reported NOTHING: it looked in the parent's own arc.
+
+        **The staging INVERTED on 2026-08-20** and the property did not: that
+        class shipped whole at `pay_calendar:C2-f3e`, so this re-opens a real
+        LEAF instead of shipping a real parent.  Class and leaf are derived --
+        see :func:`_staging.an_identity_class_with_leaves`.
         """
-        line = row_of("steps", "| balance | X-l |")
-        stage("steps", line, with_cell(line, 4, "SHIPPED"))
-        problems = [p for p in registry.decomposition_violations()
-                    if "balance:X-l" in p]
-        assert problems, registry.decomposition_violations()
-        assert "pay_calendar:C2-" in problems[0], (
-            f"the failure names no leaf of the class: {problems}"
+        members, leaf = stage_an_open_leaf(stage)
+        parent = members[0]
+        # The parent is named in an arc the leaf does not live in, which is
+        # the whole property: a per-arc derivation reports NOTHING here.
+        named = [p for p in registry.decomposition_violations() if parent in p]
+        assert named, registry.decomposition_violations()
+        assert all(leaf in p for p in named), (
+            f"{parent}'s failure names no leaf of its class: {named}"
         )
 
 
@@ -958,24 +879,65 @@ class TestNoLedgerRowHasGrownIntoASpecification:
         rows = registry.ledger_rows()
         assert len(rows) >= 100, "the ledger parsed almost no rows"
 
-    def test_the_cap_targets_outliers_rather_than_the_corpus(self):
-        """A cap most rows crowd is a cap fitted to the file, which rule 4 refuses.
+    def test_the_crowding_count_is_reported_and_true(self):
+        """Rule 4's corpus signal is a REPORT, and the file states it truthfully.
 
-        **Deliberately not a "widest row has headroom" check.**  That is the
-        right instrument for a LINE cap, where headroom means the document can
-        absorb another finding.  A row has a different remedy always available
-        -- move its narrative to the owning step -- so the meaningful property
-        is that the cap bites on outliers, not on ordinary rows.  The median
-        sat at 409 against a 2,000 cap when this was written; if it ever
-        approaches half the cap, the ledger has become a plan document again.
+        **This was a GATE on the ledger's median row width until plan step
+        balance:X-au-g-2b**, which measured that shape wrong twice over; the
+        argument is on :func:`_row_width.crowded_ledger_rows` and is not
+        repeated here.  Developer ruling 2026-09-01: the signal is REPORTED.
+
+        What is graded is only that the number in the file is TRUE.  Nothing
+        here refuses a wide table; :meth:`test_no_row_is_over_the_row_cap` and
+        the runaway backstop remain the only failures about size.
         """
-        widths = sorted(row.width for row in registry.ledger_rows())
-        median = widths[len(widths) // 2]
-        assert median <= registry.LEDGER_ROW_CAP // 2, (
-            f"the MEDIAN row is {median} of {registry.LEDGER_ROW_CAP}. The cap "
-            "is no longer catching outliers -- the whole table has grown into "
-            "specifications. conventions.md rule 4"
+        assert row_width.stated_crowding_violation() is None
+
+    def test_the_signal_discriminates_at_the_threshold(self):
+        """A reported zero must mean zero, and the signal must be a FILTER.
+
+        **Deliberately not ``len(crowded) == sum(1 for r in rows if r.width >=
+        W)``**, which was the first draft: that recomputes the producer's own
+        one-line expression on both sides, so it holds for any threshold and
+        any producer that applies one -- an equality whose two sides come from
+        one rule. What it grades instead is the BOUNDARY: every row named is at
+        or over the width, no row at or over it is missing, and the ledger
+        really does contain rows on both sides, so a producer returning
+        everything or nothing fails here rather than reading as a clean answer.
+        """
+        by_key = {row.key: row.width for row in registry.ledger_rows()}
+        crowded = set(row_width.crowded_ledger_rows())
+        width = row_width.LEDGER_CROWDING_WIDTH
+
+        assert len(by_key) >= 100, "the ledger parsed almost no rows"
+        assert crowded <= set(by_key), "the signal named a row not in the table"
+        assert all(by_key[key] >= width for key in crowded), (
+            "a row under the crowding width was reported as crowding"
         )
+        assert not [
+            key for key, w in by_key.items() if w >= width and key not in crowded
+        ], "a row at or over the crowding width was left out"
+        assert crowded and len(crowded) < len(by_key), (
+            "every row is on one side of the threshold, so this graded nothing"
+        )
+
+    def test_the_control_fires_on_a_stale_crowding_count(self, stage):
+        """A number nobody grades is a number that goes stale.
+
+        Planted by DERIVING the stated figure off the file and writing a
+        different one, rather than by naming today's count: a control that
+        hardcodes a volatile value goes stale on every branch that opens or
+        closes a finding, which this registry has already paid for once.
+        """
+        text = registry.LEDGER.read_text()
+        match = re.search(r"(\d+) of its rows crowd", text)
+        assert match, "ledger.md states no crowding count to plant in"
+        stated = match.group(0)
+        stage("ledger", stated, f"{int(match.group(1)) + 7} of its rows crowd")
+
+        violation = row_width.stated_crowding_violation()
+        assert violation is not None
+        assert "crowd the row cap" in violation
 
     def test_the_control_fires_on_a_row_that_became_a_specification(self, stage):
         """The shape eight rows carried until 2026-08-11.

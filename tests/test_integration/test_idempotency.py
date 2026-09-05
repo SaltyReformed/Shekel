@@ -27,7 +27,13 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from tests._test_helpers import make_every_period_rule
+from tests._test_helpers import (
+    rhythm_of,
+    last_covered_day,
+    make_every_period_rule,
+)
+from app.services.balance_at import BalanceContext
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -48,19 +54,18 @@ def _create_profile(seed_user):
         db.session.add(cat)
         db.session.flush()
 
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name="Day Job",
         default_amount=Decimal("2884.62"),
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     profile = SalaryProfile(
         user_id=seed_user["user"].id,
@@ -423,7 +428,7 @@ class TestPayPeriodGenerationIdempotency:
                 user_id=user_id,
                 first_payday=dt_date(2026, 6, 1),
                 num_periods=10,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert len(periods1) == 10
@@ -433,7 +438,7 @@ class TestPayPeriodGenerationIdempotency:
                 user_id=user_id,
                 first_payday=dt_date(2026, 6, 1),
                 num_periods=10,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             # All 10 start_dates already exist → 0 new periods.
@@ -448,14 +453,14 @@ class TestPayPeriodGenerationIdempotency:
             all_periods = (
                 db.session.query(PayPeriod)
                 .filter_by(user_id=user_id)
-                .order_by(PayPeriod.period_index)
+                .order_by(PayPeriod.start_date)
                 .all()
             )
             from datetime import timedelta
             expected_start = dt_date(2026, 6, 1)
             for i, period in enumerate(all_periods):
                 assert period.start_date == expected_start + timedelta(days=14 * i)
-                assert period.end_date == expected_start + timedelta(days=14 * i + 13)
+                assert last_covered_day(period) == expected_start + timedelta(days=14 * i + 13)
 
     def test_double_submit_pay_period_generate_overlapping_range(self, app, db, bare_user):
         """Re-generating with an overlapping ON-GRID tail deduplicates the overlap.
@@ -480,7 +485,7 @@ class TestPayPeriodGenerationIdempotency:
                 user_id=user_id,
                 first_payday=dt_date(2026, 6, 1),
                 num_periods=10,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert len(periods1) == 10
@@ -497,7 +502,7 @@ class TestPayPeriodGenerationIdempotency:
                 user_id=user_id,
                 first_payday=dt_date(2026, 8, 10),
                 num_periods=10,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert len(periods2) == expected_new
@@ -525,6 +530,7 @@ class TestMarkDoneDoubleSubmit:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -532,7 +538,7 @@ class TestMarkDoneDoubleSubmit:
                 name="Electricity",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("120.00"),
+                amount_ownership=AmountOwnership.own(Decimal("120.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -583,6 +589,7 @@ class TestCarryForwardDoubleSubmit:
             amounts = [Decimal("850.00"), Decimal("125.50"), Decimal("43.99")]
             for i, amount in enumerate(amounts):
                 txn = Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -590,23 +597,23 @@ class TestCarryForwardDoubleSubmit:
                     name=f"Item {i}",
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=amount,
+                    amount_ownership=AmountOwnership.own(amount),
                 )
                 db.session.add(txn)
             db.session.commit()
 
             # First carry-forward: moves 3 items.
             count1 = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
             assert count1 == 3
 
             # Second carry-forward: source is empty, moves 0 items.
             count2 = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
             assert count2 == 0

@@ -25,13 +25,13 @@ from flask_login import current_user, login_required
 from app.utils.auth_helpers import get_or_404, require_owner, log_refused_lookup
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
+from app.services import income_service
 from app.services import paycheck_calculator
 from app.services import salary_cockpit_service
+from app.services.payroll_basis import PayrollBasis
+from app.services.salary_raises import get_raise_event
 from app.services.pay_calendar import calendar_for
-from app.services.tax_config_service import (
-    load_tax_configs_for_periods,
-    load_tax_configs_for_year,
-)
+from app.services.tax_config_service import load_tax_configs_for_year
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import _get_owned_profile_and_period
 
@@ -176,7 +176,7 @@ def _anatomy_context(profile, period, periods, breakdown, calibration_active):
     # focused period against its predecessor's event (computed directly, no
     # full projection) and show the banner only on the run start.
     prev_raise_event = (
-        paycheck_calculator.get_raise_event(profile, periods[pos - 1])
+        get_raise_event(profile, periods[pos - 1])
         if pos > 0 else None
     )
     show_raise = salary_cockpit_service.raise_run_starts(
@@ -301,11 +301,10 @@ def cockpit():
         return render_template("salary/cockpit.html", **context)
 
     focused_period = _select_period(calendar, current_period)
-    configs_by_year = load_tax_configs_for_periods(current_user.id, profile, periods)
-    breakdowns = paycheck_calculator.project_salary(
-        profile, periods, configs_by_year=configs_by_year,
-        calibration=profile.calibration,
-    )
+    # ONE spelling of the projection, shared with the projection view and with
+    # the amount model's own derivation (plan step salary:R14-a, ledger row
+    # N-443).
+    breakdowns = income_service.project_profile(profile, calendar)
     pairs = list(zip(periods, breakdowns))
     focused_breakdown = breakdowns[
         [p.period_id for p in periods].index(focused_period.period_id)
@@ -357,7 +356,7 @@ def anatomy(profile_id, period_id):
         current_user.id, profile, period.start_date.year,
     )
     breakdown = paycheck_calculator.calculate_paycheck(
-        profile, period, periods, tax_configs,
+        PayrollBasis(profile, calendar), period, tax_configs,
         calibration=profile.calibration,
     )
     context = _anatomy_context(

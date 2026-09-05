@@ -36,6 +36,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.state_machine import (
     _build_transitions,
+    allowed_transitions,
     finalised_edit_rejection,
     verify_transition,
 )
@@ -57,7 +58,6 @@ def _ids(app):
             "received": ref_cache.status_id(StatusEnum.RECEIVED),
             "credit": ref_cache.status_id(StatusEnum.CREDIT),
             "cancelled": ref_cache.status_id(StatusEnum.CANCELLED),
-            "settled": ref_cache.status_id(StatusEnum.SETTLED),
         }
 
 
@@ -123,43 +123,66 @@ class TestLegalTransitionsFromProjected:
 # ── Illegal transitions from Projected ──────────────────────────────
 
 
-class TestIllegalTransitionsFromProjected:
-    """Settled is unreachable from Projected -- a row must pass through
-    Done or Received first.  The carry-forward and audit log both
-    depend on this invariant."""
+class TestProjectedReachesEveryStatus:
+    """Projected is the OPEN state: every status is a legal successor.
 
-    def test_projected_to_settled_rejected(self, app):
-        """Direct projected -> settled bypasses the Done/Received audit row."""
-        ids = _ids(app)
+    This class used to pin the one move Projected could NOT make -- direct
+    ``projected -> settled``, which bypassed the Done/Received audit row.  Plan
+    step **X-am** deleted the ARCHIVE, and with it the last status Projected
+    could not reach, so a test naming one illegal move would have nothing to
+    name.
+
+    Asserting the WHOLE successor set instead is strictly stronger, and it is
+    what ``lessons.md`` asks of a narrowing: grade what is left, not only what
+    was removed.  A future status added to the enum without a decision about
+    whether Projected may reach it fails HERE rather than shipping as whichever
+    the map's author defaulted to.
+    """
+
+    def test_projected_reaches_every_seeded_status(self, app):
+        """The successor set is exactly the five statuses, identity included."""
         with app.app_context():
-            with pytest.raises(ValidationError) as excinfo:
-                verify_transition(_txn(ids["projected"]), ids["settled"])
-            # The exception message names both endpoints so the route
-            # layer can surface a clear 400 to the user.
-            msg = str(excinfo.value)
-            assert "transaction" in msg
-            assert str(ids["projected"]) in msg
-            assert str(ids["settled"]) in msg
+            reachable = allowed_transitions(
+                _txn(ref_cache.status_id(StatusEnum.PROJECTED))
+            )
+            every = {ref_cache.status_id(m) for m in StatusEnum}
+            names = {ref_cache.status_id(m): m.value for m in StatusEnum}
+            assert reachable == every, (
+                "Projected no longer reaches every status: missing "
+                f"{sorted(names[i] for i in every - reachable)}, "
+                f"unexpected {sorted(names.get(i, i) for i in reachable - every)}"
+            )
 
 
 # ── Legal transitions from Done / Received ──────────────────────────
 
 
 class TestLegalTransitionsFromDoneReceived:
-    """Done and Received share the same successor set: settled, projected
-    (revert), and the identity edge."""
+    """Done and Received share the same successor set: projected (revert)
+    and the identity edge.
 
-    def test_done_to_settled(self, app):
-        """Archive a paid expense."""
-        ids = _ids(app)
-        with app.app_context():
-            verify_transition(_txn(ids["done"]), ids["settled"])
+    It held a third member, ``settled`` -- the archive -- until plan step
+    **X-am**."""
 
-    def test_received_to_settled(self, app):
-        """Archive received income."""
+    def test_done_and_received_successors_are_exactly_revert_and_identity(
+        self, app,
+    ):
+        """Each settled status reaches its own identity and Projected, nothing else.
+
+        Both sets held a THIRD member until plan step **X-am**: ``Settled``, the
+        archive.  Pinning the exact set rather than each edge is what catches a
+        re-added one -- an edge test can only fail for an edge somebody thought
+        to write.
+        """
         ids = _ids(app)
+        names = {v: k for k, v in ids.items()}
         with app.app_context():
-            verify_transition(_txn(ids["received"]), ids["settled"])
+            for current in ("done", "received"):
+                reachable = allowed_transitions(_txn(ids[current]))
+                assert reachable == {ids[current], ids["projected"]}, (
+                    f"{current} reaches "
+                    f"{sorted(names.get(i, i) for i in reachable)}"
+                )
 
     def test_done_to_projected_revert(self, app):
         """Revert a mistakenly-marked Paid expense back to Projected."""
@@ -253,39 +276,193 @@ class TestCreditAndCancelledSuccessors:
                 verify_transition(_txn(ids["cancelled"]), ids["done"])
 
 
-# ── Settled is terminal ─────────────────────────────────────────────
+# ── Neither map has an absorbing state ──────────────────────────────
 
 
-class TestSettledIsTerminal:
-    """Settled is the workflow terminator; no exit is permitted.  The
-    identity self-loop keeps idempotent submits safe."""
+class TestNoStateIsBothReachableAndAbsorbing:
+    """The law plan step **X-am** establishes, and it is a CONJUNCTION.
 
-    def test_settled_to_settled_identity(self, app):
-        """Re-settling a settled row succeeds silently."""
-        ids = _ids(app)
+    ``Settled`` -- the ARCHIVE -- was ABSORBING (no outgoing edge but identity)
+    and also REACHABLE (from ``done`` and ``received``, offered by the full-edit
+    popover's Status dropdown).  That pair is the trapdoor: a row could be put
+    somewhere it could never be corrected from, while the delete control on the
+    same card still removed it and reversed its postings
+    (``transaction_service.deletion_refusal`` names no status).
+
+    **It is deliberately NOT "no terminal states".**  An absorbing state nothing
+    can ENTER is a retired vocabulary item, and this project has already ruled
+    for one: ``credit_card`` locked ruling 5 (2026-07-19, *do not reopen*) makes
+    ``Credit`` terminal at step ``CC3b`` while ``projected`` loses its edge to
+    it in the same commit.  A control banning terminal states outright would
+    have been in contradiction with a locked ruling on the day it was written,
+    and would have failed CC3b for doing exactly what the developer decided.
+    Grading the conjunction admits that shape and still refuses this one.
+
+    Walks the maps themselves rather than a list of statuses somebody
+    remembered to write down, so a future trapdoor fails here and has to be a
+    decision instead of an edit.
+    """
+
+    @staticmethod
+    def _trapdoors(transitions):
+        """Return the states in *transitions* that are reachable AND absorbing.
+
+        Reachable: some OTHER state has an edge into it.  Absorbing: it has no
+        outgoing edge except to itself.
+        """
+        trapped = []
+        for state, moves in transitions.items():
+            absorbing = not (moves - {state})
+            reachable = any(
+                state in other_moves
+                for other, other_moves in transitions.items()
+                if other != state
+            )
+            if absorbing and reachable:
+                trapped.append(state)
+        return trapped
+
+    def test_the_transaction_map_holds_no_trapdoor(self, app):
+        """No transaction status can be entered and not left."""
         with app.app_context():
-            verify_transition(_txn(ids["settled"]), ids["settled"])
+            self._assert_no_trapdoor("transaction")
 
-    def test_settled_to_projected_rejected(self, app):
-        """Reverting a settled row would invalidate the carry-forward audit."""
-        ids = _ids(app)
+    def test_the_transfer_map_holds_no_trapdoor(self, app):
+        """No transfer status can be entered and not left."""
         with app.app_context():
-            with pytest.raises(ValidationError):
-                verify_transition(_txn(ids["settled"]), ids["projected"])
+            self._assert_no_trapdoor("transfer")
 
-    def test_settled_to_done_rejected(self, app):
-        """Settled rows cannot return to any active state."""
-        ids = _ids(app)
-        with app.app_context():
-            with pytest.raises(ValidationError):
-                verify_transition(_txn(ids["settled"]), ids["done"])
+    @staticmethod
+    def _cannot_reach_projected(transitions, projected):
+        """Return the states with no PATH to ``projected``, by closure.
 
-    def test_settled_to_cancelled_rejected(self, app):
-        """Cannot cancel an archived row -- archival is irreversible."""
-        ids = _ids(app)
+        A state need not be ABSORBING to be a dead end.  A CYCLE that never
+        reaches Projected traps every row in it while each of its states has an
+        outgoing edge, so ``_trapdoors`` -- which asks about one edge -- cannot
+        see it, and this closure can.
+
+        **Measured rather than argued, because the obvious example is wrong.**
+        ``cancelled: {cancelled, done}`` looks like a dead end and is not:
+        ``done`` reaches ``projected``, so the row gets out in two steps and
+        BOTH arms pass, correctly.  What does strand is a closed cycle --
+        planting ``credit: {credit, cancelled}`` with ``cancelled: {cancelled,
+        credit}`` fails THIS arm with ``['Cancelled', 'Credit']`` and leaves
+        the trapdoor arm green.  That is the evidence the two arms are not one
+        assertion written twice.
+        """
+        reaching = {projected}
+        changed = True
+        while changed:
+            changed = False
+            for state, moves in transitions.items():
+                if state not in reaching and moves & reaching:
+                    reaching.add(state)
+                    changed = True
+        return sorted(set(transitions) - reaching)
+
+    def _assert_no_trapdoor(self, context):
+        """Assert *context*'s map is well-formed, closed, and trapdoor-free.
+
+        THREE arms, because the first two each pass on a shape the other
+        catches and neither can see an empty map:
+
+        1. the map holds exactly the seeded statuses -- without it every
+           assertion below is vacuous on a map that dropped a state, and
+           ``_trapdoors({})`` really does answer ``[]`` (measured);
+        2. no state is both REACHABLE and ABSORBING -- the trapdoor;
+        3. every state has a PATH to Projected -- which is what
+           ``entry_service.removal_refusal`` rests its single *set the row back
+           to Projected* remedy on, and what arm 2 alone does NOT grade:
+           ``cancelled: {cancelled, done}`` passes arm 2 and fails this.
+        """
+        # pylint: disable-next=protected-access
+        transitions = _build_transitions()[context]
+        names = {ref_cache.status_id(m): m.value for m in StatusEnum}
+
+        expected = {
+            ref_cache.status_id(member) for member in StatusEnum
+        } if context == "transaction" else {
+            ref_cache.status_id(member) for member in (
+                StatusEnum.PROJECTED, StatusEnum.DONE, StatusEnum.CANCELLED,
+            )
+        }
+        assert set(transitions) == expected, (
+            f"the {context} map's states are "
+            f"{sorted(names.get(s, s) for s in transitions)}, expected "
+            f"{sorted(names[s] for s in expected)} -- every assertion below "
+            "is vacuous on a map that dropped one"
+        )
+
+        trapped = sorted(
+            names.get(state, state)
+            for state in self._trapdoors(transitions)
+        )
+        assert not trapped, (
+            f"{context} statuses a row can enter and never leave: {trapped}. "
+            "A row there can be destroyed but not corrected -- see this "
+            "class's docstring."
+        )
+
+        stranded = [
+            names.get(state, state)
+            for state in self._cannot_reach_projected(
+                transitions, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+        ]
+        assert not stranded, (
+            f"{context} statuses with no path back to Projected: {stranded}. "
+            "Every refusal that tells the owner to revert the row names a "
+            "repair those rows cannot take."
+        )
+
+    def test_it_REFUSES_the_archive_shape(self, app):
+        """The predicate fires on the map ``Settled`` actually had.
+
+        Reconstructed rather than described: ``done -> settled`` and
+        ``settled: {settled}``.  Without this the class could be reading a
+        predicate that never fires and would print the same green
+        (``lessons.md``: a passing gate may have measured nothing).
+        """
         with app.app_context():
-            with pytest.raises(ValidationError):
-                verify_transition(_txn(ids["settled"]), ids["cancelled"])
+            projected = ref_cache.status_id(StatusEnum.PROJECTED)
+            done = ref_cache.status_id(StatusEnum.DONE)
+            archive = -1  # the deleted status, standing in for its id
+            archive_shape = {
+                projected: {projected, done},
+                done: {done, projected, archive},
+                archive: {archive},
+            }
+            assert self._trapdoors(archive_shape) == [archive]
+            assert self._cannot_reach_projected(archive_shape, projected) == [
+                archive,
+            ]
+
+    def test_it_ADMITS_a_retired_vocabulary_item(self, app):
+        """The predicate passes the shape ``credit_card`` CC3b will build.
+
+        ``credit: {credit}`` terminal WITH ``projected`` losing its edge to it,
+        which is locked ruling 5 read as a map.  This is the half that makes
+        the control a conjunction rather than a ban, and it fails the moment
+        somebody re-broadens it -- which is what would break CC3b.
+        """
+        with app.app_context():
+            projected = ref_cache.status_id(StatusEnum.PROJECTED)
+            done = ref_cache.status_id(StatusEnum.DONE)
+            credit = ref_cache.status_id(StatusEnum.CREDIT)
+            retired = {
+                projected: {projected, done},
+                done: {done, projected},
+                credit: {credit},
+            }
+            assert self._trapdoors(retired) == []
+            assert self._cannot_reach_projected(retired, projected) == [
+                credit,
+            ], (
+                "a retired vocabulary item IS stranded from Projected, and "
+                "that is legal precisely because nothing can enter it -- the "
+                "two arms answer differently here, which is why the class "
+                "asserts the live maps against BOTH rather than either"
+            )
 
 
 # ── Defensive: corrupt or unknown current state ─────────────────────
@@ -350,12 +527,6 @@ class TestTransferTransitions:
         with app.app_context():
             verify_transition(_xfer(ids["projected"]), ids["cancelled"])
 
-    def test_done_to_settled_allowed_for_transfer(self, app):
-        """Archive a completed transfer."""
-        ids = _ids(app)
-        with app.app_context():
-            verify_transition(_xfer(ids["done"]), ids["settled"])
-
     def test_done_to_projected_revert_allowed_for_transfer(self, app):
         """Revert a mistakenly-marked transfer back to Projected."""
         ids = _ids(app)
@@ -367,14 +538,6 @@ class TestTransferTransitions:
         ids = _ids(app)
         with app.app_context():
             verify_transition(_xfer(ids["cancelled"]), ids["projected"])
-
-    def test_settled_terminal_for_transfer(self, app):
-        """Settled stays terminal in the transfer map too."""
-        ids = _ids(app)
-        with app.app_context():
-            verify_transition(_xfer(ids["settled"]), ids["settled"])
-            with pytest.raises(ValidationError):
-                verify_transition(_xfer(ids["settled"]), ids["projected"])
 
     def test_credit_as_current_status_rejected_for_transfer(self, app):
         """A transfer already sitting in Credit is corrupt for this entity;
@@ -468,7 +631,7 @@ class TestContextLabelPropagation:
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError) as excinfo:
-                verify_transition(_txn(ids["settled"]), ids["projected"])
+                verify_transition(_txn(ids["cancelled"]), ids["done"])
             assert "transaction" in str(excinfo.value)
 
     def test_transfer_context_label(self, app):
@@ -476,7 +639,7 @@ class TestContextLabelPropagation:
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError) as excinfo:
-                verify_transition(_xfer(ids["settled"]), ids["projected"])
+                verify_transition(_xfer(ids["cancelled"]), ids["done"])
             assert "transfer" in str(excinfo.value)
 
 
@@ -494,7 +657,7 @@ class TestFinalisedEditRejection:
     # the only mutable status; the rest are finalised.
     _PROJECTED = Status(name="Projected", is_immutable=False)
     _PAID = Status(name="Paid", is_immutable=True)
-    _SETTLED = Status(name="Settled", is_immutable=True)
+    _CANCELLED = Status(name="Cancelled", is_immutable=True)
 
     def test_mutable_row_allows_edit(self):
         """A Projected row is never locked, regardless of new status."""
@@ -520,14 +683,24 @@ class TestFinalisedEditRejection:
         assert finalised_edit_rejection(self._PAID, self._PROJECTED) is None
 
     def test_finalised_row_blocked_when_new_status_also_immutable(self):
-        """Paid -> Settled (archive) does NOT lift the lock -- the row stays
-        finalised, so a concurrent amount rewrite is still refused."""
-        assert finalised_edit_rejection(self._PAID, self._SETTLED) is not None
+        """An immutable -> immutable move does NOT lift the lock -- the row
+        stays finalised, so a concurrent amount rewrite is still refused.
 
-    def test_terminal_settled_row_blocks_edit(self):
-        """A Settled row (terminal) is locked; it cannot even revert, so no
-        new status can unlock it."""
-        assert finalised_edit_rejection(self._SETTLED, self._SETTLED) is not None
+        Written over ``Paid -> Settled`` (the archive) until plan step
+        **X-am**.  The rule is about ``is_immutable`` on both ends and never
+        about which statuses those are, so it is restated over a pair that
+        still exists rather than deleted with the one that does not."""
+        assert finalised_edit_rejection(self._PAID, self._CANCELLED) is not None
+
+    def test_an_immutable_row_re_submitting_its_own_status_blocks_edit(self):
+        """A finalised row re-stating its own status is still locked.
+
+        The identity case, which the popover performs on every Save: the form
+        posts the whole row, so an untouched status box arrives as
+        ``Cancelled -> Cancelled`` and must not read as a revert."""
+        assert finalised_edit_rejection(
+            self._CANCELLED, self._CANCELLED,
+        ) is not None
 
     def test_none_current_status_fails_open(self):
         """A missing current status is treated as mutable -- the transition

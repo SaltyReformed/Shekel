@@ -1,7 +1,9 @@
 # Test-harness Docker isolation — findings & plan
 
-**Status:** marker + fail-closed guard IMPLEMENTED (`dev`, 2026-07-04); rootless deferred ·
-**Written:** 2026-07-04 · **Owner:** josh
+**Status:** marker + fail-closed guard IMPLEMENTED (`dev`, 2026-07-04); rootless daemon IMPLEMENTED
+(`balance:X-br-3`, 2026-09-05), with 3 of 28 docker-marked tests still skipping on the
+published-port defect that step did not close (`balance:N-459`) · **Written:** 2026-07-04 ·
+**Owner:** josh
 
 ## TL;DR
 
@@ -33,10 +35,13 @@ Items 1 and 2 shipped to `dev`; the churn problem is solved:
 
 Deferred or corrected:
 
-- **Rootless daemon (Item 4): not done, optional.** Only needed to run the container tests locally.
-  The "One-time host setup" block below is inaccurate for this Arch host -- `rootlesskit`,
-  `slirp4netns`, and `dockerd-rootless-setuptool.sh` are not installed, so
-  `pacman -S docker-rootless-extras` must run first.
+- **Rootless daemon (Item 4): DONE at `balance:X-br-3` (2026-09-05).** The "One-time host setup"
+  block below has been rewritten against what this Arch host actually required; the previous version
+  named a package command and a setup tool that do not work here. Measured effect: the 28
+  docker-marked tests went from **28 skipped** on the system daemon to **25 passed, 3 skipped** on
+  the rootless one. The 3 that still skip are the published-port collision recorded under "Rootless
+  port allocation" below -- they skip rather than fail on it, so that defect was quietly thinning a
+  green suite.
 - **Leftover sweep (Item 3): dropped as a standalone.** The fixtures already use `--rm` plus a
   `finally: docker rm -f`; verified zero leftovers in practice, including after a hard mass-error
   run. Fold a sweep into the rootless work if it happens, where it targets the isolated daemon.
@@ -47,9 +52,10 @@ Deferred or corrected:
 
 ## Background — what the harness is
 
-- Test entrypoint: `scripts/test.sh` → restarts the test-db container, then execs `pytest`.
-  `pytest.ini` sets `addopts = ... --dist=loadgroup -n 12`, so **every** local run fans out across
-  12 pytest-xdist workers.
+- Test entrypoint: `scripts/test.sh` → execs `pytest`; restarts the test-db container first only
+  when `RESTART_TEST_DB` is set to `1`/`true`/`yes`/`on` (opt-in since 2026-09-04; an unrecognised
+  value is refused rather than guessed). `pytest.ini` sets `addopts = ... --dist=loadgroup -n 12`,
+  so **every** local run fans out across 12 pytest-xdist workers.
 - Most tests are pure Python / static config assertions. **Eight classes across six files** touch
   the docker daemon (all gated by `_docker_available()`, all now `@pytest.mark.docker`). Of those:
   - **Three actually spawn containers.**
@@ -123,26 +129,101 @@ production `wud`/`cadvisor`/`alloy` (which watch the *system* socket) never see 
 mirroring the CI model. The C-33 tests only use `network create`, `run`, `port`, `exec`, `logs`,
 `rm`, bind-mounts of repo-owned paths, and a random high host port — all fully supported rootless.
 
-**One-time host setup (run as `josh` yourself, via `!`):**
+**One-time host setup (run as `josh` yourself, via `!`).** Rewritten 2026-09-05 from what this host
+actually needed; three lines of the previous version were wrong.
 
 ```bash
-sudo pacman -S docker-rootless-extras     # PREREQ on Arch: rootlesskit + slirp4netns + the setuptool
-dockerd-rootless-setuptool.sh install     # runs dockerd as josh (systemd --user)
-systemctl --user enable --now docker
-loginctl enable-linger josh               # daemon survives logout
+yay -S docker-rootless-extras             # AUR on this host, NOT pacman -- it is not in extra
+systemctl --user start docker.service     # the package ships the user unit; see the note below
+loginctl enable-linger josh               # daemon survives logout -- otherwise it dies at logout
 # resulting socket: unix:///run/user/1000/docker.sock
-docker -H unix:///run/user/1000/docker.sock info | grep -i 'rootless\|Server Version'   # verify
+docker -H unix:///run/user/1000/docker.sock info | grep -iE 'rootless|Server Version'   # verify
 ```
 
-**Wire the suite to it** — in `scripts/test.sh`, before invoking pytest:
+Three corrections the old block got wrong, all confirmed on 2026-09-05:
+
+- **`docker-rootless-extras` is an AUR package here**, so `pacman -S` fails. `pacman -Qi` reports
+  `Installed From: None` and `Packager: Unknown Packager`, i.e. locally built.
+- **It does not ship `dockerd-rootless-setuptool.sh`.** The package contains exactly four files:
+  `/usr/bin/dockerd-rootless.sh`, a sysctl drop-in, and the `docker.service` / `docker.socket` user
+  units. Start the *service*; do not enable `docker.socket` alongside it, because both bind
+  `$XDG_RUNTIME_DIR/docker.sock` and would collide.
+- **`slirp4netns` is an optional dependency and is not installed**, so rootlesskit falls back to the
+  `gvisor-tap-vsock` driver, which announces itself as experimental.
+  **Installing it is not required and would not change how the harness behaves**, because the
+  per-run containers run `--network=none` (see below) and so use no network driver at all. It sits
+  only in the path of `docker pull`, measured at 5 s for `postgres:18-alpine` on this host. Recorded
+  because the daemon logs an experimental-driver warning at every start, which otherwise reads as a
+  problem waiting to be fixed.
+
+The rest of the prerequisites were already satisfied here and needed no action: `/etc/subuid` and
+`/etc/subgid` map `josh:100000:65536`, `kernel.unprivileged_userns_clone` is 1, and cgroup v2
+delegation gives the user slice `cpu memory pids`.
+
+### Rootless port allocation: why the harness publishes no ports
+
+**Do not publish a container port on this rootless daemon and expect it to work.** `dockerd`'s
+`portallocator` picks a free ephemeral port *inside the container's network namespace*, and
+RootlessKit's `builtin` port driver then binds that same number *on the host*, where an entirely
+different set of sockets lives. `net.ipv4.ip_local_port_range` is `32768-60999` -- byte-identical to
+the band docker publishes into -- and this host routinely holds thousands of sockets in it, so the
+two allocators disagree constantly.
+
+Measured 2026-09-05:
+
+| arm | result |
+|---|---|
+| 12 containers, docker-assigned ports, removed between each | **5/12 failed** |
+| 12 containers, docker-assigned ports, none removed (no port ever recycled) | **3/12 failed** |
+| 12 containers, host ports chosen by the caller outside the ephemeral band | **0/12 failed** |
+| 8 containers, docker-assigned ports, on the ROOT daemon | **0/8 failed** |
+
+The second row is the one that makes this a diagnosis rather than a guess: with nothing recycled
+there is no release race left to blame. The fourth is why nobody hit it before the harness moved off
+the root daemon.
+
+`scripts/test.sh` therefore gives the per-run cluster **no port at all** -- `--network=none`,
+`listen_addresses=''`, and a unix socket in a per-run directory. The socket is mounted at `/sockets`
+rather than the default `/var/run/postgresql`, because the postgres entrypoint chowns its default
+socket directory to a user that rootless maps into the subuid range and sets the sticky bit, after
+which the invoking user cannot unlink the socket: five cleanup attempts of five failed against that
+path and five of five succeeded against `/sockets`.
+
+One place still publishes a port: `scripts/build_test_db_image.py`'s bake container, which runs
+`initdb`. The entrypoint's own post-`initdb` `psql` hardcodes `/var/run/postgresql` and `PGHOST`
+does not override it (measured: exit 2 either way), so that container cannot be moved to a socket
+without mounting over the directory whose cleanup fails. It runs once per image build rather than
+once per run.
+
+**Wire the suite to it**: IMPLEMENTED in `scripts/test.sh` at `balance:X-br-3`, inside the
+`TEST_DB_PER_RUN` branch. When `DOCKER_HOST` is unset and a rootless socket exists it is selected
+automatically; then the wrapper asks the daemon what it IS and refuses a non-rootless one:
 
 ```bash
-# Route all test-spawned containers to the isolated rootless daemon so they
-# never touch the production daemon that the homelab stack + wud/cadvisor/alloy
-# share. Fail-closed: if the rootless daemon is down, `docker info` fails and the
-# docker-gated tests SKIP rather than falling back to the production socket.
-export DOCKER_HOST="unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock"
+# Only when DOCKER_HOST is unset AND that socket actually exists; the wrapper
+# does not invent an endpoint, and it refuses rather than falling back.
+if [ -z "${DOCKER_HOST:-}" ] && [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock" ]; then
+    export DOCKER_HOST="unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock"
+fi
 ```
+
+Two properties worth keeping if this is ever rewritten. It reads `docker info` rather than
+pattern-matching the socket path, because "rootless" is a property of a daemon and a path is only a
+guess about one -- a `tcp://` endpoint aimed at the `socket-proxy` container would read as isolated
+while being the production daemon at another address. And it is fail-closed: an absent rootless
+daemon stops the run with instructions rather than falling back to the daemon the whole exercise
+exists to get off. `SHEKEL_ALLOW_HOST_DOCKER=1` remains the one spelling for accepting the churn
+deliberately, shared with `tests/test_deploy/conftest.py`.
+
+**The POLICY, however, is not yet single-homed, and an earlier draft of this section wrongly said it
+was.** Two producers decide "is this daemon isolated" by contradictory methods that agree today:
+`scripts/test.sh` asks the daemon (`docker info` -> `rootless`), while
+`tests/test_deploy/conftest.py` classifies by a path allowlist (`_SYSTEM_DOCKER_ENDPOINTS`) -- the
+exact heuristic the wrapper's own comment argues has a hole, since a `tcp://` endpoint aimed at the
+`socket-proxy` container reads as isolated while being the production daemon at another address.
+That is CLAUDE.md rule 14's shape and it wants one of the two deleted. Exporting `DOCKER_HOST` lets
+those 28 tests run, but only for a caller who also passes `PYTEST_MARKER_EXPR=docker`: this wrapper
+defaults to `-m "not docker"`, which deselects them before the conftest is ever consulted.
 
 CI is unaffected: it calls `pytest` directly (not `scripts/test.sh`), so its own `DOCKER_HOST` /
 default socket keeps working.
@@ -227,15 +308,19 @@ Work happens in **this repo** (`/home/josh/projects/Shekel`), branch `dev`.
         the `SHEKEL_ALLOW_HOST_DOCKER=1` override. Verified: system-daemon skips, `CI=1` runs,
         override runs, default path unchanged.
 - [x] Point `docs/testing-standards.md` at this doc.
-- [ ] **Isolated rootless daemon (Item 4, optional -- only to run the container tests locally):**
-  - [ ] `sudo pacman -S docker-rootless-extras` (PREREQ), then
-        `dockerd-rootless-setuptool.sh install` + `systemctl --user enable --now docker` +
-        `loginctl enable-linger josh` (host steps, run via `!`).
-  - [ ] `scripts/test.sh`: `export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock`.
-  - [ ] With `SHEKEL_ALLOW_HOST_DOCKER` unset, run
-        `PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/…` and confirm
-        `shekel-test-*` containers appear on the **rootless** daemon and **never** on the system
-        daemon. Fold the leftover-`shekel-test-*` sweep in here.
+- [x] **Isolated rootless daemon (Item 4): DONE at `balance:X-br-3`, 2026-09-05.** The commands this
+      checklist used to carry were refuted; see "One-time host setup" above, which is the one home
+      for them. Do not restore them here: they named `pacman` for an AUR package, a setup tool that
+      package does not ship, and a `slirp4netns` prerequisite that is not installed and not needed.
+  - [x] `scripts/test.sh` selects the daemon itself in per-run mode and refuses a non-rootless one;
+        no manual `export` is required.
+  - [x] Verified with `SHEKEL_ALLOW_HOST_DOCKER` unset:
+        `DOCKER_HOST=unix:///run/user/1000/docker.sock PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy`
+        gave **25 passed, 3 skipped** against **28 skipped** on the system daemon, and zero
+        `shekel-testrun-*` containers appeared on the system daemon.
+  - [ ] The leftover sweep was NOT folded in and is not needed: the wrapper removes its own
+        container and socket directory on every exit path, measured zero leftovers after both gating
+        full suites.
 
 ## Open decisions for you
 

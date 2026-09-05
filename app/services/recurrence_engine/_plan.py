@@ -16,10 +16,10 @@ import logging
 from datetime import date
 from typing import NamedTuple
 
-from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app import ref_cache
 from app.enums import StatusEnum
+from app.services.pay_calendar import DerivedPeriod
 from app.services.recurrence import rule_occurrences, scheduling_day_of_month
 from app.services._recurrence_common import check_scenario_ownership
 
@@ -28,16 +28,25 @@ logger = logging.getLogger(__name__)
 
 
 class PlannedOccurrence(NamedTuple):
-    """One occurrence a generate pass will write, and the row it writes into.
+    """One occurrence a generate pass WILL write, and the paycheck it lands in.
 
-    The engine-side twin of
-    :class:`~app.services.recurrence.OccurrencePlacement`, and it exists
-    because the two halves of a generated row come from different places: the
-    occurrence DATE is a pure fact about the rule and the schedule, while the
-    pay period has to be the caller's own ORM row -- that is what a
-    ``Transaction`` / ``Transfer`` is written against, and what the paycheck
-    calculator reads.  Resolving the id back to the row happens ONCE, in
-    :func:`resolve_generation_plan`, rather than in each engine's write loop.
+    The NARROWED twin of
+    :class:`~app.services.recurrence.OccurrencePlacement`, and the narrowing is
+    now its whole reason to exist.  The walk answers about every occurrence of
+    a rule, so its ``period`` is optional -- ``None`` where the saved schedule
+    does not reach that far.  This value is what survives
+    :func:`resolve_generation_plan`'s three filters (a period exists, it is in
+    the pass's write window, it is not before the caller's bound), so its
+    ``period`` is never absent and no consumer needs to ask.  A type that says
+    so is the only place that fact can be stated once.
+
+    **It carried an ORM row until pay-calendar plan step C2-f3c**, and THAT was
+    the difference between the two types before the narrowing became it: a
+    ``Transaction`` is written against ``budget.pay_periods.id``, so the id was
+    resolved back to a row here rather than in each engine's write loop.  The
+    derived period carries the id, the payday and the last covered day -- every
+    field the seam ever read off the row -- so the round trip through the ORM
+    bought nothing and cost the seam a second read of the schedule.
 
     **The occurrence is carried rather than re-derived** (plan step R4b-2).
     Until this step generation answered in periods alone, so the two things
@@ -50,18 +59,17 @@ class PlannedOccurrence(NamedTuple):
         occurrence: The date the rule's cadence names.  For the ``PERIOD``
             unit this is the paycheck's own payday; see
             :mod:`app.services.recurrence._occurrence`.
-        period: The owner's :class:`~app.models.pay_period.PayPeriod` row the
+        period: The :class:`~app.services.pay_calendar.DerivedPeriod` the
             generated record lives in.  Always inside the pass's write window,
-            and never ``None``: an occurrence the schedule cannot host is
-            reported and dropped by :func:`resolve_generation_plan` before a
-            plan is built.  **The write loops read this and not *occurrence*,**
-            because a row's date still comes from ``compute_due_date`` (plan
-            ledger row D18, owned by plan step R5); the occurrence is what the
-            repeat refusal names and what the gap report skips.
+            always materialised (so its ``period_id`` is a real
+            ``budget.pay_periods.id``), and never ``None``.  **The write loops
+            read this and not *occurrence*,** because a row's date still comes
+            from ``compute_due_date`` (plan ledger row D18, owned by plan step
+            R5); the occurrence is what the repeat refusal names.
     """
 
     occurrence: date
-    period: PayPeriod
+    period: DerivedPeriod
 
 
 
@@ -81,9 +89,9 @@ class GenerationPlan(NamedTuple):
             may write, ascending by occurrence date.  **A pay period can
             appear more than once** -- at a pay cadence of 30 days or more a
             monthly bill legitimately falls inside one paycheck several times
-            -- which is what :func:`refuse_unstorable_repeats` refuses while
-            ``idx_transactions_template_period_scenario`` is keyed on the
-            paycheck (plan ledger row D19).
+            -- and since plan step **R17** re-keyed the unique index onto the
+            occurrence, both rows STORE.  It was refused until then (plan
+            ledger row D19), because the index held one row per paycheck.
         projected_id: The ``Projected`` status id every generated row carries.
 
     **It carried a fourth field until plan step C2-b2**, ``gaps`` -- the
@@ -126,7 +134,7 @@ def resolve_generation_plan(
     **It answers in ``(occurrence, period)`` pairs** (plan step R4b-2).  It
     used to answer in periods alone, so the date a row's cadence actually
     named was computed, used to select a paycheck, and then thrown away --
-    leaving :func:`refuse_unstorable_repeats` able to say only how MANY times a
+    leaving the repeat refusal of the day able to say only how MANY times a
     definition fell inside one paycheck, and leaving an occurrence in a
     schedule gap indistinguishable from one that was never generated.
 
@@ -165,7 +173,7 @@ def resolve_generation_plan(
         template: The (Transaction|Transfer)Template to generate from.
         schedule: The owner's
             :class:`~app.services.generation_schedule.GenerationSchedule` --
-            their whole pay-period schedule plus the window this pass may
+            their whole pay calendar plus the ids of the periods this pass may
             write into.
         scenario_id: The scenario to generate into.
         effective_from: Optional lower bound on the window; occurrences whose
@@ -194,41 +202,32 @@ def resolve_generation_plan(
         # it).
         return None
 
-    # The occurrence walk answers in DerivedPeriod values; row creation needs
-    # the ORM rows.  ``write_periods`` is keyed on ``pay_periods.id``, so the
-    # single lookup below does BOTH jobs -- narrow to the window, and hand back
-    # the row to write into.  Dropping that intersection would make a schedule
-    # extend re-walk every historical period and cost O(schedule) writes
-    # instead of O(new).
+    # Narrow the walk's answer to what this pass may actually write.  Dropping
+    # the window intersection would make a schedule extend re-walk every
+    # historical period and cost O(schedule) writes instead of O(new).
     #
-    # **The ORM row is resolved BEFORE the bound is applied, and the ORDER is
-    # load-bearing** (found by adversarial review of plan step C2-b2).
-    # ``effective_from`` also bounds the ROW SELECT that
-    # ``_maintain.regenerate_for_template`` runs beside this call, and that
-    # select is SQL over ``pay_periods.end_date`` -- the STORED column
-    # (``_recurrence_common.query_rows_from_effective_date``).  Testing
-    # ``placement.period.end_date`` here would test the DERIVED end instead, so
-    # on a schedule where the two disagree the two halves would consider
-    # different periods: a row selected but never NAMED where the derived end
-    # is earlier, and a stale amount surviving an edit where it is later.
-    # Reading the bound off the same column the select reads makes the two one
-    # statement again.  **This said "the DELETE sweep ... runs before calling
-    # here" until plan step R10-a**, which is no longer the shape: that pass
-    # maintains rows rather than deleting them, and resolves this plan first
-    # rather than afterwards.  The hazard is unchanged and its consequence is
-    # now WORSE -- an unnamed row is RETIRED rather than merely recreated.
-    # Plan step C4 deletes that column, at which point the select has to move
-    # onto the calendar and this comment with it.
-    window = schedule.write_periods
+    # **The bound is applied to the DERIVED end, and so is the row select this
+    # call runs beside** (pay-calendar plan step C2-f3c).  It used to be
+    # applied to the ORM row's STORED ``end_date``, deliberately, because
+    # ``_maintain.regenerate_for_template``'s sweep was SQL over that same
+    # column -- and reading the bound off two different definitions of "when
+    # does this paycheck end" is how a row gets selected for maintenance but
+    # never NAMED by the rule, which since plan step R10-a means RETIRED rather
+    # than merely recreated.  ``_recurrence_common.rows_this_pass_may_maintain``
+    # now selects on a period-id set filtered by the same derived end this line
+    # reads, off the same calendar, so the two halves are one predicate rather
+    # than two that have to agree.  Plan step C4-c dropped the column both used to
+    # read.
+    window = schedule.write_period_ids
     placements = []
     for placement in rule_occurrences(rule, schedule.calendar):
-        if placement.period is None:
+        period = placement.period
+        if period is None:
             # The saved schedule does not reach this occurrence.  Ordinary --
             # the next schedule extend places it -- and since plan step C2-b2
             # it is the only way to get a placement with no period.
             continue
-        period = window.get(placement.period.period_id)
-        if period is None:
+        if period.period_id not in window:
             continue
         if effective_from is not None and period.end_date < effective_from:
             continue
@@ -275,7 +274,12 @@ def compute_due_date(rule, period):
 
     Args:
         rule: The RecurrenceRule to date the row from.
-        period: The PayPeriod the transaction was assigned to.
+        period: The :class:`~app.services.pay_calendar.DerivedPeriod` the
+            transaction was assigned to.  It reads that period's payday and its
+            last covered day; both are DERIVED from the owner's payday set
+            since pay-calendar plan step C2-f3c, where they were the stored
+            columns plan step **C4-c** dropped.  Measured equal on production the
+            same day: 62 periods, zero disagreements.
 
     Returns:
         A date object representing the due date.
@@ -303,6 +307,11 @@ def compute_due_date(rule, period):
     # carries the same defect: at a cadence where the firing month is neither
     # endpoint the row is dated in the wrong month entirely (plan ledger row
     # D18).  Plan step R5 owns it, with the due-date model it rewrites.
+    #
+    # The containment test is the PERIOD's own rule since pay-calendar plan
+    # step C4-a-3 (``DerivedPeriod.covers``, ruling R-PC31); it was
+    # ``period.start_date <= target <= period.end_date`` open-coded here, one
+    # of the three sites that spelled it out.
     base_year = period.start_date.year
     base_month = period.start_date.month
 
@@ -310,7 +319,7 @@ def compute_due_date(rule, period):
         last_day = cal.monthrange(dt.year, dt.month)[1]
         target_day = min(dom, last_day)
         target = date(dt.year, dt.month, target_day)
-        if period.start_date <= target <= period.end_date:
+        if period.covers(target):
             base_year = dt.year
             base_month = dt.month
             break

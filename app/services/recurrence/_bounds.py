@@ -179,6 +179,60 @@ class BoundReading:
         return self.horizon is not None and self.horizon >= day
 
 
+def date_bound_has_closed(
+    last_day: date, *, on: date, reading: "Callable[[], BoundReading]",
+) -> bool:
+    """Return whether a bound whose last day is *last_day* has closed by *on*.
+
+    **THE one statement of the date-bound closure rule**, shared by the bound
+    an owner AUTHORS (:class:`EndsOnDate`) and the one a loan DERIVES
+    (:class:`~app.services.recurrence.ClosesOn`, plan step R7d-e).  Both are
+    the same bound -- a last day an occurrence may fall on, inclusive -- stated
+    by different authors, and the day a commitment leaves the ``/obligations``
+    and ``/savings`` totals must not depend on which author stated it.  Two
+    spellings that agree today are two chances to drift, which is
+    ``CLAUDE.md`` rule 14's ONE WALK.
+
+    **It asks whether the rule still OWES an occurrence, not whether the day
+    has passed** (developer ruling 2026-08-13, plan ledger row **D33**; the
+    derived bound takes the same reading under ruling **R-R57**, 2026-09-05).
+    A bound is a validity WINDOW rather than a last occurrence, so the two
+    questions differ by up to one cadence interval -- eleven months for a
+    yearly bill bounded at year end -- and the same schedule written as a
+    COUNT stopped counting at its last payment while the date form did not.
+    Measured before the ruling on the five live date-bounded production rules:
+    the gap between a rule's last occurrence and its bound was 0 days for four
+    of them (their bound IS an installment date) and 12 days for the one
+    hand-set every-paycheck rule, which had already expired.  So the ruling
+    moved no figure on live data; what it removes is the disagreement between
+    two ways of saying one thing.
+
+    The date test survives as the CHEAP arm: past the bound there can be no
+    occurrence on or after *on*, so no walk is needed to say so.
+
+    Args:
+        last_day: The last day the bound admits an occurrence on, inclusive.
+        on: The day being asked about.
+        reading: Called only when the bound is still open, for the rule's
+            :class:`BoundReading`.
+
+    Returns:
+        ``True`` when the bound has passed, or when the rule names no
+        occurrence in ``[on, last_day]`` AND the schedule reaches far enough to
+        say so.
+    """
+    if last_day < on:
+        return True
+    walked = reading()
+    if walked.owes_from(on):
+        return False
+    # Nothing left inside the horizon.  For a bound the schedule has not yet
+    # reached, that is the schedule's limit rather than the rule's end --
+    # answering "closed" there would drop a live commitment out of two money
+    # totals because the owner had not extended their pay schedule.
+    return walked.reaches(last_day)
+
+
 @dataclass(frozen=True)
 class EndBoundColumns:
     """The two ``budget.recurrence_rules`` columns a bound writes.
@@ -313,11 +367,15 @@ class EndBound(ABC):
         still a commitment", so two ways of writing one schedule cannot
         disagree.
 
-        **The reading arrives as a CALLABLE, and the reason is cost.**
-        :class:`NeverEnds` never asks for it -- 41 of the 46 live production
-        rules are unbounded (measured 2026-08-13) -- so an eager argument would
-        resolve a rule against its owner's schedule for every template on a
-        page where most of them need nothing.
+        **The reading arrives as a CALLABLE.**  :class:`NeverEnds` never asks
+        for it and the date shape's cheap arm does not either, so a caller
+        that has not already walked the rule pays for the walk only when a
+        shape needs it.  It bought a resolution per page until plan step
+        R7d-e: the one production caller (``recurrence.has_ended``) now hands
+        over the walk the composed door already made, so the callable costs it
+        nothing -- the shape stays because it is the contract every stop
+        answers, authored here and derived in
+        :mod:`app.services.recurrence._closing`.
 
         Args:
             on: The day being asked about, normally "today".
@@ -464,22 +522,12 @@ class EndsOnDate(EndBound):
     ) -> bool:
         """Return whether the rule owes no occurrence on or after *on*.
 
-        **This asked the narrower "has the bound date passed" until plan step
-        R-D33** (developer ruling 2026-08-13, plan ledger row **D33**).  A
-        bound is a validity WINDOW rather than a last occurrence, so the two
-        differ by up to one cadence interval -- eleven months for a yearly bill
-        bounded at year end -- and the same schedule written as a COUNT stopped
-        counting at its last payment while this one did not.
-
-        Measured before the change, on the five live date-bounded production
-        rules: the gap between a rule's last occurrence and its bound was 0
-        days for four of them (their bound IS an installment date) and 12 days
-        for the one hand-set every-paycheck rule, which had already expired.
-        So the ruling moved no figure on live data; what it removes is the
-        disagreement between two ways of saying one thing.
-
-        The date test survives as the CHEAP arm: past the bound there can be
-        no occurrence on or after *on*, so no walk is needed to say so.
+        The date-bound closure rule, :func:`date_bound_has_closed`, applied to
+        this shape's own last day.  It is stated there rather than here because
+        the derived :class:`~app.services.recurrence.ClosesOn` is the same
+        bound by another author (plan step R7d-e), and one closure rule with
+        two spellings would be two chances to drift on the day a commitment
+        leaves two money totals.
 
         Args:
             on: The day being asked about.
@@ -490,16 +538,7 @@ class EndsOnDate(EndBound):
             occurrence in ``[on, self.on]`` AND the schedule reaches far enough
             to say so.
         """
-        if self.on < on:
-            return True
-        walked = reading()
-        if walked.owes_from(on):
-            return False
-        # Nothing left inside the horizon.  For a bound the schedule has not
-        # yet reached, that is the schedule's limit rather than the rule's end
-        # -- answering "closed" there would drop a live commitment out of two
-        # money totals because the owner had not extended their pay schedule.
-        return walked.reaches(self.on)
+        return date_bound_has_closed(self.on, on=on, reading=reading)
 
     @classmethod
     def from_payload(

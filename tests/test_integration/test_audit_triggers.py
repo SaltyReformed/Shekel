@@ -13,6 +13,8 @@ from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
 import pytest
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 def _get_audit_rows(table_name=None, operation=None):
@@ -38,6 +40,7 @@ def _create_transaction(seed_user, seed_periods):
     projected = db.session.query(Status).filter_by(name="Projected").one()
     expense = db.session.query(TransactionType).filter_by(name="Expense").one()
     txn = Transaction(
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -45,7 +48,7 @@ def _create_transaction(seed_user, seed_periods):
         name="Test Expense",
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=expense.id,
-        estimated_amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
     )
     db.session.add(txn)
     db.session.flush()
@@ -118,7 +121,6 @@ class TestAuditTriggerInsert:
             scenario_id=seed_user["scenario"].id,
             name="Test Salary",
             annual_salary=Decimal("80000.00"),
-            pay_periods_per_year=26,
             filing_status_id=filing.id,
         )
         db.session.add(profile)
@@ -150,7 +152,7 @@ class TestAuditTriggerUpdate:
     ):
         """UPDATE on budget.transactions produces an audit_log row."""
         txn = _create_transaction(seed_user, seed_periods)
-        txn.estimated_amount = Decimal("200.00")
+        state_own_amount(txn, Decimal("200.00"))
         db.session.flush()
         rows = _get_audit_rows("transactions", "UPDATE")
         # Exactly 1 UPDATE from changing estimated_amount

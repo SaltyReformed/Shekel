@@ -7,6 +7,7 @@ pipeline including deductions, taxes, 3rd-paycheck detection, inflation,
 cumulative wages, and project_salary().
 """
 
+import pathlib
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -14,10 +15,12 @@ import pytest
 
 from app.services.exceptions import InvalidGrossPayError
 from app.services.tax_calculator import calculate_fica
+from app.services.salary_raises import TerminatedRaise
+from app.models.salary_raise import SalaryRaise
 from app.services.paycheck_calculator import (
     apply_raises,
     _is_third_paycheck,
-    _is_first_paycheck_of_month,
+    _month_ordinal,
     _inflation_years,
     _get_cumulative_wages,
     _calculate_deductions,
@@ -31,11 +34,26 @@ from app.services.paycheck_calculator import (
     PeriodInfo,
     TaxLines,
     ZERO,
-    TWO_PLACES,
 )
 from app import ref_cache
-from app.enums import DeductionTimingEnum
-from app.services.pay_calendar import DerivedPeriod
+from app.enums import CalcMethodEnum, DeductionTimingEnum
+from app.services.pay_calendar import (
+    DerivedPeriod,
+    PayCadence,
+    PayCalendarError,
+)
+from app.services.payroll_basis import gross_per_paycheck
+from tests._test_helpers import payroll_basis
+
+#: The cent quantum these cases round their hand-computed expectations to.
+#:
+#: Defined HERE rather than imported from the engine since plan step
+#: **balance:X-aw**, which deleted the module constant with the residue
+#: distribution that was its only production reader.  A constant kept alive in
+#: ``app/`` for tests alone is the speculative shape ``CLAUDE.md`` rule 13
+#: forbids, and an expectation spelled independently of the code it grades is
+#: the point of a test.
+TWO_PLACES = Decimal("0.01")
 
 
 def _timing_id(name):
@@ -177,17 +195,22 @@ class FakeFicaConfig:
 
 
 class FakeProfile:
-    """Minimal stand-in for a SalaryProfile ORM object."""
+    """Minimal stand-in for a SalaryProfile ORM object.
+
+    **It carries no paycheck count**, and has not since plan step R-F16 dropped
+    ``salary_profiles.pay_periods_per_year``.  How often the owner is paid
+    reaches the engine on the :class:`PayrollBasis` beside the profile, which
+    every call here builds through the shared ``payroll_basis`` helper.
+    """
 
     def __init__(self, annual_salary, raises=None, deductions=None,
-                 pay_periods_per_year=26, created_at=None,
+                 created_at=None,
                  additional_income=0, additional_deductions=0,
                  extra_withholding=0, qualifying_children=0,
                  other_dependents=0):
         self.annual_salary = Decimal(str(annual_salary))
         self.raises = raises or []
         self.deductions = deductions or []
-        self.pay_periods_per_year = pay_periods_per_year
         self.created_at = created_at
         self.additional_income = Decimal(str(additional_income))
         self.additional_deductions = Decimal(str(additional_deductions))
@@ -396,6 +419,198 @@ class TestRaiseOrdering:
         assert apply_raises(Decimal("100000"), [pct, flat], as_of) == expected
 
 
+class TestRaiseTermination:
+    """A raise stops accruing where its own belief stops.
+
+    ``terminal_year`` is the last year a raise is believed to happen.
+    :func:`apply_raises` honours it by not accruing applications past that
+    year, and by never applying a one-time raise dated beyond it.  These
+    cases grade the clamp itself; the mapping that DECIDES each raise's
+    terminal year is graded in ``test_pension_calculator``.
+    """
+
+    @staticmethod
+    def _raise(percentage, *, month=1, year=2026, recurring=True,
+               terminal_year=None):
+        """A percentage :class:`TerminatedRaise`, defaulting to recurring."""
+        return TerminatedRaise(
+            effective_year=year, effective_month=month,
+            is_recurring=recurring, percentage=Decimal(percentage),
+            flat_amount=None, terminal_year=terminal_year,
+        )
+
+    def test_the_orm_row_carries_no_terminal_year_so_the_engine_is_untouched(self):
+        """`SalaryRaise` has no such column, which is why paychecks are unmoved.
+
+        The paycheck engine passes ``profile.raises`` -- real ORM rows --
+        so if they carried a ``terminal_year`` the engine would silently
+        start clamping.  Asserted against the mapped class rather than
+        against a test double, because a double trivially lacks the
+        attribute and would keep passing after a migration added it.
+
+        ``hasattr`` rather than ``__table__.columns`` because that is the
+        surface the code actually reads: ``_applications`` probes
+        ``getattr(raise_obj, "terminal_year", None)``, which a
+        ``property`` or ``hybrid_property`` would satisfy while the column
+        set would not.  Both are checked, the attribute first.
+        """
+        assert not hasattr(SalaryRaise, "terminal_year"), (
+            "SalaryRaise gained a terminal_year attribute; the paycheck "
+            "engine now clamps and this step's premise needs re-deriving"
+        )
+        columns = {c.name for c in SalaryRaise.__table__.columns}
+        assert "terminal_year" not in columns
+
+    def test_a_raise_with_no_terminal_year_compounds_indefinitely(self):
+        """3% recurring from 2026, asked at 2036, is 11 applications.
+
+        ``100,000 * 1.03^11 = 138,423.39``.  This is the shape every
+        in-window paycheck uses.
+        """
+        result = apply_raises(
+            Decimal("100000"), [self._raise("0.03")], date(2036, 12, 1),
+        )
+        assert result == Decimal("138423.39")
+
+    def test_a_terminated_recurring_raise_stops_accruing(self):
+        """Terminating at 2030 caps the same raise at five applications.
+
+        2026..2030 is 5, so ``100,000 * 1.03^5 = 115,927.41`` -- and it
+        stays there however far past 2030 the caller asks, because the
+        raise stopped rather than slowed.
+        """
+        terminated = self._raise("0.03", terminal_year=2030)
+        base = Decimal("100000")
+        assert apply_raises(base, [terminated], date(2036, 12, 1)) == Decimal("115927.41")
+        assert apply_raises(base, [terminated], date(2099, 12, 1)) == Decimal("115927.41")
+
+    def test_a_one_time_raise_past_its_terminal_year_never_applies(self):
+        """A 2035 one-time raise believed only through 2030 is dropped."""
+        beyond = self._raise("0.10", year=2035, recurring=False,
+                             terminal_year=2030)
+        result = apply_raises(Decimal("100000"), [beyond], date(2036, 12, 1))
+        assert result == Decimal("100000.00")
+
+    def test_a_one_time_raise_within_its_terminal_year_still_applies(self):
+        """Its 2028 sibling is kept: 100,000 * 1.10 = 110,000.00.
+
+        Without this, the case above would pass on a rule that dropped
+        every one-time raise.
+        """
+        within = self._raise("0.10", year=2028, recurring=False,
+                             terminal_year=2030)
+        result = apply_raises(Decimal("100000"), [within], date(2036, 12, 1))
+        assert result == Decimal("110000.00")
+
+    def test_a_raise_applies_through_the_END_of_its_terminal_year(self):
+        """A July raise terminating in 2026 still gets its 2026 application.
+
+        Termination is a whole-year fact, so a raise effective later in
+        that year is still counted in it: ``100,000 * 1.03 = 103,000.00``.
+        """
+        july = self._raise("0.03", month=7, terminal_year=2026)
+        result = apply_raises(Decimal("100000"), [july], date(2036, 12, 1))
+        assert result == Decimal("103000.00")
+
+    def test_inside_the_terminal_year_the_callers_own_month_still_governs(self):
+        """March 2026 has not reached a July raise, terminal year or not.
+
+        The clamp is a ceiling on the asked date, never a floor: it must
+        not back-date a raise into months before it exists.  Same raise as
+        the case above, asked earlier, answers the untouched base.
+        """
+        july = self._raise("0.03", month=7, terminal_year=2026)
+        result = apply_raises(Decimal("100000"), [july], date(2026, 3, 1))
+        assert result == Decimal("100000")
+
+
+class TestChronologicalRaiseOrder:
+    """Applications land in DATE order, not grouped by raise.
+
+    Until this rule, ``apply_raises`` sorted the RAISES and then applied
+    each one's whole run of yearly applications before starting the next.
+    A percentage raise therefore multiplied flat dollars that had not
+    arrived yet.  These cases grade the interleaving; the counts are
+    unchanged, so an owner holding only percentage raises is unaffected,
+    which the last case pins.
+    """
+
+    def test_a_percentage_does_not_compound_flat_dollars_that_arrive_later(self):
+        """A recurring flat COLA and a recurring percentage merit interleave yearly.
+
+        base 100,000; flat $1,500 and 4%, both recurring from 2026-01.
+        Each year the flat lands, then the percentage multiplies what is
+        there -- so the percentage never grows a dollar that arrives after
+        it:
+          2026: (100,000 + 1,500) * 1.04 = 105,560.00
+          2027: (105,560 + 1,500) * 1.04 = 111,342.40
+          2028: (111,342.40 + 1,500) * 1.04 = 117,356.10
+
+        The old grouped order added all three $1,500s to the base first
+        and compounded once: 104,500 * 1.04^3 = 117,548.29 at 2028, which
+        credited three years of growth to dollars that had not arrived.
+        """
+        flat = FakeRaise(flat_amount="1500", effective_month=1,
+                         effective_year=2026, is_recurring=True)
+        pct = FakeRaise(percentage="0.04", effective_month=1,
+                        effective_year=2026, is_recurring=True)
+        base = Decimal("100000")
+        assert apply_raises(base, [flat, pct], date(2026, 12, 1)) == Decimal("105560.00")
+        assert apply_raises(base, [flat, pct], date(2027, 12, 1)) == Decimal("111342.40")
+        assert apply_raises(base, [flat, pct], date(2028, 12, 1)) == Decimal("117356.10")
+
+    def test_input_order_still_does_not_change_the_answer(self):
+        """Reversing the input list changes nothing (M-01 determinism preserved).
+
+        The ordering key is the application's date and method, never the
+        row order, so the DB may return these two in either order.  Same
+        2028 value as the case above.
+        """
+        flat = FakeRaise(flat_amount="1500", effective_month=1,
+                         effective_year=2026, is_recurring=True)
+        pct = FakeRaise(percentage="0.04", effective_month=1,
+                        effective_year=2026, is_recurring=True)
+        base = Decimal("100000")
+        assert apply_raises(base, [pct, flat], date(2028, 12, 1)) == Decimal("117356.10")
+
+    def test_a_one_time_raise_lands_on_its_own_date_not_last(self):
+        """A mid-series one-time raise compounds only what preceded it.
+
+        base 100,000; a recurring flat $1,000 from 2026-01 and a ONE-TIME
+        10% on 2027-06.  In date order:
+          2026-01 +1,000 -> 101,000
+          2027-01 +1,000 -> 102,000
+          2027-06 *1.10  -> 112,200
+          2028-01 +1,000 -> 113,200.00
+
+        The old order applied the flat's three additions first and then
+        the 10%, reaching 113,300.00 -- the extra $100 being 10% of a
+        2028 dollar credited in 2027.
+        """
+        flat = FakeRaise(flat_amount="1000", effective_month=1,
+                         effective_year=2026, is_recurring=True)
+        once = FakeRaise(percentage="0.10", effective_month=6,
+                         effective_year=2027, is_recurring=False)
+        result = apply_raises(Decimal("100000"), [flat, once], date(2028, 12, 1))
+        assert result == Decimal("113200.00")
+
+    def test_percentage_only_raises_are_completely_unaffected(self):
+        """Ordering cannot matter when every raise is a percentage.
+
+        Multiplication commutes, so regrouping the applications changes
+        nothing -- which is why this rule moves no money for an owner
+        whose raises are all percentages.  3% from 2026-01 and 2% from
+        2026-07, at 2027-12: both have two applications, and
+        ``100,000 * 1.03^2 * 1.02^2 = 110,376.04``.
+        """
+        merit = FakeRaise(percentage="0.03", effective_month=1,
+                          effective_year=2026, is_recurring=True)
+        cola = FakeRaise(percentage="0.02", effective_month=7,
+                         effective_year=2026, is_recurring=True)
+        result = apply_raises(Decimal("100000"), [merit, cola], date(2027, 12, 1))
+        assert result == Decimal("110376.04")
+
+
 # ── New Tests ────────────────────────────────────────────────────
 
 
@@ -488,7 +703,7 @@ class TestCalculatePaycheckPipeline:
         all_periods = [period]
 
         result = calculate_paycheck(
-            base_profile, period, all_periods,
+            payroll_basis(base_profile, all_periods), period,
             simple_tax_configs
         )
 
@@ -534,8 +749,9 @@ class TestCalculatePaycheckPipeline:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
         all_periods = [period]
 
-        r = calculate_paycheck(base_profile, period, all_periods,
-                               simple_tax_configs)
+        r = calculate_paycheck(
+            payroll_basis(base_profile, all_periods), period,
+            simple_tax_configs)
 
         # Hardcoded correctness anchor: base_profile=$60k salary,
         # same setup as test_basic_paycheck_no_deductions.
@@ -565,7 +781,9 @@ class TestCalculatePaycheckPipeline:
         profile = FakeProfile(annual_salary=75000, created_at=date(2026, 1, 1))
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs)
 
         expected_gross = (Decimal("75000") / 26).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
@@ -584,7 +802,9 @@ class TestCalculatePaycheckPipeline:
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs)
 
         assert result.earnings.taxable_income == ZERO
 
@@ -598,7 +818,9 @@ class TestCalculatePaycheckPipeline:
             "fica_config": standard_fica,
         }
 
-        result = calculate_paycheck(profile, period, [period], configs)
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period,
+            configs)
 
         assert result.taxes.federal == ZERO
 
@@ -612,7 +834,9 @@ class TestCalculatePaycheckPipeline:
             "fica_config": standard_fica,
         }
 
-        result = calculate_paycheck(profile, period, [period], configs)
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period,
+            configs)
 
         assert result.taxes.state == ZERO
 
@@ -626,7 +850,9 @@ class TestCalculatePaycheckPipeline:
             "fica_config": None,
         }
 
-        result = calculate_paycheck(profile, period, [period], configs)
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period,
+            configs)
 
         assert result.taxes.social_security == ZERO
         assert result.taxes.medicare == ZERO
@@ -641,7 +867,9 @@ class TestCalculatePaycheckPipeline:
             "fica_config": None,
         }
 
-        result = calculate_paycheck(profile, period, [period], configs)
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period,
+            configs)
 
         assert result.taxes.federal == ZERO
         assert result.taxes.state == ZERO
@@ -669,7 +897,8 @@ class TestCalculatePaycheckPipeline:
             created_at=date(2026, 1, 1),
         )
         base_result = calculate_paycheck(
-            base, period, [period], simple_tax_configs
+            payroll_basis(base, [period]), period,
+            simple_tax_configs
         )
 
         with_w4 = FakeProfile(
@@ -679,7 +908,8 @@ class TestCalculatePaycheckPipeline:
             extra_withholding=50,
         )
         w4_result = calculate_paycheck(
-            with_w4, period, [period], simple_tax_configs
+            payroll_basis(with_w4, [period]), period,
+            simple_tax_configs
         )
 
         # Base: 4499.99/26=173.076923->173.08
@@ -704,8 +934,9 @@ class TestDeductionCalculation:
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(base_profile, period, [period],
-                                    simple_tax_configs)
+        result = calculate_paycheck(
+            payroll_basis(base_profile, [period]), period,
+            simple_tax_configs)
 
         assert len(result.deductions.pre_tax) == 1
         assert result.deductions.pre_tax[0].name == "401k"
@@ -718,8 +949,9 @@ class TestDeductionCalculation:
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(base_profile, period, [period],
-                                    simple_tax_configs)
+        result = calculate_paycheck(
+            payroll_basis(base_profile, [period]), period,
+            simple_tax_configs)
 
         assert len(result.deductions.post_tax) == 1
         assert result.deductions.post_tax[0].amount == Decimal("150.00")
@@ -732,8 +964,9 @@ class TestDeductionCalculation:
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(base_profile, period, [period],
-                                    simple_tax_configs)
+        result = calculate_paycheck(
+            payroll_basis(base_profile, [period]), period,
+            simple_tax_configs)
 
         gross = Decimal("60000") / 26
         expected = (gross * Decimal("0.06")).quantize(TWO_PLACES,
@@ -747,8 +980,9 @@ class TestDeductionCalculation:
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(base_profile, period, [period],
-                                    simple_tax_configs)
+        result = calculate_paycheck(
+            payroll_basis(base_profile, [period]), period,
+            simple_tax_configs)
 
         assert len(result.deductions.pre_tax) == 0
 
@@ -760,8 +994,9 @@ class TestDeductionCalculation:
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(base_profile, period, [period],
-                                    simple_tax_configs)
+        result = calculate_paycheck(
+            payroll_basis(base_profile, [period]), period,
+            simple_tax_configs)
 
         pre_names = [d.name for d in result.deductions.pre_tax]
         post_names = [d.name for d in result.deductions.post_tax]
@@ -788,7 +1023,9 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(profile, p3, all_periods, gross, True),
+            _DeductionContext(
+                payroll_basis(profile, all_periods), p3, gross, 3,
+            ),
             _timing_id("pre_tax"),
         )
         assert len(result) == 0
@@ -809,7 +1046,9 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(profile, p1, all_periods, gross, False),
+            _DeductionContext(
+                payroll_basis(profile, all_periods), p1, gross, 1,
+            ),
             _timing_id("pre_tax"),
         )
         assert len(result) == 1
@@ -831,7 +1070,9 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(profile, p2, all_periods, gross, False),
+            _DeductionContext(
+                payroll_basis(profile, all_periods), p2, gross, 2,
+            ),
             _timing_id("pre_tax"),
         )
         assert len(result) == 0
@@ -861,7 +1102,9 @@ class TestDeductionCalculation:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = _calculate_deductions(
-            _DeductionContext(profile, period, [period], Decimal("0.00"), False),
+            _DeductionContext(
+                payroll_basis(profile, [period]), period, Decimal("0.00"), 1,
+            ),
             _timing_id("pre_tax"),
         )
         assert len(result) == 1
@@ -889,7 +1132,9 @@ class TestDeductionCalculation:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = _calculate_deductions(
-            _DeductionContext(profile, period, [period], Decimal("0.00"), False),
+            _DeductionContext(
+                payroll_basis(profile, [period]), period, Decimal("0.00"), 1,
+            ),
             _timing_id("post_tax"),
         )
         assert len(result) == 1
@@ -911,13 +1156,32 @@ class TestDeductionAnnualCap:
     def _gross(annual="60000"):
         return (Decimal(annual) / 26).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
-    def _amounts_over(self, profile, periods, *, timing="pre_tax", is_third=False):
-        """Per-period deduction amount for the single deduction on ``profile``."""
+    def _amounts_over(self, profile, periods, *, timing="pre_tax",
+                      month_ordinal=1, history_opens_on=None):
+        """Per-period deduction amount for the single deduction on ``profile``.
+
+        ``month_ordinal`` is stated rather than derived so these cases grade
+        the CAP and nothing else: every one of them uses a 26-per-year
+        deduction, which is taken on every payday, so ordinal 1 makes the
+        cadence arm a no-op and any zero in the result is the cap's doing.
+
+        ``history_opens_on`` says how far back the owner's paychecks reach and
+        defaults to the column's own ``None``, which since ruling
+        **balance:R-IA**'s 2026-08-31 amendment means NOT STATED: the engine
+        counts only the recorded paydays.  So every case here measures what it
+        measured before plan step **balance:X-bh-2**, and the one case about
+        the backward rhythm states its floor.
+        """
         gross = self._gross(str(profile.annual_salary))
         amounts = []
         for p in periods:
             lines = _calculate_deductions(
-                _DeductionContext(profile, p, periods, gross, is_third),
+                _DeductionContext(
+                    payroll_basis(
+                        profile, periods, history_opens_on=history_opens_on,
+                    ),
+                    p, gross, month_ordinal,
+                ),
                 _timing_id(timing),
             )
             amounts.append(lines[0].amount)
@@ -960,23 +1224,59 @@ class TestDeductionAnnualCap:
             Decimal("200"), Decimal("200"),
         ]
 
-    def test_cap_is_calendar_year_scoped_and_resets(self):
-        """The cap resets each January: a new-year period starts fresh."""
-        profile = FakeProfile(
+    def _december_opening_profile(self):
+        """A $600 deduction under a $1,000 cap, on a December-opening set."""
+        return FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
             deductions=[FakeDeduction(name="HSA", amount="600",
                                       annual_cap="1000")],
-        )
-        periods = [
+        ), [
             _period(start_date=date(2026, 12, 4), period_id=1),
             _period(start_date=date(2026, 12, 18), period_id=2),
             _period(start_date=date(2027, 1, 1), period_id=3),
         ]
+
+    def test_cap_is_calendar_year_scoped_and_resets(self):
+        """The cap resets each January: a new-year period starts fresh.
+
+        Stated with NO pay history, which since ruling **balance:R-IA**'s
+        2026-08-31 amendment is an owner nobody has asked -- so the engine
+        counts only the three recorded paydays and the hand-computed figures
+        below are unchanged by plan step balance:X-bh-2.  That the default is
+        the SAFE one is the amendment's whole point, and this case is where it
+        shows: a fixture that says nothing measures what it always measured.
+        """
+        profile, periods = self._december_opening_profile()
+
         # 2026 exhausts the cap (600 then 400); the 2027 period counts only
         # same-year prior periods (none), so the cap is fresh -> full 600.
         assert self._amounts_over(profile, periods) == [
             Decimal("600"), Decimal("400"), Decimal("600"),
         ]
+
+    def test_a_STATED_history_exhausts_the_cap_BEFORE_the_record_opens(self):
+        """What the backward rhythm changes for a cap, stated as money.
+
+        Plan step **balance:X-bh-2**.  The same three periods for an owner who
+        HAS said when their paychecks began: the rhythm runs back to that day,
+        so by the time the record opens on 2026-12-04 they have already been
+        paid 24 times that year and a $1,000 cap on a $600 deduction is long
+        gone.  Both December periods clamp to zero and January resets.
+
+        This is finding **N-390** priced on the deduction side: before this
+        step the same owner was charged $1,000 of a cap they had already
+        spent, because the year opened where the RECORD did rather than where
+        they did.
+        """
+        profile, periods = self._december_opening_profile()
+
+        # 2026-12-04 less 24 fortnights is 2026-01-02, so the year holds 24
+        # rhythm paydays before the record opens -- 24 x $600 against a
+        # $1,000 cap.
+        assert (periods[0].start_date - date(2026, 1, 2)).days == 24 * 14
+        assert self._amounts_over(
+            profile, periods, history_opens_on=date(2025, 1, 1),
+        ) == [Decimal("0"), Decimal("0"), Decimal("600")]
 
     def test_percentage_deduction_capped_on_dollar_total(self):
         """A percentage deduction is clamped on its cumulative dollar amount."""
@@ -1016,7 +1316,9 @@ class TestDeductionAnnualCap:
         ]
         configs = {"bracket_set": None, "state_config": None, "fica_config": None}
         nets = [
-            calculate_paycheck(profile, p, periods, configs).earnings.net_pay
+            calculate_paycheck(
+            payroll_basis(profile, periods), p,
+            configs).earnings.net_pay
             for p in periods
         ]
         # Post-tax deduction reduces net directly.  P1 takes 600, P2 takes the
@@ -1026,51 +1328,331 @@ class TestDeductionAnnualCap:
 
 
 class TestThirdPaycheckDetection:
-    """Tests for _is_third_paycheck()."""
+    """Tests for ``_month_ordinal`` and the ``_is_third_paycheck`` rule on it.
 
-    def test_month_with_two_paychecks_returns_false(self):
-        """Standard month with 2 paychecks → False."""
+    They were two functions each scanning a caller-supplied period list until
+    plan step **balance:X-bh-1** -- ``_is_third_paycheck(period, all_periods)``
+    and ``_is_first_paycheck_of_month(period, all_periods)``.  Both asked one
+    question of one payday, so both are now the ORDINAL, counted off the
+    owner's calendar, and the cases below grade the number and the two
+    predicates that read it.
+    """
+
+    def test_month_with_two_paychecks_places_the_second(self):
+        """Standard month with 2 paychecks: the second is ordinal 2."""
         p1 = _period(start_date=date(2026, 2, 13), period_id=1)
         p2 = _period(start_date=date(2026, 2, 27), period_id=2)
-        all_periods = [p1, p2]
+        basis = payroll_basis(FakeProfile(annual_salary=60000), [p1, p2])
 
-        assert _is_third_paycheck(p2, all_periods) is False
+        assert _month_ordinal(basis.calendar, p2.start_date) == 2
+        assert _is_third_paycheck(_month_ordinal(basis.calendar, p2.start_date)) is False
 
-    def test_third_paycheck_returns_true(self):
-        """Month with 3 start dates → 3rd is True."""
+    def test_third_paycheck_of_the_month_is_ordinal_three(self):
+        """Month with 3 paydays: the third is ordinal 3 and reads as third."""
         p1 = _period(start_date=date(2026, 1, 2), period_id=1)
         p2 = _period(start_date=date(2026, 1, 16), period_id=2)
         p3 = _period(start_date=date(2026, 1, 30), period_id=3)
-        all_periods = [p1, p2, p3]
+        basis = payroll_basis(FakeProfile(annual_salary=60000), [p1, p2, p3])
 
-        assert _is_third_paycheck(p3, all_periods) is True
+        assert _month_ordinal(basis.calendar, p3.start_date) == 3
+        assert _is_third_paycheck(_month_ordinal(basis.calendar, p3.start_date)) is True
 
-    def test_first_period_of_month_returns_false(self):
-        """First period in a 3-paycheck month is not a 3rd paycheck."""
+    def test_first_period_of_a_three_paycheck_month_is_ordinal_one(self):
+        """The first payday of a 3-paycheck month is not a 3rd paycheck."""
         p1 = _period(start_date=date(2026, 1, 2), period_id=1)
         p2 = _period(start_date=date(2026, 1, 16), period_id=2)
         p3 = _period(start_date=date(2026, 1, 30), period_id=3)
-        all_periods = [p1, p2, p3]
+        basis = payroll_basis(FakeProfile(annual_salary=60000), [p1, p2, p3])
 
-        assert _is_third_paycheck(p1, all_periods) is False
+        assert _month_ordinal(basis.calendar, p1.start_date) == 1
+        assert _is_third_paycheck(_month_ordinal(basis.calendar, p1.start_date)) is False
+
+    def test_a_neighbouring_month_does_not_count(self):
+        """Only the payday's OWN calendar month is counted.
+
+        The two January paydays sit within a cadence of the February one, so a
+        rule that counted a window rather than a month would place the
+        February payday at 3 and skip a 24-per-year deduction on it.
+        """
+        jan1 = _period(start_date=date(2026, 1, 2), period_id=1)
+        jan2 = _period(start_date=date(2026, 1, 16), period_id=2)
+        jan3 = _period(start_date=date(2026, 1, 30), period_id=3)
+        feb = _period(start_date=date(2026, 2, 13), period_id=4)
+        basis = payroll_basis(
+            FakeProfile(annual_salary=60000), [jan1, jan2, jan3, feb],
+        )
+
+        assert _month_ordinal(basis.calendar, feb.start_date) == 1
+
+    def test_a_payday_past_the_horizon_is_placed_by_the_cadence(self):
+        """A projected payday is counted, not answered as if it stood alone.
+
+        The calendar holds 2026-01-02 and 2026-01-16 only, so its horizon is
+        2026-01-29 and every later payday is projected at the 14-day cadence:
+        01-30, 02-13, 02-27, 03-13, 03-27.  Counting only SAVED paydays would
+        place BOTH March paydays at 0 -- so a 24-per-year deduction could
+        never be skipped past the horizon and a 12-per-year one could never be
+        taken.  The count projects forward instead (``pay_calendar:R-PC9``).
+        """
+        jan1 = _period(start_date=date(2026, 1, 2), period_id=1)
+        jan2 = _period(start_date=date(2026, 1, 16), period_id=2)
+        basis = payroll_basis(FakeProfile(annual_salary=60000), [jan1, jan2])
+        # Built directly rather than through ``_period``: a period past the
+        # horizon carries ``period_id = None``, which is exactly what marks it
+        # unmaterialised, and that helper numbers its index off the id.
+        first_of_march = DerivedPeriod(
+            period_id=None, period_index=6, start_date=date(2026, 3, 13),
+            end_date=date(2026, 3, 26), end_is_projected=True,
+        )
+        second_of_march = DerivedPeriod(
+            period_id=None, period_index=7, start_date=date(2026, 3, 27),
+            end_date=date(2026, 4, 9), end_is_projected=True,
+        )
+
+        assert _month_ordinal(basis.calendar, first_of_march.start_date) == 1
+        assert _month_ordinal(basis.calendar, second_of_march.start_date) == 2
+
+    def test_a_payday_below_the_opening_is_counted_for_a_STATED_owner(self):
+        """The rhythm runs backwards too, which is plan step balance:X-bh-2.
+
+        The calendar opens 2026-01-16, so the January payday two weeks before
+        it -- 2026-01-02 -- is one the owner was really paid on and the app
+        holds no row for.  It is counted once they SAY their paychecks began
+        earlier: the opening payday then reads 2 and the one after it reads 3,
+        so a 24-per-year deduction is SKIPPED on 2026-01-30 where before this
+        step it was taken, and a 12-per-year one stops being taken on
+        2026-01-16.  That is ledger row **N-390** on the month side.
+        """
+        opening = _period(start_date=date(2026, 1, 16), period_id=1)
+        later = _period(start_date=date(2026, 1, 30), period_id=2)
+        basis = payroll_basis(
+            FakeProfile(annual_salary=60000), [opening, later],
+            history_opens_on=date(2025, 1, 1),
+        )
+
+        assert _month_ordinal(basis.calendar, opening.start_date) == 2
+        assert _month_ordinal(basis.calendar, later.start_date) == 3
+
+    def test_an_UNSTATED_owner_counts_only_the_record(self):
+        """THE CONTROL, and the reading every owner starts at.
+
+        The same two paydays for somebody nobody has asked: nothing runs below
+        the record, so the ordinals are 1 and 2 -- exactly what this calendar
+        answered for every owner before plan step balance:X-bh-2.  ``NULL`` is
+        an absence, not a claim (ruling **balance:R-IA** as amended
+        2026-08-31), and the safe direction for an absence is to count less.
+        """
+        opening = _period(start_date=date(2026, 1, 16), period_id=1)
+        later = _period(start_date=date(2026, 1, 30), period_id=2)
+        basis = payroll_basis(FakeProfile(annual_salary=60000),
+                              [opening, later])
+
+        assert _month_ordinal(basis.calendar, opening.start_date) == 1
+        assert _month_ordinal(basis.calendar, later.start_date) == 2
+
+    def test_a_floor_ON_the_opening_payday_also_counts_only_the_record(self):
+        """The owner whose first paycheck IS the first one recorded.
+
+        Distinct from the case above in what it MEANS -- a statement rather
+        than an absence -- and identical in what it answers, which is why both
+        stand: ``pay_calendar:R-PC14`` calls this owner ordinary, and the
+        engine must not tell them apart.
+        """
+        opening = _period(start_date=date(2026, 1, 16), period_id=1)
+        later = _period(start_date=date(2026, 1, 30), period_id=2)
+        basis = payroll_basis(
+            FakeProfile(annual_salary=60000), [opening, later],
+            history_opens_on=opening.start_date,
+        )
+
+        assert _month_ordinal(basis.calendar, opening.start_date) == 1
+        assert _month_ordinal(basis.calendar, later.start_date) == 2
+
+
+class TestTheEngineRefusesAPaycheckItCannotPlace:
+    """The PUBLIC door refuses a payday off the owner's rhythm, from a caller's shape.
+
+    ``_month_ordinal``'s refusal is graded directly in
+    ``test_pay_calendar_rhythm``; this grades it where a caller meets it --
+    through :func:`calculate_paycheck` -- and it exists because the argument
+    that the refusal is unreachable is an ONLY-WAY argument.
+
+    Every one of the 13 call sites in ``app/`` draws its period from the same
+    calendar it prices against, so none can reach this today.  That claim is
+    one unenumerated writer from false, and plan step **balance:X-bh-1** made
+    it expensive rather than cheap to be wrong about: the engine used to return
+    a confident number for a payday it could not place and now RAISES, so a
+    14th caller -- a period built from a form value, a saved template, a
+    backfill script -- meets a ``PayCalendarError`` on a money path instead of
+    a wrong figure.  This case is that caller, written from their shape.  If
+    one ever appears for real, it fails HERE rather than 500ing in production.
+
+    **Plan step balance:X-bh-2 narrowed WHAT is unplaceable and did not remove
+    the refusal**, which is why these cases changed shape rather than going
+    away.  A day BELOW the opening payday used to be unplaceable by
+    construction; the rhythm now runs backward, so such a day is placed when
+    it falls on the rhythm and inside the owner's stated history.  Two kinds
+    remain: a day OFF the rhythm's phase -- another owner's payday, or one
+    assembled by hand -- and a day below a stated ``history_opens_on``.
+
+    Measured on the developer's own schedule (opening 2026-03-26): the payday
+    2026-03-12, which he really was paid on and the app holds no row for,
+    answered ``net $2,454.10`` at plan step X-bh-1's ancestor, then RAISED at
+    X-bh-1, and is priced correctly as March's first paycheck now.  The last
+    case below is that day.
+    """
+
+    @staticmethod
+    def _biweekly_from_march():
+        """The developer's shape: six biweekly paydays opening 2026-03-26."""
+        return [
+            _period(start_date=date(2026, 3, 26) + timedelta(days=14 * i),
+                    period_id=i + 1)
+            for i in range(6)
+        ]
+
+    def test_a_payday_OFF_the_rhythm_is_refused_not_priced(
+        self, simple_tax_configs,
+    ):
+        """A period built by hand, one day out of phase, raises.
+
+        2026-03-13 is a day nobody on this schedule is paid on: the rhythm
+        runs 2026-03-12, 03-26, 04-09 in both directions from the record, and
+        a day between two paydays has no position in its month to answer with.
+        This is the shape a form value or another owner's period has.
+        """
+        profile = FakeProfile(
+            annual_salary=91675, created_at=date(2026, 1, 1),
+            deductions=[FakeDeduction(name="Health", amount="500",
+                                      deductions_per_year=24)],
+        )
+        basis = payroll_basis(profile, self._biweekly_from_march())
+        unheld = _period(start_date=date(2026, 3, 13), period_id=99)
+
+        with pytest.raises(PayCalendarError, match="is not paid on"):
+            calculate_paycheck(basis, unheld, simple_tax_configs)
+
+    def test_a_payday_below_a_STATED_opening_is_refused_not_priced(
+        self, simple_tax_configs,
+    ):
+        """On the rhythm, below the floor: the owner says they were not paid then.
+
+        The other half of what stays unplaceable after plan step
+        balance:X-bh-2.  2026-03-12 IS on this schedule's rhythm, so it is
+        priced for an owner who has stated nothing -- but an owner whose
+        paychecks began on 2026-03-26 was not paid on it, and answering a
+        position anyway would put a 12-per-year deduction on a paycheck that
+        never happened.
+        """
+        profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
+        schedule = self._biweekly_from_march()
+        basis = payroll_basis(
+            profile, schedule, history_opens_on=date(2026, 3, 26),
+        )
+        unheld = _period(start_date=date(2026, 3, 12), period_id=99)
+
+        with pytest.raises(PayCalendarError, match="is not paid on"):
+            calculate_paycheck(basis, unheld, simple_tax_configs)
+
+    def test_the_refusal_names_the_day_so_a_traceback_is_actionable(
+        self, simple_tax_configs,
+    ):
+        """The message carries the payday and the owner, not just a type.
+
+        A refusal a reader cannot act on sends them to the wrong cause, which
+        is what the message this asserts exists to prevent.
+        """
+        profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
+        basis = payroll_basis(profile, self._biweekly_from_march())
+        unheld = _period(start_date=date(2026, 3, 13), period_id=99)
+
+        with pytest.raises(PayCalendarError) as caught:
+            calculate_paycheck(basis, unheld, simple_tax_configs)
+
+        message = str(caught.value)
+        assert "2026-03-13" in message
+        assert "user 1" in message
+
+    def test_a_payday_the_calendar_DOES_hold_is_priced(
+        self, simple_tax_configs,
+    ):
+        """THE CONTROL: the refusal fires on the mismatch, not on every call.
+
+        Without this, both cases above would pass against an engine that
+        refused everything.
+        """
+        profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
+        schedule = self._biweekly_from_march()
+        basis = payroll_basis(profile, schedule)
+
+        result = calculate_paycheck(basis, schedule[0], simple_tax_configs)
+
+        # $91,675 / 26 = $3,525.96, the rate ruling balance:R-HW fixed.
+        assert result.earnings.gross_biweekly == Decimal("3525.96")
+
+    def test_the_owners_real_unrecorded_payday_is_PRICED_once_he_STATES_it(
+        self, simple_tax_configs,
+    ):
+        """THE SECOND CONTROL, and it is what plan step balance:X-bh-2 bought.
+
+        2026-03-12 is a day the developer really was paid on and the app holds
+        no row for -- the exact day X-bh-1's refusal named.  Once he says his
+        paychecks began earlier it is on the rhythm, so it prices at the same
+        rate as a recorded paycheck AND takes March's first position, which is
+        the one a 12-per-year deduction is charged on.
+
+        Paired with the two refusals above, this is what separates "the rhythm
+        reaches here" from "the engine answers anything": one day apart, 03-12
+        prices and 03-13 raises.
+        """
+        profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
+        schedule = self._biweekly_from_march()
+        basis = payroll_basis(
+            profile, schedule, history_opens_on=date(2025, 1, 1),
+        )
+        unrecorded = _period(start_date=date(2026, 3, 12), period_id=99)
+
+        result = calculate_paycheck(basis, unrecorded, simple_tax_configs)
+
+        assert result.earnings.gross_biweekly == Decimal("3525.96")
+        assert _month_ordinal(basis.calendar, unrecorded.start_date) == 1
+
+    def test_the_same_day_still_RAISES_for_an_owner_who_stated_nothing(
+        self, simple_tax_configs,
+    ):
+        """The amendment, graded at the door a caller meets.
+
+        ``NULL`` is not a claim, so an owner nobody has asked has no rhythm
+        below their record and 2026-03-12 is unplaceable for them -- exactly
+        as it was at plan step balance:X-bh-1, and for the same reason: the
+        engine would otherwise answer a confident number for a paycheck it has
+        no basis to place.  This is the pair that makes the case above about
+        the STATED fact rather than about the day.
+        """
+        profile = FakeProfile(annual_salary=91675, created_at=date(2026, 1, 1))
+        basis = payroll_basis(profile, self._biweekly_from_march())
+        unrecorded = _period(start_date=date(2026, 3, 12), period_id=99)
+
+        with pytest.raises(PayCalendarError, match="is not paid on"):
+            calculate_paycheck(basis, unrecorded, simple_tax_configs)
 
 
 class TestFirstPaycheckOfMonth:
-    """Tests for _is_first_paycheck_of_month()."""
+    """The 12-per-year deduction cadence, which is ordinal 1 and only that."""
 
-    def test_first_period_in_month_returns_true(self):
+    def test_first_period_in_month_is_ordinal_one(self):
         p1 = _period(start_date=date(2026, 3, 6), period_id=1)
         p2 = _period(start_date=date(2026, 3, 20), period_id=2)
-        all_periods = [p1, p2]
+        basis = payroll_basis(FakeProfile(annual_salary=60000), [p1, p2])
 
-        assert _is_first_paycheck_of_month(p1, all_periods) is True
+        assert _month_ordinal(basis.calendar, p1.start_date) == 1
 
-    def test_second_period_in_month_returns_false(self):
+    def test_second_period_in_month_is_not_ordinal_one(self):
         p1 = _period(start_date=date(2026, 3, 6), period_id=1)
         p2 = _period(start_date=date(2026, 3, 20), period_id=2)
-        all_periods = [p1, p2]
+        basis = payroll_basis(FakeProfile(annual_salary=60000), [p1, p2])
 
-        assert _is_first_paycheck_of_month(p2, all_periods) is False
+        assert _month_ordinal(basis.calendar, p2.start_date) == 2
 
 
 class TestInflationAdjustment:
@@ -1088,14 +1670,16 @@ class TestInflationAdjustment:
         )
         period = _period(start_date=date(2026, 6, 1), period_id=1)
 
-        years = _inflation_years(period, profile, 1)
+        years = _inflation_years(period.start_date, profile, 1)
         assert years == 1
 
         # Verify in deduction calculation
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(profile, period, [period], gross, False),
+            _DeductionContext(
+                payroll_basis(profile, [period]), period, gross, 1,
+            ),
             _timing_id("pre_tax"),
         )
         expected = (Decimal("100") * Decimal("1.03")).quantize(
@@ -1115,13 +1699,15 @@ class TestInflationAdjustment:
         )
         period = _period(start_date=date(2026, 6, 1), period_id=1)
 
-        years = _inflation_years(period, profile, 1)
+        years = _inflation_years(period.start_date, profile, 1)
         assert years == 2
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(profile, period, [period], gross, False),
+            _DeductionContext(
+                payroll_basis(profile, [period]), period, gross, 1,
+            ),
             _timing_id("pre_tax"),
         )
         expected = (Decimal("100") * Decimal("1.03") ** 2).quantize(
@@ -1153,7 +1739,7 @@ class TestInflationAdjustment:
         period = _period(start_date=date(2026, 6, 1), period_id=1)
         result = _calculate_deductions(
             _DeductionContext(
-                profile, period, [period], Decimal("1000.49"), False,
+                payroll_basis(profile, [period]), period, Decimal("1000.49"), 1,
             ),
             _timing_id("pre_tax"),
         )
@@ -1176,7 +1762,7 @@ class TestInflationAdjustment:
         period = _period(start_date=date(2026, 6, 1), period_id=1)
         result = _calculate_deductions(
             _DeductionContext(
-                profile, period, [period], Decimal("2307.69"), False,
+                payroll_basis(profile, [period]), period, Decimal("2307.69"), 1,
             ),
             _timing_id("pre_tax"),
         )
@@ -1188,7 +1774,7 @@ class TestInflationAdjustment:
         # Period is in March, effective month is June
         period = _period(start_date=date(2026, 3, 1), period_id=1)
 
-        years = _inflation_years(period, profile, 6)
+        years = _inflation_years(period.start_date, profile, 6)
         # 2026 - 2024 = 2, but month 3 < 6 → 2 - 1 = 1
         assert years == 1
 
@@ -1197,7 +1783,7 @@ class TestInflationAdjustment:
         profile = FakeProfile(annual_salary=60000, created_at=None)
         period = _period(start_date=date(2026, 6, 1), period_id=1)
 
-        years = _inflation_years(period, profile, 1)
+        years = _inflation_years(period.start_date, profile, 1)
         assert years == 0
 
     def test_same_year_as_creation_zero_years(self):
@@ -1205,7 +1791,7 @@ class TestInflationAdjustment:
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
         period = _period(start_date=date(2026, 6, 1), period_id=1)
 
-        years = _inflation_years(period, profile, 1)
+        years = _inflation_years(period.start_date, profile, 1)
         assert years == 0
 
 
@@ -1220,7 +1806,7 @@ class TestCumulativeWages:
         p3 = _period(start_date=date(2026, 1, 30), period_id=3)
         all_periods = [p1, p2, p3]
 
-        result = _get_cumulative_wages(profile, p3, all_periods)
+        result = _get_cumulative_wages(payroll_basis(profile, all_periods), p3)
 
         gross_per = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                      rounding=ROUND_HALF_UP)
@@ -1231,7 +1817,7 @@ class TestCumulativeWages:
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
         p1 = _period(start_date=date(2026, 1, 2), period_id=1)
 
-        result = _get_cumulative_wages(profile, p1, [p1])
+        result = _get_cumulative_wages(payroll_basis(profile, [p1]), p1)
         assert result == ZERO
 
     def test_different_year_periods_excluded(self):
@@ -1241,7 +1827,7 @@ class TestCumulativeWages:
         p1 = _period(start_date=date(2026, 1, 2), period_id=1)
         all_periods = [p_prev, p1]
 
-        result = _get_cumulative_wages(profile, p1, all_periods)
+        result = _get_cumulative_wages(payroll_basis(profile, all_periods), p1)
         assert result == ZERO
 
 
@@ -1257,7 +1843,7 @@ class TestProjectSalary:
             _period(start_date=date(2026, 1, 30), period_id=3),
         ]
 
-        result = project_salary(base_profile, periods, simple_tax_configs)
+        result = project_salary(payroll_basis(base_profile, periods), periods, simple_tax_configs)
 
         assert len(result) == 3
         assert all(isinstance(r, PaycheckBreakdown) for r in result)
@@ -1276,7 +1862,7 @@ class TestProjectSalary:
             _period(start_date=date(2026, 4, 10), period_id=3),
         ]
 
-        result = project_salary(profile, periods, simple_tax_configs)
+        result = project_salary(payroll_basis(profile, periods), periods, simple_tax_configs)
 
         assert result[0].period.raise_event == ""
         assert "MERIT" in result[1].period.raise_event
@@ -1303,7 +1889,7 @@ class TestProjectSalary:
             _period(start_date=date(2026, 3, 13), period_id=2),
             _period(start_date=date(2026, 4, 10), period_id=3),
         ]
-        result_2026 = project_salary(profile, periods_2026, simple_tax_configs)
+        result_2026 = project_salary(payroll_basis(profile, periods_2026), periods_2026, simple_tax_configs)
         assert all(r.period.raise_event == "" for r in result_2026)
         assert result_2026[1].earnings.annual_salary == Decimal("60000.00")
 
@@ -1314,14 +1900,16 @@ class TestProjectSalary:
             _period(start_date=date(2027, 2, 12), period_id=27),
             _period(start_date=date(2027, 3, 12), period_id=28),
         ]
-        result_2027 = project_salary(profile, periods_2027, simple_tax_configs)
+        result_2027 = project_salary(payroll_basis(profile, periods_2027), periods_2027, simple_tax_configs)
         assert result_2027[0].period.raise_event == ""
         assert "MERIT" in result_2027[1].period.raise_event
         assert result_2027[1].earnings.annual_salary == Decimal("61800.00")  # 60000 * 1.03
 
     def test_empty_periods_empty_result(self, base_profile, simple_tax_configs):
         """[] → []."""
-        result = project_salary(base_profile, [], simple_tax_configs)
+        result = project_salary(
+            payroll_basis(base_profile, []), [], simple_tax_configs,
+        )
         assert result == []
 
     def test_configs_by_year_applies_each_periods_own_year(
@@ -1354,7 +1942,7 @@ class TestProjectSalary:
         ]
 
         result = project_salary(
-            base_profile, periods, configs_by_year=configs_by_year,
+            payroll_basis(base_profile, periods), periods, configs_by_year=configs_by_year,
         )
 
         assert result[0].earnings.gross_biweekly == result[1].earnings.gross_biweekly
@@ -1366,10 +1954,10 @@ class TestProjectSalary:
         """ValueError when neither or both config sources are supplied."""
         periods = [_period(start_date=date(2026, 1, 2), period_id=1)]
         with pytest.raises(ValueError, match="exactly one"):
-            project_salary(base_profile, periods)
+            project_salary(payroll_basis(base_profile, periods), periods)
         with pytest.raises(ValueError, match="exactly one"):
             project_salary(
-                base_profile, periods, simple_tax_configs,
+            payroll_basis(base_profile, periods), periods, simple_tax_configs,
                 configs_by_year={2026: simple_tax_configs},
             )
 
@@ -1405,7 +1993,7 @@ class TestFICAWageCapBoundary:
             created_at=date(2026, 1, 1),
         )
         results = project_salary(
-            profile, biweekly_periods, simple_tax_configs
+            payroll_basis(profile, biweekly_periods), biweekly_periods, simple_tax_configs
         )
 
         # gross = 200000/26 = 7692.307692->7692.31
@@ -1589,7 +2177,7 @@ class TestMedicareSurtax:
             created_at=date(2026, 1, 1),
         )
         results = project_salary(
-            profile, biweekly_periods, simple_tax_configs
+            payroll_basis(profile, biweekly_periods), biweekly_periods, simple_tax_configs
         )
 
         # base Medicare = 11538.46*0.0145 = 167.30767->167.31
@@ -1639,54 +2227,46 @@ class TestAnnualProjection:
         self, base_profile, biweekly_periods,
         simple_tax_configs
     ):
-        """C27-3: Annual totals across 26 periods for $60k salary; gross reconciles to exact annual.
+        """C27-3: Annual totals across 26 periods for a $60k salary.
 
-        Per-period values after MED-05 / PA-07 residue reconciliation
-        (60000 / 26 floors to 2307.69; the +0.06 residue gives 6 cents
-        to distribute):
-          Periods 1-6  (first 6 of the year): gross=$2307.70,
-            net=$1854.23 (= 2307.70 - 173.08 - 103.85 - 143.08 - 33.46)
-          Periods 7-26 (last 20):              gross=$2307.69,
-            net=$1854.22 (= 2307.69 - 173.08 - 103.85 - 143.08 - 33.46)
+        Every period is identical at this salary, which is the contract ruling
+        **balance:R-HW** states: gross = $60,000 / 26 = $2307.6923... ->
+        $2307.69, and net = 2307.69 - 173.08 - 103.85 - 143.08 - 33.46 =
+        $1854.22 on all 26.
 
-        Federal/state/SS/medicare are byte-identical across all 26
-        periods at this salary because both per-period grosses
-        ($2307.69 and $2307.70) round to the same per-period tax at
-        each step (cumul max $59,999.94..$60,000.06 is under SS cap
-        $168,600 and surtax threshold $200,000).
+        Federal/state/SS/medicare are byte-identical across the year because
+        the gross is: one figure in, one figure out.  No cap moves a later
+        period either -- the largest cumulative-before is 25 x $2,307.69 =
+        $57,692.25, under the SS wage base ($168,600) and the surtax threshold
+        ($200,000).
 
-        Re-pinned under MED-05 / PA-07: was 26 * $2307.69 = $59,999.94
-        (post-fix correct value is $60,000.00 exact, the contract
-        annual salary).  Arithmetic of the residue distribution:
-        floor=$2307.69, residue=$60000-$2307.69*26=$0.06, residue_cents=6.
+        **Re-pinned at plan step balance:X-aw**, which superseded MED-05 /
+        PA-07.  Under that rule the first 6 periods carried $2307.70 and the
+        year summed to $60,000.00 exactly; the year now sums to
+        26 * $2307.69 = $59,999.94, six cents under the contract salary.
+        ``TestTheGrossIsARateAndNotAShareOfAYear`` owns that gap as its own
+        subject; this case owns the ANNUAL TOTALS built on top of it.
         """
         results = project_salary(
-            base_profile, biweekly_periods, simple_tax_configs
+            payroll_basis(base_profile, biweekly_periods), biweekly_periods, simple_tax_configs
         )
 
         assert len(results) == 26, (
             f"expected 26 results, got {len(results)}"
         )
 
-        # MED-05 / PA-07: total_gross is the exact annual salary, not
-        # the prior 26 * $2307.69 = $59,999.94 understatement.
+        # 26 * $2307.69 = $59,999.94 -- six cents under the contract salary,
+        # which is the cost ruling R-HW accepts (plan step balance:X-aw).
         total_gross = sum(r.earnings.gross_biweekly for r in results)
-        assert total_gross == Decimal("60000.00"), (
-            f"total gross: expected 60000.00 (exact annual; "
-            f"MED-05/PA-07 reconciliation), got {total_gross}"
+        assert total_gross == Decimal("59999.94"), (
+            f"total gross: expected 59999.94 (26 * 2307.69), "
+            f"got {total_gross}"
         )
 
-        # Periods 1-6 receive floor+$0.01 = $2307.70; periods 7-26
-        # receive floor = $2307.69.  6 * 2307.70 + 20 * 2307.69
-        #   = 13846.20 + 46153.80 = 60000.00.
-        for i in range(6):
-            assert results[i].earnings.gross_biweekly == Decimal("2307.70"), (
-                f"period {i+1}: expected 2307.70 (residue +cent), "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-        for i in range(6, 26):
+        # Every period carries the same rate.
+        for i in range(26):
             assert results[i].earnings.gross_biweekly == Decimal("2307.69"), (
-                f"period {i+1}: expected 2307.69 (floor), "
+                f"period {i+1}: expected 2307.69, "
                 f"got {results[i].earnings.gross_biweekly}"
             )
 
@@ -1717,13 +2297,10 @@ class TestAnnualProjection:
             f"total medicare: expected 869.96, got {total_medicare}"
         )
 
-        # Re-pinned: net first 6 = $1854.23, last 20 = $1854.22.
-        # 6 * 1854.23 + 20 * 1854.22 = 11125.38 + 37084.40 = 48209.78.
-        # (Pre-fix value was 26 * $1854.22 = $48209.72.)
+        # 26 * $1854.22 = $48,209.72, one net figure for the whole year.
         total_net = sum(r.earnings.net_pay for r in results)
-        assert total_net == Decimal("48209.78"), (
-            f"total net: expected 48209.78 (MED-05/PA-07 reconciled), "
-            f"got {total_net}"
+        assert total_net == Decimal("48209.72"), (
+            f"total net: expected 48209.72 (26 * 1854.22), got {total_net}"
         )
 
         # Cross-check: net = gross - fed - state - ss - med
@@ -1736,73 +2313,46 @@ class TestAnnualProjection:
         self, base_profile, biweekly_periods,
         simple_tax_configs
     ):
-        """C27-3 corollary: $60k breakdown is residue-distributed across 26 periods.
+        """C27-3 corollary: the $60k breakdown is IDENTICAL across 26 periods.
 
-        $60k cumul max = $60,000.00 exact under MED-05 / PA-07, under
-        SS cap ($168,600) and surtax ($200,000).  After the
-        reconciliation contract the first 6 periods receive a +$0.01
-        residue cent on gross/net; periods 7-26 receive the floor.
-        Federal, state, SS, and medicare per-period values are
-        byte-identical across all 26 periods (the $0.01 gross
-        difference is below the cent-rounding boundary for each tax).
+        Every field of every period matches -- gross, net and all four
+        withholding lines -- because the gross is a rate (ruling
+        **balance:R-HW**) and nothing else in this profile varies by period.
+        The year's cumulative max is $59,999.94, under the SS cap ($168,600)
+        and the surtax threshold ($200,000), so no cap moves a later period.
 
-        Re-pinned under MED-05 / PA-07: the prior "all 26 periods
-        identical" invariant relied on the unreconciled per-period
-        quantisation that this commit fixes.  The new invariant is:
-        within each cent-equivalence group (first 6 vs. last 20)
-        every breakdown field is identical, and the tax fields are
-        identical across all 26.
+        **Re-pinned at plan step balance:X-aw.** Under MED-05 / PA-07 this
+        case asserted TWO cent-equivalence groups -- the first 6 periods at
+        $2307.70 / $1854.23 and the last 20 at $2307.69 / $1854.22 -- which
+        was the residue distribution showing through into net pay.  The
+        "all 26 identical" invariant it replaced is restored, and it is now
+        structural rather than a property of where the residue happened to
+        land: the producer cannot see a period at all.
         """
         results = project_salary(
-            base_profile, biweekly_periods, simple_tax_configs
+            payroll_basis(base_profile, biweekly_periods), biweekly_periods, simple_tax_configs
         )
 
         assert len(results) == 26, (
             f"expected 26 results, got {len(results)}"
         )
 
-        # First 6 periods: gross = floor + $0.01 = $2307.70;
-        # net = $2307.70 - $173.08 - $103.85 - $143.08 - $33.46
-        #     = $1854.23.
-        first_group_gross = results[0].earnings.gross_biweekly
-        first_group_net = results[0].earnings.net_pay
-        assert first_group_gross == Decimal("2307.70")
-        assert first_group_net == Decimal("1854.23")
-        for i in range(1, 6):
-            r = results[i]
-            assert r.earnings.gross_biweekly == first_group_gross, (
-                f"period {i+1}: gross {r.earnings.gross_biweekly} != "
-                f"first-group gross {first_group_gross}"
-            )
-            assert r.earnings.net_pay == first_group_net, (
-                f"period {i+1}: net {r.earnings.net_pay} != "
-                f"first-group net {first_group_net}"
-            )
+        # $60,000 / 26 = $2307.6923... -> $2307.69; net = $2307.69 - $173.08
+        # - $103.85 - $143.08 - $33.46 = $1854.22.
+        assert results[0].earnings.gross_biweekly == Decimal("2307.69")
+        assert results[0].earnings.net_pay == Decimal("1854.22")
 
-        # Last 20 periods: gross = floor = $2307.69; net = $1854.22.
-        last_group_gross = results[6].earnings.gross_biweekly
-        last_group_net = results[6].earnings.net_pay
-        assert last_group_gross == Decimal("2307.69")
-        assert last_group_net == Decimal("1854.22")
-        for i in range(7, 26):
-            r = results[i]
-            assert r.earnings.gross_biweekly == last_group_gross, (
-                f"period {i+1}: gross {r.earnings.gross_biweekly} != "
-                f"last-group gross {last_group_gross}"
-            )
-            assert r.earnings.net_pay == last_group_net, (
-                f"period {i+1}: net {r.earnings.net_pay} != "
-                f"last-group net {last_group_net}"
-            )
-
-        # Group boundary: exactly $0.01 between adjacent groups.
-        assert first_group_gross - last_group_gross == Decimal("0.01")
-        assert first_group_net - last_group_net == Decimal("0.01")
-
-        # Federal/state/FICA per-period: byte-identical across all 26.
         first = results[0]
         for i in range(1, 26):
             r = results[i]
+            assert r.earnings.gross_biweekly == first.earnings.gross_biweekly, (
+                f"period {i+1}: gross {r.earnings.gross_biweekly} != "
+                f"period 1 gross {first.earnings.gross_biweekly}"
+            )
+            assert r.earnings.net_pay == first.earnings.net_pay, (
+                f"period {i+1}: net {r.earnings.net_pay} != "
+                f"period 1 net {first.earnings.net_pay}"
+            )
             assert r.taxes.federal == first.taxes.federal, (
                 f"period {i+1}: federal {r.taxes.federal} != "
                 f"period 1 federal {first.taxes.federal}"
@@ -1846,7 +2396,8 @@ class TestEdgeCases:
         )
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs
         )
 
         assert result.earnings.gross_biweekly == Decimal("0.00"), (
@@ -1892,8 +2443,8 @@ class TestEdgeCases:
 
         with pytest.raises(InvalidGrossPayError):
             calculate_paycheck(
-                profile, period, [period],
-                simple_tax_configs
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs
             )
 
 
@@ -1907,56 +2458,66 @@ class TestNegativeAndBoundaryPaths:
     deductions, and unusual pay frequencies.
     """
 
-    def test_pay_periods_per_year_zero_defaults_to_26(self, simple_tax_configs):
-        """pay_periods_per_year=0 defaults to 26 via 'or 26' fallback.
+    def test_a_zero_paycheck_count_cannot_be_expressed(self):
+        """A zero paycheck count is REFUSED, not silently defaulted (R-F16).
 
-        Input: Profile with pay_periods_per_year=0.
-        Expected: Identical output to pay_periods_per_year=26. The source code
-        has `profile.pay_periods_per_year or 26` which treats 0 as falsy.
-        Why: Division by zero in the paycheck pipeline would crash grid load
-        for any user with a misconfigured salary profile.
+        Input: a cadence of 0 days, which is what a stored
+        ``pay_periods_per_year`` of 0 amounted to before plan step R-F16.
+        Expected: ``PayCadence`` refuses at construction, so no
+        :class:`PayrollBasis` and no paycheck can be built from it.
+
+        **This replaces an assertion that the engine SILENTLY defaulted a zero
+        count to 26**, via ``profile.pay_periods_per_year or 26``, whose own
+        note asked for "a ValidationError guard if 0 is invalid user input".
+        Dropping the column is that guard: the count is now derived from
+        ``budget.pay_schedule.cadence_days``, ``ck_pay_schedule_cadence_range``
+        bounds that column to 1..365 in the database, and
+        :func:`~app.services.pay_calendar.validate_cadence` refuses the same
+        range in front of it -- so the misconfigured profile the old test
+        described is no longer a state the application can hold.  Division by
+        zero in the pipeline is prevented by the value not existing rather
+        than by a falsy-coalesce nobody could see.
+        """
+        from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+            PayCadence,
+            PayCalendarError,
+        )
+
+        with pytest.raises(PayCalendarError):
+            PayCadence(cadence_days=0)
+
+    def test_a_biweekly_cadence_prices_the_known_paycheck(
+        self, simple_tax_configs
+    ):
+        """26 paychecks a year is what a 14-day cadence derives.
+
+        Input: a $60,000 profile on the default 14-day cadence.
+        Expected: the known $60k / 26 figures -- gross $2,307.69, net
+        $1,854.22 -- proving the DERIVED count reproduces exactly what the
+        dropped column's 26 produced, which is the no-op claim plan step
+        R-F16 makes for every owner whose two stored answers agreed.
         """
         period = _period(start_date=date(2026, 1, 16), period_id=1)
-
-        profile_zero = FakeProfile(
+        profile = FakeProfile(
             annual_salary=60000,
-            pay_periods_per_year=0,
-            created_at=date(2026, 1, 1),
-        )
-        profile_26 = FakeProfile(
-            annual_salary=60000,
-            pay_periods_per_year=26,
             created_at=date(2026, 1, 1),
         )
 
-        # NOTE: Source does not raise for zero. Instead,
-        # `profile.pay_periods_per_year or 26` silently defaults to 26.
-        # Consider adding a ValidationError guard if 0 is invalid user input.
-        result_zero = calculate_paycheck(
-            profile_zero, period, [period], simple_tax_configs
-        )
-        result_26 = calculate_paycheck(
-            profile_26, period, [period], simple_tax_configs
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs
         )
 
-        # Both produce identical results since 0 defaults to 26.
-        assert result_zero.earnings.gross_biweekly == result_26.earnings.gross_biweekly
-        assert result_zero.taxes.federal == result_26.taxes.federal
-        assert result_zero.taxes.state == result_26.taxes.state
-        assert result_zero.taxes.social_security == result_26.taxes.social_security
-        assert result_zero.taxes.medicare == result_26.taxes.medicare
-        assert result_zero.earnings.net_pay == result_26.earnings.net_pay
+        assert result.earnings.gross_biweekly == Decimal("2307.69")
+        assert result.earnings.net_pay == Decimal("1854.22")
 
-        # Verify actual values match known $60k/26-periods result.
-        assert result_zero.earnings.gross_biweekly == Decimal("2307.69")
-        assert result_zero.earnings.net_pay == Decimal("1854.22")
-
-    def test_pay_periods_per_year_one_annual(
+    def test_a_once_a_year_cadence_has_no_rounding_artifacts(
         self, simple_bracket_set, nc_state_config, standard_fica
     ):
         """Annual pay frequency (1 period/year) produces no rounding artifacts.
 
-        Input: annual_salary=78000, pay_periods_per_year=1, no raises/deductions.
+        Input: annual_salary=78000, a 365-day cadence (1 paycheck a year), no
+        raises/deductions.
         Pipeline trace:
           gross = 78000 / 1 = 78000.00
           federal: taxable = 78000 - 15000 = 63000
@@ -1970,7 +2531,6 @@ class TestNegativeAndBoundaryPaths:
         """
         profile = FakeProfile(
             annual_salary=78000,
-            pay_periods_per_year=1,
             created_at=date(2026, 1, 1),
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
@@ -1980,7 +2540,12 @@ class TestNegativeAndBoundaryPaths:
             "fica_config": standard_fica,
         }
 
-        result = calculate_paycheck(profile, period, [period], tax_configs)
+        # ``round(365.2425 / 365) = 1``: the once-a-year cadence, DERIVED
+        # rather than stated as a count (plan step R-F16).
+        result = calculate_paycheck(
+            payroll_basis(profile, [period], cadence_days=365), period,
+            tax_configs,
+        )
 
         # gross = 78000 / 1 = 78000.00 (exact, no rounding)
         assert result.earnings.gross_biweekly == Decimal("78000.00"), (
@@ -2025,7 +2590,6 @@ class TestNegativeAndBoundaryPaths:
         """
         profile = FakeProfile(
             annual_salary=30000,
-            pay_periods_per_year=26,
             deductions=[
                 FakeDeduction(
                     name="Excessive Post Tax",
@@ -2037,7 +2601,9 @@ class TestNegativeAndBoundaryPaths:
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs)
 
         assert result.earnings.gross_biweekly == Decimal("1153.85")
         assert result.taxes.federal == Decimal("57.69")
@@ -2054,19 +2620,20 @@ class TestNegativeAndBoundaryPaths:
     def test_zero_annual_salary(self, simple_tax_configs):
         """Zero salary produces zero in every field without error.
 
-        Input: annual_salary=0, pay_periods_per_year=26, no deductions.
+        Input: annual_salary=0 on the default 14-day cadence, no deductions.
         Expected: All fields (including annual_salary, taxable_income) are zero.
         Why: A zero-salary profile (e.g., a template or placeholder) must not
         produce NaN, crash, or negative values in any tax calculation.
         """
         profile = FakeProfile(
             annual_salary=0,
-            pay_periods_per_year=26,
             created_at=date(2026, 1, 1),
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs)
 
         assert result.earnings.annual_salary == Decimal("0.00")
         assert result.earnings.gross_biweekly == Decimal("0.00")
@@ -2094,7 +2661,6 @@ class TestNegativeAndBoundaryPaths:
         """
         profile = FakeProfile(
             annual_salary=52000,
-            pay_periods_per_year=26,
             deductions=[
                 FakeDeduction(
                     name="Mega Pre Tax",
@@ -2106,7 +2672,9 @@ class TestNegativeAndBoundaryPaths:
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs)
 
         # gross = 52000/26 = 2000.00
         assert result.earnings.gross_biweekly == Decimal("2000.00")
@@ -2203,7 +2771,8 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         with_ded = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs
         )
 
         # Baseline comparison (from established test):
@@ -2279,10 +2848,12 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
-            no_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(no_ded_profile, [period]), period,
+            simple_tax_configs
         )
         with_ded = calculate_paycheck(
-            with_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(with_ded_profile, [period]), period,
+            simple_tax_configs
         )
 
         # SS must be identical -- computed on gross, not taxable.
@@ -2350,7 +2921,8 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs
         )
 
         # Deduction amount computed from gross.
@@ -2432,10 +3004,12 @@ class TestPreTaxDeductionTaxImpact:
         all_periods = [p1, p2, p3]
 
         normal = calculate_paycheck(
-            profile, p2, all_periods, simple_tax_configs
+            payroll_basis(profile, all_periods), p2,
+            simple_tax_configs
         )
         third = calculate_paycheck(
-            profile, p3, all_periods, simple_tax_configs
+            payroll_basis(profile, all_periods), p3,
+            simple_tax_configs
         )
 
         # On normal paycheck, deduction applies.
@@ -2533,7 +3107,8 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs
         )
 
         assert result.deductions.total_pre_tax == Decimal("300.00"), (
@@ -2599,10 +3174,12 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
-            no_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(no_ded_profile, [period]), period,
+            simple_tax_configs
         )
         post_ded = calculate_paycheck(
-            post_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(post_ded_profile, [period]), period,
+            simple_tax_configs
         )
 
         # Every tax field must be identical.
@@ -2667,7 +3244,8 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs
         )
 
         # Taxes match the $200 pre-tax scenario (post-tax has no effect).
@@ -2742,10 +3320,12 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
-            no_ded_profile, period, [period], configs
+            payroll_basis(no_ded_profile, [period]), period,
+            configs
         )
         with_ded = calculate_paycheck(
-            with_ded_profile, period, [period], configs
+            payroll_basis(with_ded_profile, [period]), period,
+            configs
         )
 
         # Without deduction: state std ded reduces the base.
@@ -2793,7 +3373,8 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         r = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs
         )
 
         # Verify every component individually.
@@ -2870,10 +3451,12 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
-            no_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(no_ded_profile, [period]), period,
+            simple_tax_configs
         )
         with_ded = calculate_paycheck(
-            with_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(with_ded_profile, [period]), period,
+            simple_tax_configs
         )
 
         assert no_ded.taxes.federal == Decimal("657.69"), (
@@ -2941,7 +3524,8 @@ class TestCalibrationIntegration:
         )
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
             calibration=cal,
         )
 
@@ -3041,7 +3625,8 @@ class TestCalibrationIntegration:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
             calibration=cal,
         )
 
@@ -3075,7 +3660,8 @@ class TestCalibrationIntegration:
 
         # Bracket-based calculation.
         bracket_result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
         )
 
         # Calibrated with intentionally different rates.
@@ -3086,7 +3672,8 @@ class TestCalibrationIntegration:
             medicare_rate="0.01450",
         )
         cal_result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
             calibration=cal,
         )
 
@@ -3106,7 +3693,8 @@ class TestCalibrationIntegration:
 
         # Bracket-based (no calibration).
         bracket_result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
         )
 
         # Inactive calibration should be ignored.
@@ -3118,7 +3706,8 @@ class TestCalibrationIntegration:
             is_active=False,
         )
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
             calibration=cal,
         )
 
@@ -3136,10 +3725,12 @@ class TestCalibrationIntegration:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result_omitted = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
         )
         result_none = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
             calibration=None,
         )
 
@@ -3176,7 +3767,8 @@ class TestCalibrationIntegration:
         )
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
             calibration=cal,
         )
 
@@ -3213,7 +3805,8 @@ class TestCalibrationIntegration:
         )
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
             calibration=cal,
         )
 
@@ -3265,7 +3858,8 @@ class TestCalibrationIntegration:
         )
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
             calibration=cal,
         )
 
@@ -3321,7 +3915,8 @@ class TestCalibrationIntegration:
 
         # Non-3rd paycheck: deduction applies, taxable = 2307.69 - 200 = 2107.69
         normal = calculate_paycheck(
-            profile, p1, all_periods, simple_tax_configs,
+            payroll_basis(profile, all_periods), p1,
+            simple_tax_configs,
             calibration=cal,
         )
         assert normal.deductions.total_pre_tax == Decimal("200.00")
@@ -3329,7 +3924,8 @@ class TestCalibrationIntegration:
 
         # 3rd paycheck: 24-per-year deduction is SKIPPED, taxable = 2307.69
         third = calculate_paycheck(
-            profile, p3, all_periods, simple_tax_configs,
+            payroll_basis(profile, all_periods), p3,
+            simple_tax_configs,
             calibration=cal,
         )
         assert third.period.is_third_paycheck is True
@@ -3371,11 +3967,13 @@ class TestCalibrationIntegration:
         )
 
         cal_result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
             calibration=cal,
         )
         bracket_result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile, [period]), period,
+            simple_tax_configs,
         )
 
         # Gross, raises, and deductions must be identical.
@@ -3410,11 +4008,11 @@ class TestCalibrationIntegration:
 
         # With calibration.
         cal_breakdowns = project_salary(
-            profile, periods, simple_tax_configs, calibration=cal,
+            payroll_basis(profile, periods), periods, simple_tax_configs, calibration=cal,
         )
         # Without calibration.
         bracket_breakdowns = project_salary(
-            profile, periods, simple_tax_configs,
+            payroll_basis(profile, periods), periods, simple_tax_configs,
         )
 
         assert len(cal_breakdowns) == 3
@@ -3427,155 +4025,133 @@ class TestCalibrationIntegration:
             )
 
 
-class TestBiweeklyResidueReconciliation:
-    """MED-05 / PA-07: per-cycle residue reconciles into the annual aggregate.
+class TestTheGrossIsARateAndNotAShareOfAYear:
+    """Plan step **balance:X-aw** / ruling **balance:R-HW**: the per-paycheck
+    gross is the salary over the owner's paycheck count, and nothing else.
 
-    For each canonical example in the module docstring, runs
-    ``project_salary`` with a full 26-period year and asserts the sum
-    of ``gross_biweekly`` values equals the contract annual salary
-    exactly.  Also asserts the distribution is deterministic across
-    repeat invocations (no random ordering, no shared mutable state)
-    and that the partial-context fallback preserves the historical
-    half-up semantics for single-period callers.
+    These replace ``TestBiweeklyResidueReconciliation``, which graded audit
+    MED-05 / PA-07's contract -- the annual quantisation residue distributed
+    across a calendar year so the year summed to the annual salary exactly.
+    That contract is superseded, and the case that mattered most is the one it
+    could not have: :meth:`test_the_gross_does_not_move_with_the_period_list`
+    is finding **N-239**, and it FAILS on the superseded rule by construction,
+    because deciding which paychecks got the residue cent required counting the
+    period rows the caller happened to pass.
     """
 
     @pytest.mark.parametrize(
-        "annual_salary,expected_floor,expected_residue_cents",
+        "annual_salary,expected_gross",
         [
-            # Per-period exact = annual / 26.  Floor is the per-period
-            # value rounded *down* to the cent; residue_cents is the
-            # number of periods that receive floor + $0.01.
-            #
-            # $50,000 / 26 = $1923.0769...; floor=$1923.07,
-            #   exact_share=$50,000.00, 26*1923.07=$49999.82,
-            #   residue=$0.18 = 18 cents.
-            (Decimal("50000"), Decimal("1923.07"), 18),
-            # $75,000 / 26 = $2884.6153...; floor=$2884.61,
-            #   26*2884.61=$74999.86, residue=$0.14 = 14 cents.
-            (Decimal("75000"), Decimal("2884.61"), 14),
-            # $100,000 / 26 = $3846.1538...; floor=$3846.15,
-            #   26*3846.15=$99999.90, residue=$0.10 = 10 cents.
-            (Decimal("100000"), Decimal("3846.15"), 10),
-            # $60,000 / 26 = $2307.6923...; floor=$2307.69,
-            #   26*2307.69=$59999.94, residue=$0.06 = 6 cents.
-            (Decimal("60000"), Decimal("2307.69"), 6),
-            # $78,000 / 26 = $3000.0000 exact; floor=$3000.00,
-            #   residue=0 -> no +cent periods.
-            (Decimal("78000"), Decimal("3000.00"), 0),
+            # Hand-computed: annual / 26, ROUND_HALF_UP at the cent.
+            # $50,000 / 26 = $1923.0769... -> $1923.08
+            (Decimal("50000"), Decimal("1923.08")),
+            # $75,000 / 26 = $2884.6153... -> $2884.62
+            (Decimal("75000"), Decimal("2884.62")),
+            # $100,000 / 26 = $3846.1538... -> $3846.15
+            (Decimal("100000"), Decimal("3846.15")),
+            # $60,000 / 26 = $2307.6923... -> $2307.69
+            (Decimal("60000"), Decimal("2307.69")),
+            # $78,000 / 26 = $3000.00 exact -- no rounding at all.
+            (Decimal("78000"), Decimal("3000.00")),
+            # The owner's own salary, whose stub pays a flat $3,526.00:
+            # $91,675 / 26 = $3525.9615... -> $3525.96.
+            (Decimal("91675"), Decimal("3525.96")),
         ],
     )
-    def test_full_year_sum_equals_annual_exact(
-        self, annual_salary, expected_floor, expected_residue_cents,
-        biweekly_periods, simple_tax_configs,
+    def test_every_paycheck_of_a_salary_segment_pays_the_same_figure(
+        self, annual_salary, expected_gross, biweekly_periods,
+        simple_tax_configs,
     ):
-        """C27-3: sum of 26 biweekly gross values == annual salary exactly.
+        """All 26 paychecks carry ONE figure, which is what a real stub does.
 
-        For each parameter row, runs ``project_salary`` with 26
-        periods and asserts: (a) the sum of grosses equals the annual
-        salary at the cent; (b) the first ``residue_cents`` periods
-        carry the +$0.01 adjustment and the rest carry the floor;
-        (c) the boundary between groups is exactly one cent.
-
-        Hand-derived ``floor`` and ``residue_cents`` are in the
-        parametrize table so each row's arithmetic is reviewable
-        inline.
+        The superseded rule gave the earliest few paychecks of the year an
+        extra cent, so a year held two distinct grosses differing by $0.01.
+        A real employer pays one number: the owner's own nine measured payroll
+        deposits all carry a gross of $3,526.00.
         """
         profile = FakeProfile(
-            annual_salary=annual_salary,
-            created_at=date(2026, 1, 1),
+            annual_salary=annual_salary, created_at=date(2026, 1, 1),
         )
 
         results = project_salary(
-            profile, biweekly_periods, simple_tax_configs
+            payroll_basis(profile, biweekly_periods), biweekly_periods, simple_tax_configs
         )
+
         assert len(results) == 26
-
-        total_gross = sum(r.earnings.gross_biweekly for r in results)
-        assert total_gross == annual_salary.quantize(Decimal("0.01")), (
-            f"sum of grosses {total_gross} != annual {annual_salary}"
+        grosses = {r.earnings.gross_biweekly for r in results}
+        assert grosses == {expected_gross}, (
+            f"expected one gross {expected_gross} across the year, "
+            f"got {sorted(grosses)}"
         )
 
-        plus_cent = expected_floor + Decimal("0.01")
-        for i in range(expected_residue_cents):
-            assert results[i].earnings.gross_biweekly == plus_cent, (
-                f"period {i+1}: expected {plus_cent} (residue +cent), "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-        for i in range(expected_residue_cents, 26):
-            assert results[i].earnings.gross_biweekly == expected_floor, (
-                f"period {i+1}: expected {expected_floor} (floor), "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-
-    def test_residue_distribution_deterministic_across_runs(
-        self, base_profile, biweekly_periods, simple_tax_configs,
+    def test_the_gross_does_not_move_with_the_period_list(
+        self, simple_tax_configs,
     ):
-        """C27-4: residue distribution is byte-identical across repeat runs.
+        """Finding **N-239**: extending the schedule must not re-price a paycheck.
 
-        ``project_salary`` is invoked twice on the same inputs; the
-        per-period gross sequence must match byte-for-byte.  This
-        guards against any non-deterministic ordering (e.g. dict
-        iteration before insertion-ordering became reliable, set
-        randomisation) inside the reconciliation helper.
+        Prices ONE fixed paycheck -- 2026-01-02, the owner's first payday of
+        the year -- against period lists of five very different sizes, and
+        asserts every caller gets the same answer.  A route preview passes a
+        single period; a year-scoped caller passes that year; the recurrence
+        engine's schedule extend passes only the rows it just created.
+
+        **The SUBJECT has to sit where the superseded rule put its residue, or
+        this case grades nothing.**  An earlier draft used the 14th payday and
+        PASSED on the pre-X-aw code, because MED-05 / PA-07 gave the extra cent
+        to the earliest 6 periods of the year and the 14th was never one of
+        them -- the assertion held under both rules and the test measured
+        nothing.  Period 1 is inside that window, so the old rule answers
+        $2307.70 from a 26- or 27-period list and $2307.69 from a shorter one
+        (which fell to its half-up fallback): two figures for one paycheck.
+
+        $60,000 / 26 = $2307.6923... -> $2307.69, whoever asks and however
+        much of the schedule they hold.
+
+        The real-data form of the same defect: on the owner's own schedule,
+        filling 2028 from its 16 stored rows to its 26 paydays moved six
+        already-settled paychecks by a cent each ($3,930.07 -> $3,930.06).
         """
-        first_run = project_salary(
-            base_profile, biweekly_periods, simple_tax_configs
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
+        # 27 is not a typo: a biweekly calendar year holds 27 paydays about
+        # one year in eleven.  A Jan 2 phase is NOT one of them -- Jan 2 plus
+        # 26 x 14 days lands 2027-01-01, so 2026 holds 26 -- and the 27th
+        # element here therefore falls in the NEXT year.  It still discriminates
+        # (the superseded rule counted 26 same-year periods either way, so both
+        # the 26- and 27-element lists answered $2307.70), and it is the case
+        # that exercises a list running past its own year's end.  The owner's
+        # real phase, Jan 1, is a genuine 27-payday 2026.
+        list_sizes = (1, 3, 16, 26, 27)
+        subject = _period(start_date=date(2026, 1, 2), period_id=1)
+
+        answers = {}
+        for size in list_sizes:
+            all_periods = [subject] + [
+                _period(start_date=date(2026, 1, 2) + timedelta(days=14 * i),
+                        period_id=i + 1)
+                for i in range(1, size)
+            ]
+            assert len(all_periods) == size
+            answers[size] = calculate_paycheck(
+            payroll_basis(profile, all_periods), subject,
+            simple_tax_configs,
+            ).earnings.gross_biweekly
+
+        assert set(answers.values()) == {Decimal("2307.69")}, (
+            "one paycheck must have ONE gross however much of the schedule "
+            f"the caller holds; got {answers}"
         )
-        second_run = project_salary(
-            base_profile, biweekly_periods, simple_tax_configs
-        )
 
-        first_grosses = [r.earnings.gross_biweekly for r in first_run]
-        second_grosses = [r.earnings.gross_biweekly for r in second_run]
-
-        assert first_grosses == second_grosses, (
-            "residue distribution diverged between runs: "
-            f"first={first_grosses} second={second_grosses}"
-        )
-
-    def test_single_period_call_uses_half_up_fallback(
-        self, base_profile, simple_tax_configs,
-    ):
-        """Partial-context single-period call retains ROUND_HALF_UP semantics.
-
-        Route previews and isolated test fixtures invoke
-        ``calculate_paycheck`` with ``all_periods=[period]``; with
-        fewer than ``pay_periods_per_year`` periods in the year, the
-        reconciliation cannot anchor against a complete annual
-        figure, so the helper falls back to the historical half-up
-        quantisation.  $60k / 26 -> $2307.69 (half-up) regardless of
-        which calendar position the period occupies.
-        """
-        period = _period(start_date=date(2026, 1, 16), period_id=1)
-        result = calculate_paycheck(
-            base_profile, period, [period], simple_tax_configs,
-        )
-        # Half-up: 2307.6923... -> 2307.69 (same as the legacy contract).
-        assert result.earnings.gross_biweekly == Decimal("2307.69")
-
-    def test_mid_year_raise_reconciles_each_salary_segment(
+    def test_a_mid_year_raise_gives_two_constant_figures(
         self, biweekly_periods, simple_tax_configs,
     ):
-        """A mid-year raise splits the year into two reconciliation groups.
+        """A raise changes the rate ONCE; each side of it is flat.
 
-        A non-recurring 10% raise effective month 7 (July) splits 2026
-        into:
-          - Periods 1-13 (Jan 2 .. Jun 26, dates < Jul): annual=$60,000
-          - Periods 14-26 (Jul 10 .. Dec 18, dates >= Jul): annual=$66,000
-
-        The biweekly_periods fixture spaces periods 14 days apart from
-        Jan 2; the 14th period starts 13*14 = 182 days later = Jul 3
-        2026, so periods 14..26 fall in the post-raise segment.  Each
-        segment reconciles independently against its share of the
-        annual salary:
-          floor(60000/26) = $2307.69; 13 * $2307.69 = $29,999.97;
-            exact share = 60000 * 13/26 = $30,000.00; residue = 3 cents.
-          floor(66000/26) = $2538.46; 13 * $2538.46 = $32,999.98;
-            exact share = 66000 * 13/26 = $33,000.00; residue = 2 cents.
-
-        First 3 of segment 1 get +cent ($2307.70); first 2 of segment 2
-        get +cent ($2538.47).  Sum of all 26 grosses = $30,000 + $33,000
-        = $63,000 exact.
+        A non-recurring 10% raise effective July 2026 splits the year at the
+        14th period (Jan 2 + 13*14 days = Jul 3).  Before it every paycheck is
+        $60,000 / 26 = $2307.69; after it every paycheck is
+        $66,000 / 26 = $2538.4615... -> $2538.46.  The superseded rule gave the
+        first three of the pre-raise run and the first two of the post-raise
+        run an extra cent, so each run held two figures.
         """
         profile = FakeProfile(
             annual_salary=60000,
@@ -3588,112 +4164,256 @@ class TestBiweeklyResidueReconciliation:
                 ),
             ],
         )
+
         results = project_salary(
-            profile, biweekly_periods, simple_tax_configs
+            payroll_basis(profile, biweekly_periods), biweekly_periods, simple_tax_configs
         )
+
         assert len(results) == 26
+        pre = {r.earnings.gross_biweekly for r in results[:13]}
+        post = {r.earnings.gross_biweekly for r in results[13:]}
+        assert [r.earnings.annual_salary for r in results[:13]] == (
+            [Decimal("60000.00")] * 13
+        )
+        assert [r.earnings.annual_salary for r in results[13:]] == (
+            [Decimal("66000.00")] * 13
+        )
+        assert pre == {Decimal("2307.69")}, f"pre-raise run: {sorted(pre)}"
+        assert post == {Decimal("2538.46")}, f"post-raise run: {sorted(post)}"
 
-        # Identify segment boundary: pre-raise periods have annual
-        # 60000, post-raise have 66000.  By construction (Jul 3 is
-        # period 14 = index 13), indices 0..12 are pre-raise and
-        # indices 13..25 are post-raise.
-        for i in range(13):
-            assert results[i].earnings.annual_salary == Decimal("60000.00")
-        for i in range(13, 26):
-            assert results[i].earnings.annual_salary == Decimal("66000.00")
-
-        # Pre-raise segment: 13 periods, residue 3 cents.
-        # First 3 (indices 0..2) get $2307.70; rest (3..12) get $2307.69.
-        for i in range(3):
-            assert results[i].earnings.gross_biweekly == Decimal("2307.70"), (
-                f"pre-raise period {i+1}: expected 2307.70, "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-        for i in range(3, 13):
-            assert results[i].earnings.gross_biweekly == Decimal("2307.69"), (
-                f"pre-raise period {i+1}: expected 2307.69, "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-
-        # Post-raise segment: 13 periods, residue 2 cents.
-        # First 2 (indices 13..14) get $2538.47; rest (15..25) get $2538.46.
-        for i in range(13, 15):
-            assert results[i].earnings.gross_biweekly == Decimal("2538.47"), (
-                f"post-raise period {i+1}: expected 2538.47, "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-        for i in range(15, 26):
-            assert results[i].earnings.gross_biweekly == Decimal("2538.46"), (
-                f"post-raise period {i+1}: expected 2538.46, "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-
-        # Each segment sums to its share of its annual salary exactly.
+        # What ruling R-HW costs in a RAISE year, pinned: the superseded rule
+        # made each segment total its exact pro-rata share ($30,000.00 and
+        # $33,000.00, summing to $63,000.00). Each is now the flat rate times
+        # the segment, three cents and two cents under respectively.
         pre_total = sum(r.earnings.gross_biweekly for r in results[:13])
         post_total = sum(r.earnings.gross_biweekly for r in results[13:])
-        # 60000 * 13/26 = 30000.00; 66000 * 13/26 = 33000.00.
-        assert pre_total == Decimal("30000.00"), (
-            f"pre-raise total: expected 30000.00, got {pre_total}"
+        assert pre_total == Decimal("29999.97"), f"pre-raise total {pre_total}"
+        assert post_total == Decimal("32999.98"), f"post-raise total {post_total}"
+        assert pre_total + post_total == Decimal("62999.95")
+
+    @pytest.mark.parametrize(
+        "annual_salary,expected_year_total,expected_gap",
+        [
+            # 26 * round(annual/26) against the annual salary.  The gap is
+            # what ruling R-HW accepts and MED-05 / PA-07 existed to close;
+            # it is stated per row so the cost is reviewable rather than
+            # asserted as "close enough".
+            # 26 * 2307.69 = 59999.94, $0.06 under $60,000.
+            (Decimal("60000"), Decimal("59999.94"), Decimal("-0.06")),
+            # 26 * 1923.08 = 50000.08, $0.08 OVER $50,000 -- the gap has no
+            # fixed sign, because the per-paycheck figure rounds either way.
+            (Decimal("50000"), Decimal("50000.08"), Decimal("0.08")),
+            # 26 * 3000.00 = 78000.00 exactly: a salary that divides evenly
+            # has no gap at all.
+            (Decimal("78000"), Decimal("78000.00"), Decimal("0.00")),
+            # The owner's: 26 * 3525.96 = 91674.96, $0.04 under $91,675 --
+            # and the employer's own flat $3,526.00 sums to $91,676.00, which
+            # is $1.00 over.  Neither the app nor payroll hits the salary
+            # exactly, which is why the identity was given up (finding N-391).
+            (Decimal("91675"), Decimal("91674.96"), Decimal("-0.04")),
+        ],
+    )
+    def test_the_year_no_longer_sums_to_the_annual_salary_exactly(
+        self, annual_salary, expected_year_total, expected_gap,
+        biweekly_periods, simple_tax_configs,
+    ):
+        """The COST of ruling R-HW, pinned so it cannot drift unnoticed.
+
+        MED-05 / PA-07 added the residue distribution to make this sum exact.
+        Ruling R-HW gives that up deliberately: the identity is not one payroll
+        honours, and buying it cost a per-paycheck figure that no stub shows
+        and a dependence on which pay-period rows exist (finding N-239).
+        """
+        profile = FakeProfile(
+            annual_salary=annual_salary, created_at=date(2026, 1, 1),
         )
-        assert post_total == Decimal("33000.00"), (
-            f"post-raise total: expected 33000.00, got {post_total}"
+
+        results = project_salary(
+            payroll_basis(profile, biweekly_periods), biweekly_periods, simple_tax_configs
         )
 
-        # Whole-year total = $30000 + $33000 = $63000 exact.
-        assert pre_total + post_total == Decimal("63000.00")
+        total = sum(r.earnings.gross_biweekly for r in results)
+        assert total == expected_year_total
+        assert total - annual_salary.quantize(TWO_PLACES) == expected_gap
+
+    # **``test_the_investment_projection_prices_the_same_gross`` was DELETED
+    # at plan step salary:R14-b, and what it graded is worth stating.**  It
+    # pinned that the paycheck engine and ``investment_projection`` rounded a
+    # percentage deduction's gross identically -- driven at the owner's own
+    # 2027 salary of $96,785.88, where until plan step balance:X-aw the two
+    # answered $3,722.54 and $3,722.53 on 5 of his 63 saved periods, so a
+    # percentage was taken against a gross a cent below the one the paycheck
+    # subtracted it from.  X-aw made both ask
+    # ``payroll_basis.gross_per_paycheck``, and this case held them there.
+    #
+    # It has no successor because it has no SUBJECT: the second producer is
+    # gone.  The contribution feed reads this engine's own breakdown now
+    # (ruling **R-SAL2**), so the agreement the case enforced is structural
+    # rather than asserted -- and the caveat it carried is settled with it.
+    # Its own docstring recorded that it graded the rounding rule and NOT the
+    # wiring, because the two sides' INPUTS still differed by any applicable
+    # raise (finding **D45**), and that "a case asserting these two equal on a
+    # raise-BEARING profile would fail, and should".  There is one input now,
+    # and ``test_income_service.TestThePerPeriodGrossIsTheENGINES`` grades a
+    # raise-bearing profile end to end.
 
 
-class TestBiweeklyResidueDocstring:
-    """Verify the biweekly residue reconciliation is documented in docstrings.
+class TestGrossPerPaycheck:
+    """The producer's own contract, graded directly rather than through the engine.
 
-    F-127 of the 2026-04-15 security audit had classified the biweekly
-    quantisation residue as an accepted simplification.  MED-05 / PA-07
-    of the financial-calculation audit (2026-05-19) superseded that
-    closure with a code-level fix: the residue is now distributed
-    deterministically across the periods of a salary group so the
-    year's grosses sum to the annual salary exactly.
-
-    These tests pin the *new* docstring content; the old F-127 /
-    ``accepted simplification`` wording must NOT survive a revert,
-    because it would silently signal the old contract still applied.
-
-    Re-pinned under MED-05 / PA-07: was F-127 locks; superseded
-    2026-05-19 (this commit).
+    Plan step **balance:X-aw** added it as a public function with two callers,
+    and an adversarial review noted it had no case of its own -- every other
+    test reaches it through ``calculate_paycheck``, which cannot exercise the
+    boundaries below.
     """
 
-    def test_module_docstring_names_reconciliation_contract(self):
-        """Module docstring names the reconciliation contract and audit IDs.
+    def test_it_rounds_half_up_at_an_exact_half_cent(self):
+        """The rounding MODE, at the one input where the modes disagree.
 
-        Asserts the substantive keywords (``reconciled``,
-        ``annual aggregate``, ``MED-05``, ``PA-07``) and the audit
-        supersession trail (``F-127``, ``supersedes``) so a future
-        reader cannot accidentally drift back to the historical wording.
+        None of the salaries the engine tests land on a half cent, so the mode
+        is inherited from ``round_money`` and graded nowhere in this file.
+        $91,000.13 / 26 = $3,500.005 exactly -- ROUND_HALF_UP gives $3,500.01,
+        Python's default ROUND_HALF_EVEN (banker's) gives $3,500.00. A money
+        figure must never reach the even-rounding default implicitly.
         """
+        assert gross_per_paycheck(
+            Decimal("91000.13"), Decimal("26"),
+        ) == Decimal("3500.01")
+
+    def test_a_float_salary_is_refused_rather_than_rounded(self):
+        """A ``float`` cannot reach the cent quantisation.
+
+        The refusal is the DIVISION's, not ``round_money``'s: Decimal refuses
+        to divide by a float operand, so the value never reaches the money
+        boundary at all. Either way the imprecision a float carries cannot be
+        laundered into a paycheck.
+        """
+        with pytest.raises(TypeError):
+            gross_per_paycheck(91675.00, Decimal("26"))
+
+    @pytest.mark.parametrize("cadence_days,count", [
+        (7, "52"), (14, "26"), (15, "24"), (30, "12"), (365, "1"),
+    ])
+    def test_the_count_is_the_divisor_at_every_cadence(
+        self, cadence_days, count,
+    ):
+        """The owner's rhythm decides the figure, which is finding F-16's rule.
+
+        $78,000 divides evenly by 52, 26, 24, 12 and 1, so each expectation is
+        exact arithmetic with no rounding to reason about -- the case grades
+        the DIVISOR and nothing else.
+        """
+        expected = (Decimal("78000") / Decimal(count)).quantize(TWO_PLACES)
+        assert gross_per_paycheck(
+            Decimal("78000"), PayCadence(cadence_days).periods_per_year,
+        ) == expected
+
+
+class TestTheGrossContractIsDocumented:
+    """The per-paycheck gross contract is stated where a reader will find it.
+
+    Replaces ``TestBiweeklyResidueDocstring``, which pinned MED-05 / PA-07's
+    wording so a revert to F-127's could not pass silently.  Ruling
+    **balance:R-HW** superseded MED-05 / PA-07, so these pin the NEW contract
+    for the same reason: the residue-distribution wording must not creep back
+    in and read as though it still applied.
+    """
+
+    def test_module_docstring_names_the_rate_contract(self):
+        """Module docstring states the rule, what it replaced, and its cost."""
         from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
 
         doc = paycheck_calculator.__doc__ or ""
-        # New audit-aligned wording.
-        assert "reconciled" in doc.lower()
-        assert "annual aggregate" in doc.lower()
-        assert "MED-05" in doc
-        assert "PA-07" in doc
-        # Supersession of the prior F-127 wording is explicit.
-        assert "F-127" in doc
-        assert "supersedes" in doc.lower()
+        assert "RATE" in doc
+        assert "X-aw" in doc
+        assert "R-HW" in doc
+        # The supersession trail stays legible in both directions.
+        assert "MED-05" in doc and "PA-07" in doc
+        # Both spellings appear and both are load-bearing: this contract
+        # SUPERSEDED MED-05 / PA-07, which had itself superseded F-127.
+        assert "superseding" in doc and "superseded" in doc
+        assert "N-239" in doc
+        # The cost is stated rather than quietly dropped.
+        assert "no longer sum to the annual salary exactly" in doc
 
-    def test_calculate_paycheck_docstring_references_reconciliation(self):
-        """Function docstring on ``calculate_paycheck`` points at the new contract.
+    def test_calculate_paycheck_docstring_points_at_the_one_producer(self):
+        """The function docstring names the producer and denies the list.
 
-        The function-level docstring must reference the reconciliation
-        contract so a caller reading only the function signature in an
-        IDE tooltip learns that the per-period gross is residue-adjusted
-        (relying solely on the module docstring leaves a discoverability
-        gap).  Asserts the substantive keywords plus the new audit IDs.
+        A caller reading only the signature in an IDE tooltip has to learn
+        that the owner's payday SET does NOT reach the gross -- that is the
+        whole content of finding N-239.  The set is no longer an argument at
+        all: plan step **balance:X-bh-1** moved the four judgements that DO
+        read it onto the calendar the basis carries.
         """
         doc = calculate_paycheck.__doc__ or ""
-        assert "reconciled" in doc.lower()
+        assert "gross_per_paycheck" in doc
+        assert "RATE" in doc
+        assert "the payday SET does not reach it" in doc
+
+    def test_the_producer_states_what_it_gave_up(self):
+        """``gross_per_paycheck`` carries the ruling and the measured cost."""
+        from app.services.payroll_basis import (  # pylint: disable=import-outside-toplevel
+            gross_per_paycheck,
+        )
+
+        doc = gross_per_paycheck.__doc__ or ""
+        assert "R-HW" in doc
+        assert "N-239" in doc
         assert "MED-05" in doc
-        assert "PA-07" in doc
+
+    @pytest.mark.parametrize("registry,ident", [
+        ("rulings.md", "| balance | R-HW |"),
+        ("rulings.md", "| balance | R-IA |"),
+        ("rulings.md", "| balance | R-IF |"),
+        ("ledger.md", "| salary | N-391 "),
+        ("ledger.md", "| pay_calendar | N-398 "),
+        ("ledger.md", "| recurrence | N-399 "),
+    ])
+    def test_the_plan_identifiers_this_step_cites_actually_exist(
+        self, registry, ident,
+    ):
+        """A citation is only worth as much as the row it names.
+
+        The three cases above pin STRINGS in docstrings, which is what they are
+        for -- the superseded wording must not creep back. But a string pin
+        cannot tell a recorded ruling from an invented one, and an adversarial
+        review of this step found exactly that state: `R-HW` cited eighteen
+        times from `app/` and `tests/` while `rulings.md` ended at `R-HO`, and
+        `N-390` / `N-391` cited while `ledger.md` ended at `N-388`. The plan
+        gate could not see it, because **it runs only when a planning document
+        is edited** and the code commit edits none.
+
+        **This is deliberately scoped to the ids THIS step mints, and
+        `tools/plan_gate/_rulings.py:135-141` says why the general arm cannot
+        exist**: "an arc document may name no ruling id that has no
+        `rulings.md` row" would fire on 88 live citations today, because an
+        archived ruling's text stays in its archive. Scoped to a handful of
+        live ids it is decidable, and it is the difference between grading the
+        citation and grading the ruling.
+
+        **`N-390` LEFT this list at plan step balance:X-bh-2, which closed
+        it**, and the removal is the arm working rather than being weakened. A
+        closed finding leaves `ledger.md` by design -- `ledger.md`'s own
+        preamble says a row leaves when its fix SHIPS -- so pinning a closed id
+        here would assert the opposite of the convention and fail forever. What
+        replaces it is what that step LEFT live: `N-398`, `N-399` and the
+        ruling pair `R-IA` / `R-IF`, all four cited from `app/` today.
+
+        *It caught a real defect on the way out.* X-bh-2 committed its code and
+        its plan documents separately, and the full suite ran against the
+        documents in their PRE-change state -- so both commits were green alone
+        and the pair was red. This case is the only thing in the corpus that
+        would have said so, and it says it about the SECOND commit, which is
+        the one no code-side gate looks at.
+        """
+        path = (
+            pathlib.Path(__file__).resolve().parents[2] / "docs/plans" / registry
+        )
+        assert ident in path.read_text(encoding="utf-8"), (
+            f"{ident.strip('| ')} is cited from app/ but has no row in "
+            f"docs/plans/{registry}. conventions.md rules 1 and 9"
+        )
+
 
 
 # ── CRIT-03 / F-037 integration: calibration path SS cap ──────────
@@ -3767,9 +4487,9 @@ class TestCalibrationSSCapIntegration:
             medicare_rate="0.01450",
         )
 
-        bracket = project_salary(profile, periods, tax_configs)
+        bracket = project_salary(payroll_basis(profile, periods), periods, tax_configs)
         calibrated = project_salary(
-            profile, periods, tax_configs, calibration=cal,
+            payroll_basis(profile, periods), periods, tax_configs, calibration=cal,
         )
 
         bracket_year_ss = sum(r.taxes.social_security for r in bracket)
@@ -3812,7 +4532,7 @@ class TestCalibrationSSCapIntegration:
         )
 
         results = project_salary(
-            profile, periods, tax_configs, calibration=cal,
+            payroll_basis(profile, periods), periods, tax_configs, calibration=cal,
         )
 
         # Periods 1-15 (indexes 0-14): full SS.  12000.00 * 0.062 = 744.00.

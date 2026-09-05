@@ -370,13 +370,61 @@ def build_schedule(
     periods = []
     for index in range(count):
         period_start = start + timedelta(days=cadence_days * index)
-        periods.append(PayPeriod(
-            id=index + 1,
-            start_date=period_start,
-            end_date=period_start + timedelta(days=cadence_days - 1),
-            period_index=index,
-        ))
+        periods.append(PayPeriod(id=index + 1, start_date=period_start))
     return periods
+
+
+def period_last_covered_day(
+    periods: "list[PayPeriod]", cadence_days: int, index: int,
+) -> date:
+    """Return the inclusive last day the period at *index* covers.
+
+    **The span rule written out for THIS module's unsaved schedules**, which
+    plan step ``pay_calendar:C4-c`` is why it has to be written out at all: a
+    period's last covered day was a stored column until that step dropped it,
+    and the rows :func:`build_schedule` returns are UNSAVED and carry no owner,
+    so ``_test_helpers.last_covered_day`` cannot answer for them -- it resolves
+    the span through ``calendar_for``, and no calendar holds a row that was
+    never flushed.
+
+    The rule is the application's, spelled independently rather than imported:
+    the day before the NEXT payday, or -- for the last period, which has no
+    successor -- the payday plus one cadence minus a day.  Writing it here is
+    what keeps this module an ORACLE: a baseline that asked
+    ``derive_periods`` for the answer would agree with the engine by
+    construction.
+
+    Pure, which is this module's own property: no session, no clock.
+
+    Args:
+        periods: A contiguous schedule from :func:`build_schedule`, non-empty.
+        cadence_days: The cadence it was built at.
+        index: The 0-based position whose span to answer, which is also that
+            period's ordinal -- the schedules here are built in payday order.
+
+    Returns:
+        The inclusive last day of that period.
+    """
+    if index + 1 < len(periods):
+        return periods[index + 1].start_date - timedelta(days=1)
+    return periods[index].start_date + timedelta(days=cadence_days - 1)
+
+
+def schedule_horizon(periods: "list[PayPeriod]", cadence_days: int) -> date:
+    """Return the last day *periods* covers.
+
+    :func:`period_last_covered_day` at the last index, kept as its own name
+    because "how far does this schedule reach" is the question most callers
+    ask and spelling the index at each of them is where an off-by-one lives.
+
+    Args:
+        periods: A contiguous schedule from :func:`build_schedule`, non-empty.
+        cadence_days: The cadence it was built at.
+
+    Returns:
+        The inclusive last day of the last period.
+    """
+    return period_last_covered_day(periods, cadence_days, len(periods) - 1)
 
 
 #: The owner every spec and calendar this module builds names.  The baseline's
@@ -405,8 +453,17 @@ def build_shape_rule(
     nothing reads that column, so a transient rule carrying ``None`` there
     differs from a production row in a field neither of them is read for.
 
+    **The rule carries an unsaved OWNER from plan step R-F6**, built inside
+    ``build_transient_rule`` from the spec's own ``user_id``: a recurrence rule
+    belongs to exactly one definition, and ``RecurrenceRule.user_id`` reads
+    through to it.  Nothing is added to a session, so the blob is still
+    captured without touching the database -- and it stayed byte-identical
+    across the step, which is what says the ownership move changed no
+    occurrence and no due date.
+
     Args:
         shape: The configuration to build.
+        calendar: The schedule the shape resolves against.
 
     Returns:
         An unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
@@ -505,6 +562,7 @@ def build_shape_calendar(
         paydays=[(period.id, period.start_date) for period in periods],
         cadence_days=cadence_days,
         user_id=SHAPE_USER_ID,
+        history_opens_on=None,
     )
 
 
@@ -1053,11 +1111,11 @@ def capture_baseline() -> str:
         f"# biweekly schedule: {SCHEDULE_START.isoformat()} "
         f"cadence={SCHEDULE_CADENCE_DAYS} periods={SCHEDULE_PERIOD_COUNT} "
         f"({biweekly[0].start_date.isoformat()}"
-        f"..{biweekly[-1].end_date.isoformat()})",
+        f"..{schedule_horizon(biweekly, SCHEDULE_CADENCE_DAYS).isoformat()})",
         f"# long schedule:     {SCHEDULE_START.isoformat()} "
         f"cadence={LONG_CADENCE_DAYS} periods={LONG_CADENCE_PERIOD_COUNT} "
         f"({long_cadence[0].start_date.isoformat()}"
-        f"..{long_cadence[-1].end_date.isoformat()})",
+        f"..{schedule_horizon(long_cadence, LONG_CADENCE_DAYS).isoformat()})",
         f"# shapes: {len(shapes)}",
     ]
     for shape in shapes:

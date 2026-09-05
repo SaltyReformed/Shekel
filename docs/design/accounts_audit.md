@@ -146,7 +146,8 @@ shows all account types, not just savings, and `/accounts` is a separate managem
   `inline_anchor_update`, optimistic `version_id` lock, `app/routes/accounts/anchor.py:50-198`), and
   edit / archive / unarchive / hard-delete routes (`accounts/crud.py:285-646`). Hard-delete is
   fresh-login gated (`@fresh_login_required()`, `crud.py:505`) and confirmed through the shared
-  `data-confirm` modal (`app/static/js/app.js:447-471`).
+  `data-confirm` modal (`app/static/js/confirm.js`, loaded in `<head>` since plan step
+  `bank_import:X-gc`).
 - **Divergence:** management is a second screen reached from the dashboard, and the mobile balance
   cell is deliberately read-only there (`accounts/list.html` note) to avoid double-rendering the
   editable cell.
@@ -518,16 +519,16 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    `net_worth_chart_json`. Read-only this slice: no balance edit yet, so the header keeps a
    temporary "Manage Accounts" link until slice
    2. The card balance is the resolver `current_balance` (SSOT with the headline and the subtotals),
-   and account icons are monochrome so the accent stays the only non-money chroma. Six redesign-driven,
-   developer-approved test updates: the `Accounts Dashboard` -> `Accounts` rename; the three investment
-   milestone-count tests reworked to assert `max(projection)` (robust to the net-worth band's aggregate
-   figures); and the paid-off card's face prompt -> the `Paid Off` badge. No `app/` Python touched;
-   full suite 6294.
+   and account icons are monochrome so the accent stays the only non-money chroma. Six
+   redesign-driven, developer-approved test updates: the `Accounts Dashboard` -> `Accounts` rename;
+   the three investment milestone-count tests reworked to assert `max(projection)` (robust to the
+   net-worth band's aggregate figures); and the paid-off card's face prompt -> the `Paid Off` badge.
+   No `app/` Python touched; full suite 6294.
 
    **P2 slice 2, click-to-edit balance and `balanceChanged` refresh: DONE 2026-06-25 on dev.** The
    cockpit's per-card balance is now click-to-edit, reusing the shared grid anchor editor and the
-   single `true_up` -> `apply_anchor_true_up` mutation (no second edit path). The editor opens in the
-   `accounts` surface and re-syncs the whole cockpit region on save. As built:
+   single `true_up` -> `apply_anchor_true_up` mutation (no second edit path). The editor opens in
+   the `accounts` surface and re-syncs the whole cockpit region on save. As built:
 
    - **A third anchor-editor surface, `accounts`.** `_normalize_revert_context` now allowlists
      `accounts` alongside `dashboard` (a `_REVERT_SURFACES` frozenset); `_anchor_revert_url` maps it
@@ -554,9 +555,9 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
      display-vs-edit split as the dashboard hero.
    - **The z-index raise is on the balance WRAPPER, not the cell** (caught in live verification, not
      the suite). The cockpit is the first inline-edit surface INSIDE a `.stretched-link` card;
-     raising only the display cell left the editor form -- which swaps in WITHOUT the raised class
-     -- below the card-link overlay, so the input and Save / Cancel buttons were unclickable (the
-     link swallowed the click). The fix raises the persistent `.acct-card__balance` wrapper
+     raising only the display cell left the editor form -- which swaps in WITHOUT the raised
+     class -- below the card-link overlay, so the input and Save / Cancel buttons were unclickable
+     (the link swallowed the click). The fix raises the persistent `.acct-card__balance` wrapper
      (`z-index: 2`), so both the cell AND the editor that replaces it sit above the overlay. The
      dashboard never hit this (its hero is not in a stretched-link card). The cell keeps a
      persistent faint pencil (`accounts.css`).
@@ -565,15 +566,15 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
      full suite 6309, `pylint app/` 10.00/10. The temporary "Manage Accounts" header link stays
      until P4 (the `/accounts` table still owns hard-delete).
 
-   **Live verification (P5 done early for this slice, dev app + Playwright, both themes).** Confirmed
-   on the prod-clone dev DB: clicking a card balance opens the inline editor in place; a save re-syncs
-   the entire region together -- on a Checking edit the net-worth hero, all four chips (assets, change,
-   liquid), the edited card, and the Asset group subtotal all moved by the identical delta (one
-   `balanceChanged` region, SSOT holds); Escape reverts the single cell; both themes render. The editor
-   input + Save / Cancel are confirmed clickable above the stretched-link (elementFromPoint). The
-   cockpit correctly inherits the F-103 same-day same-balance idempotency: re-truing-up a value already
-   used today is a 200 no-op (`DUPLICATE_SAME_DAY`), which is correct, not a bug. The dev account's
-   balance and same-day history were restored after testing.
+   **Live verification (P5 done early for this slice, dev app + Playwright, both themes).**
+   Confirmed on the prod-clone dev DB: clicking a card balance opens the inline editor in place; a
+   save re-syncs the entire region together -- on a Checking edit the net-worth hero, all four chips
+   (assets, change, liquid), the edited card, and the Asset group subtotal all moved by the
+   identical delta (one `balanceChanged` region, SSOT holds); Escape reverts the single cell; both
+   themes render. The editor input + Save / Cancel are confirmed clickable above the stretched-link
+   (elementFromPoint). The cockpit correctly inherits the F-103 same-day same-balance idempotency:
+   re-truing-up a value already used today is a 200 no-op (`DUPLICATE_SAME_DAY`), which is correct,
+   not a bug. The dev account's balance and same-day history were restored after testing.
 
    **P3, charts.** Re-sliced by feature (each full-stack, gated) rather than backend-first: 3a the
    net-worth trend, 3b the diverging allocation bar, 3c the conditional sparklines.
@@ -582,28 +583,29 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    dashed-projection split, the Today marker, the Net vs Assets-and-Liabilities toggle, and the
    `6 / 13 / 26 / All` horizon picker (default 13). Built to the developer's rulings this session
    (rebuild decision 11 below). The trend series was widened from forward-only to an honest history
-   tail plus the full forward projection, carrying a `current_index` boundary (the solid/dashed split,
-   the Today marker, and the client's forward-slice anchor); the client slices the horizon and toggles
-   the series in JS (no money math -- only slice, restyle, format), so the producer serializes once.
-   The change-this-period chip was fixed (decision 11; later removed -- decision 13). Full suite 6318,
-   `pylint app/` 10.00/10, biome
+   tail plus the full forward projection, carrying a `current_index` boundary (the solid/dashed
+   split, the Today marker, and the client's forward-slice anchor); the client slices the horizon
+   and toggles the series in JS (no money math -- only slice, restyle, format), so the producer
+   serializes once. The change-this-period chip was fixed (decision 11; later removed -- decision
+   13). Full suite 6318, `pylint app/` 10.00/10, biome
    - djlint clean, code-reviewer no Critical/High/Medium, live-verified both themes.
 
-   **P3 slice 3b, allocation bar: DONE 2026-06-25 on dev (`638fedc`).** The category-stacked diverging
-   assets-vs-liabilities bar (decision 8) in the hero band -- the asset-side category subtotals stacked
-   right, the liability total left, each block labeled name + value, from the existing
-   `group_subtotals` + `net_worth`. `compute_allocation` splits by category id (never a label string);
-   `_serialize_allocation_bar` adds the float widths (scaled to the larger side); the reused
-   `progress_bar.js` applies them. Live-verified both themes.
+   **P3 slice 3b, allocation bar: DONE 2026-06-25 on dev (`638fedc`).** The category-stacked
+   diverging assets-vs-liabilities bar (decision 8) in the hero band -- the asset-side category
+   subtotals stacked right, the liability total left, each block labeled name + value, from the
+   existing `group_subtotals` + `net_worth`. `compute_allocation` splits by category id (never a
+   label string); `_serialize_allocation_bar` adds the float widths (scaled to the larger side); the
+   reused `progress_bar.js` applies them. Live-verified both themes.
 
    **P3 slice 3c, conditional sparklines: DONE 2026-06-25 on dev (`10d8b80`).** A per-account
-   server-rendered SVG sparkline above the card's secondary line, only where informative (>= 4 points
-   AND a min-max spread above `max($1, 0.5% of magnitude)`); a flat account shows just the figure +
-   projected line. The producer (`compute_sparklines`) REUSES the dense maps already built for the
-   net-worth trend (`build_account_net_worth_maps` now carries `account_id`); `_serialize_sparklines`
-   normalizes to an SVG polyline. Developer ruling: the rule stays spread-based, so a cash account
-   whose projected balance oscillates with paychecks/bills shows that cash-flow rhythm (the magnitude
-   is in the secondary line), not only monotonic trends. Live-verified both themes.
+   server-rendered SVG sparkline above the card's secondary line, only where informative (>= 4
+   points AND a min-max spread above `max($1, 0.5% of magnitude)`); a flat account shows just the
+   figure + projected line. The producer (`compute_sparklines`) REUSES the dense maps already built
+   for the net-worth trend (`build_account_net_worth_maps` now carries `account_id`);
+   `_serialize_sparklines` normalizes to an SVG polyline. Developer ruling: the rule stays
+   spread-based, so a cash account whose projected balance oscillates with paychecks/bills shows
+   that cash-flow rhythm (the magnitude is in the secondary line), not only monotonic trends.
+   Live-verified both themes.
 
    **P4, retire `/accounts`: DONE 2026-06-25 on dev.** The hard-delete fork was resolved by the
    developer ruling to the edit-form danger zone (decision 12). As built:
@@ -622,22 +624,23 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
      land on `/savings`), plus new tests for the redirect contract and the danger zone. Full suite
      6333 passed, `pylint app/` 10.00/10.
 
-   **UI-orphan cleanup (DONE 2026-06-25, follow-up to P4):** the retired table's inline balance editor
-   -- `inline_anchor_update` plus its `inline_anchor_form` / `inline_anchor_display` GET partners and
-   the `accounts/_anchor_cell.html` partial -- was removed in full, since the cockpit edits balances
-   through the shared grid editor (`savings.cockpit_balance` -> `true_up`). All three inline routes,
-   the partial, 12 test methods + 3 `test_auth_required` matrix rows + 5 `TEST_PLAN.md` rows, 6
-   now-unused imports, and 7 stale docstring `:func:` cross-references across 6 live files went; the
-   live `true_up` / `anchor_form` / `anchor_display` editor and the 9 grid/dashboard/cockpit tests in
-   the mixed version-pin class were kept. Sweep clean, `pylint app/` 10.00/10, full suite 6318.
+   **UI-orphan cleanup (DONE 2026-06-25, follow-up to P4):** the retired table's inline balance
+   editor -- `inline_anchor_update` plus its `inline_anchor_form` / `inline_anchor_display` GET
+   partners and the `accounts/_anchor_cell.html` partial -- was removed in full, since the cockpit
+   edits balances through the shared grid editor (`savings.cockpit_balance` -> `true_up`). All three
+   inline routes, the partial, 12 test methods + 3 `test_auth_required` matrix rows + 5
+   `TEST_PLAN.md` rows, 6 now-unused imports, and 7 stale docstring `:func:` cross-references across
+   6 live files went; the live `true_up` / `anchor_form` / `anchor_display` editor and the 9
+   grid/dashboard/cockpit tests in the mixed version-pin class were kept. Sweep clean, `pylint app/`
+   10.00/10, full suite 6318.
 
    **P5, live verification: DONE 2026-06-26 (Claude's pass).** Desktop and mobile both themes via
    `shoot.py`; net worth reconciled from `compute_dashboard_data` to the cent; and a non-destructive
    interaction pass (the P4 redirect, the kebab Edit and Archive, click-to-edit open with the input
-   raised above the stretched-link, then Escape revert) was green at 7 of 7. The home-to-mortgage link
-   got set so the equity card now nets, and the always-blank Change this period chip was removed
-   (decision 13). Developer acceptance, driving real saves and archives with live data, remains the
-   developer's to do.
+   raised above the stretched-link, then Escape revert) was green at 7 of 7. The home-to-mortgage
+   link got set so the equity card now nets, and the always-blank Change this period chip was
+   removed (decision 13). Developer acceptance, driving real saves and archives with live data,
+   remains the developer's to do.
 
 ## Verification (for the build)
 

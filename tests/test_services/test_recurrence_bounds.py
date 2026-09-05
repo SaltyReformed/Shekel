@@ -542,19 +542,32 @@ class TestTheShapesAreValues:
 
     @pytest.mark.parametrize("kind", END_BOUND_KINDS)
     def test_no_shape_can_be_mutated_after_construction(self, kind):
-        """What makes a shape's own refusals cover every path, not the first.
+        """Every shape refuses assignment, which two other things SPEND.
 
-        ``EndsAfterOccurrences.__post_init__`` is only the whole story if the
-        value cannot be edited afterwards; a settable ``count`` would let a 0
-        in behind it.  Asserted over EVERY shape, and on each one's OWN field
-        -- setting a name a shape does not have would prove only that frozen
-        dataclasses reject arbitrary attributes, which is not the claim.
+        :meth:`EndsAfterOccurrences.__post_init__` polices ``count >= 1`` in
+        the only place a count bound is built, and says so itself: "a frozen
+        dataclass cannot be mutated afterwards, so there is no second path to
+        police".  That sentence is true only while this passes.
+        :class:`NeverEnds` spends the same property differently -- it carries
+        no value, so the package builds ONE and shares it
+        (:data:`~app.services.recurrence.NEVER_ENDS`, what
+        :func:`~app.services.recurrence.end_bound_from_columns` returns for
+        every rule storing no bound -- 41 of the 46 live rules carried it at
+        the census this package cites, measured 2026-08-13).  A write landing
+        on that object is read by every rule holding it, off the INSTANCE, by
+        ``_recurrence_preview``'s default ``recurrence_end_mode`` and by
+        ``_recurrence_fields.html``'s ``selected.token``.
+
+        Asserted through ``token``, the one name every shape declares --
+        ``test_every_shape_has_its_own_token`` above is what holds that, so
+        this is each shape's OWN name and not an arbitrary one.  **One name is
+        the whole claim**: frozen is a property of the CLASS and is
+        all-or-nothing, so a shape that refuses one name refuses every name,
+        and a shape that accepts one accepts every name.  Walking
+        ``dataclasses.fields`` asks that same question once per field, and
+        ZERO times for a shape carrying none -- which is how this arm skipped
+        :class:`NeverEnds` from R7b-3 until 2026-08-26, leaving the one value
+        the package shares as the one value nothing held.
         """
-        bound = sample_bound(kind)
-        own_fields = [field.name for field in dataclasses.fields(bound)]
-        if not own_fields:
-            pytest.skip(f"{kind.__name__} carries no value to mutate")
-
-        for name in own_fields:
-            with pytest.raises(dataclasses.FrozenInstanceError):
-                setattr(bound, name, None)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            setattr(sample_bound(kind), "token", None)

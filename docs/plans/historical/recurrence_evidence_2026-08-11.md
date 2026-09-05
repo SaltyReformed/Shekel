@@ -199,3 +199,104 @@ nothing has to encode an offset at all, and `due_day_of_month`'s implicit `+1` i
 2026-08-08, to buy the room ruling R-R13 needed. Three were weighed before R1 and none has been
 re-opened: adding two enum members, RFC 5545 RRULE strings as the storage model, and materialising
 occurrence dates into their own table.
+
+## 1. Root cause (lifted 2026-08-26)
+
+**The state below is the one this arc DELETED, and it is preserved verbatim as the argument for
+why.** It was still in the live document in the PRESENT tense on 2026-08-26, with five citations
+into `app/services/recurrence_engine.py` -- a PACKAGE since R7c, so every one of them resolved to
+nothing. Measured that day on `origin/dev`: `RecurrencePatternEnum` survives in `app/enums.py`
+only inside a comment saying it was deleted; `budget.recurrence_rules` holds thirteen columns and
+none of `pattern_id`, `day_of_month` or `month_of_year`; the five `_match_*` helpers survive only
+in a docstring saying they went; and neither `recurring_view.py` nor `savings_goal_service.py`
+names `Once` at all. Rulings **R-R16** / **R-R18** / **R-R27** and steps R7c-a..R7c-c are what
+changed it.
+
+### As it stood
+
+`RecurrencePatternEnum` (`app/enums.py:136`) is a closed set of eight names. Four of them --
+Monthly, Quarterly, Semi-Annual, Annual -- are the same idea with a different integer baked into the
+*name*: every 1, 3, 6, or 12 months. The integer lives in a column (`interval_n`) only for the
+paycheck-space family (`Every N Periods`).
+
+**One cadence family got a knob; the other got hardcoded constants.** That is why "every other
+month" and "every two years" have nowhere to live. It is not a missing enum member; adding two would
+repeat the exercise at the next gap.
+
+Second-order consequences of the same fusion:
+
+- `budget.recurrence_rules` is a wide sparse table: 8 columns whose validity depends on
+  `pattern_id`, with **no constraint tying presence to pattern**. The engine papers over malformed
+  rules with `rule.month_of_year or 1` and `rule.day_of_month or 1`
+  (`recurrence_engine.py:504,516`), so a broken annual rule silently becomes January instead of
+  failing loud.
+- `Once` is a row in the recurrence table that means "no recurrence", requiring four separate guards
+  to suppress: `recurrence_engine.py:115`, `:257`, `recurring_view.py:236`,
+  `savings_goal_service.py:427`, plus `templates.py:931`. Transaction templates already model this
+  correctly (`recurrence_rule_id IS NULL`); transfers were forced onto `Once` because their form has
+  no null option (`_recurrence_fields.html:49`).
+- Generation is a **reverse** mapping ("scan every period, ask if it contains the target day"),
+  which needs five near-identical `_match_*` helpers (`recurrence_engine.py:527-628`) and is neither
+  total nor injective (see D3).
+
+## 0. The split MEASUREMENT and the R6/X-an contradiction (lifted 2026-08-26)
+
+**Both are finished business.** The file-overlap trace of 2026-08-05 is what decided that this
+arc splits, and its conclusion is the one sentence the live section keeps. The
+"R6 ships with X-an" contradiction was found on 2026-08-09 and is now GATE-GRADED
+(`conventions.md` rule 13, `steps.md`'s blocker column), so it cannot be re-entered and the
+account of it is a record rather than a warning. Lifted under rule 5 to bring the live document
+back under its cap; the `developer-decision` the section still OWES stayed behind.
+
+### As it stood
+
+**The ORDER is `steps.md`'s and is not restated here.** This section holds the MEASUREMENT the order
+rests on and the one question the measurement could not answer.
+
+The recurrence work SPLITS. Measured file overlap against
+`docs/audits/balance_architecture/README.md`'s live blocks (2026-08-05):
+
+```text
+R1-R4 (engine core)  vs X-an                 : 0 files
+R1-R4                vs X-f4 deletion set    : 0 files
+R1-R4                vs xx-attempt-1-held-rde: 0 files
+R1-R4                vs xd-attempt-1-parked  : 1 file  (_recurrence_common.py)
+PAY_PERIODS_PER_YEAR vs X-an / X-f4 / X-d    : 0 files
+
+R5+R6 (dates)        vs X-an                 : 4 files -- ALL FOUR of X-an's surfaces
+R5+R6                vs X-f4 deletion set    : 1 file  (cash_ledger/_events.py)
+```
+
+**What the measurement says.** The ENGINE CORE touches no file the balance arc's anchor half is
+editing, so it constrains nothing there; it delivers every-other-month, every-two-years, weekly,
+nth-weekday, count-bounded end, business-day shift and defects D1, D2, D3. The DATE work is a
+different story: `R5` and `R6` sit on all four of X-an's surfaces and one file of X-f4's deletion
+set, which is why they are a separate half and why the index gates them where it does.
+
+**"R6 ships with X-an" was UNSATISFIABLE, and the contradiction was inside this section** (found
+2026-08-09 while building X-an's first leaf). Three statements could not all hold: R6's own
+specification derives the installment "over the rule plus `due_on`"; `due_on` is created by R5; and
+R5 cannot precede the balance step that deletes from `cash_ledger/_events.py`. The sentence right
+after the ordering claim already said so -- "`due_on` is created by R5 and READ by R6, so the order
+is forced anyway". `steps.md` recorded only `R6 blocked by balance:X-an`, and nothing reconciled the
+two; **that column is now graded, so the same contradiction cannot be re-entered** (`conventions.md`
+rule 13).
+
+**What survives is the TRACE, not the ship.** The file overlap is real and unchanged: this arc asks
+which date IS the contractual installment while X-an asks which date decides a payment already
+HAPPENED, and tracing them apart means tracing the loan half's date semantics twice. X-an-a was
+traced with R6's question in view and shipped without it.
+
+**`developer-decision` OWED, and it is the one thing in this section the index cannot settle.** Two
+options: re-point R6 behind R5, which is what `steps.md` currently records; or split off the half
+that needs no `due_on` -- the single `loan_installment_date` accessor over the rule -- and ship that
+beside the remaining X-an leaf.
+**The index recording the first option is not the developer choosing it.**
+
+**Consequence for Half A:** it must leave the `due_date` contract byte-identical so the R1 oracle
+stays green, so no step before R5 touches the column. The transaction-template form's live "Due Day
+of Month" field (`_recurrence_fields.html:104-111`, `routes/templates.py:472,649`) stays exactly as
+it is until R5 gives the installment a column of its own.
+
+---
+

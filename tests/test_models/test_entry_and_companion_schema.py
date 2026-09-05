@@ -21,6 +21,12 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
+from tests._test_helpers import load_migration_module
+from app.models.amount_ownership import AmountOwnership
+
+_REFUND_MIGRATION = load_migration_module(
+    "b8e4c1f7a903_a_refund_is_a_negative_purchase.py",
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -45,6 +51,7 @@ def _make_txn(seed_user, seed_periods, estimated_amount=Decimal("500.00")):
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     projected_status = db.session.query(Status).filter_by(name="Projected").one()
     txn = Transaction(
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -52,7 +59,7 @@ def _make_txn(seed_user, seed_periods, estimated_amount=Decimal("500.00")):
         name="Test Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=estimated_amount,
+        amount_ownership=AmountOwnership.own(estimated_amount),
     )
     db.session.add(txn)
     db.session.flush()
@@ -95,13 +102,23 @@ class TestTransactionEntryCascadeDelete:
 
 
 class TestTransactionEntryAmountCheck:
-    """Verify the CHECK(amount > 0) constraint on transaction_entries."""
+    """Verify the CHECK(amount <> 0) constraint on transaction_entries.
+
+    **It was ``amount > 0`` until ruling bank_import:R-II** (migration
+    ``b8e4c1f7a903``, developer 2026-08-31).  A merchant credit files as a
+    NEGATIVE purchase against the envelope its merchant rule names, so the
+    negative case below asserts ACCEPTANCE where it used to assert refusal.
+    The zero case is unchanged and is the surviving half: a purchase worth
+    nothing is not a purchase.
+    """
 
     def test_transaction_entry_amount_zero_rejected(self, app, db, seed_user, seed_periods):
         """Creating an entry with amount=0 raises IntegrityError.
 
         The ck_transaction_entries_positive_amount constraint requires
-        amount > 0, so zero is invalid.
+        amount <> 0, so zero is invalid.  **This half of the rule SURVIVED
+        R-II** -- what a purchase may not be is nothing, and the widening to
+        ``<> 0`` did not touch it.
         """
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods)
@@ -116,24 +133,34 @@ class TestTransactionEntryAmountCheck:
                 db.session.flush()
             db.session.rollback()
 
-    def test_transaction_entry_amount_negative_rejected(self, app, db, seed_user, seed_periods):
-        """Creating an entry with a negative amount raises IntegrityError.
+    def test_transaction_entry_amount_negative_accepted(self, app, db, seed_user, seed_periods):
+        """A NEGATIVE purchase is a refund, and the table accepts it.
 
-        The ck_transaction_entries_positive_amount constraint requires
-        amount > 0, so negative values are invalid.
+        Ruling **bank_import:R-II**: a merchant credit files as a negative
+        purchase against the envelope its merchant rule names, rather than as
+        income under a spending category.  **This test asserted the opposite
+        until 2026-08-31**, and inverting it is the developer's confirmed
+        change of behaviour rather than a test bent to fit code.
+
+        Asserts the stored value round-trips, not merely that the flush
+        survived: a constraint relaxed to ``<> 0`` that silently coerced the
+        sign would pass a bare "no IntegrityError" assertion.
         """
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods)
             entry = TransactionEntry(
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
-                amount=Decimal("-5.00"),
-                description="Negative amount",
+                amount=Decimal("-28.29"),
+                description="Amazon refund",
             )
             db.session.add(entry)
-            with pytest.raises(sqlalchemy.exc.IntegrityError):
-                db.session.flush()
-            db.session.rollback()
+            db.session.flush()
+            db.session.commit()
+
+            assert entry.id is not None
+            stored = db.session.get(TransactionEntry, entry.id)
+            assert stored.amount == Decimal("-28.29")
 
     def test_transaction_entry_amount_positive_accepted(self, app, db, seed_user, seed_periods):
         """Creating an entry with a small positive amount succeeds.
@@ -148,6 +175,70 @@ class TestTransactionEntryAmountCheck:
             db.session.commit()
             assert entry.id is not None
             assert entry.amount == Decimal("0.01")
+
+
+class TestTheDowngradeRefusesANegativePurchase:
+    """Migration ``b8e4c1f7a903``'s only non-DDL logic, driven directly.
+
+    ``refuse_negative_purchases`` is module-level so a test can drive it, which
+    is the pattern this chain's guarded revisions use (``e4b8a71c0f36``,
+    ``a9d3c15e7f42``) and the rule *a guard nothing exercises is a guard nobody
+    has seen work*.  Both precedents HAVE such a test; this one had none until
+    plan step ``bank_import:X-gj-2b``'s own adversarial review said so.
+
+    **What it protects is a REFUND.**  Restoring ``amount > 0`` makes a
+    negative purchase unrepresentable, so the downgrade is value-lossless only
+    where none exists.  Left to PostgreSQL the same state arrives as a bare
+    constraint violation naming no row; the guard names the rows and the
+    diagnostic SELECT, which is the whole difference for an operator running it
+    mid-deploy.
+
+    Definition of Done item 7 asks for both directions.  The DDL halves run on
+    every test-template rebuild -- ``scripts/build_test_template.py`` replays
+    the whole Alembic chain rather than calling ``create_all`` -- so what no
+    rebuild can reach is the REFUSAL, because a chain that has just widened the
+    CHECK has no negative row in it yet.
+    """
+
+    def test_it_passes_when_no_purchase_is_negative(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The state an ordinary revert is run in, so it is not refused.
+
+        Returns ``None`` rather than raising: the assertion is the ABSENCE of a
+        refusal, and the case below is what gives that meaning -- a guard that
+        refused everything would pass this one alone.
+        """
+        with app.app_context():
+            txn = _make_txn(seed_user, seed_periods)
+            _make_entry(
+                txn, seed_user["user"], Decimal("42.00"), "An ordinary swipe",
+            )
+
+            assert _REFUND_MIGRATION.refuse_negative_purchases(
+                db.session.connection(),
+            ) is None
+
+    def test_it_REFUSES_while_a_refund_is_stored_and_NAMES_it(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The arm that keeps *no such rows exist* measured rather than assumed.
+
+        Asserts the row's OWN id is in the message, not merely that something
+        raised: an operator hitting this has only the message to work from, and
+        a refusal that named no row would leave them exactly where
+        PostgreSQL's own violation would have.
+        """
+        with app.app_context():
+            txn = _make_txn(seed_user, seed_periods)
+            refund = _make_entry(
+                txn, seed_user["user"], Decimal("-28.29"), "Amazon refund",
+            )
+
+            with pytest.raises(RuntimeError, match=str(refund.id)):
+                _REFUND_MIGRATION.refuse_negative_purchases(
+                    db.session.connection(),
+                )
 
 
 # ── Template Flag Tests ────────────────────────────────────────────────

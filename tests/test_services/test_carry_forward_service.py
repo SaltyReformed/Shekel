@@ -16,12 +16,17 @@ test_idempotency.py.  Focuses on:
     period) so cell == subtotal == balance.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum
+from app.enums import (
+    SettledDayBasisEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+)
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
@@ -47,11 +52,16 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.row_valuation import owned_contribution, settled_figure
 from tests._test_helpers import (
+    create_account_of_type,
     default_settle_day,
+    settle_day_columns,
+    settled_day_basis_id,
     settlement_basis_id,
     settlement_columns,
+    state_template_price,
 )
 from tests._test_helpers import make_every_period_rule
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
@@ -79,6 +89,7 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
     _settle_day = default_settle_day(seed_periods[period_index], status.id)
 
     txn = Transaction(
+        user_id=seed_periods[period_index].user_id,
         pay_period_id=seed_periods[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -86,12 +97,12 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal(amount),
+        amount_ownership=AmountOwnership.own(Decimal(amount)),
         # A settled row carries the day its money moved AND the record of what
         # moved, or it carries neither -- the pair is one fact in three columns
         # (plan step X-au-c3), resolved by the shared helper rather than spelled
         # out here.
-        settled_on=_settle_day,
+        **settle_day_columns(_settle_day),
         **settlement_columns(_settle_day, amount, settled_amount),
         template_id=template_id,
         is_deleted=is_deleted,
@@ -119,8 +130,8 @@ class TestCarryForwardUnpaid:
             assert txn.is_override is False
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -130,21 +141,24 @@ class TestCarryForwardUnpaid:
             assert txn.pay_period_id == seed_periods[1].id
 
     def test_settled_status_not_moved(self, app, db, seed_user, seed_periods):
-        """Transactions with 'settled' status are not carried forward.
+        """Transactions in the RECEIVED status are not carried forward.
 
-        The 'settled' status was added in WU-05. It is a terminal status
-        (done/received -> settled) and must not be moved.
+        Specimen was ``Settled`` -- the terminal archive added in WU-05 --
+        until plan step **balance:X-am** deleted that status.  Carry-forward
+        moves PROJECTED rows and nothing else (``is_projected_clause``), so
+        every other status is the same specimen; ``Received`` is the one this
+        class was otherwise missing.
         """
         with app.app_context():
             txn = _create_transaction(
-                seed_user, seed_periods, status_name="Settled",
-                name="Settled Bill",
+                seed_user, seed_periods, status_name="Received",
+                name="Received Paycheck",
             )
             original_period_id = txn.pay_period_id
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -176,8 +190,8 @@ class TestCarryForwardUnpaid:
             original_scenario_id = txn.scenario_id
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -185,14 +199,20 @@ class TestCarryForwardUnpaid:
             assert txn.scenario_id == original_scenario_id
 
     def test_all_statuses_comprehensive(self, app, db, seed_user, seed_periods):
-        """All 6 statuses plus soft-deleted: only non-deleted projected moves.
+        """All 5 statuses plus soft-deleted: only non-deleted projected moves.
 
-        Creates one transaction for each status (projected, done, received,
-        credit, cancelled, settled) plus one projected+deleted. Verifies
-        exactly 1 transaction moves and 6 remain in the source period.
+        Creates one transaction for each status (projected, paid, received,
+        credit, cancelled) plus one projected+deleted. Verifies
+        exactly 1 transaction moves and 5 remain in the source period.
+
+        It was 6 and 6 until plan step **balance:X-am** deleted the terminal
+        ``Settled`` archive.  The list is written out rather than derived from
+        ``StatusEnum`` deliberately: a status added to the enum should make
+        somebody decide whether carry-forward moves it, and a self-updating
+        list would answer that question silently.
         """
         with app.app_context():
-            statuses = ["Projected", "Paid", "Received", "Credit", "Cancelled", "Settled"]
+            statuses = ["Projected", "Paid", "Received", "Credit", "Cancelled"]
             original_ids = {}
 
             for status_name in statuses:
@@ -213,8 +233,8 @@ class TestCarryForwardUnpaid:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -230,16 +250,16 @@ class TestCarryForwardUnpaid:
             assert len(target_txns) == 1
             assert target_txns[0].name == "Status-Projected"
 
-            # Source period retains 6 transactions (5 non-projected + 1 deleted).
+            # Source period retains 5 transactions (4 non-projected + 1 deleted).
             source_txns = (
                 db.session.query(Transaction)
                 .filter_by(pay_period_id=seed_periods[0].id)
                 .all()
             )
-            assert len(source_txns) == 6
+            assert len(source_txns) == 5
 
             # Verify each non-moved transaction is still in the source.
-            for status_name in ["Paid", "Received", "Credit", "Cancelled", "Settled"]:
+            for status_name in ["Paid", "Received", "Credit", "Cancelled"]:
                 txn = db.session.get(Transaction, original_ids[status_name])
                 assert txn.pay_period_id == seed_periods[0].id, (
                     f"{status_name} transaction should stay in source period"
@@ -277,6 +297,7 @@ class TestCarryForwardUnpaid:
 
             # Baseline projected transaction.
             baseline_txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=baseline_scenario.id,
                 account_id=seed_user["account"].id,
@@ -284,12 +305,13 @@ class TestCarryForwardUnpaid:
                 name="Baseline Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             db.session.add(baseline_txn)
 
             # Alternative scenario projected transaction.
             alt_txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=alt_scenario.id,
                 account_id=seed_user["account"].id,
@@ -297,15 +319,15 @@ class TestCarryForwardUnpaid:
                 name="Alt Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             db.session.add(alt_txn)
             db.session.flush()
 
             # Carry forward only the baseline scenario.
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, baseline_scenario.id,
+                seed_periods[0].id, seed_periods[1].id, baseline_scenario.id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -389,7 +411,7 @@ class TestCarryForwardStatusRecheck:
                 # as ``status_id`` because that is what the seam does: the day
                 # the money moved, the figure that moved, and how that figure
                 # is known (plan steps X-f1 / X-au-c3).  A day without the
-                # record is a state ``ck_transactions_settle_day_needs_basis``
+                # record is a state ``ck_transactions_settle_day_needs_a_record``
                 # refuses, so a race simulated with a partial record would fail
                 # on the database rather than on the contract under test.
                 # ``CURRENT_DATE`` rather than an instant: the column is a
@@ -400,6 +422,7 @@ class TestCarryForwardStatusRecheck:
                         "UPDATE budget.transactions "
                         "SET status_id = :paid, "
                         "    settled_on = CURRENT_DATE, "
+                        "    settled_day_basis_id = :day_basis, "
                         "    settled_amount = estimated_amount, "
                         "    settled_basis_id = :basis, "
                         "    version_id = version_id + 1 "
@@ -407,6 +430,16 @@ class TestCarryForwardStatusRecheck:
                     ),
                     {
                         "paid": paid_status_id,
+                        # WHICH KIND of day the race stamped (plan step X-az):
+                        # ``entered``, because a concurrent mark-done is a door
+                        # supplying the owner's today with no bank document
+                        # behind it -- the same basis the seam's own default
+                        # arm writes.  It is in the SAME statement for the same
+                        # reason the figure is: the pair is welded by
+                        # ``ck_transactions_settle_day_basis_pairing``.
+                        "day_basis": settled_day_basis_id(
+                            SettledDayBasisEnum.ENTERED,
+                        ),
                         "basis": settlement_basis_id(SettlementBasisEnum.DERIVED),
                         "tid": loser_id,
                     },
@@ -419,8 +452,8 @@ class TestCarryForwardStatusRecheck:
                 side_effect=racing_build,
             ):
                 count = carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
                 db.session.commit()
 
@@ -487,8 +520,8 @@ class TestCarryForwardStatusRecheck:
                 side_effect=racing_build,
             ):
                 count = carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
                 db.session.commit()
 
@@ -508,9 +541,8 @@ class TestCarryForwardStatusRecheck:
 
         Regression for the F-049 fix: collapsing the loop into a
         bulk UPDATE must still set ``is_override = TRUE`` on
-        template-linked rows so the partial unique index
-        ``idx_transactions_template_period_scenario`` does not
-        collide with a rule-generated row in the target period.
+        template-linked rows so the partial unique generation indexes do
+        not collide with a rule-generated row in the target period.
         """
         with app.app_context():
             template = TransactionTemplate(
@@ -532,8 +564,8 @@ class TestCarryForwardStatusRecheck:
             assert txn.is_override is False
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -562,8 +594,8 @@ class TestCarryForwardStatusRecheck:
             initial_version = txn.version_id
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -579,19 +611,20 @@ class TestCarryForwardStatusRecheck:
 
 
 def _create_savings(seed_user):
-    """Create a savings account for transfer tests."""
-    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="CF Savings",
-            anchor_balance=Decimal("0"),
-        ),
+    """Create a savings account for transfer tests.
+
+    Through the shared factory rather than the ``AccountType`` lookup +
+    ``AccountSpec`` block it used to spell by hand, which is the same four
+    lines ``create_account_of_type`` is.  The factory also opens the account's
+    BOOKS before anything a fixture dates (plan step X-f3c-2b, ruling
+    **R-HG**), which is what the transfers below need: they settle in the
+    seeded periods, all of them earlier than the day ``create_account`` would
+    otherwise open the books on.
+    """
+    return create_account_of_type(
+        seed_user, db.session, "Savings", "CF Savings",
+        anchor_balance=Decimal("0"),
     )
-    db.session.add(acct)
-    db.session.flush()
-    return acct
 
 
 def _create_transfer_in_period(seed_user, seed_periods, period_index=0):
@@ -628,8 +661,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 2  # 1 regular + 1 transfer
@@ -663,8 +696,8 @@ class TestCarryForwardShadowTransactions:
             assert shadow_count == 2
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             # Counted as 1 transfer, not 2 shadows.
@@ -679,8 +712,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             db.session.refresh(xfer)
@@ -705,8 +738,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 0
@@ -726,8 +759,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 0
@@ -746,8 +779,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 0
@@ -766,8 +799,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 3  # 2 regular + 1 transfer
@@ -821,8 +854,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 3  # 1 regular + 2 transfers
@@ -841,8 +874,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 1
@@ -860,8 +893,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 3
@@ -894,6 +927,7 @@ def _create_template(seed_user, name="Recurring Bill",
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     return template
 
 
@@ -910,7 +944,7 @@ class TestCarryForwardOverrideSibling:
         """Override sibling coexists with rule-generated parent.
 
         Reproduces the production traceback:
-            UniqueViolation: idx_transactions_template_period_scenario
+            UniqueViolation on the generation index
             Key (template_id, pay_period_id, scenario_id)=(N, target, S)
             already exists.
 
@@ -940,8 +974,8 @@ class TestCarryForwardOverrideSibling:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1004,8 +1038,8 @@ class TestCarryForwardOverrideSibling:
             db.session.flush()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1063,8 +1097,6 @@ class TestCarryForwardOverrideSibling:
             # two-axis columns are NOT NULL, so a rule naming only a pattern
             # cannot be stored.  It starts on the schedule's opening payday,
             # which is where an unbounded rule always resolved to.
-            rule = make_every_period_rule(db.session, seed_user["user"].id)
-
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
@@ -1072,23 +1104,26 @@ class TestCarryForwardOverrideSibling:
                 transaction_type_id=expense_type.id,
                 name="Recurring with rule",
                 default_amount=Decimal("400.00"),
-                recurrence_rule_id=rule.id,
             )
             db.session.add(template)
             db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            rule = make_every_period_rule(db.session, template)
             db.session.refresh(template)
 
             # Initial generation populates rule-generated rows for
             # periods 0 and 1.
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
             # Carry forward the period 0 row into period 1.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1108,7 +1143,9 @@ class TestCarryForwardOverrideSibling:
             # Re-running the engine must NOT add a third row -- the
             # override sibling signals the period is handled.
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1151,7 +1188,7 @@ def _create_transfer_template(seed_user, savings_account,
 
 class TestCarryForwardOverrideSiblingTransfers:
     """Mirror TestCarryForwardOverrideSibling for transfers, exercising
-    the relaxed idx_transfers_template_period_scenario index.
+    the relaxed idx_transfers_template_scenario_undated index.
     """
 
     def test_carries_transfer_into_target_with_existing_rule_generated(
@@ -1200,8 +1237,8 @@ class TestCarryForwardOverrideSiblingTransfers:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1245,8 +1282,6 @@ class TestCarryForwardOverrideSiblingTransfers:
             # two-axis columns are NOT NULL, so a rule naming only a pattern
             # cannot be stored.  It starts on the schedule's opening payday,
             # which is where an unbounded rule always resolved to.
-            rule = make_every_period_rule(db.session, seed_user["user"].id)
-
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
@@ -1254,24 +1289,27 @@ class TestCarryForwardOverrideSiblingTransfers:
                 category_id=seed_user["categories"]["Rent"].id,
                 name="Recurring Transfer with rule",
                 default_amount=Decimal("300.00"),
-                recurrence_rule_id=rule.id,
             )
             db.session.add(template)
             db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            rule = make_every_period_rule(db.session, template)
             db.session.refresh(template)
 
             # Initial generation: rule-generated transfers in periods 0
             # and 1.
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
             # Carry forward period 0 into period 1.  Period 1 now has a
             # rule-generated transfer + an override sibling.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1288,7 +1326,9 @@ class TestCarryForwardOverrideSiblingTransfers:
 
             # Re-run transfer recurrence -- must not add a third row.
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1325,15 +1365,10 @@ def _create_envelope_template(
         db.session.query(TransactionType)
         .filter_by(name=txn_type_name).one()
     )
-    rule = None
-    if with_rule:
-        rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"][category_key].id,
-        recurrence_rule_id=rule.id if rule else None,
         transaction_type_id=txn_type.id,
         name=name,
         default_amount=Decimal(default_amount),
@@ -1341,13 +1376,17 @@ def _create_envelope_template(
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
+    if with_rule:
+        # The definition first, then the cadence onto it (plan step R-F6).
+        make_every_period_rule(db.session, template)
     return template
 
 
 def _create_envelope_txn(
     seed_user, period, template, *,
     estimated_amount=None, status_name="Projected",
-    is_override=False, settled_amount=None,
+    is_override=False, settled_amount=None, occurs_on=None,
 ):
     """Create a single envelope transaction owned by the template.
 
@@ -1355,12 +1394,19 @@ def _create_envelope_txn(
     that hand-place rows rather than driving the engine.  Defaults to
     the template's default amount and Projected status.
 
-    A row built in a SETTLED status carries the whole record -- the day, the
+    *occurs_on* is WHICH occurrence of the template's cadence the row answers
+    (plan step **R17**).  ``None`` -- the default, and what every caller that
+    does not care passes -- leaves the row answering no occurrence, which
+    ``idx_transactions_template_scenario_undated`` holds to one per paycheck.
+    A caller staging two rows in ONE paycheck must therefore give each its own
+    occurrence, which is the only state in which two are storable.
+
+    A row built in a settled status carries the whole record -- the day, the
     figure and how that figure is known -- through the one door a bare-built
     fixture uses (``_test_helpers.settlement_columns``); *settled_amount* is a
     figure a human typed, which makes it a ``corrected`` record, and with none
     the record is ``derived`` at the row's own plan.  Building the settle DAY
-    without the record is a state ``ck_transactions_settle_day_needs_basis``
+    without the record is a state ``ck_transactions_settle_day_needs_a_record``
     refuses, and building the STATUS without either is one
     ``row_valuation.settled_figure`` refuses to value (plan step X-au-c3).
     """
@@ -1372,6 +1418,7 @@ def _create_envelope_txn(
     settled_on = default_settle_day(period, status.id)
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -1379,9 +1426,10 @@ def _create_envelope_txn(
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=planned,
-        settled_on=settled_on,
+        amount_ownership=AmountOwnership.own(planned),
+        **settle_day_columns(settled_on),
         **settlement_columns(settled_on, planned, submitted=settled_amount),
+        occurs_on=occurs_on,
         is_override=is_override,
     )
     db.session.add(txn)
@@ -1449,8 +1497,8 @@ class TestCarryForwardEnvelopePartialSpend:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1514,8 +1562,8 @@ class TestCarryForwardEnvelopePartialSpend:
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1555,8 +1603,8 @@ class TestCarryForwardEnvelopeZeroEntries:
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1603,8 +1651,8 @@ class TestCarryForwardEnvelopeOverspend:
             target_is_override_before = target.is_override
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1640,8 +1688,8 @@ class TestCarryForwardEnvelopeOverspend:
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1650,6 +1698,112 @@ class TestCarryForwardEnvelopeOverspend:
             assert settled_figure(source) == Decimal("100.00")
             assert target.estimated_amount == Decimal("100.00")
             assert target.is_override is False
+
+
+class TestCarryForwardEnvelopeRefundedBelowZero:
+    """A refund carries the source's entries NEGATIVE, so the leftover EXCEEDS.
+
+    Ruling **bank_import:R-II**, developer ruling 2026-09-01, plan step
+    ``bank_import:X-gj-2b-3``.  A merchant credit files as a NEGATIVE purchase,
+    so ``entries_sum`` can be below zero and ``max(0, budget - entries_sum)``
+    can exceed the budget.  The `max` clamps an OVERSPENT envelope and was
+    never a bound against a refunded one -- and it must not become one:
+    ``entry_service.compute_remaining`` answers the same figure for the same
+    row on screen, so a cap here would make the rollover disagree with the
+    number the owner reads beside it.
+
+    **What the pair conserves is the PLAN.**  A `$100.00` envelope holding one
+    `-$50.00` refund settles at `-$50.00` and rolls `$150.00` -- `$100.00`
+    across the two periods, which is the one budget the owner declared.  That
+    is the assertion below, and it is what makes the figure a decision rather
+    than an artefact of an unguarded subtraction.
+
+    **The COST is a known one** (same ruling): a refund of a purchase made in
+    an EARLIER period lands here on the cash basis, so it enlarges an envelope
+    whose own purchases it did not reverse.
+    """
+
+    def test_a_refunded_envelope_rolls_MORE_than_its_budget(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """`$100.00` budget, one `-$50.00` refund: `$150.00` rolls, source `-$50.00`."""
+        with app.app_context():
+            template = _create_envelope_template(
+                seed_user, default_amount="100.00",
+            )
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            target = _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+            )
+            _add_entry(
+                source, seed_user, "-50.00", description="Amazon refund",
+            )
+            db.session.commit()
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.refresh(source)
+            db.session.refresh(target)
+            assert settled_figure(source) == Decimal("-50.00"), (
+                "the source records what its entries came to, refunds and all"
+            )
+            assert target.estimated_amount == Decimal("250.00"), (
+                "100.00 of the target's own plan plus a 150.00 leftover"
+            )
+            assert target.is_override is True
+            # THE CONSERVED FIGURE: what the two periods plan between them is
+            # the two budgets the owner declared, unchanged by the refund
+            # passing through.  A cap at the source budget would read 200.00
+            # here and lose 50.00 of plan.
+            assert (
+                settled_figure(source) + target.estimated_amount
+            ) == Decimal("200.00")
+
+    def test_a_PARTLY_refunded_envelope_still_rolls_its_net_leftover(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The control between this class and the overspend one.
+
+        `$80.00` spent and `$30.00` refunded is `$50.00` of net spend against a
+        `$100.00` budget, so `$50.00` rolls -- a figure BELOW the budget, which
+        a cap could not be told apart from.  Without this case an
+        implementation that simply ignored negative entries would satisfy the
+        one above by arithmetic accident on a source holding only a refund.
+        """
+        with app.app_context():
+            template = _create_envelope_template(
+                seed_user, default_amount="100.00",
+            )
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            target = _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+            )
+            _add_entry(source, seed_user, "80.00")
+            _add_entry(
+                source, seed_user, "-30.00", description="Amazon refund",
+            )
+            db.session.commit()
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.refresh(source)
+            db.session.refresh(target)
+            assert settled_figure(source) == Decimal("50.00")
+            assert target.estimated_amount == Decimal("150.00")
 
 
 class TestCarryForwardEnvelopeMissingTarget:
@@ -1689,8 +1843,8 @@ class TestCarryForwardEnvelopeMissingTarget:
             assert pre_count == 0
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1738,8 +1892,8 @@ class TestCarryForwardEnvelopeMissingTarget:
             source_id = source.id
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1803,8 +1957,8 @@ class TestCarryForwardEnvelopeSettledTarget:
             target_id = target.id
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1880,8 +2034,8 @@ class TestCarryForwardEnvelopeMultiHop:
 
             # Hop 1: A -> B.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1898,8 +2052,8 @@ class TestCarryForwardEnvelopeMultiHop:
 
             # Hop 2: B (now $200) -> C.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[1].id, seed_periods[2].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[1].id, seed_periods[2].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1973,8 +2127,8 @@ class TestCarryForwardEnvelopeMultipleSourcesToSameTarget:
 
             # Hop 1: A -> C.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[2].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[2].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
             db.session.refresh(row_c)
@@ -1984,8 +2138,8 @@ class TestCarryForwardEnvelopeMultipleSourcesToSameTarget:
             # Hop 2: B -> C.  C is now is_override=True; lookup must
             # still find it.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[1].id, seed_periods[2].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[1].id, seed_periods[2].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2047,8 +2201,8 @@ class TestCarryForwardEnvelopeCorruptDoubledRow:
 
             with pytest.raises(ValidationError) as exc_info:
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
             db.session.rollback()
 
@@ -2086,8 +2240,8 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
             source_id = source.id
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2141,15 +2295,15 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
 
             # Hop 1: period 0 -> target.  Creates a $100 override row.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[2].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[2].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
             # Hop 2: period 1 -> target.  Tops up the same override row.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[1].id, seed_periods[2].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[1].id, seed_periods[2].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2198,8 +2352,8 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2280,8 +2434,8 @@ class TestCarryForwardEnvelopeMixedBatch:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2375,8 +2529,8 @@ class TestCarryForwardEnvelopeMixedBatch:
 
             with pytest.raises(ValidationError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
             db.session.rollback()
             db.session.expire_all()
@@ -2433,8 +2587,8 @@ class TestCarryForwardEnvelopeBalanceInvariant:
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2532,6 +2686,7 @@ class TestCarryForwardEnvelopeIncomeFalse:
             )
             source = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2539,15 +2694,15 @@ class TestCarryForwardEnvelopeIncomeFalse:
                 name=template.name,
                 category_id=template.category_id,
                 transaction_type_id=template.transaction_type_id,
-                estimated_amount=Decimal("2500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
             )
             db.session.add(source)
             db.session.commit()
             source_id = source.id
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2605,8 +2760,8 @@ class TestCarryForwardEnvelopeRecurrenceSkip:
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2627,7 +2782,9 @@ class TestCarryForwardEnvelopeRecurrenceSkip:
             # is_immutable status; the bumped canonical in period 1
             # has is_override=True.  Both trigger skip clauses.
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -2677,8 +2834,8 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
         """
         with app.app_context():
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert preview.plans == []
             assert preview.any_blocked is False
@@ -2686,8 +2843,8 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
             assert preview.discrete_count == 0
             assert preview.transfer_count == 0
             assert preview.blocked_count == 0
-            assert preview.source_period.id == seed_periods[0].id
-            assert preview.target_period.id == seed_periods[1].id
+            assert preview.source_period.period_id == seed_periods[0].id
+            assert preview.target_period.period_id == seed_periods[1].id
 
     def test_same_period_returns_empty_plans(
         self, app, db, seed_user, seed_periods,
@@ -2708,8 +2865,8 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[0].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[0].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert preview.plans == []
             assert preview.any_blocked is False
@@ -2723,8 +2880,8 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.preview_carry_forward(
-                    9_999_999, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    9_999_999, seed_periods[1].id, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
     def test_unowned_source_period_raises_not_found(
@@ -2744,8 +2901,8 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
             other_period_id = seed_second_periods[0].id
             with pytest.raises(NotFoundError):
                 carry_forward_service.preview_carry_forward(
-                    other_period_id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    other_period_id, seed_periods[1].id, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
 
@@ -2778,8 +2935,8 @@ class TestPreviewCarryForwardEnvelopePlans:
 
             before = _read_only_session_snapshot()
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             after = _read_only_session_snapshot()
             assert before == after, (
@@ -2816,8 +2973,8 @@ class TestPreviewCarryForwardEnvelopePlans:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -2849,8 +3006,8 @@ class TestPreviewCarryForwardEnvelopePlans:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -2890,8 +3047,8 @@ class TestPreviewCarryForwardEnvelopePlans:
             assert target_count == 0
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -2948,8 +3105,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert preview.any_blocked is False
@@ -2979,8 +3136,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -3012,8 +3169,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -3022,6 +3179,191 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
                 carry_forward_service.BLOCK_AMBIGUOUS_TARGETS
             )
             assert "open row" in plan.block_reason.lower()
+
+    def test_two_targets_answering_different_occurrences_top_up_the_earliest(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A cadence that names one paycheck twice is NOT ambiguous.
+
+        **The developer's ruling of 2026-08-28**, and the case plan step R17
+        created: the re-keyed unique index
+        (``idx_transactions_template_scenario_occurrence``) lets one paycheck
+        hold two generated rows answering two different occurrences -- a
+        monthly bill at a pay cadence of 30 days or more, measured at 2 of the
+        developer's templates at cadence 30 and 11 at cadence 31.  The old
+        guard called any second mutable row corrupt, because the paycheck-keyed
+        index made it so; reading it that way now would refuse the whole
+        carry-forward batch over a correct state.
+
+        **The EARLIEST occurrence receives the leftover**: the unspent money
+        rolls into the paycheck to meet the next obligation, and the next
+        obligation is the first occurrence in it.
+        """
+        with app.app_context():
+            template = _create_envelope_template(seed_user)
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            # Distinct amounts, so the assertion below identifies WHICH row
+            # was chosen rather than merely that one was.
+            # Two occurrences of one cadence inside the one paycheck.  The
+            # occurrence is given at CREATION: two undated rows in one paycheck
+            # is the state ``..._undated`` forbids, so assigning after the
+            # flush would trip the index rather than stage the case.
+            first = _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+                estimated_amount="100.00", occurs_on=date(2026, 1, 15),
+            )
+            second = _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+                estimated_amount="200.00", occurs_on=date(2026, 2, 15),
+            )
+            _add_entry(source, seed_user, "30.00")
+            db.session.commit()
+
+            preview = carry_forward_service.preview_carry_forward(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+
+            plan = preview.plans[0]
+            assert plan.blocked is False, (
+                "two rows answering two occurrences is a correct state, not "
+                "an ambiguous one"
+            )
+            assert plan.target_estimated_before == Decimal("100.00"), (
+                "the leftover must top up the EARLIEST occurrence in the "
+                "target paycheck, which is the $100.00 row"
+            )
+
+    def test_an_override_sibling_in_the_target_still_blocks(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A row the OWNER owns is never chosen by an occurrence tie-break.
+
+        An adversarial review of plan step R17 found this: a row moved into the
+        target paycheck through the PATCH door carries ``is_override = True``
+        and its own EARLIER ``occurs_on``, so ranking candidates by occurrence
+        would select it over the paycheck's own canonical -- and the caller
+        then writes ``estimated_amount = resolve + leftover`` and clears
+        ``amount_source_id``, overwriting a figure the owner typed by hand.
+
+        The 2026-08-28 ruling was about two rows a CADENCE names.  It was never
+        about a row the owner owns, and the guard this leaf relaxed used to
+        refuse here.  It still does.
+        """
+        with app.app_context():
+            template = _create_envelope_template(seed_user)
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            # The paycheck's own canonical, and a row the owner moved in --
+            # earlier occurrence, hand-priced, and theirs.
+            _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+                estimated_amount="100.00", occurs_on=date(2026, 2, 15),
+            )
+            _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+                estimated_amount="777.77", occurs_on=date(2026, 1, 15),
+                is_override=True,
+            )
+            _add_entry(source, seed_user, "30.00")
+            db.session.commit()
+
+            preview = carry_forward_service.preview_carry_forward(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+
+            plan = preview.plans[0]
+            assert plan.blocked is True, (
+                "the leftover was about to be folded into a row the owner "
+                "priced by hand"
+            )
+            assert plan.block_reason_code == (
+                carry_forward_service.BLOCK_AMBIGUOUS_TARGETS
+            )
+
+    def test_two_targets_answering_the_SAME_occurrence_still_block(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The corrupt state the guard was actually written for still refuses.
+
+        The companion to the case above, and what keeps that relaxation from
+        having deleted the guard: two rows answering ONE occurrence is a state
+        no cadence produces and the dated unique index forbids, so which of
+        them to credit is a guess.  Without this, widening
+        ``_leftover_recipient`` to "just take the earliest" would pass every
+        other carry-forward test in this file.
+        """
+        with app.app_context():
+            template = _create_envelope_template(seed_user)
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            # The corrupt pair: one occurrence, answered twice.  The DATED
+            # index forbids it, so it is staged with the index dropped exactly
+            # as the DC-06 duplicate test stages its own.
+            #
+            # **Restored in a ``finally``, and this test COMMITS**, so a leak
+            # here is not confined to one case: the drop would outlive the
+            # rollback and every later test on this worker would run with the
+            # dated uniqueness gone, silently.  The staged rows are removed
+            # first -- CREATE UNIQUE INDEX validates the rows already there.
+            db.session.execute(db.text(
+                "DROP INDEX budget.idx_transactions_template_scenario_occurrence"
+            ))
+            try:
+                first = _create_envelope_txn(
+                    seed_user, seed_periods[1], template,
+                    occurs_on=date(2026, 1, 15),
+                )
+                second = _create_envelope_txn(
+                    seed_user, seed_periods[1], template,
+                    occurs_on=date(2026, 1, 15),
+                )
+                _add_entry(source, seed_user, "30.00")
+                db.session.commit()
+
+                preview = carry_forward_service.preview_carry_forward(
+                    seed_periods[0].id, seed_periods[1].id,
+                    seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
+                )
+
+                plan = preview.plans[0]
+                assert plan.blocked is True
+                assert plan.block_reason_code == (
+                    carry_forward_service.BLOCK_AMBIGUOUS_TARGETS
+                )
+            finally:
+                db.session.query(Transaction).filter(
+                    Transaction.id.in_([first.id, second.id]),
+                ).delete(synchronize_session=False)
+                db.session.commit()
+                db.session.execute(db.text("""
+                    CREATE UNIQUE INDEX
+                        idx_transactions_template_scenario_occurrence
+                    ON budget.transactions (template_id, scenario_id, occurs_on)
+                    WHERE template_id IS NOT NULL
+                      AND occurs_on IS NOT NULL
+                      AND is_deleted = FALSE
+                      AND is_override = FALSE
+                """))
+                db.session.commit()
+                # The restore is CHECKED, not hoped for.  A silent failure
+                # here leaves every later test on this worker running without
+                # the dated uniqueness -- the "green suite covering nothing"
+                # shape -- and the worker database is dropped at the end of
+                # the run, so nothing outside this block could observe it.
+                assert db.session.execute(db.text(
+                    "SELECT count(*) FROM pg_indexes WHERE schemaname = "
+                    "'budget' AND indexname = "
+                    "'idx_transactions_template_scenario_occurrence'"
+                )).scalar() == 1, "the dated unique index was not restored"
 
     def test_only_soft_deleted_target_is_actionable_creates_row(
         self, app, db, seed_user, seed_periods,
@@ -3046,8 +3388,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -3099,8 +3441,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert len(preview.plans) == 2
             assert preview.any_blocked is True
@@ -3127,8 +3469,8 @@ class TestPreviewCarryForwardDiscreteAndTransfer:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert len(preview.plans) == 1
             plan = preview.plans[0]
@@ -3153,8 +3495,8 @@ class TestPreviewCarryForwardDiscreteAndTransfer:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert len(preview.plans) == 1
             plan = preview.plans[0]
@@ -3200,8 +3542,8 @@ class TestPreviewCarryForwardOrdering:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert len(preview.plans) == 3
@@ -3254,15 +3596,15 @@ class TestPreviewCarryForwardParityWithMutating:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert preview.any_blocked is False
             predicted_after = preview.plans[0].target_estimated_after
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -3299,8 +3641,8 @@ class TestPreviewCarryForwardParityWithMutating:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert preview.any_blocked is True
             assert preview.plans[0].block_reason_code == (
@@ -3309,8 +3651,8 @@ class TestPreviewCarryForwardParityWithMutating:
 
             with pytest.raises(ValidationError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
             db.session.rollback()
 
@@ -3335,15 +3677,15 @@ class TestPreviewCarryForwardParityWithMutating:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             predicted_after = preview.plans[0].target_estimated_after
             assert preview.plans[0].target_will_be_generated is True
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 

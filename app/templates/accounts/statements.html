@@ -2,21 +2,28 @@
 {% from "_acct_macros.html" import acct_glyph %}
 {% from "_money_macros.html" import money %}
 {% from "_nav_macros.html" import back_link %}
+{% from "accounts/_statement_undo_macros.html" import undo_match %}
 {% block title %}{{ account.name }} -- Bank statements -- Shekel{% endblock title %}
 
 {# What the BANK said about this account -- plan step bank_import:X-f6a-1,
    ruling R-FP.
 
-   The page RECORDS and does not reconcile, and it says so above the fold
-   rather than in a caption.  An import screen that looked like it reconciled
-   would be read as having reconciled, and the whole reason this leaf is
-   separable is that no figure the app publishes moves when it runs.  Matching
-   a recorded line to the app's own rows -- and correcting a settle date from
-   it -- happens on the REVIEW page (X-f6a-2), which this one links to.
+   The page says WHICH of two things it is doing, above the fold rather than
+   in a caption.  It RECORDS -- storing the bank's own lines moves no figure --
+   and since plan step bank_import:X-ge it also FILES: a new swipe from a
+   merchant carrying a standing rule becomes a purchase where that rule says,
+   with no press, because consent was given when the rule was stated (ruling
+   R-GH).  Every act that would MODIFY a row the owner made by hand still waits
+   on the REVIEW page (X-f6a-2) for its tick, which is what the banner and the
+   receipt card below both say in as many words.  An import screen that looked
+   like it reconciled would be read as having reconciled; one that claimed it
+   changed nothing while a rule moved money would be worse.
 
    Context (accounts.statements): account, sources (the adapters with a
    parser), span (RecordedSpan), imports (StatementImport, newest first),
-   lines (BankStatementLine, newest posted day first). #}
+   lines (BankStatementLine, newest posted day first), filed_by_rules
+   (AcceptedGroup, the acts a standing rule performed, newest first) and
+   filed_limit (how many of them this card shows). #}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
@@ -25,23 +32,61 @@
     <span class="acctd-type-tag">Bank statements</span>
   </div>
   <div class="d-flex align-items-center gap-2">
+    {# THE WAY IN TO THE NEW SCREEN (plan step bank_import:X-gj-1b).  One page
+       on four verbs replaces the review queue, the register and the
+       workbench; the three stay alive and linked beside it until
+       bank_import:X-gi's census deletes them, which is ruling R-HU's own
+       sequencing -- nothing is removed on the way in. #}
     <a class="btn btn-sm btn-primary"
+       href="{{ url_for('accounts.statement_reconcile', account_id=account.id) }}">
+      <i class="bi bi-list-check"></i> Reconcile
+    </a>
+    <a class="btn btn-sm btn-outline-secondary"
        href="{{ url_for('accounts.review_statements', account_id=account.id) }}">
       <i class="bi bi-link-45deg"></i> Review matches
+    </a>
+    {# IT SAYS "EXPLAINED" BECAUSE THAT IS THE TAB IT OPENS (plan step
+       bank_import:X-gj-1c, ruling R-HU).  It read "Already decided" and
+       pointed at the REGISTER, which listed BOTH halves of the accepted set;
+       the Reconcile screen splits them by who agreed to them (R-GT), so no
+       one tab is "already decided" -- an act a standing rule filed is decided
+       and is on the other one.  Keeping the old words over the new
+       destination would be the caption-over-a-count shape that deleted the
+       "already explained" chip in the same step.  The tab bar carries the
+       reader to Filed by rules in one click. #}
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab='explained') }}">
+      <i class="bi bi-check2-square"></i> Explained
+    </a>
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('accounts.statement_agreement', account_id=account.id) }}">
+      <i class="bi bi-clipboard-data"></i> Books vs bank
     </a>
     {{ back_link(url_for('accounts.cash_detail', account_id=account.id), 'Account') }}
   </div>
 </div>
 
+{# The banner read "This records what your bank said. It changes no balance."
+   until plan step bank_import:X-ge, and that sentence became FALSE the moment
+   a standing rule could file at import (ruling R-GH).  What it says now is the
+   split that ruling makes: recording moves no figure, and a rule the owner
+   already stated does -- with the acts themselves listed below, each carrying
+   its undo, rather than a promise the page cannot show. #}
 <div class="alert alert-info d-flex gap-2 align-items-start" role="alert">
   <i class="bi bi-info-circle mt-1"></i>
   <div>
-    <strong>This records what your bank said. It changes no balance.</strong>
+    <strong>This records what your bank said, and files what you have already
+    decided.</strong>
     Importing a statement stores the bank's own lines so the app has a record
-    of when money actually moved. Nothing is marked paid, no settle date is
-    corrected and no projection changes here -- that happens when you
+    of when money actually moved. That part changes no balance. A new swipe
+    from a merchant you have given a
+    <a href="{{ url_for('accounts.statement_merchants', account_id=account.id) }}#merchant-rules">standing
+    rule</a> is <em>also</em> filed as a purchase where that rule says it goes
+    -- listed below, and undoable one at a time. Anything that would change a
+    row you made yourself -- its date, its amount, marking it paid -- is never
+    done for you: it waits on the
     <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}">review
-    the matches</a>, and only for the ones you accept.
+    screen</a> for you to accept it.
   </div>
 </div>
 
@@ -63,11 +108,20 @@
               <option value="{{ source.value }}">{{ source.label }}</option>
               {% endfor %}
             </select>
+            {# **It said "with the running-balance column included" as though
+               that were a requirement, and it is not one.**  A file carrying no
+               balance column imports fine -- 376 lines of the developer's own
+               2026-08-20 export did, with `carries_running_balance` false and
+               the self-check simply not run.  Saying "included" sent them
+               hunting an export option their bank had been failing to produce
+               for a month, to satisfy a rule the importer does not enforce.
+               State what the column BUYS and let the owner decide. #}
             <div class="form-text">
-              Export your transactions as CSV <strong>with the running-balance
-              column included</strong>. The running balance is what lets the
-              import check the file against itself; without it a missing line
-              cannot be detected.
+              Export your transactions as CSV. If your bank offers a
+              <strong>running-balance</strong> column, include it: it is what
+              lets the import check the file against itself, so a missing line
+              is caught. Without it the import still works, and that check is
+              simply not available.
             </div>
           </div>
 
@@ -121,7 +175,10 @@
         {% endif %}
 
         {% if imports %}
-        <h6 class="text-muted text-uppercase small mt-3">Imports</h6>
+        <h6 class="text-muted text-uppercase small mt-3">
+          Imports
+          <span class="text-body-secondary text-lowercase">-- 20 most recent, newest first</span>
+        </h6>
         <div class="table-responsive">
           <table class="table table-sm align-middle mb-0">
             <thead>
@@ -129,8 +186,10 @@
                 <th scope="col">When</th>
                 <th scope="col">File</th>
                 <th scope="col">Covers</th>
+                <th scope="col">Bank said</th>
                 <th scope="col" class="text-end">New</th>
                 <th scope="col" class="text-end">In file</th>
+                <th scope="col"><span class="visually-hidden">Delete</span></th>
               </tr>
             </thead>
             <tbody>
@@ -139,18 +198,188 @@
                 <td class="text-nowrap">{{ row.created_at | local_datetime }}</td>
                 <td class="text-truncate stmt-file-name">{{ row.file_name }}</td>
                 <td class="text-nowrap font-mono small">{{ row.period_start }} .. {{ row.period_end }}</td>
+                {# The bank's claim, and how firmly the app holds it. The
+                   caption is looked up by the ENUM MEMBER the service handed
+                   us -- no name string is compared here, which is the
+                   ref-table rule. An ASSUMED anchor is the one worth seeing
+                   later: it propagates into every import that reconciles
+                   against it, so the flash alone would not be enough. #}
+                <td class="text-nowrap small">
+                  {% if row.balance is not none %}
+                  <span class="font-mono">{{ money(row.balance.stated) }}</span>
+                  {% if row.balance.is_anchored %}
+                  {% set copy = evidence_copy[row.balance.evidence] %}
+                  <span class="text-muted">as of {{ row.balance.effective_on }}</span>
+                  <br>
+                  <span class="badge {{ copy.badge }}"
+                        title="{{ copy.sentence }}">{{ copy.label }}</span>
+                  {% else %}
+                  <span class="text-muted">as of {{ row.balance.stated_on }}</span>
+                  <br>
+                  <span class="badge text-bg-warning"
+                        title="This file's lines stop at {{ row.period_end }}, so they cannot reach the day it states this figure for. Nothing here could place it.">not placed</span>
+                  {% endif %}
+                  {% else %}
+                  <span class="text-muted">no balance stated</span>
+                  {% endif %}
+                </td>
                 <td class="text-end font-mono">{{ row.recorded_count }}</td>
                 <td class="text-end font-mono text-muted">{{ row.line_count }}</td>
+                {# `data-confirm` is the project's own destructive-action
+                   pattern; base.html includes the modal, and confirm.js sets
+                   the body with textContent, so a hostile FILE NAME cannot
+                   inject.
+                   The line count is `recorded_count`: nothing removes a bank
+                   line except its import's cascade or its account's, so a
+                   "live" count beside it could never differ -- see
+                   ImportRecord. The MATCH count is genuinely live, and so is
+                   the ROW count: a delete now destroys what was created
+                   from these lines (X-f6f, R-GG), and both the count and the
+                   figure come from the release door's own derivation so the
+                   sentence cannot promise what the act will not do.
+                   A BLOCKED delete says so INSTEAD of naming a destruction:
+                   one refusing release takes the whole delete down, so the
+                   figure would be attached to a press that changes nothing --
+                   which is what a first version of this line did. #}
+                <td class="text-end">
+                  {% if row.removes.blocked %}
+                  <div class="small text-warning-emphasis mb-1">
+                    Deleting this import is refused: {{ row.removes.blocked }}
+                  </div>
+                  {% elif row.removes.rows %}
+                  <div class="small text-warning-emphasis mb-1">
+                    Deleting it also removes {{ row.removes.rows }} row(s) the
+                    review created from those lines,
+                    {{ money(row.removes.cash) }}.
+                  </div>
+                  {% endif %}
+                  <form method="post" class="d-inline"
+                        action="{{ url_for('accounts.delete_statement_import', account_id=account.id) }}"
+                        data-confirm="{% if row.removes.blocked %}This delete is REFUSED right now and will change nothing: {{ row.removes.blocked }}{% else %}Delete the import of &quot;{{ row.file_name }}&quot;? This removes {{ row.recorded_count }} bank line(s) the app has on record{% if row.matches_affected %}, and undoes {{ row.matches_affected }} accepted match(es) so their rows can be matched again{% endif %}{% if row.removes.rows %}. It also DESTROYS {{ row.removes.rows }} row(s) created from those lines, worth {{ money(row.removes.cash) }} of money the app currently records{% endif %}{% if row.removes.skips %}. It also forgets {{ row.removes.skips }} line(s) you had SKIPPED, so re-importing this span will ask about those again{% endif %}. Settle dates a match already corrected are NOT changed. To get the lines back you would import the file again.{% endif %}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="import_id" value="{{ row.import_id }}">
+                    <button type="submit" class="btn btn-sm btn-outline-danger"
+                            title="Delete this import and the bank lines it recorded">
+                      <i class="bi bi-trash"></i>
+                      <span class="visually-hidden">Delete the import of {{ row.file_name }}</span>
+                    </button>
+                  </form>
+                </td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
+        <p class="text-muted small mb-0 mt-2">
+          Deleting an import removes what the <em>bank</em> said, not what the
+          app decided. Settle dates an accepted match corrected stay as they
+          are -- the bank is still the best evidence of when that money moved.
+          Re-importing the file puts the lines back.
+        </p>
         {% endif %}
       </div>
     </div>
   </div>
 </div>
+
+{# ── What your standing rules filed ────────────────────────────────── #}
+{# THE RECEIPT ruling R-GH asks for (plan step bank_import:X-ge), and it is a
+   READ rather than a flash.  A rule fires at IMPORT with no press, so the
+   ruling requires every application to be itemised with the one-click undo
+   R-GG built -- and an undo is a FORM.  A flash cannot carry one; it rides in
+   the signed session cookie, where the review screen has already measured nine
+   batch sentences overflowing the 4 KB a browser stores; and it is gone on the
+   next load, which is exactly when an owner wants to check what was done for
+   them.  So what is stored (`statement_matches.applied_by_rule`, R-GT) is what
+   is rendered, and this list says the same thing tomorrow.
+
+   The undo control is `_statement_undo_macros.undo_match`, shared with the
+   register's accepted-matches list: the figure it names and the figure the
+   door removes come from ONE derivation (`planned_removals`), and two copies
+   of that markup would put the guarantee one edit away from being false on one
+   of the two pages.  It posts to THIS page's own release door and comes back
+   here (plan step bank_import:X-gf-2) -- it used to post to the review
+   screen's, which threw the reader onto a different page mid-receipt. #}
+{% if filed_by_rules %}
+{# THE ID IS AN ANCHOR TARGET, and the Reconcile hero's "receipt" link is what
+   names it (plan step bank_import:X-gj-1b).  This card is the receipt ruling
+   R-GH asks for: the acts a standing rule performed, each with its own undo.
+
+   IT IS THE ACCOUNT'S AND IT IS BOUNDED, which the hero's own sentence is
+   not -- that line counts ONE import's lines and this lists the newest
+   `filed_limit` acts of every import.  The header below says the bound, which
+   is what keeps the truncation from being silent (finding N-330's rule). #}
+<div class="card mt-3" id="filed-by-rules">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>
+      <i class="bi bi-signpost-split"></i> Filed by your rules
+      {# WHERE ALL OF THEM ARE, and it is a TAB rather than a page since plan
+         step bank_import:X-gj-1c.  It named "the page of what you have already
+         decided", which was the register and listed every accepted act; the
+         Reconcile screen splits those into two tabs by WHO agreed to them
+         (ruling R-GT), and the acts this card receipts are by definition the
+         ones nobody pressed.  Sending their owner to Explained would send them
+         to the half that holds none of them, which is the same
+         page-that-cannot-answer shape this sentence was corrected for once
+         already at X-gf-2. #}
+      <span class="text-muted small">-- {{ filed_limit }} most recent, newest
+      first; every one is on Reconcile's
+      <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab='filed_by_rules') }}">Filed
+      by rules</a> tab</span>
+    </span>
+    <span class="badge text-bg-secondary">{{ filed_by_rules | length }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead>
+        <tr>
+          <th scope="col">Bank's day</th>
+          <th scope="col" class="text-end">Amount</th>
+          <th scope="col">What it was, and where it went</th>
+          <th scope="col"><span class="visually-hidden">Undo</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for group in filed_by_rules %}
+        <tr {% if not group.agrees %}class="table-warning"{% endif %}>
+          <td class="text-nowrap font-mono small">{{ group.posts_on }}</td>
+          <td class="text-end fw-semibold text-nowrap">{{ money(group.amount) }}</td>
+          <td class="small">
+            {% for description in group.descriptions %}
+            <div class="text-body-secondary">{{ description }}</div>
+            {% endfor %}
+            {% for row in group.rows %}
+            <div>
+              {{ row.label }}
+              {% if not row.agrees %}
+              <span class="text-warning-emphasis">
+                -- now dated {{ row.settled_on or 'not recorded' }}, not the bank's day
+              </span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </td>
+          <td class="text-end">
+            {{ undo_match(url_for('accounts.release_filed_match', account_id=account.id), group) }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer small text-body-secondary">
+    These became purchases without you pressing anything, because you had
+    already said where that merchant's spending goes. Undoing one removes the
+    purchase it created and puts the bank line back among the unexplained on
+    the
+    <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}">review
+    screen</a>; the Undo itself leaves you here. To stop a merchant filing
+    itself, change its answer to <em>ask me every time</em> on
+    <a href="{{ url_for('accounts.statement_merchants', account_id=account.id) }}#merchant-rules">where
+    your merchants go</a>.
+  </div>
+</div>
+{% endif %}
 
 {# ── The lines themselves ──────────────────────────────────────────── #}
 {% if lines %}

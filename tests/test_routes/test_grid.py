@@ -4,6 +4,7 @@ Shekel Budget App -- Grid & Transaction Route Tests
 Tests the main budget grid view and transaction CRUD endpoints.
 """
 
+import re
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,19 +16,26 @@ from app.extensions import db
 from app.routes._render_helpers import fragment_amounts
 from app.models.account import Account
 from app.models.category import Category
+from app.models.investment_params import InvestmentParams
 from app.models.scenario import Scenario
 from app.models.user import User, UserSettings
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.services import template_amount_service
+from app.enums import (
+    AmountSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.services import (
     account_service,
     balance_at,
     income_service,
-    pay_period_service,
     pay_period_write,
     posting_service,
     status_seam,
@@ -35,24 +43,36 @@ from app.services import (
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import DerivedPeriod
+from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
-    settlement_if_settling,
-    settlement_basis_id,
-    settlement_columns,
+    rhythm_of,
+    all_periods,
+    an_entered_day,
     append_balance_assertion,
     create_hysa_account,
+    current_pay_period,
+    derived_span,
     field_is_disabled,
     freeze_today,
+    last_covered_day,
+    make_expense_template,
+    make_investment_account,
+    make_salary_profile,
     mark_purchase_settled,
     net_posted_by_day,
     posted_loan_balance_at,
+    settle_day_columns,
     settle_instant_on,
+    settlement_basis_id,
+    settlement_columns,
+    settlement_if_settling,
 )
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 #: Where the grid route's source lives, for the three STATIC guards below.
 #: It was the single file ``app/routes/grid.py`` until plan step C2-f2b split
@@ -149,13 +169,14 @@ class TestGridRowScoping:
         ).one()
         txn = Transaction(
             account_id=seed_user["account"].id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected.id,
             name=name,
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal(amount),
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
         )
         db.session.add(txn)
         db.session.flush()
@@ -165,11 +186,11 @@ class TestGridRowScoping:
         """Return a period that falls in the default visible window.
 
         The grid starts at the current period; seed_periods_today places
-        period 4 around today's date so get_current_period always
-        returns a valid period.  No fallback is needed.
+        period 4 around today's date so the containment lookup always
+        answers a real period.  No fallback is needed.
         """
         # pylint: disable=unused-argument
-        return pay_period_service.get_current_period(
+        return current_pay_period(
             seed_user["user"].id,
         )
 
@@ -293,7 +314,8 @@ class TestBalanceRow:
     def test_balance_row_no_current_period(self, app, auth_client, seed_user):
         """GET /grid/balance-row with no periods returns 204 empty."""
         with app.app_context():
-            # No periods generated -- get_current_period returns None.
+            # No periods generated -- no period contains today, so the
+            # grid's containment lookup answers None.
             resp = auth_client.get("/grid/balance-row")
             assert resp.status_code == 204
             assert resp.data == b""
@@ -479,6 +501,7 @@ class TestSubtotalRowsEndpoint:
         )
         db.session.add_all([
             Transaction(
+                user_id=seed_user['account'].user_id,
                 pay_period_id=period_id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -486,9 +509,10 @@ class TestSubtotalRowsEndpoint:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=income,
+                amount_ownership=AmountOwnership.own(income),
             ),
             Transaction(
+                user_id=seed_user['account'].user_id,
                 pay_period_id=period_id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -496,7 +520,7 @@ class TestSubtotalRowsEndpoint:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=expense,
+                amount_ownership=AmountOwnership.own(expense),
             ),
         ])
         db.session.commit()
@@ -515,7 +539,7 @@ class TestSubtotalRowsEndpoint:
         hx-swap-oob fragment so it never needs its own GET.
         """
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             self._seed_income_expense(
@@ -651,7 +675,7 @@ class TestSubtotalRowsEndpoint:
                 db.session.query(TransactionType)
                 .filter_by(name="Income").one()
             )
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             # First user's own income -- shown via the fallback.
@@ -662,6 +686,7 @@ class TestSubtotalRowsEndpoint:
             # Second user's income on the second user's account/period --
             # must NOT leak into the first user's subtotal response.
             db.session.add(Transaction(
+                user_id=seed_second_user['bootstrap_period'].user_id,
                 pay_period_id=seed_second_user["bootstrap_period"].id,
                 scenario_id=seed_second_user["scenario"].id,
                 account_id=seed_second_user["account"].id,
@@ -669,7 +694,7 @@ class TestSubtotalRowsEndpoint:
                 name="Other Paycheck",
                 category_id=seed_second_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("9999.00"),
+                amount_ownership=AmountOwnership.own(Decimal("9999.00")),
             ))
             db.session.commit()
 
@@ -685,6 +710,27 @@ class TestSubtotalRowsEndpoint:
             assert "$2,000" in html
 
 
+def _generate_first_row(template, seed_user, periods):
+    """Generate *template*'s rows and return the first, committed.
+
+    The tests below need a row a DEFINITION produced rather than one built by
+    hand: only a generated row carries the ``amount_source_id`` declaration
+    plan step balance:X-au-e's refusal is keyed on, so a hand-built row would
+    grade the gate against a shape the app never writes.
+    """
+    from app.services import recurrence_engine  # pylint: disable=import-outside-toplevel
+
+    created = recurrence_engine.generate_for_template(
+        template,
+        GenerationSchedule.for_period_ids(
+            BalanceContext.build(template.user_id), {p.id for p in periods},
+        ),
+        seed_user["scenario"].id,
+    )
+    db.session.commit()
+    return created[0] if created else None
+
+
 class TestTransactionCRUD:
     """Tests for transaction create, update, delete, and status changes."""
 
@@ -694,6 +740,7 @@ class TestTransactionCRUD:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
+            user_id=seed_periods_today[0].user_id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -701,7 +748,7 @@ class TestTransactionCRUD:
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("123.45"),
+            amount_ownership=AmountOwnership.own(Decimal("123.45")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -818,21 +865,24 @@ class TestTransactionCRUD:
             ).data.decode()
             assert "Mark as paid" in projected_html
 
-            # Settled: the Paid action is suppressed (mark_done would 400).
-            # Driven through the SEAM rather than by assigning ``status_id``:
-            # since plan step X-au-c3 a settle records what moved in the same
-            # call, and a raw column write produces a settled row that records
-            # nothing -- a state no door can create and one
+            # SETTLED: the Paid action is suppressed.  Driven through the
+            # SEAM rather than by assigning ``status_id``: since plan step
+            # X-au-c3 a settle records what moved in the same call, and a raw
+            # column write produces a settled row that records nothing -- a
+            # state no door can create and one
             # ``row_valuation.settled_figure`` refuses outright, so the page
             # under test would 500 on a row the app could never have.
-            settled = db.session.query(Status).filter_by(name="Settled").one()
+            #
+            # It walked Paid -> the terminal ``Settled`` archive until plan
+            # step **balance:X-am** deleted that status.  The button is gated
+            # on ``Status.is_settled``, so the first step was always the one
+            # that suppressed it.
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
                 settlement=settlement_if_settling(
                     txn, ref_cache.status_id(StatusEnum.DONE),
                 ),
             )
-            status_seam.apply_status_change(txn, settled.id)
             db.session.commit()
             settled_html = auth_client.get(
                 f"/transactions/{txn.id}/full-edit"
@@ -872,7 +922,10 @@ class TestTransactionCRUD:
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "200.00"},
+                data={
+                    "estimated_amount": "200.00",
+                    "estimated_amount_as_rendered": "123.45",
+                },
             )
             assert response.status_code == 200
             assert b"200" in response.data
@@ -899,6 +952,7 @@ class TestTransactionCRUD:
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -906,7 +960,7 @@ class TestTransactionCRUD:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -957,6 +1011,240 @@ class TestTransactionCRUD:
 
             # Ad-hoc transaction should be fully deleted.
             assert db.session.get(Transaction, txn_id) is None
+
+    def test_a_zero_row_still_draws_a_click_target(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Finding **N-344**'s second limb, MEASURED rather than read.
+
+        The cell suppressed a zero figure, so a `$0.00` Projected row rendered
+        a ``.txn-open`` span containing only whitespace -- an inline-flex
+        element with no content is zero pixels wide, so the row could not be
+        clicked and its action card could not be opened.  That is the exact
+        population this step's delete control has to reach: an envelope emptied
+        of its purchases and set back to Projected prices at `$0.00`.
+
+        The ``aria-label`` was always right, which is why the defect was
+        visual-only and why asserting on it would have proved nothing -- the
+        assertion is on the SPAN'S CONTENT.
+
+        **It read ``0`` and reads ``$0`` since plan step
+        ``bank_import:X-gj-2b-3``** (developer ruling 2026-09-01): the four
+        figures in this cell go through the ``money`` macro that gate B7 makes
+        the one currency formatter, rather than through a second spelling of
+        it that could not show a sign while every purchase was positive.  What
+        this case grades is unchanged -- that the span has CONTENT.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            state_own_amount(txn, Decimal("0.00"))
+            txn.is_envelope = True
+            db.session.commit()
+
+            html = auth_client.get(f"/transactions/{txn.id}/cell").data.decode()
+
+            start = html.index('<span class="txn-open"')
+            inner = html[html.index(">", start) + 1:html.index("<button", start)]
+            visible = re.sub(r"<[^>]*>", "", inner).strip()
+
+            assert visible != "", (
+                "a row with nothing inside .txn-open cannot be clicked"
+            )
+            assert visible == "$0", (
+                f"the chip should read the row's own figure, got {visible!r}"
+            )
+
+    def test_a_refunded_envelope_draws_a_signed_figure_not_a_bare_minus(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The cell's progress display through the ``money`` macro (gate B7).
+
+        Plan step ``bank_import:X-gj-2b-3``, developer ruling 2026-09-01.
+        Ruling **bank_import:R-II** made a merchant credit a NEGATIVE purchase,
+        so an envelope's entry total can be negative -- and this cell formatted
+        it with a raw ``"{:,.0f}".format`` while the mobile card beside it
+        (``grid/_grid_row_macros.html``) rendered the SAME two figures through
+        ``money``.  The raw spelling could not show a sign at all while every
+        purchase was positive, so the two agreed until this step and then
+        stopped: it printed ``-87 / 100`` under ``-$87 / $100``.
+
+        Asserts the FULL pair, so restoring either spelling fails: the raw one
+        drops both currency marks.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            state_own_amount(txn, Decimal("100.00"))
+            txn.is_envelope = True
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id,
+                account_id=txn.account_id,
+                user_id=seed_user["user"].id,
+                # A refund larger than the envelope holds, which is the shape
+                # a cross-period merchant credit files (ruling R-II).
+                amount=Decimal("-86.67"),
+                description="Amazon refund",
+                purchased_on=seed_periods_today[0].start_date,
+                is_credit=False,
+            ))
+            db.session.commit()
+
+            html = auth_client.get(f"/transactions/{txn.id}/cell").data.decode()
+
+            assert "-$87 / $100" in html, (
+                "the cell's two progress figures go through the money macro"
+            )
+
+    def test_the_delete_response_reloads_the_grid(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A delete takes a ROW off the grid, which no cell swap can express.
+
+        ``balanceChanged`` refreshes the balance row and the subtotals in
+        place; the row itself would stay on screen with an emptied cell.
+        ``gridRefresh`` is what ``cancel_transaction`` and ``unmark_credit``
+        already return for the same reason -- they add or remove rows -- and
+        this route returned ``balanceChanged`` for as long as it had no caller
+        to be wrong for (finding **N-344**, plan step ``bank_import:X-gb``).
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+
+            response = auth_client.delete(f"/transactions/{txn.id}")
+
+            assert response.status_code == 200
+            assert response.headers["HX-Trigger"] == "gridRefresh"
+            assert response.data == b"", (
+                "there is no cell left to render"
+            )
+
+    def test_the_action_card_offers_the_delete_with_its_consequences(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The control exists AND its dialog names what goes.
+
+        Finding **N-344** is that ``DELETE /transactions/<id>`` shipped with
+        full teardown logic and zero UI callers.  A test that only asserted the
+        button renders would pass over a dialog reading *"Are you sure?"*, which
+        is the disclosure shape **N-345** records one screen over -- so this
+        asserts the figures too.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+
+            response = auth_client.get(f"/transactions/{txn.id}/full-edit")
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert f'hx-delete="/transactions/{txn.id}"' in html
+            assert "Delete this row" in html
+            assert 'hx-target="#txn-cell-' in html
+            # The dialog: what it is, what it is worth, and that it is final.
+            assert "Delete &quot;Test Expense&quot;?" in html
+            assert "$123.45" in html, "the dialog must name the figure"
+            assert "still expects" in html, "a projected row has no record yet"
+            assert "This cannot be undone." in html
+
+    def test_a_quote_in_the_row_name_does_not_break_the_dialog(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The whole question survives a name the owner typed.
+
+        **A firing control over a defect this step shipped and caught.**  The
+        first draft wrote the name between LITERAL quotes, and a ``{% set %}``
+        block is Markup -- so those quotes reached the attribute unescaped and
+        CLOSED it: ``hx-confirm="Delete "`` with the rest of the sentence
+        parsed as three more attributes on the button.  The dialog then asked
+        "Delete" over a row worth `$123.45` and named neither the figure nor
+        the bank lines, which is the disclosure failure the control exists to
+        avoid.  A name carrying its own quote is the case that would have made
+        it permanent.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            txn.name = 'Kayla\'s "Fun" Money'
+            db.session.commit()
+
+            html = auth_client.get(
+                f"/transactions/{txn.id}/full-edit",
+            ).data.decode()
+
+            confirm = re.search(r'hx-confirm="([^"]*)"', html)
+            assert confirm is not None
+            question = confirm.group(1)
+            assert "&#34;Fun&#34;" in question, (
+                "the owner's own quotes are escaped, not dropped"
+            )
+            assert "$123.45" in question, (
+                "the attribute must not end before the figure"
+            )
+            assert "This cannot be undone." in question, (
+                "the attribute must not end before the last sentence"
+            )
+
+    def test_the_card_says_a_generated_row_will_not_come_back(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A template row soft-deletes, and *undoable* would be a lie.
+
+        The two arms of the route's own fork are two different promises to the
+        owner, so the dialog states whichever one applies rather than one
+        sentence that is true of neither.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                name="Template",
+                default_amount=Decimal("100.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            txn.template_id = template.id
+            db.session.commit()
+
+            html = auth_client.get(
+                f"/transactions/{txn.id}/full-edit",
+            ).data.decode()
+
+            assert "This occurrence will not come back" in html
+            assert "This cannot be undone." not in html
+
+    def test_the_card_withholds_the_delete_from_a_CC_payback(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A payback is half of a credit assertion, so it does not leave alone.
+
+        The card renders the SERVICE's sentence
+        (``transaction_service.deletion_refusal``) and the route re-asks the
+        same function, so what the screen withholds and what the door refuses
+        cannot drift.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            auth_client.post(f"/transactions/{txn.id}/mark-credit")
+            payback = (
+                db.session.query(Transaction)
+                .filter_by(credit_payback_for_id=txn.id, is_deleted=False)
+                .one()
+            )
+
+            html = auth_client.get(
+                f"/transactions/{payback.id}/full-edit",
+            ).data.decode()
+            assert "Delete this row" not in html
+            assert "Undo CC" in html
+
+            refused = auth_client.delete(f"/transactions/{payback.id}")
+
+            assert refused.status_code == 400
+            assert refused.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+            assert db.session.get(Transaction, payback.id) is not None
 
     def test_mark_done_without_a_correction_records_the_derived_figure(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1182,6 +1470,180 @@ class TestTransactionCRUD:
             db.session.refresh(txn)
             assert txn.due_date == date(2026, 2, 20)
 
+    def test_clearing_a_GENERATED_rows_due_date_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A generated row's due date is its definition's (**R-JD**'s sibling).
+
+        Plan step balance:X-au-e prices such a row from its definition's
+        series ON ITS OWN DUE DATE, so a cleared date leaves a row no rule can
+        answer -- and ``routes/grid/page`` prices every row it loads with no
+        handler, so ONE of them 500s the whole grid. Reproduced on a clone of
+        production before the fix: 926 rows priced before the cutover and
+        raised after it.
+
+        **The last assertion is the one that matters** and the case above is
+        why: the sibling test clears the date on an AD-HOC row and asserts
+        200, which is still correct. Asserting only the refusal here would
+        grade the door and not the thing that breaks, so this re-renders the
+        grid afterwards.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.flush()
+            row = _generate_first_row(template, seed_user, seed_periods_today)
+            assert row is not None, "the fixture generated no rows"
+            # The precondition the refusal exists for: this row is DERIVED.
+            assert row.amount_source_id is not None
+            assert row.due_date is not None
+            was = row.due_date
+
+            resp = auth_client.patch(f"/transactions/{row.id}", data={
+                "due_date": "",
+                "version_id": row.version_id,
+            })
+
+            assert resp.status_code == 400
+            assert b"recurring transaction" in resp.data
+            db.session.refresh(row)
+            assert row.due_date == was
+            # And the grid still renders, which is what the refusal protects.
+            assert auth_client.get("/grid").status_code == 200
+
+    def test_moving_a_GENERATED_rows_due_date_is_refused_too(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Keyed on the FIELD, not on emptiness.
+
+        A moved date is not harmless: it re-prices the row against a different
+        point in its definition's series, silently, and the next regeneration
+        puts it back. Without this case the gate could be written as a
+        clear-only test and still pass.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.flush()
+            row = _generate_first_row(template, seed_user, seed_periods_today)
+            was = row.due_date
+
+            resp = auth_client.patch(f"/transactions/{row.id}", data={
+                "due_date": "2026-02-20",
+                "version_id": row.version_id,
+            })
+
+            assert resp.status_code == 400
+            db.session.refresh(row)
+            assert row.due_date == was
+
+    def test_a_NOTES_only_save_does_not_take_a_GENERATED_rows_amount(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """Finding **N-248**, closed by ruling **R-JR** (plan step X-au-h).
+
+        The popover renders the Estimated box on every correctable row and an
+        HTML form posts every input it renders, so the door's old test -- *is
+        ``estimated_amount`` PRESENT?* -- was true of a save that touched only
+        the notes. The row then OWNED a figure nobody chose and stopped
+        tracking its definition, silently and with no control that undid it.
+
+        **The payload here is read out of the rendered popover rather than
+        assembled**, which is the whole point: `feedback_a_route_test_must_post_
+        what_the_template_emits` records that a hand-picked payload once graded
+        an arm that was dead in a browser, and this defect lives precisely in
+        the gap between what a form sends and what a test remembers to send.
+        Extracting both values also grades the template half -- if the popover
+        ever stops emitting the companion, this fails here rather than silently
+        landing every save on the fail-closed arm.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.flush()
+            row = _generate_first_row(template, seed_user, seed_periods_today)
+            assert row is not None, "the fixture generated no rows"
+            # The precondition: this row is DERIVED, so ownership is a real
+            # state change rather than a no-op on a row that already owns.
+            assert row.amount_source_id is not None
+            assert row.estimated_amount is None
+            assert row.is_override is False
+
+            edit = auth_client.get(f"/transactions/{row.id}/full-edit")
+            assert edit.status_code == 200
+            body = edit.data.decode()
+            shown = re.search(
+                r'name="estimated_amount"[^>]*value="([^"]*)"', body,
+            )
+            companion = re.search(
+                r'name="estimated_amount_as_rendered"[^>]*value="([^"]*)"', body,
+            )
+            assert shown is not None, "the popover renders an amount box"
+            assert companion is not None, (
+                "the popover must post what it rendered (R-JR); without the "
+                "companion every save lands on the fail-closed arm and takes "
+                "ownership, which is the defect this case exists for"
+            )
+            assert companion.group(1) == shown.group(1), (
+                "the companion and the box must render from ONE expression"
+            )
+
+            resp = auth_client.patch(f"/transactions/{row.id}", data={
+                "estimated_amount": shown.group(1),
+                "estimated_amount_as_rendered": companion.group(1),
+                "pay_period_id": str(row.pay_period_id),
+                "status_id": str(row.status_id),
+                "notes": "rent went up in March",
+                "version_id": row.version_id,
+            })
+            assert resp.status_code == 200, resp.data
+
+            db.session.refresh(row)
+            assert row.notes == "rent went up in March", "the save landed"
+            assert row.is_override is False, (
+                "a notes-only save must not make the row the owner's"
+            )
+            assert row.amount_source_id is not None, (
+                "a notes-only save must not take the row's amount"
+            )
+            assert row.estimated_amount is None
+
+    def test_a_RETYPED_amount_on_a_generated_row_still_takes_it(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The control for the case above, and its fail set must be disjoint.
+
+        Closing **N-248** by refusing every figure would be the same defect
+        pointed the other way -- an owner could no longer re-price one instance
+        -- and a suite that only asserted "ownership was not taken" would call
+        that a pass. This asserts the door still hears a real retype.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.flush()
+            row = _generate_first_row(template, seed_user, seed_periods_today)
+            assert row.amount_source_id is not None
+
+            edit = auth_client.get(f"/transactions/{row.id}/full-edit")
+            companion = re.search(
+                r'name="estimated_amount_as_rendered"[^>]*value="([^"]*)"',
+                edit.data.decode(),
+            )
+            assert companion is not None
+            typed = Decimal(companion.group(1)) + Decimal("10.00")
+
+            resp = auth_client.patch(f"/transactions/{row.id}", data={
+                "estimated_amount": str(typed),
+                "estimated_amount_as_rendered": companion.group(1),
+                "pay_period_id": str(row.pay_period_id),
+                "status_id": str(row.status_id),
+                "notes": "",
+                "version_id": row.version_id,
+            })
+            assert resp.status_code == 200, resp.data
+
+            db.session.refresh(row)
+            assert row.estimated_amount == typed, "the typed figure is stored"
+            assert row.amount_source_id is None, "and the row now OWNS it"
+            assert row.is_override is True, "so the row is the owner's"
+
     def test_full_edit_clears_due_date(
         self, app, auth_client, seed_user, seed_periods_today
     ):
@@ -1275,13 +1737,24 @@ class TestTransactionCRUD:
             assert 'name="pay_period_id"' in html
             sel_start = html.index('name="pay_period_id"')
             period_select = html[sel_start:html.index("</select>", sel_start)]
-            # Own past period present and selected.
-            assert source_period.label in period_select
+            # Own past period present and selected.  The labels come off the
+            # CALENDAR since pay-calendar plan step C4-a-5, which deleted
+            # ``PayPeriod.label``: the ``<option>`` renders
+            # ``DerivedPeriod.label``, so that is what an assertion about the
+            # markup may be built from.
+            calendar = calendar_for(seed_user["user"].id)
+            assert calendar.period_by_id(
+                source_period.id,
+            ).label in period_select
             assert f'value="{source_period.id}" selected' in period_select
             # Future period offered.
-            assert target_period.label in period_select
+            assert calendar.period_by_id(
+                target_period.id,
+            ).label in period_select
             # A past period that is not the row's own is excluded.
-            assert excluded_past.label not in period_select
+            assert calendar.period_by_id(
+                excluded_past.id,
+            ).label not in period_select
 
             # Saving a future period reassigns the transaction and asks
             # the client for a full grid refresh so the row relocates to
@@ -1299,6 +1772,7 @@ class TestTransactionCRUD:
             # balanceChanged trigger (no full reload).
             inplace_resp = auth_client.patch(f"/transactions/{txn.id}", data={
                 "estimated_amount": "130.00",
+                "estimated_amount_as_rendered": str(txn.estimated_amount),
                 "pay_period_id": target_period.id,
                 "version_id": txn.version_id,
             })
@@ -1341,6 +1815,7 @@ class TestTransactionNegativePaths:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
+            user_id=seed_periods_today[0].user_id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -1348,7 +1823,7 @@ class TestTransactionNegativePaths:
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("123.45"),
+            amount_ownership=AmountOwnership.own(Decimal("123.45")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -1532,7 +2007,7 @@ class TestTransactionNegativePaths:
                 user_id=other_user.id,
                 first_payday=date(2026, 1, 2),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -1960,13 +2435,14 @@ class TestAccountIdColumn:
 
         txn = Transaction(
             account_id=account.id,
+            user_id=seed_periods_today[0].user_id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected.id,
             name="Account Test",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -1986,13 +2462,14 @@ class TestAccountIdColumn:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
+            user_id=seed_periods_today[0].user_id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected.id,
             name="No Account",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         with pytest.raises(IntegrityError):
@@ -2009,7 +2486,9 @@ class TestAccountIdColumn:
         scenario = data["scenario"]
 
         created = recurrence_engine.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in periods},
+            ), scenario.id
         )
 
         assert len(created) > 0
@@ -2026,13 +2505,14 @@ class TestAccountIdColumn:
 
         txn = Transaction(
             account_id=account.id,
+            user_id=seed_periods_today[0].user_id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected.id,
             name="Test Expense for Credit",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("75.00"),
+            amount_ownership=AmountOwnership.own(Decimal("75.00")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -2199,13 +2679,14 @@ class TestAccountScopedGrid:
         txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
         txn = Transaction(
             account_id=account.id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=scenario.id,
             status_id=status.id,
             name=name,
             category_id=category.id if category else None,
             transaction_type_id=txn_type.id,
-            estimated_amount=Decimal(str(amount)),
+            amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         )
         db.session.add(txn)
         return txn
@@ -2250,7 +2731,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use a visible period (current period index ~5).
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         self._create_txn(checking, current, scenario, "Checking Rent", 1234,
                          category=seed_user["categories"]["Rent"])
         self._create_txn(savings, current, scenario, "Savings Deposit", 567,
@@ -2371,7 +2852,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use the current period so it falls within the visible window.
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
 
         self._create_txn(checking, current, scenario, "Salary", 2000,
                          txn_type_name="Income", category=seed_user["categories"]["Salary"])
@@ -2474,7 +2955,7 @@ class TestAccountScopedGrid:
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
         bctx = BalanceContext.build(seed_user["user"].id)
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
 
         active = self._create_txn(checking, current, scenario, "Active Expense", 100,
                                   category=seed_user["categories"]["Rent"])
@@ -2545,7 +3026,7 @@ class TestAccountScopedGrid:
         checking_after = db.session.get(Transaction, checking_txn_id)
         savings_after = db.session.get(Transaction, savings_txn_id)
 
-        current_period = pay_period_service.get_current_period(seed_user["user"].id)
+        current_period = current_pay_period(seed_user["user"].id)
         assert checking_after.pay_period_id == current_period.id
         assert savings_after.pay_period_id == current_period.id
 
@@ -2598,7 +3079,7 @@ class TestAccountScopedGrid:
         bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         # Find the next period after current.
         current_idx = next(
             i for i, p in enumerate(seed_periods_today) if p.id == current.id
@@ -2668,12 +3149,12 @@ class TestInlineSubtotalRows:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            from app.services import pay_period_service
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
             txn_inc = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2681,9 +3162,10 @@ class TestInlineSubtotalRows:
                 name="Salary",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             txn_exp = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2691,7 +3173,7 @@ class TestInlineSubtotalRows:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             db.session.add_all([txn_inc, txn_exp])
             db.session.commit()
@@ -2709,8 +3191,7 @@ class TestInlineSubtotalRows:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            from app.services import pay_period_service
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
@@ -2721,6 +3202,7 @@ class TestInlineSubtotalRows:
                 ("Food", "Groceries", expense_type.id, "400.00"),
             ]:
                 txn = Transaction(
+                    user_id=current.user_id,
                     pay_period_id=current.id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -2728,7 +3210,7 @@ class TestInlineSubtotalRows:
                     name=name,
                     category_id=seed_user["categories"][cat].id,
                     transaction_type_id=typ,
-                    estimated_amount=Decimal(amt),
+                    amount_ownership=AmountOwnership.own(Decimal(amt)),
                 )
                 db.session.add(txn)
             db.session.commit()
@@ -2748,12 +3230,12 @@ class TestInlineSubtotalRows:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            from app.services import pay_period_service
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
             txn_ok = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2761,9 +3243,10 @@ class TestInlineSubtotalRows:
                 name="Good Pay",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             )
             txn_bad = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2771,7 +3254,7 @@ class TestInlineSubtotalRows:
                 name="Cancelled Pay",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add_all([txn_ok, txn_bad])
             db.session.commit()
@@ -2803,17 +3286,17 @@ class TestNetCashFlowRow:
     def _seed_txns(self, seed_user, seed_periods_today, income_amt, expense_amt):
         """Helper: create income + expense in the current/first visible period."""
         from app.models.ref import TransactionType
-        from app.services import pay_period_service
         projected = db.session.query(Status).filter_by(name="Projected").one()
         income_type = db.session.query(TransactionType).filter_by(name="Income").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         if not current:
             current = seed_periods_today[0]
 
         txns = []
         if income_amt:
             txns.append(Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2821,10 +3304,11 @@ class TestNetCashFlowRow:
                 name="Income",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal(income_amt),
+                amount_ownership=AmountOwnership.own(Decimal(income_amt)),
             ))
         if expense_amt:
             txns.append(Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2832,7 +3316,7 @@ class TestNetCashFlowRow:
                 name="Expense",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal(expense_amt),
+                amount_ownership=AmountOwnership.own(Decimal(expense_amt)),
             ))
         db.session.add_all(txns)
         db.session.commit()
@@ -2927,14 +3411,14 @@ class TestFooterCondensation:
         """Tbody subtotal and net cash flow rows survive footer condensation."""
         with app.app_context():
             from app.models.ref import TransactionType
-            from app.services import pay_period_service
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -2942,7 +3426,7 @@ class TestFooterCondensation:
                 name="Pay",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -2968,7 +3452,7 @@ class TestPeriodHeaderDateFormat:
             user_id=seed_user["user"].id,
             first_payday=start_date,
             num_periods=num_periods,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         db.session.flush()
         db.session.commit()
@@ -2987,7 +3471,7 @@ class TestPeriodHeaderDateFormat:
             self._make_periods(db, seed_user, start)
 
             # The grid starts at the current period -- find it.
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id
             )
             assert current is not None, "No period covers today"
@@ -3055,10 +3539,10 @@ class TestPeriodHeaderDateFormat:
 
             assert next_year_period is not None, "Test requires a next-year period"
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = next_year_period.period_index - current_period.period_index
+            offset = derived_span(next_year_period).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3076,10 +3560,10 @@ class TestPeriodHeaderDateFormat:
             num = (days_to_today // 14) + 4
             periods = self._make_periods(db, seed_user, past_start, num_periods=num)
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
-            first_offset = periods[0].period_index - current_period.period_index
+            first_offset = derived_span(periods[0]).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=3&offset={first_offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3104,10 +3588,10 @@ class TestPeriodHeaderDateFormat:
 
             assert future_period is not None, "Test requires a next-year period"
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = future_period.period_index - current_period.period_index
+            offset = derived_span(future_period).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3136,10 +3620,10 @@ class TestPeriodHeaderDateFormat:
             assert last_current is not None
             assert first_next is not None
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = last_current.period_index - current_period.period_index
+            offset = derived_span(last_current).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=6&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3167,6 +3651,7 @@ class TestPeriodHeaderDateFormat:
             )
             first_cat = list(seed_user["categories"].values())[0]
             txn = Transaction(
+                user_id=periods[0].user_id,
                 pay_period_id=periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3174,15 +3659,15 @@ class TestPeriodHeaderDateFormat:
                 name="Test Bill",
                 category_id=first_cat.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             db.session.add(txn)
             db.session.commit()
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = periods[0].period_index - current_period.period_index
+            offset = derived_span(periods[0]).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=6&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3231,10 +3716,10 @@ class TestPeriodHeaderDateFormat:
             num = max((days_to_today // 14) + 4, 6)
             periods = self._make_periods(db, seed_user, jan1, num_periods=num)
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = periods[0].period_index - current_period.period_index
+            offset = derived_span(periods[0]).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3261,10 +3746,10 @@ class TestPeriodHeaderDateFormat:
             if dec_period is None:
                 pytest.skip("No period starting in late current year generated")
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
-            offset = dec_period.period_index - current_period.period_index
+            offset = derived_span(dec_period).period_index - derived_span(current_period).period_index
             resp = auth_client.get(f"/grid?periods=3&offset={offset}")
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -3276,7 +3761,7 @@ class TestPeriodHeaderDateFormat:
             # The next period (if it exists and starts next year) shows year.
             next_periods = [
                 p for p in periods
-                if p.period_index == dec_period.period_index + 1
+                if derived_span(p).period_index == derived_span(dec_period).period_index + 1
             ]
             if next_periods and next_periods[0].start_date.year > today.year:
                 full = next_periods[0].start_date.strftime("%-m/%-d/%y")
@@ -3294,7 +3779,7 @@ class TestTransactionNameRows:
 
     def _get_current_period(self, seed_user):
         """Return the current period for the seed user."""
-        return pay_period_service.get_current_period(seed_user["user"].id)
+        return current_pay_period(seed_user["user"].id)
 
     def test_grid_separate_rows_for_same_category_transactions(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3338,6 +3823,7 @@ class TestTransactionNameRows:
 
             txn_sf = Transaction(
                 template_id=tmpl_sf.id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3345,10 +3831,11 @@ class TestTransactionNameRows:
                 name="State Farm",
                 category_id=auto_insurance.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
             txn_geico = Transaction(
                 template_id=tmpl_geico.id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3356,7 +3843,7 @@ class TestTransactionNameRows:
                 name="Geico",
                 category_id=auto_insurance.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("120.00"),
+                amount_ownership=AmountOwnership.own(Decimal("120.00")),
             )
             db.session.add_all([txn_sf, txn_geico])
             db.session.commit()
@@ -3390,6 +3877,7 @@ class TestTransactionNameRows:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3397,7 +3885,7 @@ class TestTransactionNameRows:
                 name="Car Repair",
                 category_id=seed_user["categories"]["Car Payment"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("450.00"),
+                amount_ownership=AmountOwnership.own(Decimal("450.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -3457,7 +3945,7 @@ class TestTransactionNameRows:
                 pay_period_id=current.id,
                 status_id=projected.id,
                 name="To Savings",
-                amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 from_account_id=seed_user["account"].id,
                 to_account_id=savings_acct.id,
             )
@@ -3466,6 +3954,7 @@ class TestTransactionNameRows:
 
             shadow = Transaction(
                 transfer_id=transfer.id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3473,7 +3962,7 @@ class TestTransactionNameRows:
                 name="Transfer to Savings",
                 category_id=out_cat.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(shadow)
             db.session.commit()
@@ -3504,6 +3993,7 @@ class TestTransactionNameRows:
             # Create a transaction only in the current period so adjacent
             # periods have empty cells for this row key.
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3511,7 +4001,7 @@ class TestTransactionNameRows:
                 name="Electric Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("120.00"),
+                amount_ownership=AmountOwnership.own(Decimal("120.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -3537,6 +4027,7 @@ class TestTransactionNameRows:
 
             # Create expenses in two different groups.
             txn_home = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3544,9 +4035,10 @@ class TestTransactionNameRows:
                 name="Rent Payment",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             )
             txn_auto = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3554,7 +4046,7 @@ class TestTransactionNameRows:
                 name="Car Loan",
                 category_id=seed_user["categories"]["Car Payment"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("400.00"),
+                amount_ownership=AmountOwnership.own(Decimal("400.00")),
             )
             db.session.add_all([txn_home, txn_auto])
             db.session.commit()
@@ -3581,6 +4073,7 @@ class TestTransactionNameRows:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3588,7 +4081,7 @@ class TestTransactionNameRows:
                 name="Phone Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("80.00"),
+                amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -3601,7 +4094,10 @@ class TestTransactionNameRows:
             # GI-2: PATCH updates amount.
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "95.00"},
+                data={
+                    "estimated_amount": "95.00",
+                    "estimated_amount_as_rendered": "80.00",
+                },
             )
             assert resp.status_code == 200
             assert b"95" in resp.data
@@ -3619,6 +4115,7 @@ class TestTransactionNameRows:
             # Create a transaction so a row key exists with empty cells
             # in adjacent periods.
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3626,7 +4123,7 @@ class TestTransactionNameRows:
                 name="Internet Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("60.00"),
+                amount_ownership=AmountOwnership.own(Decimal("60.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -3671,6 +4168,7 @@ class TestTransactionNameRows:
             current = self._get_current_period(seed_user)
 
             income_txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3678,12 +4176,13 @@ class TestTransactionNameRows:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             # Expense in the "Home" group so a real (non-suppressed) group
             # header renders -- the "Income" group header is dropped as
             # redundant with the INCOME banner.
             expense_txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3691,7 +4190,7 @@ class TestTransactionNameRows:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
             )
             db.session.add_all([income_txn, expense_txn])
             db.session.commit()
@@ -3741,6 +4240,7 @@ class TestTransactionNameRows:
             current = self._get_current_period(seed_user)
 
             income = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3748,9 +4248,10 @@ class TestTransactionNameRows:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             expense1 = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3758,9 +4259,10 @@ class TestTransactionNameRows:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             )
             expense2 = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3768,7 +4270,7 @@ class TestTransactionNameRows:
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add_all([income, expense1, expense2])
             db.session.commit()
@@ -3798,11 +4300,12 @@ class TestTransactionNameRows:
             current = self._get_current_period(seed_user)
             past = next(
                 p for p in seed_periods_today
-                if p.period_index == current.period_index - 1
+                if derived_span(p).period_index == derived_span(current).period_index - 1
             )
 
             # Setup: past expense, current income + 2 expenses.
             past_exp = Transaction(
+                user_id=past.user_id,
                 pay_period_id=past.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=account.id,
@@ -3810,9 +4313,10 @@ class TestTransactionNameRows:
                 name="Past Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
             income_txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=account.id,
@@ -3820,9 +4324,10 @@ class TestTransactionNameRows:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             exp_done = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=account.id,
@@ -3830,9 +4335,10 @@ class TestTransactionNameRows:
                 name="Electric Bill",
                 category_id=seed_user["categories"]["Car Payment"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             exp_credit = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=account.id,
@@ -3840,7 +4346,7 @@ class TestTransactionNameRows:
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
             db.session.add_all([past_exp, income_txn, exp_done, exp_credit])
             db.session.commit()
@@ -3913,6 +4419,7 @@ class TestTransactionNameRows:
             # Create multiple transactions across categories.
             txns = [
                 Transaction(
+                    user_id=current.user_id,
                     pay_period_id=current.id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -3920,9 +4427,10 @@ class TestTransactionNameRows:
                     name="Paycheck",
                     category_id=seed_user["categories"]["Salary"].id,
                     transaction_type_id=income_type.id,
-                    estimated_amount=Decimal("2000.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 ),
                 Transaction(
+                    user_id=current.user_id,
                     pay_period_id=current.id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -3930,9 +4438,10 @@ class TestTransactionNameRows:
                     name="Rent",
                     category_id=seed_user["categories"]["Rent"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("1000.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1000.00")),
                 ),
                 Transaction(
+                    user_id=current.user_id,
                     pay_period_id=current.id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -3940,9 +4449,10 @@ class TestTransactionNameRows:
                     name="Groceries",
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("200.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
                 ),
                 Transaction(
+                    user_id=current.user_id,
                     pay_period_id=current.id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -3950,7 +4460,7 @@ class TestTransactionNameRows:
                     name="Car Loan",
                     category_id=seed_user["categories"]["Car Payment"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("400.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("400.00")),
                 ),
             ]
             db.session.add_all(txns)
@@ -3986,6 +4496,7 @@ class TestTransactionNameRows:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3993,7 +4504,7 @@ class TestTransactionNameRows:
                 name="Restaurant",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4031,6 +4542,7 @@ class TestTransactionNameRows:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4038,7 +4550,7 @@ class TestTransactionNameRows:
                 name="Cancelled Item",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4070,7 +4582,7 @@ class TestTooltipContent:
 
     def _get_current_period(self, seed_user):
         """Return the current period for the seed user."""
-        return pay_period_service.get_current_period(seed_user["user"].id)
+        return current_pay_period(seed_user["user"].id)
 
     @staticmethod
     def _extract_txn_titles(html):
@@ -4099,6 +4611,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4106,7 +4619,7 @@ class TestTooltipContent:
                 name="Test Tooltip Amount",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1234.56"),
+                amount_ownership=AmountOwnership.own(Decimal("1234.56")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4134,6 +4647,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4141,11 +4655,11 @@ class TestTooltipContent:
                 # A settled row carries the day its money moved; this fixture
                 # is bare (no seam), so it states the day the readers would
                 # otherwise refuse to guess (plan step X-f1).
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 name="Test Est Comparison",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 settled_amount=Decimal("487.32"),
                 settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
@@ -4171,6 +4685,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4178,11 +4693,11 @@ class TestTooltipContent:
                 # A settled row carries the day its money moved; this fixture
                 # is bare (no seam), so it states the day the readers would
                 # otherwise refuse to guess (plan step X-f1).
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 name="Test Equal Amounts",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 settled_amount=Decimal("500.00"),
                 settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
@@ -4209,6 +4724,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4216,11 +4732,11 @@ class TestTooltipContent:
                 # A settled row carries the day its money moved; this fixture
                 # is bare (no seam), so it states the day the readers would
                 # otherwise refuse to guess (plan step X-f1).
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 name="Test Paid Status",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 settled_amount=Decimal("100.00"),
                 settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
@@ -4244,6 +4760,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4251,7 +4768,7 @@ class TestTooltipContent:
                 name="Test Projected Status",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4273,6 +4790,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4280,7 +4798,7 @@ class TestTooltipContent:
                 name="Test Notes Tooltip",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 notes="Auto-pay on the 15th",
             )
             db.session.add(txn)
@@ -4305,6 +4823,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4312,7 +4831,7 @@ class TestTooltipContent:
                 name="Test No Trailing Sep",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4341,6 +4860,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4348,7 +4868,7 @@ class TestTooltipContent:
                 name="Test Zero Amount",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("0.00"),
+                amount_ownership=AmountOwnership.own(Decimal("0.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4370,6 +4890,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4377,7 +4898,7 @@ class TestTooltipContent:
                 name="Test Large Amount",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("12345.67"),
+                amount_ownership=AmountOwnership.own(Decimal("12345.67")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4401,6 +4922,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4408,7 +4930,7 @@ class TestTooltipContent:
                 name="Test Credit Tooltip",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4438,6 +4960,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4445,7 +4968,7 @@ class TestTooltipContent:
                 name="Test HTMX Update",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("80.00"),
+                amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4453,7 +4976,10 @@ class TestTooltipContent:
             # PATCH the amount.
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "95.50"},
+                data={
+                    "estimated_amount": "95.50",
+                    "estimated_amount_as_rendered": "80.00",
+                },
             )
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -4475,6 +5001,7 @@ class TestTooltipContent:
             current = self._get_current_period(seed_user)
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4482,7 +5009,7 @@ class TestTooltipContent:
                 name="State Farm",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4513,8 +5040,7 @@ class TestSubtotalDecimalPrecision:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            from app.services import pay_period_service
-            period = pay_period_service.get_current_period(seed_user["user"].id)
+            period = current_pay_period(seed_user["user"].id)
             if not period:
                 period = seed_periods_today[0]
 
@@ -4523,6 +5049,7 @@ class TestSubtotalDecimalPrecision:
             for i in range(20):
                 amt = Decimal("33.33")
                 txn = Transaction(
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -4530,7 +5057,7 @@ class TestSubtotalDecimalPrecision:
                     name=f"Expense {i}",
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=amt,
+                    amount_ownership=AmountOwnership.own(amt),
                 )
                 db.session.add(txn)
                 expected_expense += amt
@@ -4540,6 +5067,7 @@ class TestSubtotalDecimalPrecision:
             for i in range(5):
                 amt = Decimal("777.77")
                 txn = Transaction(
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -4547,7 +5075,7 @@ class TestSubtotalDecimalPrecision:
                     name=f"Income {i}",
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=income_type.id,
-                    estimated_amount=amt,
+                    amount_ownership=AmountOwnership.own(amt),
                 )
                 db.session.add(txn)
                 expected_income += amt
@@ -4616,13 +5144,14 @@ class TestGridSubtotalsRegressionBaseline:
 
             # Place the transaction in the current period so it is
             # visible on the default grid view.
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             if not current:
                 current = seed_periods_today[0]
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=scenario.id,
                 account_id=account.id,
@@ -4630,8 +5159,8 @@ class TestGridSubtotalsRegressionBaseline:
                 name="Regression Subtotal Income",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("500.00"),
-                settled_on=current.start_date,
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                **settle_day_columns(current.start_date),
                 **settlement_columns(
                     current.start_date, Decimal("500.00"),
                     submitted=Decimal("400.00"),
@@ -4699,8 +5228,6 @@ class TestGridPeriodSubtotalCanonical:
         to tell them apart.  Overspending separates all three: $562 correct,
         $500 the raw-estimate defect, $0 the reservation-only answer.
         """
-        from app.models.transaction_entry import TransactionEntry
-
         with app.app_context():
             projected = db.session.query(Status).filter_by(
                 name="Projected",
@@ -4708,7 +5235,7 @@ class TestGridPeriodSubtotalCanonical:
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense",
             ).one()
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None, (
@@ -4716,6 +5243,7 @@ class TestGridPeriodSubtotalCanonical:
             )
 
             txn = Transaction(
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4723,7 +5251,7 @@ class TestGridPeriodSubtotalCanonical:
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -4737,7 +5265,7 @@ class TestGridPeriodSubtotalCanonical:
             # claimed the purchases were inside an anchor asserted four
             # periods earlier (finding N-132 / R8).
             append_balance_assertion(
-                db.session, seed_user["account"], current,
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(current.start_date),
             )
             for amt in (
@@ -4851,7 +5379,7 @@ class TestGridPeriodSubtotalCanonical:
                 name="Expense",
             ).one()
             periods = seed_periods_today
-            target_period = pay_period_service.get_current_period(
+            target_period = current_pay_period(
                 seed_user["user"].id,
             )
             assert target_period is not None, (
@@ -4866,6 +5394,7 @@ class TestGridPeriodSubtotalCanonical:
             )
 
             txn = Transaction(
+                user_id=target_period.user_id,
                 pay_period_id=target_period.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -4873,7 +5402,7 @@ class TestGridPeriodSubtotalCanonical:
                 name="Groceries window",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -4883,7 +5412,7 @@ class TestGridPeriodSubtotalCanonical:
             # stays $0.00.  See the docstring: it was $1,000.00 while a posted
             # purchase was no fact.
             append_balance_assertion(
-                db.session, seed_user["account"], target_period,
+                db.session, seed_user["account"],
                 Decimal("750.00"),
                 settle_instant_on(target_period.start_date),
             )
@@ -5147,19 +5676,20 @@ class TestGridMatchedByRowPeriod:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Weekly Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("123.45"),
+                amount_ownership=AmountOwnership.own(Decimal("123.45")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -5220,7 +5750,7 @@ class TestGridMatchedByRowPeriod:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -5244,47 +5774,51 @@ class TestGridMatchedByRowPeriod:
             db.session.flush()
             txn_a = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected_id,
                 name="Biweekly Salary",
                 category_id=salary_cat.id,
                 transaction_type_id=income_type_id,
-                estimated_amount=Decimal("2500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
                 template_id=salary_template.id,
             )
             # (b) Standalone expense.
             txn_b = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected_id,
                 name="Adhoc Groceries",
                 category_id=groceries_cat.id,
                 transaction_type_id=expense_type_id,
-                estimated_amount=Decimal("85.00"),
+                amount_ownership=AmountOwnership.own(Decimal("85.00")),
             )
             # (c) Cancelled expense.
             txn_c = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=cancelled_id,
                 name="Cancelled Groceries",
                 category_id=groceries_cat.id,
                 transaction_type_id=expense_type_id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             # (d) Soft-deleted expense.
             txn_d = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected_id,
                 name="Deleted Groceries",
                 category_id=groceries_cat.id,
                 transaction_type_id=expense_type_id,
-                estimated_amount=Decimal("60.00"),
+                amount_ownership=AmountOwnership.own(Decimal("60.00")),
                 is_deleted=True,
             )
             db.session.add_all([txn_a, txn_b, txn_c, txn_d])
@@ -5424,13 +5958,14 @@ class TestSettleDayLifecycle:
 
         txn = Transaction(
             account_id=seed_user["account"].id,
+            user_id=seed_periods_today[0].user_id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected_id,
             name="Test Expense",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense_type_id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             due_date=seed_periods_today[0].start_date,
         )
         db.session.add(txn)
@@ -5447,13 +5982,14 @@ class TestSettleDayLifecycle:
 
         txn = Transaction(
             account_id=seed_user["account"].id,
+            user_id=seed_periods_today[0].user_id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             status_id=projected_id,
             name="Test Income",
             category_id=seed_user["categories"]["Salary"].id,
             transaction_type_id=income_type_id,
-            estimated_amount=Decimal("2000.00"),
+            amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             due_date=seed_periods_today[0].start_date,
         )
         db.session.add(txn)
@@ -5605,7 +6141,7 @@ class TestSettleDayLifecycle:
             status_seam.apply_status_change(
                 txn,
                 ref_cache.status_id(StatusEnum.DONE),
-                settled_on=settled_a_week_ago,
+                settle_day=an_entered_day(settled_a_week_ago),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             posting_service.sync_transaction_postings(txn, settled=True)
@@ -5689,7 +6225,7 @@ class TestSettleDayLifecycle:
             status_seam.apply_status_change(
                 txn,
                 ref_cache.status_id(StatusEnum.DONE),
-                settled_on=settled_a_week_ago,
+                settle_day=an_entered_day(settled_a_week_ago),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             posting_service.sync_transaction_postings(txn, settled=True)
@@ -5754,7 +6290,7 @@ class TestSettleDayLifecycle:
 
         txn = self._create_test_txn(seed_user, seed_periods_today)
         status_seam.apply_status_change(
-            txn, ref_cache.status_id(StatusEnum.DONE), settled_on=day,
+            txn, ref_cache.status_id(StatusEnum.DONE), settle_day=an_entered_day(day),
             settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
         )
         posting_service.sync_transaction_postings(txn, settled=True)
@@ -6248,6 +6784,150 @@ class TestBornProjected:
             assert 'name="status_id"' not in body
 
 
+class TestCreateFragmentsCarryThePeriodId:
+    """The two create fragments state their period contract as an ID.
+
+    Plan step **C2-f3e**, closing ledger row **P51**.  Both partials took a
+    whole ORM ``PayPeriod`` and read ``period.id`` off it, where their
+    sibling ``_transaction_empty_cell.html`` had taken the scalar since plan
+    step C2-f2b -- one family of three partials stating one contract two ways.
+
+    **These assert the rendered VALUE, not merely that the route answers
+    200**, and the reason is Jinja's default ``Undefined``: this application
+    configures no ``StrictUndefined``, so a context key that stops being
+    passed renders as the empty string in silence.  ``pay_period_id`` is the
+    field that decides which paycheck funds every row created from this cell,
+    so a blank one is exactly the failure that must not be able to pass
+    quietly (the same argument ``forms.get_quick_edit`` records for priming
+    the Estimated field from a map rather than a scalar).
+    """
+
+    def _cell_args(self, seed_user, seed_periods_today):
+        """Return the query string naming one real cell of the owner's grid."""
+        return {
+            "category_id": seed_user["categories"]["Groceries"].id,
+            "period_id": seed_periods_today[3].id,
+            "account_id": seed_user["account"].id,
+            "transaction_type_id": ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        }
+
+    def test_quick_create_posts_back_the_requested_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The quick-create form's hidden pay_period_id is the cell's own."""
+        with app.app_context():
+            period_id = seed_periods_today[3].id
+            response = auth_client.get(
+                "/transactions/new/quick",
+                query_string=self._cell_args(seed_user, seed_periods_today),
+            )
+            assert response.status_code == 200
+            body = response.get_data(as_text=True)
+            assert (
+                f'name="pay_period_id" value="{period_id}"' in body
+            ), body
+
+    def test_quick_create_expand_button_carries_the_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The expand button's data-period-id is the cell's own.
+
+        ``grid_edit.js`` reads it back off the DOM to build the full-create
+        URL (``openFullCreate``), so a blank here breaks F2 / the three-dots
+        button rather than the save -- a second consumer of the same value,
+        and the reason the partial names the id twice.
+        """
+        with app.app_context():
+            period_id = seed_periods_today[3].id
+            response = auth_client.get(
+                "/transactions/new/quick",
+                query_string=self._cell_args(seed_user, seed_periods_today),
+            )
+            assert response.status_code == 200
+            body = response.get_data(as_text=True)
+            assert f'data-period-id="{period_id}"' in body, body
+
+    def test_full_create_posts_back_the_requested_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The full-create form's hidden pay_period_id is the cell's own."""
+        with app.app_context():
+            period_id = seed_periods_today[3].id
+            response = auth_client.get(
+                "/transactions/new/full",
+                query_string=self._cell_args(seed_user, seed_periods_today),
+            )
+            assert response.status_code == 200
+            body = response.get_data(as_text=True)
+            assert (
+                f'name="pay_period_id" value="{period_id}"' in body
+            ), body
+
+    def test_empty_cell_reopens_the_same_cell(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The dash's hx-get names the period it was rendered for.
+
+        Escape swaps the quick-create input back to this fragment, and its
+        ``hx-get`` is what a following click re-opens; a blank period there
+        would offer the create form for a cell in no paycheck at all.
+        """
+        with app.app_context():
+            period_id = seed_periods_today[3].id
+            response = auth_client.get(
+                "/transactions/empty-cell",
+                query_string=self._cell_args(seed_user, seed_periods_today),
+            )
+            assert response.status_code == 200
+            body = response.get_data(as_text=True)
+            assert f"period_id={period_id}" in body, body
+
+    def test_created_row_lands_in_the_requested_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The whole loop: the form the route renders files the row correctly.
+
+        The end-to-end statement the two field assertions above decompose --
+        it posts the create form's OWN hidden fields back, so the row's
+        ``pay_period_id`` is whatever the fragment actually emitted rather
+        than whatever the test would have typed.  A partial that rendered a
+        blank id is caught here as a 422, and one that rendered the WRONG id
+        as a row in the wrong paycheck.
+        """
+        with app.app_context():
+            period_id = seed_periods_today[3].id
+            form = auth_client.get(
+                "/transactions/new/quick",
+                query_string=self._cell_args(seed_user, seed_periods_today),
+            ).get_data(as_text=True)
+
+            hidden = dict(
+                re.findall(
+                    r'<input type="hidden" name="([^"]+)" value="([^"]*)">',
+                    form,
+                ),
+            )
+            assert set(hidden) == {
+                "account_id", "category_id", "pay_period_id", "scenario_id",
+                "transaction_type_id",
+            }, hidden
+
+            created = auth_client.post(
+                "/transactions/inline",
+                data={**hidden, "estimated_amount": "42.00"},
+            )
+            assert created.status_code == 201, created.get_data(as_text=True)
+
+            txn = (
+                db.session.query(Transaction)
+                .filter_by(estimated_amount=Decimal("42.00"))
+                .order_by(Transaction.id.desc())
+                .first()
+            )
+            assert txn is not None
+            assert txn.pay_period_id == period_id
+
+
 class TestSchemaValidation:
     """Tests for due_day_of_month and due_date schema validation."""
 
@@ -6400,9 +7080,8 @@ class TestMobileThisPeriodPartial:
         partial's nav header equals ``current_period.label``.
         """
         with app.app_context():
-            from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -6414,7 +7093,18 @@ class TestMobileThisPeriodPartial:
             # The partial's header div is followed by the period
             # label inside a fw-bold div.  Encode the label so non-ASCII
             # whitespace and quoting are byte-stable.
-            assert current.label.encode("utf-8") in response.data
+            #
+            # The label comes off the CALENDAR since pay-calendar plan step
+            # C4-a-5 deleted ``PayPeriod.label``: the partial renders
+            # ``DerivedPeriod.label`` (``grid/_mobile_this_period.html``), and
+            # ``current_pay_period`` returns the ORM ROW on purpose because the
+            # factories take one.  The two name the same paycheck by
+            # construction -- that helper resolves the row FROM the derivation
+            # -- so this reads the derived value for the id it just resolved.
+            derived = calendar_for(
+                seed_user["user"].id,
+            ).period_by_id(current.id)
+            assert derived.label.encode("utf-8") in response.data
             # The partial-specific collapse IDs prefix with mobile-tp-
             # to avoid colliding with the Plan tab's mobile-income-/mobile-expense-.
             assert f"mobile-tp-income-{current.id}".encode("utf-8") in response.data
@@ -6594,19 +7284,20 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="C7-3 Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("42.00"),
+                amount_ownership=AmountOwnership.own(Decimal("42.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -6616,37 +7307,44 @@ class TestMobileCardActionBar:
             assert f'/transactions/{txn.id}/mark-done' in rendered
             assert "Mark Paid" in rendered
 
-    def test_action_bar_excludes_mark_paid_when_settled(
+    def test_action_bar_excludes_mark_paid_when_paid(
         self, app, seed_user, seed_periods_today,
     ):
-        """C7-4: Settled txns do NOT get a ``[Mark Paid]`` form.
+        """C7-4: Paid txns do NOT get a ``[Mark Paid]`` form.
 
-        Settled is a state-machine terminal for the mark-done path;
-        offering the button would let the user fire a request the
-        route would reject with 400.  The partial's guard on
-        ``status_id`` is the source of truth here.
+        The button would fire an identity re-submit at best and, on the row
+        types that settle from entries, a re-price of money that already
+        moved.
+
+        **The partial's guard is ``status_id == STATUS_PROJECTED``**, which is
+        narrower than the settled band and is the source of truth here: Mark
+        Paid is suppressed on Credit and Cancelled rows too.  The specimen was
+        ``Settled`` -- the terminal archive -- until plan step
+        **balance:X-am** deleted that status; Paid is the same specimen because
+        it is equally not-Projected.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.SETTLED),
-                name="C7-4 Settled Groceries",
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                name="C7-4 Paid Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("42.00"),
+                amount_ownership=AmountOwnership.own(Decimal("42.00")),
                 # A settled row carries the day its money moved and a RECORD
                 # of what moved (plan step X-au-c3); a bare fixture states both
                 # through the one door, ``settlement_columns``.
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 **settlement_columns(current.start_date, Decimal("42.00")),
             )
             db.session.add(txn)
@@ -6670,23 +7368,24 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 name="C7-4b Done Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("42.00"),
+                amount_ownership=AmountOwnership.own(Decimal("42.00")),
                 # A settled row carries the day its money moved and a RECORD
                 # of what moved (plan step X-au-c3); a bare fixture states both
                 # through the one door, ``settlement_columns``.
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 **settlement_columns(current.start_date, Decimal("42.00")),
             )
             db.session.add(txn)
@@ -6709,31 +7408,36 @@ class TestMobileCardActionBar:
         ``status_id != STATUS_DONE and status_id != STATUS_SETTLED``
         guard missed RECEIVED and kept the Mark Paid button visible
         on already-received income.  Switched to the semantic
-        ``Status.is_settled`` boolean which covers Paid, Received,
-        and Settled uniformly.
+        ``Status.is_settled`` boolean, which covered Paid, Received and
+        Settled uniformly then and covers the two that remain now.  (The
+        DESKTOP action bar has since narrowed further, to
+        ``status_id == STATUS_PROJECTED``; this case is the MOBILE card's,
+        whose guard is the boolean.  Plan step **balance:X-am** deleted
+        ``STATUS_SETTLED`` and neither partial needed an edit.)
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             salary_cat = seed_user["categories"]["Salary"]
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.RECEIVED),
                 name="C7-4c Received Salary",
                 category_id=salary_cat.id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("2500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
                 # A settled row carries the day its money moved and a RECORD
                 # of what moved (plan step X-au-c3); a bare fixture states both
                 # through the one door, ``settlement_columns``.
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 **settlement_columns(current.start_date, Decimal("2500.00")),
             )
             db.session.add(txn)
@@ -6763,19 +7467,20 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="C7-5 Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("99.00"),
+                amount_ownership=AmountOwnership.own(Decimal("99.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -6813,19 +7518,20 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="C7-6 Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("42.00"),
+                amount_ownership=AmountOwnership.own(Decimal("42.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -6857,19 +7563,20 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="C7-integration Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("31.00"),
+                amount_ownership=AmountOwnership.own(Decimal("31.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -6922,19 +7629,20 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="C7-prefix Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("17.00"),
+                amount_ownership=AmountOwnership.own(Decimal("17.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -6946,8 +7654,8 @@ class TestMobileCardActionBar:
                 display_name=txn.name,
             )
             period = DerivedPeriod(
-                period_id=current.id, period_index=current.period_index,
-                start_date=current.start_date, end_date=current.end_date,
+                period_id=current.id, period_index=derived_span(current).period_index,
+                start_date=current.start_date, end_date=last_covered_day(current),
                 end_is_projected=False,
             )
             matched = {
@@ -7095,19 +7803,20 @@ class TestMobileNoSwipeAffordances:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="No-swipe Projected Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("23.00"),
+                amount_ownership=AmountOwnership.own(Decimal("23.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -7182,9 +7891,9 @@ class TestMobilePlanTab:
     showing projected end balances and (on tap) the static line
     items behind each balance.  It is decoupled from the URL's
     ``periods`` / ``offset`` params -- always anchored at
-    ``current_period`` and walking forward
-    :data:`app.routes.grid.PLAN_WINDOW_PERIODS` periods regardless of
-    how the user is navigating in This Period.
+    ``current_period`` and covering
+    :data:`app.routes.grid.PLAN_WINDOW_MONTHS` months of the owner's own
+    paychecks regardless of how the user is navigating in This Period.
 
     Pinned contracts:
 
@@ -7232,7 +7941,7 @@ class TestMobilePlanTab:
         period's id.
         """
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -7262,7 +7971,7 @@ class TestMobilePlanTab:
         Plan card is still the current period.
         """
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -7406,12 +8115,13 @@ class TestMobilePlanTab:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=current.user_id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -7420,7 +8130,7 @@ class TestMobilePlanTab:
                 transaction_type_id=ref_cache.txn_type_id(
                     TxnTypeEnum.EXPENSE,
                 ),
-                estimated_amount=Decimal("88.00"),
+                amount_ownership=AmountOwnership.own(Decimal("88.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -7760,7 +8470,7 @@ class TestMobileJumpToPeriod:
         """C10-2: option count equals ``len(all_periods)``.
 
         ``seed_periods_today`` provisions 10 biweekly periods
-        (indices 0..9); ``pay_period_service.get_all_periods``
+        (indices 0..9); the owner's full period list
         returns all 10 to the route, so the rendered select carries
         10 ``<option>`` elements. Each option's ``value`` is the
         offset relative to the current period (period_index 4 under
@@ -7768,15 +8478,15 @@ class TestMobileJumpToPeriod:
         ``{-4, -3, -2, -1, 0, 1, 2, 3, 4, 5}``.
         """
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
-            all_periods = pay_period_service.get_all_periods(
+            owner_periods = all_periods(
                 seed_user["user"].id,
             )
-            assert len(all_periods) == 10
-            assert current.period_index == 4
+            assert len(owner_periods) == 10
+            assert derived_span(current).period_index == 4
 
             response = auth_client.get("/grid")
             assert response.status_code == 200
@@ -7793,7 +8503,7 @@ class TestMobileJumpToPeriod:
             select_start = pane.index('<select name="offset"')
             select_end = pane.index("</select>", select_start)
             select_block = pane[select_start:select_end]
-            assert select_block.count("<option ") == len(all_periods)
+            assert select_block.count("<option ") == len(owner_periods)
 
             # Spot-check the boundary offsets. period_index 0 -> -4,
             # period_index 9 -> +5 (all under current.period_index=4).
@@ -8280,17 +8990,47 @@ class TestTheTwoRemainderRows:
         same card, and with the redundant per-cell guard now gone (the flag
         alone decides) it would render ``None`` as money.
 
-        Driven from data through the Interest bar, which is the one
-        conditional figure a producer can vary at this step: an HYSA anchored
-        two periods AHEAD of today accrues nothing in the current column, so
-        the default window has accruing columns (the desktop row renders)
-        whose leftmost period has none (the mobile bar must not).  The shape
-        is asserted at the seam first, so the test cannot pass vacuously by
-        failing to construct it.
+        Driven from data through the employer-CONTRIBUTION bar.  A 401(k)
+        whose balance is asserted on the current period's own payday receives
+        nothing in that period and a contribution on every payday after it
+        (ruling **R-Z**: a payday at or before the assertion contributes
+        nothing), so the default window has contributing columns -- the desktop
+        row renders -- whose leftmost period has none, and the mobile bar must
+        not.  The shape is asserted at the seam first, so the test cannot pass
+        vacuously by failing to construct it.
+
+        **It was the Interest bar until plan step X-f3c-2c, on an HYSA anchored
+        two periods AHEAD of today, and that shape is unreachable.**  An
+        assertion is a statement about a day that has already happened --
+        ``anchor_service.resolve_observation_day`` refuses a future one -- and
+        the fixture only built it because it re-stamped the origination row
+        after the factory had written it, which an append-only table has no act
+        for.  Accrual cannot serve here at all: a modelled account accrues from
+        its latest assertion forward, and that assertion can never be later
+        than today, so the column CONTAINING today always accrues something.
+        The contribution tier can, because what it keys on is a payday's
+        position relative to the assertion rather than the clock's.
         """
-        hysa = create_hysa_account(
-            seed_user, db.session, seed_periods_today[5], Decimal("100000.00"),
+        salary = make_salary_profile(
+            seed_user, db.session, annual_salary=Decimal("94425.24"),
         )
+        salary.is_active = True
+        db.session.flush()
+        retirement = make_investment_account(
+            seed_user, db.session, seed_periods_today[4],
+            Decimal("100000.00"), employer_type="flat_percentage",
+        )
+        params = (
+            db.session.query(InvestmentParams)
+            .filter_by(account_id=retirement.id).one()
+        )
+        params.employer_flat_percentage = Decimal("0.0500")
+        # The job that FUNDS the employer contribution (ruling R-SAL5, applied
+        # at plan step salary:R14-b): no deduction names this account, so
+        # without the link no employer money is modelled at all and the
+        # precondition below -- a window that contributes -- cannot hold.
+        params.salary_profile_id = salary.id
+        db.session.commit()
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
@@ -8303,26 +9043,27 @@ class TestTheTwoRemainderRows:
             current = calendar.period_containing(bctx.as_of)
             window = calendar.window(current.period_index, 6)
             card_window = [window[0]]
-            view = balance_at.grid_balance_view(hysa, bctx)
-            # The shape this test needs: the window accrues, its first
+            view = balance_at.grid_balance_view(retirement, bctx)
+            # The shape this test needs: the window contributes, its first
             # column does not.
-            assert view.row_flags(window).accrual is True
-            assert view.row_flags(card_window).accrual is False
+            assert view.row_flags(window).contribution is True
+            assert view.row_flags(card_window).contribution is False
 
-        resp = auth_client.get(f"/grid?account_id={hysa.id}&periods=6")
+        resp = auth_client.get(f"/grid?account_id={retirement.id}&periods=6")
         assert resp.status_code == 200
         html = resp.data.decode()
 
-        # The desktop footer row renders: the window DOES contain accrual.
+        # The desktop footer row renders: the window DOES contain a
+        # contribution.
         footer = html[html.index('id="grid-summary"'):html.index("</tfoot>")]
-        assert "modelled-accrual-row" in footer
+        assert "modelled-contribution-row" in footer
 
         # The mobile card renders the leftmost period, which has none.  It is
         # the last block of the This Period pane, so the Plan pane bounds it.
         card_start = html.index('id="mobile-tp-summary-')
         card = html[card_start:html.index('id="mobile-plan"', card_start)]
         assert "Net Cash Flow" in card, "the card must actually have rendered"
-        assert "modelled-accrual-row" not in card
+        assert "modelled-contribution-row" not in card
 
     def test_the_shipped_grid_shows_no_remainder_row_on_a_clean_account(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -8814,7 +9555,7 @@ class TestTheAccrualRowLabelIsPerKind:
             seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
         )
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
         resp = auth_client.get(
@@ -8914,7 +9655,7 @@ class TestGridInterestAccrual:
         scenario = seed_user["scenario"]
         bctx = BalanceContext.build(seed_user["user"].id)
         user_id = seed_user["user"].id
-        current = pay_period_service.get_current_period(user_id)
+        current = current_pay_period(user_id)
         # Seam truth the route must render (current is the leftmost visible col).
         view = balance_at.grid_balance_view(hysa, bctx)
         accrued = view.columns[current.id].balance
@@ -8982,7 +9723,7 @@ class TestGridInterestAccrual:
         hysa = create_hysa_account(
             seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
         )
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         resp = auth_client.get(
             f"/grid/this-period-summary?period_id={current.id}"
             f"&account_id={hysa.id}",
@@ -8994,29 +9735,33 @@ class TestGridInterestAccrual:
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """The mobile This-Period summary refresh shows no Interest bar (PLAIN)."""
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         resp = auth_client.get(
             f"/grid/this-period-summary?period_id={current.id}",
         )
         assert resp.status_code == 200
         assert b"modelled-accrual-row" not in resp.data
 
-    def test_refresh_uses_live_income_matching_full_render(
-        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
+    def test_refresh_uses_the_same_income_basis_as_the_full_render(
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The balance-row refresh uses LIVE income, matching the full render.
+        """The balance-row refresh and the full render fold ONE income basis.
 
-        Ruling R-Q retired the caller's choice: the SEAM builds the live
-        override map, so an interest account cannot be projected on the stored
-        estimate by a caller that forgot to thread one.  Before it,
-        ``grid_balance_view`` fell back to the STORED amount on a bare
-        ``None`` for the interest path, so a refresh after a mark-paid could
-        revert the balance to the stored figure while the full page showed the
-        live one -- a flicker with no argument to fix it at the call site.
-        Forces live ($5,000) != stored ($1,000) on an income transaction and
-        asserts the live-income accrued balance appears in BOTH the full
-        ``/grid`` render AND the ``/grid/balance-row`` refresh, with NO
-        override passed anywhere.
+        Ruling R-Q retired the caller's choice: the SEAM owns the basis, so an
+        interest account cannot be projected on a different income figure by a
+        caller that forgot to thread one.  Before it, ``grid_balance_view``
+        fell back to the STORED amount on a bare ``None`` for the interest
+        path, so a refresh after a mark-paid could revert the balance to the
+        stored figure while the full page showed the live one -- a flicker with
+        no argument to fix it at the call site.
+
+        **The divergent figure is a real DATA state since plan step
+        balance:X-au-d**, where it was a monkeypatched read-time repair: the
+        income row DECLARES a definition whose price series states ``$5,000``
+        and stores no figure itself, so a surface reading the column would
+        contribute ``None`` and one asking the amount model contributes
+        ``$5,000``.  Both surfaces must render the same accrued balance, with
+        no override passed anywhere -- there is none to pass.
         """
         hysa = create_hysa_account(
             seed_user, db.session, seed_periods_today[0], Decimal("10000.00"),
@@ -9028,32 +9773,50 @@ class TestGridInterestAccrual:
         income_type = (
             db.session.query(TransactionType).filter_by(name="Income").one()
         )
+        period = seed_periods_today[2]
+        template = TransactionTemplate(
+            user_id=user_id,
+            account_id=hysa.id,
+            category_id=next(iter(seed_user["categories"].values())).id,
+            transaction_type_id=income_type.id,
+            name="Paycheck",
+            # NOT the graded figure: the series states $5,000 and this states
+            # something else, so a producer reading the scalar instead of the
+            # series answers a number no assertion here expects.  A first
+            # version set both to $5,000 and an adversarial review of plan step
+            # X-au-d showed that makes ``_stated_amount``'s empty-series
+            # refusal invisible.
+            default_amount=Decimal("7.77"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        template_amount_service.set_amount(
+            template, Decimal("5000.00"), effective_on=period.start_date,
+        )
         income = Transaction(
             account_id=hysa.id,
-            pay_period_id=seed_periods_today[2].id,
+            template_id=template.id,
+            user_id=period.user_id,
+            pay_period_id=period.id,
             scenario_id=scenario.id,
             status_id=status.id,
             name="Paycheck",
+            due_date=period.start_date,
             transaction_type_id=income_type.id,
-            estimated_amount=Decimal("1000.00"),
+            amount_ownership=AmountOwnership.derived(
+                ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+            ),
         )
         db.session.add(income)
         db.session.commit()
-
-        # The live recompute revalues this income at $5,000 (vs $1,000 stored).
-        monkeypatch.setattr(
-            income_service, "live_projected_net",
-            lambda txn, pricing: (
-                Decimal("5000.00") if txn.id == income.id else None
-            ),
-        )
-        current = pay_period_service.get_current_period(user_id)
+        assert income.estimated_amount is None
+        current = current_pay_period(user_id)
         # The seam builds the live map itself (ruling R-Q), so no override is
         # threaded here or by the route -- this IS the live figure.
         live_view = balance_at.grid_balance_view(hysa, bctx)
         accrued_live = live_view.columns[current.id].balance
-        # Sanity: the live $5,000 (not the $1,000 stored) is reflected -- the
-        # balance clears the $10,000 anchor + the live deposit.
+        # Sanity: the definition's $5,000 is reflected -- the balance clears
+        # the $10,000 anchor + the deposit.
         assert accrued_live > Decimal("15000.00")
 
         full = auth_client.get(f"/grid?account_id={hysa.id}").data.decode()
@@ -9166,13 +9929,14 @@ class TestTheAddPurchaseFormReadsTheUsersClock:
 
         txn = Transaction(
             account_id=seed_user["account"].id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             name="Two-clock Groceries",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
             is_envelope=True,
         )
         db.session.add(txn)
@@ -9219,7 +9983,7 @@ class TestTheAddPurchaseFormReadsTheUsersClock:
         monkeypatch.setattr(_helpers, "display_today", lambda: self._SENTINEL)
 
         with app.app_context(), app.test_request_context("/"):
-            period = pay_period_service.get_current_period(
+            period = current_pay_period(
                 seed_user["user"].id,
             )
             assert period is not None
@@ -9257,13 +10021,14 @@ class TestARevertedRowShowsWhatARePayWillBook:
         """Settle a bill at a human's figure, then revert it -- through the doors."""
         txn = Transaction(
             account_id=seed_user["account"].id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             name="Reverted Bill",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -9287,7 +10052,7 @@ class TestARevertedRowShowsWhatARePayWillBook:
         own badge, captioned with what a tick will do.
         """
         with app.app_context():
-            period = pay_period_service.get_current_period(
+            period = current_pay_period(
                 seed_user["user"].id,
             )
             self._reverted_corrected_row(seed_user, period)
@@ -9319,7 +10084,7 @@ class TestARevertedRowShowsWhatARePayWillBook:
         the one carrying a retained figure.
         """
         with app.app_context():
-            period = pay_period_service.get_current_period(
+            period = current_pay_period(
                 seed_user["user"].id,
             )
             txn_id = self._reverted_corrected_row(seed_user, period).id
@@ -9341,21 +10106,393 @@ class TestARevertedRowShowsWhatARePayWillBook:
         noise to every row on the grid.
         """
         with app.app_context():
-            period = pay_period_service.get_current_period(
+            period = current_pay_period(
                 seed_user["user"].id,
             )
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=period.user_id,
                 pay_period_id=period.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Ordinary Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(txn)
             db.session.commit()
 
         html = auth_client.get("/grid").data.decode()
         assert "Marking this paid will record" not in html
+
+
+class TestTheRangeSelectorIsDerivedFromTheOwnersCadence:
+    """The 6M / 1Y / 2Y buttons name a SPAN and resolve it per owner.
+
+    Recurrence plan step **R-F17**, ledger row **F-17**, ruling **R-R31**.
+    ``grid/grid.html`` held the selector as a Jinja literal --
+    ``("6M", 13, "6 months"), ("1Y", 26, "1 year"), ("2Y", 52, "2 years")`` --
+    which is ``months x 26 / 12`` and so told the truth for an owner paid every
+    fourteen days and for nobody else: a weekly owner pressing ``1Y`` got six
+    months of columns, a monthly one got two years, each under a button naming
+    a year.  The ``3P`` / ``6P`` buttons name a COUNT of paychecks and are
+    correct for every owner, so they are untouched.
+
+    The selector had NO test at all before this step, which is how the defect
+    stayed on the highest-traffic screen in the application.
+    """
+
+    def test_biweekly_is_the_literal_the_template_held(self):
+        """The exact five-row table ``grid.html`` carried, in order.
+
+        The regression pin behind the step's "no figure moved" claim on the
+        developer's own cadence: the derived table and the deleted literal are
+        the same list, so the cutover changed nothing they see.
+        """
+        from app.routes.grid.page import _range_options
+        from app.services.pay_calendar import PayCadence
+
+        assert _range_options(PayCadence(cadence_days=14)) == [
+            ("3P", 3, "3 pay periods"),
+            ("6P", 6, "6 pay periods"),
+            ("6M", 13, "6 months"),
+            ("1Y", 26, "1 year"),
+            ("2Y", 52, "2 years"),
+        ]
+
+    def test_a_weekly_owner_gets_twice_the_columns_for_the_same_span(self):
+        """``1Y`` is 52 columns weekly where the literal offered 26.
+
+        26 weekly paychecks is six months.  The paycheck-count buttons are
+        unchanged, which is the contrast that shows the derivation applies to
+        the SPAN buttons alone.
+        """
+        from app.routes.grid.page import _range_options
+        from app.services.pay_calendar import PayCadence
+
+        assert _range_options(PayCadence(cadence_days=7)) == [
+            ("3P", 3, "3 pay periods"),
+            ("6P", 6, "6 pay periods"),
+            ("6M", 26, "6 months"),
+            ("1Y", 52, "1 year"),
+            ("2Y", 104, "2 years"),
+        ]
+
+    def test_a_window_already_offered_is_not_offered_twice(self):
+        """At a monthly cadence "6 months" IS "6 pay periods", so it is offered once.
+
+        **A defect this step CREATED, and its adversarial review caught.**  The
+        deleted literal was ``3 / 6 / 13 / 26 / 52``, which can never collide;
+        deriving the span buttons makes one land on the fixed 3 or 6 of a
+        paycheck button at 64 of the 365 legal cadences, the shortest being 28
+        days -- so a monthly-paid owner got ``6P`` and ``6M`` both linking to
+        ``?periods=6``, and since the template marks a button active with
+        ``num_periods == count``, BOTH lit up.
+
+        The paycheck labels are exact and cadence-independent, so the DERIVED
+        label yields: the WINDOW is still offered, under the label that was
+        already true.
+        """
+        from app.routes.grid.page import _range_options
+        from app.services.pay_calendar import PayCadence
+
+        assert _range_options(PayCadence(cadence_days=30)) == [
+            ("3P", 3, "3 pay periods"),
+            ("6P", 6, "6 pay periods"),
+            ("1Y", 12, "1 year"),
+            ("2Y", 24, "2 years"),
+        ]
+
+    def test_no_cadence_offers_one_window_under_two_labels(self):
+        """Swept over the WHOLE domain: every offered count is distinct.
+
+        The single case above names the shape; this is the axis the defect
+        actually lived on, and no case varied it until the review said so
+        (``feedback_oracle_coverage_holes``).
+        """
+        from app.routes.grid.page import _range_options
+        from app.services.pay_calendar import PayCadence
+
+        for cadence_days in range(1, 366):
+            counts = [
+                count for _, count, _
+                in _range_options(PayCadence(cadence_days=cadence_days))
+            ]
+
+            assert len(counts) == len(set(counts)), (
+                f"cadence {cadence_days} offers one window twice: {counts}"
+            )
+
+    def test_a_span_no_paycheck_reaches_is_not_offered_at_all(self):
+        """An annually paid owner is offered no ``6M`` button.
+
+        Ruling **R-R31**, and here it is also what keeps the control working
+        rather than merely honest: the derived count would be 0, and a ``6M``
+        button linking to ``?periods=0`` renders the empty-schedule page for a
+        user whose schedule is not empty.
+        """
+        from app.routes.grid.page import _range_options
+        from app.services.pay_calendar import PayCadence
+
+        labels = [
+            label for label, _, _
+            in _range_options(PayCadence(cadence_days=365))
+        ]
+
+        assert labels == ["3P", "6P", "1Y", "2Y"]
+
+    def test_the_template_no_longer_names_a_period_count_for_a_span(self):
+        """STATIC guard: no hardcoded ``("6M", 13, ...)`` back in the template.
+
+        A Jinja literal is invisible to every Python gate in this repository,
+        which is how this one survived plan step R7a-2a's sweep of the
+        hardcoded 26s.  The guard reads the template source directly so a
+        re-introduction fails here rather than on someone's screen.
+        """
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "app" / "templates" / "grid" / "grid.html"
+        ).read_text(encoding="utf-8")
+
+        # **The POSITIVE fact, not an enumeration of negative ones.**  The
+        # first draft of this guard asserted `"set range_options" not in
+        # source` and a regex for a double-quoted `"6M", 13` pair, and BOTH
+        # arms passed on the real defect: an adversarial review re-inlined the
+        # literal single-quoted, directly in the `{% for %}` expression, and
+        # the guard stayed green while the selector was fully hardcoded again.
+        # Jinja accepts either quote style and this template's house style is
+        # single quotes, so a guard that enumerates spellings is one spelling
+        # from useless.  There is exactly one way to iterate the route's
+        # resolved options, and asserting it cannot be satisfied by any
+        # re-inlined literal in any quote style, in a `set` or in a `for`.
+        assert "{% for label, count, tooltip in range_options %}" in source, (
+            "grid.html no longer iterates the route's resolved range_options; "
+            "the counts are the OWNER's paychecks and only the route can "
+            "derive them"
+        )
+
+    def test_the_rendered_page_carries_the_derived_hrefs(
+        self, app, auth_client, seed_user, seed_schedule_at_cadence,
+    ):
+        """End to end: a WEEKLY owner's ``1Y`` button links to ``periods=52``.
+
+        The route resolves the buttons and the template renders them, so this
+        is the one case that proves the context key actually reaches the page
+        -- a Jinja loop over an undefined name renders nothing at all and
+        would drop the whole selector SILENTLY.
+        """
+        with app.app_context():
+            seed_schedule_at_cadence(cadence_days=7, num_periods=120)
+
+            html = auth_client.get("/grid").data.decode()
+
+        # **Scoped to the button group, because the page-wide scrape was
+        # blind.**  The first draft matched `periods=(\d+)&offset=0` across the
+        # whole document, which also matches the show-all toggle -- and that
+        # link carries `periods=6`, the `grid_default_periods` default -- so
+        # deleting the `6P` button entirely left this assertion passing.  An
+        # adversarial review measured that.
+        group = html.split('class="btn-group period-btn-group"', 1)[1]
+        group = group.split("</div>", 1)[0]
+        offered = {
+            int(count) for count in
+            re.findall(r"periods=(\d+)&(?:amp;)?offset=0", group)
+        }
+
+        # 3P / 6P are absolute; 6M / 1Y / 2Y are 26 / 52 / 104 weekly.  The
+        # biweekly 13 / 26 / 52 would be a passing SUBSET of nothing here: 26
+        # and 52 appear under different labels, so the set equality is what
+        # makes this case distinguish the derivation from the old literal.
+        assert offered == {3, 6, 26, 52, 104}, (
+            f"the weekly owner was offered {sorted(offered)} columns"
+        )
+        assert 'title="1 year"' in html
+        assert 'title="6 months"' in html
+        assert 'title="6 pay periods"' in html
+
+
+class TestTheGridRefusesBeforeItReadsACadence:
+    """`/grid` answers a repair page rather than a 500, for both no-rhythm owners.
+
+    Both grid reads of the owner's cadence are UNGUARDED --
+    ``_range_options(ctx.balance_ctx.calendar().cadence)`` in the render kwargs
+    and ``calendar.cadence.paychecks_within(...)`` in ``_build_plan_view``.
+
+    **They used to be safe only by ORDERING**, and plan step
+    ``pay_calendar:C4-d`` (ruling **R-PC45**) removed the thing that ordering
+    was standing between.  ``PayCalendar.cadence`` REFUSED a calendar holding
+    no cadence, and these reads were reached only because
+    ``_resolve_visible_window`` had already returned ``None`` and ``index`` had
+    rendered ``no_periods.html``: a correctness property held up by the order
+    of two statements, which is what this class's own name records.  A calendar
+    cannot carry an absent cadence now, so those reads cannot raise whatever
+    order they run in.
+
+    **What the owner sees split in two, and each half is a case below.**  An
+    owner with a schedule row and no COVERING paycheck still gets
+    ``no_periods.html`` from ``index``'s early return -- unchanged, and it is
+    the state that page's copy is for.  An owner with no schedule ROW is
+    refused at ``calendar_for`` and gets the application-wide
+    ``errors/no_pay_calendar.html``, which carries the same repair link.  That
+    is one answer for one state instead of the grid improvising its own, and it
+    leaves ``no_periods.html`` naming a single state -- its copy currently
+    reads "No pay periods have been generated yet, OR there is no period
+    covering today's date", which is ``balance:X-x4``'s subject.
+
+    **Nothing pinned any of it.** The account page and the savings service each
+    got an explicit zero-payday case in plan step R-F17 and the grid did not,
+    which an adversarial test review measured: the existing
+    ``test_grid_shows_no_periods_page`` uses bare ``seed_user``, and that
+    fixture carries a bootstrap pay period.
+    """
+
+    def test_an_owner_with_no_SCHEDULE_ROW_gets_the_repair_page(
+        self, app, auth_client, seed_user, db,
+    ):
+        """Zero pay periods, zero schedule rows: 200 and the repair page.
+
+        **This case changed its ANSWER at plan step ``pay_calendar:C4-d``**
+        (ruling **R-PC45**) and is kept rather than deleted, because the change
+        is the decision.  It asserted ``no_periods.html`` -- the grid's own
+        empty state -- which the route reached because ``calendar_for``
+        answered this owner an empty calendar carrying no cadence.  It now
+        asserts ``errors/no_pay_calendar.html``, the application-wide answer,
+        because ``calendar_for`` refuses them.
+
+        **What is NOT lost is what the assertion checks for.**  Both pages are
+        a 200 rather than a 500, both carry ``/pay-periods/generate``, and the
+        htmx-fragment behaviour the handler defines is graded in
+        ``test_pay_calendar_error_handler.py``.  What IS gained is that the
+        grid stops being one of three different answers to one state, and that
+        this class's ordering property -- see its docstring -- has no subject.
+
+        The ``pytest.raises`` is kept and moved onto ``calendar_for`` itself,
+        so this case still cannot pass vacuously: it fails if the loader ever
+        stops refusing, rather than reporting a repair page it did not earn.
+        """
+        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
+        from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+            PayCalendarError,
+            calendar_for,
+        )
+        with app.app_context():
+            user_id = seed_user["user"].id
+            # **The owner must hold no stored cadence, and since plan step
+            # ``pay_calendar:C4-b-1`` the fixture writes one** -- the seeded
+            # opening payday comes from ``pay_period_write.record_paydays``,
+            # which upserts the ``budget.pay_schedule`` row in the same call.
+            # So this state is CONSTRUCTED here rather than inherited from a
+            # fixture that happened to supply it, which is the stronger form:
+            # the assertion that used to stand here could only report that the
+            # fixture had changed.  It is still a real owner -- somebody who
+            # has never generated a schedule holds neither row -- and the
+            # periods go FIRST, which is the order the foreign key plan step
+            # ``pay_calendar:C4-b-2`` adds makes the only non-cascading one.
+            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
+            db.session.commit()
+
+            with pytest.raises(PayCalendarError):
+                _ = calendar_for(user_id)
+
+            response = auth_client.get("/grid")
+
+            assert response.status_code == 200
+            assert b"Pay Calendar Unavailable" in response.data
+            assert b"/pay-periods/generate" in response.data
+
+
+class TestThePlanWindowIsDerivedFromTheOwnersCadence:
+    """The mobile Plan tab looks forward a SPAN, not a period count.
+
+    ``PLAN_WINDOW_PERIODS = 13`` was a count whose own comment asserted it
+    matched the desktop ``6M`` button.  Recurrence plan step **R-F17** made
+    that button derive from the owner's cadence, so the count had to derive
+    with it or the stated agreement would hold only at 14 days.  The window's
+    WIDTH had no test before this step -- every Plan case renders the partial
+    with a hand-supplied ``plan_periods`` list -- so the route's own arithmetic
+    was uncovered.
+    """
+
+    @staticmethod
+    def _plan_periods(app, auth_client):
+        """Return the ``plan_periods`` the grid route handed the template."""
+        from flask import template_rendered  # pylint: disable=import-outside-toplevel
+
+        recorded: list[tuple] = []
+
+        def _record(sender, template, context, **extra):
+            recorded.append((template, context))
+
+        template_rendered.connect(_record, app)
+        try:
+            response = auth_client.get("/grid")
+        finally:
+            template_rendered.disconnect(_record, app)
+        assert response.status_code == 200, (
+            f"GET /grid returned {response.status_code}; expected 200"
+        )
+        grid = [c for t, c in recorded if t.name == "grid/grid.html"]
+        assert grid, (
+            "GET /grid did not render grid/grid.html; templates rendered: "
+            f"{[t.name for t, _ in recorded]!r}"
+        )
+        return grid[0]["plan_periods"]
+
+    def test_biweekly_is_the_thirteen_periods_the_constant_held(
+        self, app, auth_client, seed_user, seed_schedule_at_cadence,
+    ):
+        """13 columns -- what ``PLAN_WINDOW_PERIODS`` produced, unchanged."""
+        with app.app_context():
+            seed_schedule_at_cadence(cadence_days=14, num_periods=40)
+
+            assert len(self._plan_periods(app, auth_client)) == 13
+
+    def test_a_weekly_owner_sees_the_same_HALF_YEAR_in_more_columns(
+        self, app, auth_client, seed_user, seed_schedule_at_cadence,
+    ):
+        """26 columns weekly, where the fixed 13 covered three months.
+
+        The window is the same span of TIME for both owners; what changes is
+        how many paychecks that span holds.
+        """
+        with app.app_context():
+            seed_schedule_at_cadence(cadence_days=7, num_periods=120)
+
+            assert len(self._plan_periods(app, auth_client)) == 26
+
+    def test_an_owner_whose_paycheck_outlasts_the_span_sees_that_paycheck(
+        self, app, auth_client, seed_user, seed_schedule_at_cadence,
+    ):
+        """A 300-day cadence reaches no further paycheck, so Plan shows one.
+
+        The tab must render something, so this is where the honest zero
+        ``paychecks_within`` answers is turned into a real window rather than
+        an empty one: the paycheck the owner is currently IN already spans the
+        whole of the next six months, so it IS the answer.  The desktop
+        selector omits its ``6M`` button for the same owner, because a button
+        is optional where a tab is not.
+        """
+        with app.app_context():
+            # One period of history, not the default four.  *The reason was
+            # that the writer is forward-only and four 300-day periods back
+            # starts before ``seed_user``'s own opening payday; plan step
+            # ``pay_calendar:C4-b-1`` moved this fixture onto the reset door,
+            # which retires every surviving payday in the same call, so that
+            # bound is gone.*  What replaces it is the BOOKS: a calendar may
+            # not open at or before the day the seeded account's books open
+            # (ruling ``balance:R-HG``), and four 300-day periods back is about
+            # three and a half years -- well before the 2024 books -- which
+            # ``_test_helpers.rebuild_calendar`` now refuses outright.  One
+            # period back keeps this case inside that bound.  *The day itself
+            # is not named because it moves with the wall clock: the fixture
+            # derives it from ``display_today()``.*
+            seed_schedule_at_cadence(
+                cadence_days=300, num_periods=6, periods_before=1,
+            )
+
+            plan_periods = self._plan_periods(app, auth_client)
+
+            assert len(plan_periods) == 1

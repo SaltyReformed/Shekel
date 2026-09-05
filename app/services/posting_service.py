@@ -157,7 +157,7 @@ def _settle_effective(xfer: Transfer) -> Decimal:
             its to-account -- a Transfer-Invariant-1 violation, or a caller
             posting a settled effect for a pair that has not settled -- or if
             that shadow records no settlement, which
-            ``ck_transactions_settle_day_needs_basis`` makes unstorable.
+            ``ck_transactions_settle_day_needs_a_record`` makes unstorable.
     """
     effective = (
         db.session.query(posting_reads.settled_figure_clause())
@@ -177,7 +177,7 @@ def _settle_effective(xfer: Transfer) -> Decimal:
             f"account {xfer.to_account_id} that records what moved; cannot "
             "post its settled effect. Either no such shadow exists (Transfer "
             "Invariant 1), or the one that does carries no settlement record "
-            "-- a state ck_transactions_settle_day_needs_basis refuses to "
+            "-- a state ck_transactions_settle_day_needs_a_record refuses to "
             "store and status_seam.apply_status_change refuses to create."
         )
     return effective
@@ -316,8 +316,15 @@ def _settled_target(txn: Transaction, owner_id: int) -> dict[int, Decimal]:
         txn: The settled transaction.  ``account_id`` and
             ``transaction_type_id`` are immutable, so the cash account and the
             class are stable across the transaction's life.
-        owner_id: The owning user's id (``txn.pay_period.user_id`` -- a
-            ``Transaction`` has no ``user_id``), the category account's owner.
+        owner_id: The owning user's id, the category account's owner.  The
+            caller sources it from ``txn.user_id``.  It walked
+            ``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``,
+            which took it: the two are the same value, and the walk hydrated a
+            ``budget.pay_periods`` row to learn it.  It is a read that STAMPS
+            rather than refuses, so it was never one of finding **P75**'s
+            nineteen -- that census excludes it by name -- and what moved it
+            is the rule the developer ruled `C13-b` to, that a row's owner has
+            ONE home and no reader asks a second object for it.
 
     Returns:
         ``{cash_ledger_id: cash_leg, category_ledger_id: -cash_leg}``.
@@ -588,7 +595,7 @@ def sync_transaction_postings(
     if txn.transfer_id is not None:
         return []
 
-    owner_id = txn.pay_period.user_id
+    owner_id = txn.user_id
     entries = _emit_transaction_deltas(txn, settled=settled, owner_id=owner_id)
     for purchase in txn.entries:
         entries.extend(
@@ -615,7 +622,7 @@ def _emit_transaction_deltas(
     Args:
         txn: The transaction (already known not to be a transfer shadow).
         settled: Whether its confirmed effect should be posted.
-        owner_id: ``txn.pay_period.user_id``.
+        owner_id: ``txn.user_id``.
 
     Returns:
         The emitted delta entries; ``[]`` when the ledger is already at target.
@@ -686,7 +693,7 @@ def sync_purchase_postings(entry) -> "list[JournalEntry]":
     # sets is how the fourth one is written wrongly.
     if txn.transfer_id is not None:
         return []
-    owner_id = txn.pay_period.user_id
+    owner_id = txn.user_id
     entries = emit_purchase_deltas(
         entry, txn, posted=purchase_posts(txn, entry), owner_id=owner_id,
     )
@@ -717,7 +724,7 @@ def reverse_purchase_postings_before_delete(entry) -> None:
     txn = entry.transaction
     if txn.transfer_id is not None:
         return
-    owner_id = txn.pay_period.user_id
+    owner_id = txn.user_id
     entries = emit_purchase_deltas(
         entry, txn, posted=False, owner_id=owner_id,
     )
@@ -769,11 +776,13 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     """
     # A transfer shadow carries no transaction-sourced postings and no entries;
     # the guard mirrors ``sync_transaction_postings``' so both doors refuse the
-    # same row rather than one of them reading ``pay_period`` for a row it will
-    # do nothing with.
+    # same row rather than one of them doing work for a row the other drops.
+    # It said "rather than one of them reading ``pay_period`` for a row it will
+    # do nothing with" until plan step ``pay_calendar:C13-b`` moved the owner
+    # read onto the row's own column, which reads no relationship at all.
     if txn.transfer_id is not None:
         return
-    owner_id = txn.pay_period.user_id
+    owner_id = txn.user_id
     entries = _emit_transaction_deltas(txn, settled=False, owner_id=owner_id)
     for purchase in txn.entries:
         entries.extend(
@@ -887,13 +896,22 @@ def resync_all_cash_postings() -> tuple[int, int]:
         db.session.query(Transaction)
         .options(
             selectinload(Transaction.entries),
-            # ``pay_period`` is a plain lazy relationship, and BOTH
-            # ``_transaction_entry_date`` (its ``start_date`` fallback) and
-            # ``_settled_target`` (``pay_period.user_id``) dereference it once
-            # per row -- 122 extra SELECTs on production's settled set with the
-            # eager ``entries`` load right beside it doing the same job for the
-            # other relationship (finding N-133 / F9).
-            joinedload(Transaction.pay_period),
+            # **``joinedload(Transaction.pay_period)`` is GONE, and both readers
+            # it was added for went first** (plan step ``pay_calendar:C13-b``).
+            # It was here for finding N-133 / F9 -- 122 extra SELECTs on
+            # production's settled set -- because ``_transaction_entry_date``
+            # read the period's ``start_date`` as a NULL fallback and
+            # ``_settled_target``'s caller read ``pay_period.user_id``.  Plan
+            # step X-f1 deleted the first when ``settled_on`` replaced
+            # ``paid_at``; this step moved the second onto ``txn.user_id``.  The
+            # comment outlived both and named two live dereferences that no
+            # longer existed, which is what an adversarial review caught.
+            # **Measured 2026-09-03 rather than deduced**: with the option this
+            # walk hydrates ONE ``PayPeriod``, without it ZERO -- so nothing
+            # lazy-loads in its place and no autoflush moves into the loop.
+            # The whole walk is enumerable here because the query excludes
+            # shadows (``transfer_id IS NULL``), so the transfer arm that made
+            # ``reconcile_service._rows``' twin undecidable does not apply.
         )
         .filter(
             Transaction.is_deleted.is_(False),

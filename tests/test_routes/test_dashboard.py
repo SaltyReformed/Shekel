@@ -36,14 +36,15 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
-from app.services import pay_period_service
 from app.utils.dates import add_months, display_today
 from tests._test_helpers import (
+    last_covered_day,
     add_anchor_history as _add_anchor_history,
     add_txn as _add_txn,
+    current_pay_period,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Auth ─────────────────────────────────────────────────────────────
@@ -147,7 +148,7 @@ class TestDashboardPulseRendering:
         Still-due total = $300.00, rendered ``$300.00``.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "Rent", "300.00",
                 due_date=cur.start_date + timedelta(days=2),
@@ -184,7 +185,7 @@ class TestDashboardPulseRendering:
         from app.services import account_service, transfer_service
 
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
 
             _add_txn(
                 db.session, seed_user, cur, "Rent", "300.00",
@@ -205,6 +206,7 @@ class TestDashboardPulseRendering:
             db.session.flush()
             envelope = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=cur.user_id,
                 pay_period_id=cur.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -212,7 +214,7 @@ class TestDashboardPulseRendering:
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 template_id=template.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 due_date=cur.start_date + timedelta(days=3),
             )
             db.session.add(envelope)
@@ -309,7 +311,7 @@ class TestDashboardPulseRendering:
         from app.models.transaction_template import TransactionTemplate
 
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "Rent", "1200.00",
                 due_date=cur.start_date + timedelta(days=1),
@@ -327,6 +329,7 @@ class TestDashboardPulseRendering:
             db.session.flush()
             tracked = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=cur.user_id,
                 pay_period_id=cur.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -334,7 +337,7 @@ class TestDashboardPulseRendering:
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 template_id=template.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 due_date=cur.start_date + timedelta(days=2),
             )
             db.session.add(tracked)
@@ -368,7 +371,7 @@ class TestDashboardPulseRendering:
         feeds the street, so its name never reaches the response.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "Already Paid", "500.00",
                 status_enum=StatusEnum.DONE, settled_amount="500.00",
@@ -434,17 +437,18 @@ class TestDashboardPulseRendering:
             # the test would still pass.  Never a producer as its own oracle
             # (``docs/plans/verification.md`` #2).
             cur = seed_periods_today[4]
-            assert cur.start_date <= date.today() <= cur.end_date
+            assert cur.start_date <= date.today() <= last_covered_day(cur)
             nxt = seed_periods_today[5]
             peak_period = seed_periods_today[6]
             income = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=peak_period.user_id,
                 pay_period_id=peak_period.id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Windfall",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
             db.session.add(income)
             db.session.commit()
@@ -476,7 +480,7 @@ class TestDashboardPulseRendering:
             # POSITIONAL -- see the peak test above for why the fixture does
             # not ask the search this asserts on.
             cur = seed_periods_today[4]
-            assert cur.start_date <= date.today() <= cur.end_date
+            assert cur.start_date <= date.today() <= last_covered_day(cur)
             nxt = seed_periods_today[5]
             _add_txn(
                 db.session, seed_user, nxt, "Next Period Bill", "175.00",
@@ -508,10 +512,10 @@ class TestDashboardPulseRendering:
         terminus no longer print on top of each other.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "End Day Bill", "250.00",
-                due_date=cur.end_date,
+                due_date=last_covered_day(cur),
             )
             db.session.commit()
 
@@ -537,17 +541,19 @@ class TestHeroCaptions:
     ):
         """An anchor older than the threshold renders the stale caption.
 
-        The factory writes an origination row at NOW; delete it so the
-        20-days-ago row is the latest.  20 > 14 (default threshold), so the
-        hero's last-updated caption carries the stale class + icon.
+        The seeded account asserts on the owner's bootstrap day, which is
+        years before the 20-days-ago row appended here, so that row is the
+        latest.  20 > 14 (default threshold), so the hero's last-updated
+        caption carries the stale class + icon.
+
+        *It used to DELETE the origination first, on the ground that the
+        factory wrote it "at NOW".  Neither half survives plan step X-f3c-2c:
+        the row is dated on the bootstrap day rather than now, and the table is
+        append-only, so nothing may delete it.*
         """
         with app.app_context():
-            db.session.query(AccountAnchorHistory).filter_by(
-                account_id=seed_user["account"].id,
-            ).delete()
             _add_anchor_history(
-                db.session, seed_user["account"],
-                seed_periods_today[0], "1000.00", days_ago=20,
+                db.session, seed_user["account"], "1000.00", days_ago=20,
             )
             db.session.commit()
 
@@ -568,16 +574,19 @@ class TestHeroCaptions:
         money macro must place the sign before the dollar symbol.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             account = seed_user["account"]
             # The assertion IS the anchor since ruling R-EH; the cache column
-            # this used to set beside it is deleted.  The origination row is
-            # cleared so the one added below is the account's only assertion.
-            db.session.query(AccountAnchorHistory).filter_by(
-                account_id=account.id,
-            ).delete()
+            # this used to set beside it is deleted.  The row added below is
+            # dated yesterday and the seeded origination on the owner's
+            # bootstrap day years earlier, so this one GOVERNS -- which is what
+            # the figure below is computed from.
+            #
+            # *It used to delete the origination first, to make this the
+            # account's only assertion.  The table is append-only since plan
+            # step X-f3c-2c, and superseding is what an owner does anyway.*
             _add_anchor_history(
-                db.session, account, cur, "100.00", days_ago=1,
+                db.session, account, "100.00", days_ago=1,
             )
             _add_txn(
                 db.session, seed_user, cur, "Big Bill", "500.00",
@@ -919,7 +928,7 @@ class TestPulseSection:
         street head + the bill's street event.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "Rent", "300.00",
                 due_date=cur.start_date + timedelta(days=2),

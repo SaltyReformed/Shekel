@@ -57,6 +57,7 @@ from flask_login import current_user, login_required
 
 from app import ref_cache
 from app.enums import CompoundingFrequencyEnum
+from app.exceptions import RequiredRecordMissing
 from app.extensions import db
 from app.models.account import Account
 from app.models.asset_appreciation_params import AssetAppreciationParams
@@ -65,10 +66,11 @@ from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.routes.accounts.history import balance_history_context
+from app.routes.accounts.outstanding import outstanding_context
 from app.routes.accounts.reconcile import (
-    governing_statement,
     panel_id,
     reconcile_context,
+    reconcile_statement,
 )
 from app.services import (
     balance_at,
@@ -82,35 +84,25 @@ from app.utils.account_validation import (
     _interest_params_schema,
 )
 from app.utils.auth_helpers import get_or_404, require_owner
-from app.utils.period_projections import project_balance_horizons
+from app.utils.period_projections import (
+    ONE_YEAR_MONTHS,
+    horizon_offsets,
+    project_balance_horizons,
+)
 
 if TYPE_CHECKING:
     # Typing-only imports for the per-page helper signatures (lazy strings
     # via ``from __future__ import annotations``; no runtime cost).
     from app.services.cash_ledger import AnchorPoint
-    from app.services.pay_calendar import DerivedPeriod, PeriodWindow
+    from app.services.pay_calendar import (
+        DerivedPeriod,
+        PayCadence,
+        PayCalendar,
+        PeriodWindow,
+    )
 
 logger = logging.getLogger(__name__)
 
-# The number of pay periods that make up one year -- the window width for the
-# "Interest, next 12 months" health chip.  Matches the ``("1 year", 26)``
-# horizon offset in :mod:`app.utils.period_projections`.
-#
-# **It is a hardcoded 26 and it should be the OWNER's paycheck count**, which
-# :attr:`app.services.pay_calendar.PayCadence.periods_per_year` now derives
-# from ``budget.pay_schedule.cadence_days``.  At a weekly cadence this window
-# spans six months and the chip still says "next 12 months"; at a monthly one
-# it spans two years.  Left as-is by plan step R7a-2a (``CLAUDE.md`` rule 6:
-# report out of scope, do not fix), together with the sibling offsets in
-# ``period_projections`` -- both are period-INDEX arithmetic rather than the
-# money constant that step replaced, and converting them means deciding what a
-# fractional period offset means.  **It IS a ledger row -- ``recurrence:F-17``,
-# born with its owner ``recurrence:R-F17`` at R7a-2a's design review 2026-08-11
-# -- and this comment claimed the opposite until plan step pay_calendar:C2-f1,
-# whose own adversarial review re-reported the row because the comment said it
-# did not exist.  A sentence about the registry goes stale exactly like a
-# sentence about the code.
-_ONE_YEAR_PERIODS = 26
 
 # Chart.js x-axis label format for the balance-projection trend: month
 # abbreviation plus un-padded day (e.g. "Jun 5").  The SAME convention as
@@ -141,33 +133,60 @@ def _current_period_balance(
     return current_bal
 
 
-def _ensure_interest_params(account: Account) -> InterestParams:
-    """Return the account's :class:`InterestParams`, auto-creating if missing.
+def _interest_params(account: Account) -> InterestParams:
+    """Return the account's :class:`InterestParams`, refusing if it has none.
 
-    Mirrors the pre-merge ``interest_detail`` safety fallback: an
-    interest-bearing account should always carry a params row (the create
-    flow seeds it), but if one was lost this defensively recreates it with
-    an explicit ``apy=0`` sentinel and the DAILY compounding ref id.
+    **It used to auto-create the row, and plan step balance:X-i3 deleted that
+    branch rather than declaring it.**  A render that repairs data is a write
+    inside a read: it cost this page the one snapshot every figure on it is
+    computed against, and it hid the door that should have written the row.
+    The gap was real, and WIDER than the step's own first draft said: the
+    seeder had a single caller, account CREATION, while **THREE doors can make
+    an account interest-bearing** -- creating it, re-classing it
+    (``crud.update_account``), and editing the TYPE itself
+    (``types.update_account_type``, which may flip ``has_interest`` on an
+    owner's own custom type and so change every account already on it, with no
+    account row touched at all).  All three hold the rule now, through the one
+    statement of it in :mod:`app.routes.accounts._type_params`.
 
-    The explicit zero (E-12 / HIGH-06) is deliberate: relying on a column
-    ``server_default`` would silently project 4.5% interest the user never
-    configured.  ``compounding_frequency_id`` is a ref FK now (#38, no
-    server_default), so the DAILY id is supplied explicitly.
+    So a missing row means the data was changed outside the application, and
+    the honest answer is to refuse rather than manufacture a zero-rate row that
+    reads on screen exactly like a rate the owner configured.  **NOT the answer
+    :func:`require_scenario` gives**, which an earlier draft of this paragraph
+    cited and which is the opposite disposition: a missing baseline has a
+    handler and a repair page (ruling R-BW) because the owner can fix it from a
+    screen the app can still render.  This state has no door that produces it,
+    so there is no screen to send anyone to.
+
+    Measured before the branch was deleted: **0 of 9 production accounts** of a
+    parameterised kind were missing their satellite row, on either table.
+
+    Args:
+        account: The interest-bearing cash account being rendered.
+
+    Returns:
+        The account's :class:`InterestParams`.
+
+    Raises:
+        RequiredRecordMissing: The account carries no params row.
     """
     params = (
         db.session.query(InterestParams)
         .filter_by(account_id=account.id)
         .first()
     )
-    if not params:
-        params = InterestParams(
-            account_id=account.id, apy=Decimal("0"),
-            compounding_frequency_id=ref_cache.compounding_frequency_id(
-                CompoundingFrequencyEnum.DAILY,
-            ),
+    if params is None:
+        raise RequiredRecordMissing(
+            f"account {account.id} is interest-bearing and carries no "
+            f"budget.interest_params row, so there is no APY or compounding "
+            f"basis to project it at. All three doors that can make an "
+            f"account interest-bearing write one -- creating it, re-classing "
+            f"it, and editing the account TYPE -- so reaching this means the "
+            f"row was removed outside the application. To rebuild it, change "
+            f"the account's type to another kind and change it back: the "
+            f"re-class door seeds on a CHANGE, so re-saving the same type is a "
+            f"no-op."
         )
-        db.session.add(params)
-        db.session.commit()
     return params
 
 
@@ -176,19 +195,51 @@ def _build_horizons(
     current_period: DerivedPeriod | None,
     all_periods: PeriodWindow,
     balances: dict[int, Decimal],
+    calendar: PayCalendar,
 ) -> list[dict]:
-    """Build the 3 / 6 / 12-month horizon chip rows for the template.
+    """Build the forward horizon chip rows for the template.
 
     One row per horizon that has a projected balance, in the shared
-    :data:`~app.utils.period_projections.HORIZON_OFFSETS` order.  Each row
+    :data:`~app.utils.period_projections.HORIZON_MONTHS` order.  Each row
     carries the horizon ``label`` ("3 months" / "6 months" / "1 year"),
     its projected ``value``, and the ``delta`` from the current balance
     (``value - current_balance``), all ``Decimal``.  Returns an empty list
     when there is no current balance to project or delta from.
+
+    **It takes the CALENDAR rather than a resolved cadence** (plan step
+    **R-F17**).  How many pay periods a horizon named in months reaches is a
+    function of the owner's cadence.  *This paragraph used to say the calendar
+    is what made the read SAFE, because
+    :attr:`~app.services.pay_calendar.PayCalendar.cadence` REFUSED a calendar
+    holding no cadence and a current period was the proof there was one; plan
+    step ``pay_calendar:C4-d`` (ruling R-PC45) made that property total, so a
+    calendar in hand always answers and nothing here can raise.  What remains
+    true is the reason the CALENDAR travels rather than a loose number:*
+    :func:`~app.services.pay_calendar.derive_periods` derives every span from
+    one owner's own paydays, so a non-empty calendar always carries
+    one, and it cannot be paired with another owner's rhythm.
+
+    Args:
+        current_balance: The page hero's figure, which every ``delta`` is
+            measured from.  ``None`` yields no rows.
+        current_period: The pay period covering the read pass's clock, or
+            ``None`` -- which also yields no rows, since no horizon is
+            measurable from nowhere.
+        all_periods: The pass's reporting window, searched by ``period_index``.
+        balances: The seam's ``{period_id: balance}`` map for this account.
+        calendar: The read pass's own
+            :class:`~app.services.pay_calendar.PayCalendar`, read for the
+            owner's cadence alone.
+
+    Returns:
+        The chip rows, in horizon order.
     """
-    if current_balance is None:
+    if current_balance is None or current_period is None:
         return []
-    projected = project_balance_horizons(current_period, all_periods, balances)
+    projected = project_balance_horizons(
+        current_period, all_periods, balances,
+        horizon_offsets(calendar.cadence),
+    )
     return [
         {"label": label, "value": value, "delta": value - current_balance}
         for label, value in projected.items()
@@ -199,19 +250,39 @@ def _interest_next_year(
     interest_by_period: dict[int, Decimal],
     current_period: DerivedPeriod,
     all_periods: PeriodWindow,
+    cadence: PayCadence,
 ) -> Decimal:
-    """Sum the interest earned over the next year (26 biweekly periods).
+    """Sum the interest earned over the owner's next year of paychecks.
 
     The health-chip figure: the ``Decimal`` sum of ``interest_by_period``
     for every period whose ``period_index`` falls in
-    ``[current + 1, current + 26]`` (the next full year of biweekly
-    periods after the current one).  ``Decimal("0.00")`` is a legitimate
-    result (a zero-APY account, or a horizon with no projected interest),
-    NOT a "missing" sentinel; the caller only invokes this for an
-    interest-bearing account with a current period.
+    ``[current + 1, current + paychecks_within(12)]`` -- the next full year
+    of the owner's OWN paychecks after the current one.  ``Decimal("0.00")``
+    is a legitimate result (a zero-APY account, or a horizon with no
+    projected interest), NOT a "missing" sentinel; the caller only invokes
+    this for an interest-bearing account with a current period.
+
+    **The window width was a hardcoded ``_ONE_YEAR_PERIODS = 26``** whose own
+    comment said it matched the "1 year" balance chip beside it -- an agreement
+    held by a sentence, and wrong for both chips at any cadence but biweekly
+    (ledger row **F-17**).  Both now resolve
+    ``paychecks_within(ONE_YEAR_MONTHS)``, so the interest chip covers exactly
+    the span the balance chip beside it reaches, by construction.  The count is
+    :attr:`~app.services.pay_calendar.PayCadence.periods_per_year` for a
+    twelve-month span, so it is at least 1 and the window is never empty.
+
+    Args:
+        interest_by_period: The seam's per-period earned interest for this
+            account.
+        current_period: The pay period covering the read pass's clock.
+        all_periods: The pass's reporting window.
+        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`.
+
+    Returns:
+        The summed interest, a ``Decimal``.
     """
     lo = current_period.period_index + 1
-    hi = current_period.period_index + _ONE_YEAR_PERIODS
+    hi = current_period.period_index + cadence.paychecks_within(ONE_YEAR_MONTHS)
     total = Decimal("0.00")
     for period in all_periods:
         if lo <= period.period_index <= hi:
@@ -348,14 +419,15 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
     # defaulting to its own ``date.today()`` rather than the pass's ``as_of``,
     # so a render begun before midnight and reaching this line after it placed
     # the hero in one paycheck and the seam's columns in another.
+    calendar = ctx.calendar()
     all_periods = ctx.reported_periods()
-    current_period = ctx.calendar().period_containing(ctx.as_of)
+    current_period = calendar.period_containing(ctx.as_of)
 
-    # Preserve the pre-merge ``interest_detail`` behaviour: the params row is
-    # auto-created before any projection so the parameters card always
-    # renders for an interest-bearing account.  Plain accounts carry no
-    # params / compounding list.
-    params = _ensure_interest_params(account) if is_interest else None
+    # The params row is READ before any projection so the parameters card
+    # always renders for an interest-bearing account.  Plain accounts carry no
+    # params / compounding list.  It is read rather than repaired since plan
+    # step balance:X-i3 -- see :func:`_interest_params`.
+    params = _interest_params(account) if is_interest else None
     compounding_frequencies = (
         CompoundingFrequency.query.order_by(CompoundingFrequency.id).all()
         if is_interest else []
@@ -387,13 +459,25 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
         # the day is already the user's.
         "anchor_as_of": anchor.observed_on if anchor is not None else None,
         "horizons": _build_horizons(
-            current_balance, current_period, all_periods, balances,
+            current_balance, current_period, all_periods, balances, calendar,
         ),
         # The next-year interest chip is interest-only; a plain account
         # carries ``None`` (the template omits the chip).  ``Decimal("0.00")``
         # is a legitimate value for a zero-APY interest account.
+        #
+        # ``calendar.cadence`` sits INSIDE the true branch, and since plan step
+        # ``pay_calendar:C4-d`` (ruling R-PC45) that is no longer load-bearing
+        # for the cadence: that property is total now, so evaluating it
+        # unguarded would raise nothing.  The GUARD is still required, for its
+        # other reason -- ``_interest_next_year`` dereferences
+        # ``current_period.period_index``, so a lapsed schedule with no current
+        # period is an ``AttributeError`` without it.  See
+        # :func:`_build_horizons`.
         "interest_next_year": (
-            _interest_next_year(interest_by_period, current_period, all_periods)
+            _interest_next_year(
+                interest_by_period, current_period, all_periods,
+                calendar.cadence,
+            )
             if is_interest and current_period is not None else None
         ),
         "params": params,
@@ -403,10 +487,14 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
         # The outstanding list (plan step S1-c, widened at X-f2-c), built by
         # the SAME helper the post-true-up prompt uses so the page and the
         # modal cannot come to disagree about what is still unreconciled.
-        # The asserted day is resolved once and handed in (finding N-222).
+        # The statement is resolved once and handed in (finding N-222), and the
+        # CALENDAR inside it is this pass's own memoized one -- the same value
+        # the horizon chips and the current-period caption above were built
+        # from, so the panel dates its offers by the paydays the rest of this
+        # page already reported (pay-calendar plan step C4-a-2).
         **reconcile_context(
             account, panel=panel_id(account.id),
-            statement=governing_statement(account),
+            statement=reconcile_statement(account, calendar),
         ),
     }
 
@@ -434,9 +522,12 @@ def cash_detail(account_id):
     account = load_cash_account_or_404(account_id)
     # ONE read pass for the whole page.  Both builders below fold this
     # account, and handing each its own context would be two resolutions of
-    # one question inside one request.  The WALK still runs twice (the band's
-    # fold and the history's), which is plan step X-i1's subject -- the
-    # context is the half this route can hold to one.
+    # one question inside one request.  **The WALK ran twice as well -- the
+    # band's fold and the history's -- until plan step X-i4** put the cash
+    # fold on the pass beside the loan derivations it already memoized, so
+    # both builders now share one assembly and this route holds BOTH halves
+    # to one.  (This comment named X-i1 as that half's owner; X-i4 reached it
+    # first, by making the pass hand out the fold.)
     ctx = BalanceContext.build(current_user.id)
     return render_template(
         "accounts/cash_detail.html",
@@ -451,6 +542,14 @@ def cash_detail(account_id):
         # in would walk the account's whole event stream again for a card the
         # response does not carry.
         history=balance_history_context(account, ctx),
+        # The same nesting, for the same reason, and off the same pass (plan
+        # step balance:X-f3c-3).  Both builders read the fold ``ctx`` already
+        # memoizes, so the outstanding difference costs this page no second
+        # walk -- only the bank comparison its verdict rests on.  It is out of
+        # ``_cash_detail_context`` for the reason ``history`` is: that builder
+        # also serves the BAND fragment, which re-renders on every
+        # ``balanceChanged`` and carries neither card.
+        books_difference=outstanding_context(account, ctx),
         **_cash_detail_context(account, ctx),
     )
 
@@ -758,15 +857,20 @@ def property_detail(account_id):
         .first()
     )
     if params is None:
-        # Defensive auto-create with a zero-rate sentinel (E-12), mirroring
-        # ``_ensure_interest_params``: the create flow already seeds this
-        # row, so this branch only fires if it was lost (manual delete /
-        # data loss).
-        params = AssetAppreciationParams(
-            account_id=account.id, annual_appreciation_rate=Decimal("0"),
+        # The appreciation twin of :func:`_interest_params`, deleted as an
+        # auto-create by the same step and for the same reason: this is a
+        # render, and a render that writes is a render without a snapshot.
+        raise RequiredRecordMissing(
+            f"account {account.id} is an appreciating asset and carries no "
+            f"budget.asset_appreciation_params row, so there is no rate to "
+            f"project its value at. Every door that can make an account "
+            f"appreciating writes one -- creating it and re-classing it; "
+            f"``has_appreciation`` is not editable on a type -- so reaching "
+            f"this means the row was removed outside the application. To "
+            f"rebuild it, change the account's type to another kind and change "
+            f"it back: the re-class door seeds on a CHANGE, so re-saving the "
+            f"same type is a no-op."
         )
-        db.session.add(params)
-        db.session.commit()
 
     balance_ctx = BalanceContext.build(current_user.id)
 

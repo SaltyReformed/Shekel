@@ -44,13 +44,10 @@ def _create_salary_profile(seed_user, db_session):
         db_session.add(cat)
         db_session.flush()
 
-    rule = make_every_period_rule(db_session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name="Main Job",
         default_amount=Decimal("80000.00") / 26,
@@ -58,6 +55,8 @@ def _create_salary_profile(seed_user, db_session):
     )
     db_session.add(template)
     db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db_session, template)
 
     profile = SalaryProfile(
         user_id=seed_user["user"].id,
@@ -66,7 +65,6 @@ def _create_salary_profile(seed_user, db_session):
         filing_status_id=filing_status.id,
         name="Main Job",
         annual_salary=Decimal("80000.00"),
-        pay_periods_per_year=26,
     )
     db_session.add(profile)
     db_session.flush()
@@ -92,7 +90,12 @@ def _create_pension(seed_user, db_session, salary_profile=None, name="State Pens
 
 
 def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
-    """Helper to create a retirement account with investment params."""
+    """Helper to create a retirement account with investment params.
+
+    COMMITS rather than flushes (plan step balance:X-i3): most callers go on to
+    issue a request, and a request holds a transaction of its own in which an
+    uncommitted account and its params do not exist.
+    """
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
         account_service.AccountSpec(
@@ -116,7 +119,7 @@ def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
         employer_match_cap_percentage=Decimal("0.0600"),
     )
     db_session.add(params)
-    db_session.flush()
+    db_session.commit()
     return account, params
 
 

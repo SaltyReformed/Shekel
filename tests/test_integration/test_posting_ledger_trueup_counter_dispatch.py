@@ -44,6 +44,7 @@ from app.models.ledger_account import LedgerAccount
 from app.services import account_posting_service, ledger_report_service
 from app.services.ledger_report_service import StatementWindow
 from app.utils.dates import display_today
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     create_account_of_type,
     create_settled_transfer,
@@ -161,6 +162,11 @@ def _true_up(account, balance, days_after_opening=None):
             seconds=days_after_opening or _TRUE_UP_DAYS_AFTER_OPENING,
         ),
         observed_on=opening.observed_on + timedelta(
+            days=days_after_opening or _TRUE_UP_DAYS_AFTER_OPENING,
+        ),
+        # The ENTERED day moves with the observed one (**N-299**): the column
+        # defaults to the wall clock, which a historical row must not inherit.
+        recorded_on=opening.observed_on + timedelta(
             days=days_after_opening or _TRUE_UP_DAYS_AFTER_OPENING,
         ),
     ))
@@ -324,10 +330,20 @@ class TestTheTrueUpCounterLegNamesTheDifference:
         buried in equity.  That is the defect ruling R-FO exists to close.
 
         Reproduced exactly: a Roth opened at ``$1,000.00`` with a ``$1,000.00``
-        settled transfer already dated before it, so the opening correction's
-        ``ledger_before`` equals its anchor balance and it books nothing.  The
-        ``$150.00`` that follows is a market move and must read as one.  The
-        ``$0`` pre-fill is fixed on the FORM, where it belongs.
+        settled transfer already dated before it.  The ``$150.00`` that follows
+        is a market move and must read as one.  The ``$0`` pre-fill is fixed on
+        the FORM, where it belongs.
+
+        **The delta-keyed rule is now unreachable rather than merely rejected**
+        (plan step X-f3c-2a).  Which correction opens the books is read from the
+        stored ``budget.account_openings`` row, so no property of the DELTA
+        series can re-elect it -- the refinement that failed this case has
+        nothing left to key on.  The opening therefore books the account's
+        stored equity here, where it booked NOTHING before: the transfer dated
+        before the books opened is the pre-opening double count **N-378**
+        measures, and X-f3c-2b closes it.  What this case grades is unchanged
+        and is the whole point -- the ``$150.00`` after it still reads as a
+        market gain and not as capital.
         """
         with app.app_context():
             account = _opened_account(
@@ -337,10 +353,16 @@ class TestTheTrueUpCounterLegNamesTheDifference:
             account_posting_service.sync_account_anchor_postings_all_scenarios(
                 account.id,
             )
-            # The opening really does book nothing -- the premise of the case.
+            # The opening books the account's STORED equity, whatever the
+            # records happen to explain -- which is the premise that replaced
+            # "the opening books nothing" and the reason no delta-keyed rule
+            # can re-elect it.
             assert _correction_legs(
                 account.id, PostingSourceEnum.ACCOUNT_OPENING,
-            ) == {}
+            ) == {
+                ("linked", "Asset"): Decimal("1000.00"),
+                ("anchor_equity", "Equity"): Decimal("-1000.00"),
+            }
 
             _true_up(account, "1150.00")
 
@@ -352,9 +374,19 @@ class TestTheTrueUpCounterLegNamesTheDifference:
                 "a market gain after an opening the records explained was "
                 "booked as capital, which is the defect R-FO closes"
             )
+            # +$1,000.00 from the opening-day correction, less the $150.00
+            # market gain.  **The $1,000.00 is finding N-378 wearing this
+            # account's clothes and is PINNED rather than endorsed**: the
+            # transfer is dated before the books opened, so the fold counts it
+            # twice, the opening assertion corrects it straight back out, and
+            # on a MODELLED account that correction's counter is
+            # ``unrealized_change`` (ruling R-FO) -- so the double count reads
+            # as a market LOSS that never happened.  Plan step X-f3c-2b closes
+            # it at the write door; until then this is what the ledger says and
+            # a test that hid it would be worse than one that states it.
             assert ledger_net(
                 _db.session, gain.id, seed_user["scenario"].id,
-            ) == Decimal("-150.00")
+            ) == Decimal("850.00")
 
     def test_a_zero_opening_is_still_the_opening(
         self, app, db, seed_user,
@@ -570,7 +602,7 @@ class TestTheStatementsReportTheDifference:
             # as-of-today month would not contain a true-up dated two days ago.
             observed = _true_up_day()
             report = ledger_report_service.compute_income_statement(
-                seed_user["user"].id,
+                seed_user["user"].id, calendar_for(seed_user["user"].id),
                 StatementWindow(
                     window_type="month",
                     month=observed.month,
@@ -610,7 +642,7 @@ class TestTheStatementsReportTheDifference:
             # as-of-today month would not contain a true-up dated two days ago.
             observed = _true_up_day()
             report = ledger_report_service.compute_income_statement(
-                seed_user["user"].id,
+                seed_user["user"].id, calendar_for(seed_user["user"].id),
                 StatementWindow(
                     window_type="month",
                     month=observed.month,
@@ -676,7 +708,7 @@ class TestTheStatementsReportTheDifference:
 
             observed = _true_up_day()
             income = ledger_report_service.compute_income_statement(
-                seed_user["user"].id,
+                seed_user["user"].id, calendar_for(seed_user["user"].id),
                 StatementWindow(
                     window_type="month",
                     month=observed.month,

@@ -14,6 +14,7 @@ from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.calibration_override import CalibrationOverride
+from app.services import pay_period_write
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -27,16 +28,21 @@ from app.models.ref import (
     RaiseType, TransactionType,
 )
 from app.services.pay_calendar import calendar_for
+from app.services.payroll_basis import PayrollBasis
 from app.services.auth_service import hash_password
 
 import pytest
 from app.services import account_service
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
-    make_every_period_rule,
+    rhythm_of,
+    all_periods,
     create_loan_account,
     freeze_today,
+    make_every_period_rule,
+    open_owner_calendar,
     seed_fica_config,
     seed_state_tax_config,
     seed_tax_bracket_set,
@@ -52,7 +58,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     which spans 2026-2027 from a calendar anchor.  Migrating to a
     today-relative fixture would slide the period range out of the
     tax_year=2026 frame.  Freezing today inside the seeded range keeps
-    get_current_period() deterministic regardless of wall-clock date.
+    "which paycheck contains today" deterministic regardless of wall-clock date.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
 
@@ -73,13 +79,10 @@ def _create_profile(seed_user):
         db.session.add(cat)
         db.session.flush()
 
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name="Day Job",
         default_amount=Decimal("75000.00") / 26,
@@ -87,6 +90,8 @@ def _create_profile(seed_user):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     profile = SalaryProfile(
         user_id=seed_user["user"].id,
@@ -96,7 +101,6 @@ def _create_profile(seed_user):
         name="Day Job",
         annual_salary=Decimal("75000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
     )
     db.session.add(profile)
     db.session.commit()
@@ -109,8 +113,7 @@ def _create_other_user_profile():
     Returns:
         dict with keys: user, profile.
     """
-    from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
-    from app.models.pay_period import PayPeriod as _PayPeriod  # pylint: disable=import-outside-toplevel
+    from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
     other_user = User(
         email="other@shekel.local",
@@ -123,16 +126,10 @@ def _create_other_user_profile():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3) so the account factory
-    # can resolve an anchor period without raising ValidationError.
-    _bootstrap = _PayPeriod(
-        user_id=other_user.id,
-        start_date=_date(2024, 1, 5),
-        end_date=_date(2024, 1, 5) + _td(days=13),
-        period_index=0,
-    )
-    db.session.add(_bootstrap)
-    db.session.flush()
+    # The owner's calendar, so the account factory can resolve an anchor
+    # period without raising ValidationError.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    _bootstrap = open_owner_calendar(other_user.id, _date(2024, 1, 5))[0]
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = account_service.create_account(
@@ -159,13 +156,10 @@ def _create_other_user_profile():
     db.session.add(cat)
     db.session.flush()
 
-    rule = make_every_period_rule(db.session, other_user.id)
-
     template = TransactionTemplate(
         user_id=other_user.id,
         account_id=account.id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name="Other Job",
         default_amount=Decimal("60000.00") / 26,
@@ -173,6 +167,8 @@ def _create_other_user_profile():
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     profile = SalaryProfile(
         user_id=other_user.id,
@@ -182,7 +178,6 @@ def _create_other_user_profile():
         name="Other Job",
         annual_salary=Decimal("60000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
     )
     db.session.add(profile)
     db.session.commit()
@@ -219,6 +214,31 @@ class TestProfileList:
             assert b"New Salary Profile" in response.data
 
 
+def _respace_paydays(db, user_id, cadence_days):
+    """Re-generate the owner's schedule AT *cadence_days*, committed.
+
+    Both the persisted cadence and the paydays move, through the one write
+    door, so the fixture is a state the application can actually produce -- a
+    schedule row saying 7 beside 14-day paydays is not.
+
+    Args:
+        db: The test session wrapper.
+        user_id: The owner to respace.
+        cadence_days: The new days between paydays.
+    """
+    pay_period_write.record_paydays(
+        user_id=user_id,
+        first_payday=date(2026, 1, 2),
+        num_periods=10,
+        rhythm=rhythm_of(cadence_days),
+        retiring_ids={
+            pid for (pid,) in db.session.query(PayPeriod.id)
+            .filter_by(user_id=user_id)
+        },
+    )
+    db.session.commit()
+
+
 class TestProfileCreate:
     """Tests for POST /salary."""
 
@@ -232,7 +252,6 @@ class TestProfileCreate:
                 "annual_salary": "75000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
-                "pay_periods_per_year": "26",
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -249,7 +268,7 @@ class TestProfileCreate:
             assert profile.template.is_active is True
 
     def test_create_profile_template_amount(self, app, auth_client, seed_user, seed_periods):
-        """Created template amount equals annual_salary / pay_periods_per_year."""
+        """Created template amount equals annual_salary over the paycheck count."""
         with app.app_context():
             filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
 
@@ -258,7 +277,6 @@ class TestProfileCreate:
                 "annual_salary": "52000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
-                "pay_periods_per_year": "26",
             }, follow_redirects=True)
 
             profile = (
@@ -268,6 +286,94 @@ class TestProfileCreate:
             )
             # 52000 / 26 = 2000
             assert profile.template.default_amount == Decimal("2000.00")
+
+    def test_create_profile_template_amount_follows_the_cadence(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A weekly owner's paycheck template is the salary over 52, not 26.
+
+        Input: the same $52,000 create POST as the test above, from an owner
+        whose ``budget.pay_schedule.cadence_days`` is 7.
+        Expected: ``default_amount`` is $1,000.00 ($52,000 / 52).
+        Why: **the sibling above cannot see this** -- its owner is biweekly, so
+        a route that hardcoded 26, or read a per-profile count, produces the
+        same $2,000.00 either way.  Before plan step R-F16 nothing checked the
+        form's ``pay_periods_per_year`` against the schedule, so a weekly owner
+        accepting the dropdown's default seeded every paycheck row at DOUBLE
+        their pay.
+
+        **What this pins, measured rather than assumed.**  The figure asserted
+        is the one ``create_profile`` finally writes, which is the paycheck
+        ENGINE's answer for the reference period -- ``_paycheck_template``'s
+        own ``annual / count`` seed is overwritten by ``set_amount`` in the
+        same request, and mutating that seed to ``/ 26`` leaves this test
+        green.  Hardcoding :attr:`PayrollBasis.periods_per_year` to 26 fails
+        it, and it is the ONLY test in this module that does -- which is the
+        point: every other case here is biweekly, where the derived count and
+        the old constant agree.
+        """
+        with app.app_context():
+            filing_status = db.session.query(FilingStatus).filter_by(
+                name="single",
+            ).one()
+            # A COHERENT weekly owner: the paydays are respaced with the
+            # cadence, not just relabelled.  A 7-day cadence beside 14-day
+            # paydays is a state no door in the application can produce, and
+            # asserting a figure for one pins nothing about a real owner.
+            _respace_paydays(db, seed_user["user"].id, cadence_days=7)
+
+            auth_client.post("/salary", data={
+                "name": "Weekly Check",
+                "annual_salary": "52000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+            }, follow_redirects=True)
+
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=seed_user["user"].id, name="Weekly Check")
+                .one()
+            )
+            # 52000 / 52 = 1000, gross == net here (no tax configs seeded).
+            assert profile.template.default_amount == Decimal("1000.00")
+
+    def test_the_salary_form_states_the_derived_paycheck_count(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The form SHOWS the count and offers no control to change it.
+
+        Input: ``GET /salary/new`` for an owner at a 7-day cadence and again
+        at 14.
+        Expected: "52" then "26" under a "Paychecks / Year" label, no
+        ``pay_periods_per_year`` input of any kind, and a link to the
+        pay-period settings that own the cadence.
+        Why: the count is what the page's own gross preview divides by, so
+        hiding it makes that figure unexplainable -- but rendering a SECOND
+        control for it is the finding.  **Both cadences are asked** because a
+        readout hardcoded to 26 renders correctly for the biweekly fixture and
+        is the exact regression this replaces; only the weekly read
+        distinguishes them.  Asserting the absence of the input matters just
+        as much: ``BaseSchema``'s ``unknown = EXCLUDE`` means a stale control
+        would submit silently and reach nothing, so nothing else in the suite
+        would fail if one came back.
+        """
+        with app.app_context():
+            for cadence_days, shown in ((7, ">52<"), (14, ">26<")):
+                _respace_paydays(db, seed_user["user"].id, cadence_days)
+
+                response = auth_client.get("/salary/new")
+
+                assert response.status_code == 200
+                body = response.data.decode()
+                assert b'name="pay_periods_per_year"' not in response.data
+                assert b'id="pay_periods_per_year"' not in response.data
+                assert "Paychecks / Year" in body
+                assert "from your pay schedule" in body
+                marker = body.index("Paychecks / Year")
+                assert shown in body[marker:marker + 400], (
+                    f"a {cadence_days}-day cadence rendered "
+                    f"{body[marker:marker + 400]!r}"
+                )
 
     def test_create_profile_validation_error(self, app, auth_client, seed_user):
         """POST /salary with missing fields shows a validation error."""
@@ -492,7 +598,6 @@ class TestProfileUpdate:
                 "annual_salary": "80000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
-                "pay_periods_per_year": "26",
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -1078,6 +1183,119 @@ class TestDeductions:
             db.session.refresh(deduction)
             assert deduction.target_account_id is None
             assert deduction.annual_cap is None
+
+    def test_add_deduction_refuses_another_users_target_account(
+        self, app, auth_client, seed_user, seed_second_user, seed_periods
+    ):
+        """A forged ``target_account_id`` is refused at the create door.
+
+        Ledger row **N-534**.  ``target_account_id`` is what makes a deduction
+        a contribution FEED into an investment account, and the schema checked
+        only that it was a positive integer while the database FK checked only
+        that the account existed -- so this payload was accepted and the
+        deduction pointed at a stranger's account.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+            victim_account_id = seed_second_user["account"].id
+
+            response = auth_client.post(
+                f"/salary/{profile.id}/deductions",
+                data={
+                    "name": "Forged Feed",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "200.00",
+                    "deductions_per_year": "26",
+                    "target_account_id": str(victim_account_id),
+                },
+            )
+
+            assert response.status_code == 404
+            assert db.session.query(PaycheckDeduction).filter_by(
+                name="Forged Feed",
+            ).one_or_none() is None
+
+    def test_add_deduction_still_accepts_the_users_own_target_account(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """The ownership guard refuses a stranger's account and NOTHING else.
+
+        Paired with the refusal above deliberately.  A 404 from the ownership
+        gate and a 404 from a broken URL map are indistinguishable, so a
+        refusal test alone would still pass if the guard rejected every
+        account -- or if the route stopped existing.  This asserts the door is
+        open for the legitimate payload the form actually posts.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+
+            response = auth_client.post(
+                f"/salary/{profile.id}/deductions",
+                data={
+                    "name": "Own Feed",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "200.00",
+                    "deductions_per_year": "26",
+                    "target_account_id": str(seed_user["account"].id),
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            saved = db.session.query(PaycheckDeduction).filter_by(
+                name="Own Feed",
+            ).one()
+            assert saved.target_account_id == seed_user["account"].id
+
+    def test_update_deduction_refuses_repointing_to_another_users_account(
+        self, app, auth_client, seed_user, seed_second_user, seed_periods
+    ):
+        """The EDIT door refuses a forged re-point too, and keeps the old link.
+
+        The create and update doors load through different schemas
+        (``_deduction_schema`` / ``_deduction_update_schema``) and the update
+        one writes through the ``_DEDUCTION_UPDATE_FIELDS`` allowlist, so
+        guarding only the create door would leave the same forged FK reachable
+        one route over -- which is how this class of defect survives a fix.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+            own_account_id = seed_user["account"].id
+
+            deduction = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                deduction_timing_id=pre_tax.id,
+                calc_method_id=flat_method.id,
+                name="Retirement Feed",
+                amount=Decimal("200.00"),
+                target_account_id=own_account_id,
+            )
+            db.session.add(deduction)
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/salary/deductions/{deduction.id}/edit",
+                data={
+                    "name": "Retirement Feed",
+                    "deduction_timing_id": pre_tax.id,
+                    "calc_method_id": flat_method.id,
+                    "amount": "200.00",
+                    "deductions_per_year": "26",
+                    "target_account_id": str(seed_second_user["account"].id),
+                },
+            )
+
+            assert response.status_code == 404
+            db.session.refresh(deduction)
+            assert deduction.target_account_id == own_account_id
 
     def test_update_deduction_percentage_conversion(
         self, app, auth_client, seed_user, seed_periods
@@ -1899,13 +2117,10 @@ def _create_second_user_salary_profile(second_user_data):
         db.session.add(cat)
         db.session.flush()
 
-    rule = make_every_period_rule(db.session, second_user_data["user"].id)
-
     template = TransactionTemplate(
         user_id=second_user_data["user"].id,
         account_id=second_user_data["account"].id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name="Other Job",
         default_amount=Decimal("60000.00") / 26,
@@ -1913,6 +2128,8 @@ def _create_second_user_salary_profile(second_user_data):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     profile = SalaryProfile(
         user_id=second_user_data["user"].id,
@@ -1922,7 +2139,6 @@ def _create_second_user_salary_profile(second_user_data):
         name="Other Job",
         annual_salary=Decimal("60000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
     )
     db.session.add(profile)
     db.session.commit()
@@ -2277,7 +2493,6 @@ class TestNetBiweeklyMismatchFixes:
                 "annual_salary": "75000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
-                "pay_periods_per_year": "26",
             }, follow_redirects=True)
 
             profile = (
@@ -2316,7 +2531,6 @@ class TestNetBiweeklyMismatchFixes:
                 "annual_salary": "60000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
-                "pay_periods_per_year": "26",
             }, follow_redirects=True)
 
             profile = (
@@ -2341,12 +2555,18 @@ class TestNetBiweeklyMismatchFixes:
     def test_future_year_transactions_use_current_year_tax_configs(
         self, app, auth_client, seed_user, seed_periods_52
     ):
-        """Future-year salary transactions fall back to current-year tax configs.
+        """Future-year salary rows fall back to current-year tax configs.
 
-        When tax configs exist only for 2026, periods in 2027 should use the
-        2026 configs instead of producing zero-tax paychecks.  This prevents
-        the net biweekly mismatch where the salary page (which always uses
-        current-year configs) shows a different amount than the grid.
+        When tax configs exist only for 2026, periods in 2027 must use the 2026
+        configs instead of producing zero-tax paychecks.  This prevents the net
+        biweekly mismatch where the salary page (which always uses current-year
+        configs) shows a different amount than the grid.
+
+        **Read through the AMOUNT MODEL since plan step balance:X-au-d**, where
+        it read ``Transaction.estimated_amount``: a salary row stores no figure
+        at all now, so the per-year resolution the case is about lives in
+        ``income_service.SalaryPricing._breakdown_by_period`` and this asks the rule
+        that consults it.  The claim and the figures are unchanged.
         """
         with app.app_context():
             user = seed_user["user"]
@@ -2358,16 +2578,21 @@ class TestNetBiweeklyMismatchFixes:
             # Regenerate transactions via the recurrence engine so that
             # future-year periods get amounts from the calculator.
             from app.services import recurrence_engine, pay_period_service
-            periods = pay_period_service.get_all_periods(user.id)
+            periods = all_periods(user.id)
             recurrence_engine.regenerate_for_template(
-                profile.template, GenerationSchedule.for_periods(profile.template.user_id, periods), seed_user["scenario"].id,
+                profile.template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(profile.template.user_id), {p.id for p in periods},
+                ), seed_user["scenario"].id,
             )
             db.session.commit()
 
             # Find a 2026 transaction and a 2027 transaction.
             txn_2026 = (
                 db.session.query(Transaction)
-                .join(PayPeriod)
+                # The relationship rather than the entity: since plan step
+                # ``pay_calendar:C13-a`` two foreign keys link these tables,
+                # so an entity join has no single onclause to infer.
+                .join(Transaction.pay_period)
                 .filter(
                     Transaction.template_id == profile.template_id,
                     Transaction.scenario_id == seed_user["scenario"].id,
@@ -2377,7 +2602,10 @@ class TestNetBiweeklyMismatchFixes:
             )
             txn_2027 = (
                 db.session.query(Transaction)
-                .join(PayPeriod)
+                # The relationship rather than the entity: since plan step
+                # ``pay_calendar:C13-a`` two foreign keys link these tables,
+                # so an entity join has no single onclause to infer.
+                .join(Transaction.pay_period)
                 .filter(
                     Transaction.template_id == profile.template_id,
                     Transaction.scenario_id == seed_user["scenario"].id,
@@ -2391,21 +2619,31 @@ class TestNetBiweeklyMismatchFixes:
 
             gross_biweekly = (Decimal("75000.00") / 26).quantize(Decimal("0.01"))
 
-            # Both should be less than gross (taxes applied).
-            assert txn_2026.estimated_amount < gross_biweekly, (
-                f"2026 txn ({txn_2026.estimated_amount}) should be less than "
-                f"gross ({gross_biweekly}) -- taxes should be applied"
+            # Pylint: ``import-outside-toplevel`` -- the amount model is not
+            # this module's subject and is imported where it is used, as the
+            # recurrence engine above it is.
+            from app.services import cash_ledger  # pylint: disable=import-outside-toplevel
+            priced = cash_ledger.amounts_by_id(
+                [txn_2026, txn_2027],
+                cash_ledger.amount_basis(user.id, seed_user["scenario"].id),
             )
-            assert txn_2027.estimated_amount < gross_biweekly, (
-                f"2027 txn ({txn_2027.estimated_amount}) should be less than "
-                f"gross ({gross_biweekly}) -- fallback taxes should be applied"
+            net_2026 = priced[txn_2026.id]
+            net_2027 = priced[txn_2027.id]
+
+            # Both should be less than gross (taxes applied).
+            assert net_2026 < gross_biweekly, (
+                f"2026 row ({net_2026}) should be less than gross "
+                f"({gross_biweekly}) -- taxes should be applied"
+            )
+            assert net_2027 < gross_biweekly, (
+                f"2027 row ({net_2027}) should be less than gross "
+                f"({gross_biweekly}) -- fallback taxes should be applied"
             )
 
             # Both years should produce the same net pay (same tax configs).
-            assert txn_2026.estimated_amount == txn_2027.estimated_amount, (
-                f"2026 txn ({txn_2026.estimated_amount}) and 2027 txn "
-                f"({txn_2027.estimated_amount}) should match because 2027 "
-                f"falls back to 2026 tax configs"
+            assert net_2026 == net_2027, (
+                f"2026 row ({net_2026}) and 2027 row ({net_2027}) should "
+                "match because 2027 falls back to 2026 tax configs"
             )
 
 
@@ -2573,10 +2811,12 @@ class TestCalibration:
             db.session.refresh(profile)
 
             from app.services import recurrence_engine, pay_period_service
-            periods = pay_period_service.get_all_periods(user.id)
+            periods = all_periods(user.id)
             try:
                 recurrence_engine.regenerate_for_template(
-                    profile.template, GenerationSchedule.for_periods(profile.template.user_id, periods), seed_user["scenario"].id,
+                    profile.template, GenerationSchedule.for_period_ids(
+                        BalanceContext.build(profile.template.user_id), {p.id for p in periods},
+                    ), seed_user["scenario"].id,
                 )
             except Exception:
                 pass
@@ -3191,16 +3431,16 @@ class TestCalibrationServerDerivedSnapshot:
             profile = db.session.query(SalaryProfile).filter_by(
                 id=cal.salary_profile_id,
             ).one()
-            # The DERIVED calendar, as the engine takes it since pay-calendar
-            # plan step C2-f2d-3.
+            # The DERIVED calendar, which the engine takes WHOLE since plan
+            # step balance:X-bh-1 (pay-calendar plan step C2-f2d-3 made it
+            # derived).
             calendar = calendar_for(user.id)
             current_period = calendar.period_containing(date.today())
-            periods = calendar.saved()
             tax_configs = load_tax_configs_for_year(
                 user.id, profile, current_period.start_date.year,
             )
             breakdown = paycheck_calculator.calculate_paycheck(
-                profile, current_period, periods, tax_configs,
+                PayrollBasis(profile, calendar), current_period, tax_configs,
                 calibration=profile.calibration,
             )
 
@@ -3351,12 +3591,10 @@ def _create_inactive_profile(seed_user, name="Old Job"):
         cat = Category(user_id=seed_user["user"].id, group_name="Income", item_name="Salary")
         db.session.add(cat)
         db.session.flush()
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name=name,
         default_amount=Decimal("40000.00") / 26,
@@ -3364,6 +3602,8 @@ def _create_inactive_profile(seed_user, name="Old Job"):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
     profile = SalaryProfile(
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
@@ -3372,7 +3612,6 @@ def _create_inactive_profile(seed_user, name="Old Job"):
         name=name,
         annual_salary=Decimal("40000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
         is_active=False,
     )
     db.session.add(profile)

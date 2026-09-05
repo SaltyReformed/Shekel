@@ -19,13 +19,14 @@ import logging
 from flask import current_app, render_template, request
 from flask_login import current_user
 
-from app.exceptions import BaselineMissingError, RecurrenceCadenceUnsupported
+from app.exceptions import BaselineMissingError
 from app.extensions import db
+from app.services.pay_calendar import PayCalendarError
 from app.utils.log_events import (
     ACCESS,
     ERROR,
     EVT_BASELINE_MISSING,
-    EVT_RECURRENCE_CADENCE_UNSUPPORTED,
+    EVT_PAY_CALENDAR_UNDERIVABLE,
     EVT_RATE_LIMIT_EXCEEDED,
     log_event,
 )
@@ -40,6 +41,44 @@ _LOGGER = logging.getLogger(__name__)
 #: not work and said so to no one -- see :func:`register_error_handlers`'s
 #: no-baseline handler.
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _recovery_response(template_name: str):
+    """Answer a recoverable SETUP state, honouring what htmx will swap.
+
+    **The shared half of the two application-error handlers below**, extracted
+    when plan step ``pay_calendar:C4-b-2`` added the second one rather than
+    copying its three lines.  The rule it encodes belongs to the CLIENT, not
+    to either error: htmx swaps only 2xx responses and swaps them into
+    whatever target the request named, so both facts about the response are
+    decided by what the request was rather than by which state was found.
+
+    * **A SAFE-method htmx request gets ``204 No Content``.**  An idempotent
+      poll must leave the live DOM alone; swapping a setup card into a balance
+      cell because a refresh happened to run is worse than showing nothing.
+    * **A MUTATING htmx request gets the card**, because 204 there is a button
+      the user pressed that did nothing, silently and forever -- measured on
+      ``POST /debt-strategy/calculate`` during plan step X-v2's adversarial
+      review.
+    * **Everything else gets the full page.**
+
+    **Status ``200`` in both non-204 cases, and htmx is the reason rather than
+    precedent.**  Any honest-looking 4xx or 5xx would make htmx swap NOTHING,
+    which is the silence these handlers exist to remove.  What carries the
+    failure signal is each handler's own ``ERROR`` event -- the channel an
+    operator alerts on.  A status code no client acts on is not one.
+
+    Args:
+        template_name: The recovery template to render for a full page or a
+            mutating fragment.
+
+    Returns:
+        ``("", 204)`` for a safe-method htmx request, else the rendered
+        template at the implicit ``200``.
+    """
+    if request.headers.get("HX-Request") and request.method in _SAFE_METHODS:
+        return "", 204
+    return render_template(template_name)
 
 
 def register_error_handlers(app):
@@ -150,74 +189,6 @@ def register_error_handlers(app):
         db.session.rollback()
         return render_template("errors/500.html"), 500
 
-    @app.errorhandler(RecurrenceCadenceUnsupported)
-    def recurrence_cadence_unsupported(error):
-        """Answer "one paycheck must hold this row twice" -- once, for the app.
-
-        THE disposition for plan ledger row D19 (developer ruling 2026-08-08).
-        A monthly bill is owed monthly whatever the pay cadence, so at a
-        cadence of 30 days or more several of its occurrences fall inside one
-        paycheck -- and ``idx_transactions_template_period_scenario`` (with its
-        transfer twin) holds exactly one row per ``(template, pay period,
-        scenario)``.  Generation refuses rather than writing the first and
-        silently under-budgeting the rest, or writing both and raising an
-        ``IntegrityError`` that names nothing and rolls back whatever
-        transaction it was inside -- a pay-schedule extend among them.
-
-        **One handler rather than eleven call sites.**  Generation is reachable
-        from template create / update / unarchive, transfer create, salary
-        profile create and regenerate, carry-forward, and the extend /
-        regenerate / reset schedule operations.  Each deciding for itself is
-        the failure ruling R-BW catalogued for
-        :class:`~app.exceptions.BaselineMissingError`, and the answer is the
-        same shape: decide once, here.
-
-        **Status 200 for an HTMX request, 409 otherwise**, and the reason is
-        htmx rather than precedent: htmx swaps only 2xx responses, so an honest
-        4xx would leave a user who pressed a button looking at an unchanged
-        page.  A full request gets 409 Conflict, which is what this is -- the
-        request is well-formed and the stored schedule cannot host it.
-
-        The rollback matches the other handlers': the refusal is raised
-        mid-transaction, after the caller may have flushed rows of its own
-        (``templates.create_template`` flushes the template before generating),
-        so the session must not carry that work into the error page's own
-        context-processor queries.
-
-        Args:
-            error: The raised
-                :class:`~app.exceptions.RecurrenceCadenceUnsupported`, carrying
-                the definition's name, every occurrence date that falls inside
-                the paycheck (plan step R4b-2 gave generation the dates), and
-                that paycheck's span.
-
-        Returns:
-            The rendered card, at 200 for an HTMX request and 409 otherwise.
-        """
-        db.session.rollback()
-        log_event(
-            _LOGGER, logging.ERROR, EVT_RECURRENCE_CADENCE_UNSUPPORTED, ERROR,
-            "Generation refused: a recurrence repeats inside one pay period",
-            user_id=getattr(current_user, "id", None),
-            template_name=error.template_name,
-            occurrence_count=error.occurrence_count,
-            occurrences=[day.isoformat() for day in error.occurrence_dates],
-            period_start=error.period_start.isoformat(),
-            period_end=error.period_end.isoformat(),
-            path=request.path,
-            method=request.method,
-        )
-        page = render_template(
-            "errors/recurrence_cadence.html",
-            template_name=error.template_name,
-            occurrence_dates=error.occurrence_dates,
-            period_start=error.period_start,
-            period_end=error.period_end,
-        )
-        if request.headers.get("HX-Request"):
-            return page
-        return page, 409
-
     @app.errorhandler(BaselineMissingError)
     def baseline_missing(error):
         """Answer "this user has no baseline scenario" -- once, for the whole app.
@@ -292,6 +263,67 @@ def register_error_handlers(app):
             method=request.method,
             detail=str(error),
         )
-        if request.headers.get("HX-Request") and request.method in _SAFE_METHODS:
-            return "", 204
-        return render_template("errors/no_baseline.html")
+        return _recovery_response("errors/no_baseline.html")
+
+    @app.errorhandler(PayCalendarError)
+    def pay_calendar_underivable(error):
+        """Answer "this user's pay calendar cannot be derived" -- once, for the app.
+
+        **Plan step ``pay_calendar:C4-b-2``, and it is the deferral ledger row
+        P35 recorded rather than a new idea.**  That row weighed a
+        ``BaselineMissingError``-shaped handler and deferred it to the owner of
+        the step that would delete the fallback; this is that step, and the
+        developer ruled on 2026-09-01 that the handler ships with it rather
+        than being filed again.
+
+        Until now ``PayCalendarError`` had no arm at all, so it reached the
+        browser through the bare ``500`` handler: an unstyled page on a money
+        screen, and inside an htmx fragment something worse -- htmx does not
+        swap a 500, so a click did nothing and said nothing.  Fourteen raise
+        sites across ``pay_calendar`` and ``paycheck_calculator`` shared that
+        answer (AST census 2026-09-01; a grep over-counts, because the class's
+        own docstrings name it).
+
+        **Two states reach it and the page deliberately does not distinguish
+        them.**  One is ordinary and repairable -- an owner with no
+        ``budget.pay_schedule`` row, which since ``fk_pay_periods_schedule``
+        means an owner with no paydays: a companion, or anyone before their
+        first batch.  The other is a broken invariant no write door produces, a
+        payday set that cannot define a calendar.  The OWNER can act on the
+        first and can do nothing about the second, and both leave every
+        per-period figure unanswerable, so the page offers the one repair that
+        exists and the LOG carries which state it was.  That is the same split
+        the no-baseline handler makes: quiet on screen, loud in the log.
+
+        **This does not silence the invariant.**  ``PayCalendarError`` is still
+        raised, still an ``ERROR`` event, and still names the path and the
+        message that says which state fired.  What changed is that the user
+        gets a page instead of a stack trace, and a fragment gets something
+        rather than nothing.
+
+        The rollback matches the two handlers above it: the raise may have left
+        the session in a failed transaction and the recovery page's own context
+        processors query.
+
+        Args:
+            error: The raised
+                :class:`~app.services.pay_calendar.PayCalendarError`.  Its
+                message names which of the two states fired; logged, never
+                shown, because it is written for an operator.
+
+        Returns:
+            ``("", 204)`` for a safe-method htmx request, else the rendered
+            recovery page (:func:`_recovery_response`).
+        """
+        db.session.rollback()
+        log_event(
+            _LOGGER, logging.ERROR, EVT_PAY_CALENDAR_UNDERIVABLE, ERROR,
+            "A pay calendar could not be derived for this request",
+            # The same read, and the same reason for not importing
+            # ``auth_helpers._safe_user_id``, that the handler above gives.
+            user_id=getattr(current_user, "id", None),
+            path=request.path,
+            method=request.method,
+            detail=str(error),
+        )
+        return _recovery_response("errors/no_pay_calendar.html")

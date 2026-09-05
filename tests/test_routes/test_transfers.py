@@ -5,11 +5,16 @@ Tests for transfer template CRUD, grid cell endpoints, transfer instance
 operations, and ad-hoc transfer creation (§2.3 of the test plan).
 """
 
+import re
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
-from app.enums import AcctTypeEnum, SettlementBasisEnum, StatusEnum
+from app.enums import (
+    AcctTypeEnum, SettlementBasisEnum, StatusEnum, TxnTypeEnum,
+)
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry
@@ -22,6 +27,7 @@ from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
 from app.models.ref import AccountType, Status
 from app.services import balance_at, pay_period_write
+from app.services.pay_calendar import calendar_for
 from app.services.balance_at import BalanceContext
 from app.services import transfer_service
 from app.services.auth_service import hash_password
@@ -29,17 +35,31 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
-    make_every_period_rule,
-    settlement_basis_id,
+    rhythm_of,
+    all_periods,
+    pay_periods_hydrated,
+    an_asserted_day,
+    an_entered_day,
+    an_observed_day,
     cadence_payload,
     create_account_of_type,
     create_loan_account,
     field_is_disabled,
+    last_covered_day,
+    make_every_period_rule,
     make_transfer_template,
     net_posted_by_day,
+    open_books_before_the_first_assertion,
     override_anchor,
+    settlement_basis_id,
+    shadow_amount,
 )
 from app.services.row_valuation import owned_contribution
+from app.services.settle_day import (
+    record_settle_day,
+    recorded_settle_day,
+)
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_savings_account(seed_user):
@@ -54,25 +74,30 @@ def _create_savings_account(seed_user):
         ),
     )
     db.session.add(acct)
+    # Its BOOKS open the day before its origination assertion (plan step
+    # X-f3c-2b, ruling **R-HG**).  The factory defaults ``observed_on`` to the
+    # owner's today and this suite settles transfers on days around it, so
+    # leaving the books on today makes every such fixture unrecordable -- an
+    # opening equity is the CLOSING balance for its own day.
+    open_books_before_the_first_assertion(db.session, acct)
     db.session.commit()
     return acct
 
 
 def _create_template(seed_user, savings_acct, with_rule=True):
     """Helper: create a transfer template with optional recurrence rule."""
-    rule = None
-    if with_rule:
-        rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=savings_acct.id,
-        recurrence_rule_id=rule.id if rule else None,
         name="Monthly Savings",
         default_amount=Decimal("200.00"),
     )
     db.session.add(template)
+    db.session.flush()
+    if with_rule:
+        # The definition first, then the cadence onto it (plan step R-F6).
+        make_every_period_rule(db.session, template)
     db.session.commit()
     return template
 
@@ -123,19 +148,12 @@ def _create_other_user_with_template():
     db.session.flush()
 
 
-    # Bootstrap pay period (E-19, Commit 3): the
-    # account_service factory requires the user to have at
-    # least one pay period to anchor against.
-    from datetime import date as _date, timedelta as _td
-    from app.models.pay_period import PayPeriod as _PayPeriod
-    _bootstrap = _PayPeriod(
-        user_id=other_user.id,
-        start_date=_date(2024, 1, 5),
-        end_date=_date(2024, 1, 5) + _td(days=13),
-        period_index=0,
-    )
-    db.session.add(_bootstrap)
-    db.session.flush()
+    # The account_service factory requires the user to have at least one pay
+    # period to anchor against.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    from datetime import date as _date
+    from tests._test_helpers import open_owner_calendar as _open_calendar
+    _bootstrap = _open_calendar(other_user.id, _date(2024, 1, 5))[0]
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
@@ -159,6 +177,10 @@ def _create_other_user_with_template():
         ),
     )
     db.session.add_all([checking, savings])
+    # Both sets of BOOKS open the day before their origination -- see
+    # ``_create_savings_account`` above (plan step X-f3c-2b, ruling R-HG).
+    open_books_before_the_first_assertion(db.session, checking)
+    open_books_before_the_first_assertion(db.session, savings)
 
     scenario = Scenario(
         user_id=other_user.id, name="Baseline", is_baseline=True,
@@ -183,13 +205,12 @@ def _create_other_user_with_template():
     db.session.add(template)
     db.session.flush()
 
-    from app.services import pay_period_service
     from datetime import date
     periods = pay_period_write.record_paydays(
         user_id=other_user.id,
         first_payday=date(2026, 1, 2),
         num_periods=3,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
 
@@ -343,6 +364,73 @@ class TestTemplatePrefill:
             assert resp.status_code == 200
             html = resp.data.decode()
             assert f'value="{savings.id}"' in html
+
+
+class TestTheStartPeriodSelectorComesFromTheDerivation:
+    """The create form's pay-period ``<select>`` is answered by ONE calendar.
+
+    Plan step **C2-f3a**.  It read ``pay_period_service.get_all_periods`` for
+    its options and ``get_current_period`` to preselect one -- two reads of
+    ``budget.pay_periods``, the second SQL whose ``.first()`` carried no
+    ``ORDER BY`` (ledger row **P19**) resolved against the process clock (row
+    **P49**).  Both are now the one derivation, and the day is the OWNER's.
+
+    ``tests/test_arch/test_one_read_pass_per_render`` counts the derivations;
+    these grade what the form actually renders, which a count cannot see.
+    """
+
+    def test_the_option_values_are_pay_period_ids(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Every option names a row a foreign key can point at.
+
+        The values come off ``DerivedPeriod.period_id`` now, where they came
+        off ``PayPeriod.id`` -- the SAME integer, and the case exists because
+        the derived type spells it differently: a template rendering ``p.id``
+        against a ``DerivedPeriod`` emits an EMPTY value silently, and the
+        POST door would then read "no start period" for a form that showed
+        one selected.
+        """
+        with app.app_context():
+            expected = [str(period.id) for period in seed_periods_today]
+
+            html = auth_client.get("/transfers/new").data.decode()
+
+        select = html.split('id="start_period_id"', 1)[1].split("</select>", 1)[0]
+        rendered = re.findall(r'<option value="([^"]*)"', select)
+        assert rendered == expected, (
+            "the start-period options do not name this owner's pay periods "
+            "in payday order"
+        )
+        assert "" not in rendered, (
+            "an option rendered an empty value, which is what reading ``.id`` "
+            "off a DerivedPeriod produces"
+        )
+
+    def test_the_preselected_option_is_the_owners_current_paycheck(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The selected option is the period containing the OWNER's day.
+
+        ``seed_periods_today`` puts ``display_today()`` inside period 4 by
+        construction, so the assertion names that period rather than
+        recomputing the fixture's own rule.
+        """
+        with app.app_context():
+            today = display_today()
+            expected = next(
+                period for period in seed_periods_today
+                if period.start_date <= today <= last_covered_day(period)
+            )
+
+            html = auth_client.get("/transfers/new").data.decode()
+
+        select = html.split('id="start_period_id"', 1)[1].split("</select>", 1)[0]
+        selected = re.findall(r'<option value="([^"]*)" selected', select)
+        assert selected == [str(expected.id)], (
+            "the form preselected a paycheck other than the one the owner is "
+            "in today"
+        )
 
 
 class TestTemplateCreate:
@@ -517,7 +605,7 @@ class TestTemplateCreate:
 
             # RecurrenceRule count: exactly 1 for this template.
             rule_count = db.session.query(RecurrenceRule).filter_by(
-                id=template.recurrence_rule_id,
+                id=template.recurrence_rule.id,
             ).count()
             assert rule_count == 1, (
                 f"Expected 1 recurrence rule, found {rule_count}"
@@ -564,6 +652,87 @@ class TestTemplateUpdate:
             db.session.refresh(template)
             assert template.default_amount == Decimal("300.00")
 
+    def test_a_retained_transfer_is_reported_and_the_edit_still_commits(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A row the pass declined to change is TOLD, not put to the owner.
+
+        Plan step R10-b's route half, and the transfer twin of
+        ``test_templates.py``'s transaction case.  A retained row has no
+        keep-vs-use question -- the pass already took the only safe outcome --
+        so ``regenerate_or_conflict_chooser`` must NOT render the chooser over
+        it, must flash the notice, and must let the edit commit.  Rendering the
+        chooser here would show an empty table and roll the whole edit back,
+        which is how an ordinary amount change came to do nothing silently.
+        """
+        with app.app_context():
+            from app.services import transfer_recurrence
+
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings)  # rule, amount 200
+            periods = all_periods(seed_user["user"].id)
+            transfer_recurrence.generate_for_template(
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
+                ), seed_user["scenario"].id,
+            )
+            db.session.flush()
+            # A note on a FUTURE row, which the update route's sweep reaches.
+            noted = (
+                db.session.query(Transfer)
+                .filter_by(transfer_template_id=template.id)
+                .order_by(Transfer.due_date.desc())
+                .first()
+            )
+            transfer_service.update_transfer(
+                noted.id, seed_user["user"].id, notes="reconcile this one",
+            )
+            # Moving the DESTINATION is what retains it: the row's records
+            # would be re-filed against an account nobody asserted them on.
+            elsewhere = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings.account_type_id,
+                    name="Second Savings",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+            db.session.commit()
+            tid, noted_id = template.id, noted.id
+            elsewhere_id = elsewhere.id
+
+            # The amount MOVES (200 -> 275), which is what arms the chooser
+            # branch at all: it is gated on ``template.default_amount !=
+            # before.amount``.  An adversarial review of R10-b found the first
+            # version posting the unchanged 200.00, so the "no chooser"
+            # assertion below was dead however the branch behaved.
+            resp = auth_client.post(f"/transfers/{tid}", data={
+                "name": "Monthly Savings",
+                "default_amount": "275.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(elsewhere_id),
+                **cadence_payload(),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Some upcoming instances were hand-edited" not in resp.data
+            assert b"kept the value it already had" in resp.data
+
+            db.session.expire_all()
+            reloaded = db.session.get(TransferTemplate, tid)
+            assert reloaded.to_account_id == elsewhere_id, (
+                "the edit was rolled back by a conflict that asked nothing"
+            )
+            assert reloaded.default_amount == Decimal("275.00")
+            held = db.session.get(Transfer, noted_id)
+            assert held.to_account_id == savings.id, (
+                "the retained row must be exactly as the pass found it"
+            )
+            assert held.notes == "reconcile this one"
+            assert held.amount == Decimal("200.00"), (
+                "a retained row is left ALONE, not re-priced"
+            )
+
     def test_transfer_amount_change_with_override_shows_chooser(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
@@ -577,9 +746,11 @@ class TestTemplateUpdate:
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)  # rule, amount 200
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.flush()
             xfer = (
@@ -591,7 +762,7 @@ class TestTemplateUpdate:
             # Hand-edit the future transfer, shadow-safe via the service.
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("350.00"), is_override=True,
+                amount=Decimal("350.00"), amount_authored=True, is_override=True,
             )
             db.session.commit()
             tid = template.id
@@ -624,9 +795,11 @@ class TestTemplateUpdate:
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)  # rule, amount 200
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.flush()
             xfer = (
@@ -637,7 +810,7 @@ class TestTemplateUpdate:
             )
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("350.00"), is_override=True,
+                amount=Decimal("350.00"), amount_authored=True, is_override=True,
             )
             db.session.commit()
             tid, xfer_id = template.id, xfer.id
@@ -663,7 +836,7 @@ class TestTemplateUpdate:
             )
             assert len(shadows) == 2
             assert all(
-                s.estimated_amount == Decimal("250.00") for s in shadows
+                shadow_amount(s) == Decimal("250.00") for s in shadows
             )
 
     def test_archive_template(self, app, auth_client, seed_user, seed_periods_today):
@@ -894,7 +1067,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "250.00"},
+                data={"amount": "250.00", "amount_as_rendered": str(xfer.amount)},
             )
 
             assert response.status_code == 200
@@ -930,7 +1103,7 @@ class TestTransferInstance:
             settled_at = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                status_id=done_id, settled_on=settled_at,
+                status_id=done_id, settle_day=an_entered_day(settled_at),
             )
             db.session.commit()
 
@@ -968,31 +1141,35 @@ class TestTransferInstance:
                 f"the posted entry_date moved: {before[1]} -> {dated_after}"
             )
 
-            # ARCHIVING it must not re-date it either.  Paid -> Settled is a
-            # real state change, not an identity re-submit, and it reaches the
-            # same rule: the schema carries no settle day, so the seam decides,
-            # and before X-aj1 it stamped now() on any entry into a settled
-            # status.  Archiving a transfer paid last month used to move its
-            # posted entry to today.  Reachable from this very form -- Settled
-            # is in ``allowed_transitions`` for a Paid transfer and renders
-            # enabled.
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            # A SECOND re-submit, this one with no other field at all, must
+            # not re-date it either: the schema carries no settle day, so the
+            # seam decides, and before X-aj1 it stamped now() on any entry
+            # into a settled status.
+            #
+            # This was ``Paid -> Settled`` -- the ARCHIVE -- until plan step
+            # **balance:X-am** deleted that status, and it was the stronger
+            # case: a real state CHANGE that still had to preserve the day,
+            # where an identity re-submit merely has to leave things alone.
+            # With the archive gone there is no non-identity move into or
+            # inside the settled band from Paid, so what remains is the bare
+            # re-submit -- which is the shape the popover actually produces,
+            # since it posts the whole row on every Save.
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
                     "version_id": str(xfer.version_id),
-                    "status_id": str(settled_id),
+                    "status_id": str(done_id),
                 },
             )
             assert response.status_code == 200, response.data[:400]
 
             paid_archived, dated_archived = _state()
             assert paid_archived == before[0], (
-                f"archiving moved the settle instant: "
+                f"the bare re-submit moved the settle instant: "
                 f"{before[0]} -> {paid_archived}"
             )
             assert dated_archived == before[1], (
-                f"archiving moved the posted entry_date: "
+                f"the bare re-submit moved the posted entry_date: "
                 f"{before[1]} -> {dated_archived}"
             )
 
@@ -1080,7 +1257,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "300.00", "due_date": ""},
+                data={"amount": "300.00", "amount_as_rendered": str(xfer.amount), "due_date": ""},
             )
 
             assert response.status_code == 200
@@ -1140,13 +1317,95 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "999.99"},
+                data={"amount": "999.99", "amount_as_rendered": str(xfer.amount)},
             )
             assert response.status_code == 400
             body = response.data.decode()
             assert "finalised" in body
             assert "transfer" in body
 
+            db.session.refresh(xfer)
+            assert xfer.amount == Decimal("200.00")
+
+    @pytest.mark.parametrize("fragment", [
+        "/transfers/quick-edit/{id}",
+        "/transfers/{id}/full-edit",
+    ])
+    def test_every_transfer_form_posts_the_figure_it_rendered(
+        self, app, auth_client, seed_user, seed_periods_today, fragment,
+    ):
+        """Both transfer forms emit the companion, with the SAME value (**R-JR**).
+
+        **The templates were the ungraded half of this ruling.**  Every other
+        case hand-assembles ``amount_as_rendered`` into its payload, so the
+        suite would stay green for a template that stopped emitting it -- and
+        the two transfer templates are exactly the ones plan step X-au-f must
+        rewrite, because they render from the raw ``xfer.amount`` column that
+        step empties.
+
+        Asserting the two values are EQUAL is the load-bearing half.  A
+        companion rendered from a different expression than the box is a
+        difference nobody typed, which the door would read as an authorship and
+        act on -- so "both present" is not enough.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+
+            resp = auth_client.get(fragment.format(id=xfer.id))
+            assert resp.status_code == 200
+            body = resp.data.decode()
+
+            shown = re.search(r'name="amount"[^>]*value="([^"]*)"', body)
+            companion = re.search(
+                r'name="amount_as_rendered"[^>]*value="([^"]*)"', body,
+            )
+            assert shown is not None, "the form renders an amount box"
+            assert companion is not None, (
+                "a form that posts a figure must post what it rendered; "
+                "without it the schema refuses every save this form makes"
+            )
+            assert companion.group(1) == shown.group(1), (
+                "the box and its companion must render from ONE expression"
+            )
+
+    def test_finalised_lock_still_speaks_for_an_ECHOED_amount(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The lock grades what was SUBMITTED, not what survived authorship.
+
+        Plan step balance:X-au-h drops an ``amount`` no human authored before
+        handing the payload to the service, and WHERE that drop happens is a
+        decision this case pins. Dropped before the gates, a crafted request
+        naming a finalised transfer's amount would stop being refused and start
+        being quietly ignored -- the row is unharmed either way, so no other
+        assertion in this suite would notice, and a lock that silently stops
+        speaking is how the next reader concludes it is not needed.
+
+        The sibling above sends a CHANGED figure, which is authored and so
+        survives to the lock however the ordering is written. Only an ECHO
+        distinguishes the two orderings, which is why this case exists.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            auth_client.post(f"/transfers/instance/{xfer.id}/mark-done")
+            db.session.refresh(xfer)
+            assert xfer.status.is_immutable
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "amount": "200.00",
+                    "amount_as_rendered": "200.00",
+                },
+            )
+
+            assert response.status_code == 400, (
+                "an echoed amount on a finalised transfer is still a locked "
+                "field edit, and the lock must say so rather than ignore it"
+            )
+            assert "finalised" in response.data.decode()
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("200.00")
 
@@ -1165,7 +1424,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"status_id": str(projected_id), "amount": "250.00"},
+                data={"status_id": str(projected_id), "amount": "250.00", "amount_as_rendered": str(xfer.amount)},
             )
             assert response.status_code == 200
             db.session.refresh(xfer)
@@ -1190,7 +1449,12 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transactions/{shadow.id}",
-                data={"estimated_amount": "999.99"},
+                # Well-formed, so the refusal under test is the FINALISED lock
+                # and not the schema declining an unaccompanied figure.
+                data={
+                    "estimated_amount": "999.99",
+                    "estimated_amount_as_rendered": "200.00",
+                },
             )
             assert response.status_code == 400
             assert "finalised" in response.data.decode()
@@ -1202,7 +1466,7 @@ class TestTransferInstance:
                 .filter_by(transfer_id=xfer.id)
                 .all()
             )
-            assert all(s.estimated_amount == Decimal("200.00") for s in shadows)
+            assert all(shadow_amount(s) == Decimal("200.00") for s in shadows)
 
     def test_update_transfer_to_credit_rejected(
         self, app, auth_client, seed_user, seed_periods_today
@@ -1354,7 +1618,7 @@ class TestTransferInstance:
 
             auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "999.00"},
+                data={"amount": "999.00", "amount_as_rendered": str(xfer.amount)},
             )
 
             db.session.refresh(xfer)
@@ -1386,7 +1650,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{target.id}",
-                data={"amount": "9999.00"},
+                data={"amount": "9999.00", "amount_as_rendered": str(orig_amount)},
             )
 
             assert response.status_code == 404
@@ -1699,7 +1963,7 @@ class TestAdHoc:
             # a genuinely week-old settle is really in.
             settled_a_week_ago = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, settled_on=settled_a_week_ago,
+                xfer.id, seed_user["user"].id, settle_day=an_entered_day(settled_a_week_ago),
             )
             db.session.commit()
 
@@ -1773,7 +2037,7 @@ class TestTransferSettleDayEditDoor:
             status_id=ref_cache.status_id(StatusEnum.DONE),
         )
         transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id, settled_on=day,
+            xfer.id, seed_user["user"].id, settle_day=an_entered_day(day),
         )
         db.session.commit()
         return xfer
@@ -1797,6 +2061,129 @@ class TestTransferSettleDayEditDoor:
             .filter_by(transfer_id=xfer_id, is_deleted=False)
             .all()
         }
+
+    def test_a_RE_SUBMITTED_day_does_not_restate_its_basis(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Plan step **X-az**: the ECHO rule at the TRANSFER PATCH.
+
+        This form prefills the settle-day box and posts it on Save, so an
+        untouched Save re-submits the day the pair already carries.  Stamping
+        that ``entered`` rewrites what the legs knew about their own day -- a
+        reconcile-panel BOUND, or a day the bank stated, becomes the owner's own
+        typing, with the day unchanged so nothing releases the clearing link.
+
+        A transfer carries neither settle column, so the rule needs the pair off
+        the INCOME shadow (``Transfer.settle_day_columns``, ONE read of both).
+        Drop the ``recorded`` argument at this route's ``settle_day_for_status``
+        call and this fails.
+        """
+        with app.app_context():
+            day = display_today() - timedelta(days=6)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, day,
+            )
+            for shadow in db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, is_deleted=False,
+            ):
+                record_settle_day(shadow, an_asserted_day(day))
+            db.session.commit()
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_on": day.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            db.session.expire_all()
+            bases = {
+                recorded_settle_day(shadow)
+                for shadow in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id, is_deleted=False,
+                )
+            }
+            assert bases == {an_asserted_day(day)}, (
+                "an untouched Save laundered the pair's BOUND into the owner's "
+                "own day"
+            )
+
+    def test_a_transfer_day_the_owner_MOVED_is_their_own(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The firing half of the rule above, so it is not "never restate"."""
+        with app.app_context():
+            day = display_today() - timedelta(days=6)
+            corrected = day + timedelta(days=2)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, day,
+            )
+            for shadow in db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, is_deleted=False,
+            ):
+                record_settle_day(shadow, an_asserted_day(day))
+            db.session.commit()
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_on": corrected.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            db.session.expire_all()
+            bases = {
+                recorded_settle_day(shadow)
+                for shadow in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id, is_deleted=False,
+                )
+            }
+            assert bases == {an_entered_day(corrected)}
+
+    def test_the_SHADOW_branch_of_the_transaction_PATCH_echoes_too(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Plan step **X-az**: the ECHO rule at the THIRD status door.
+
+        A transfer shadow PATCHed through ``/transactions/<id>`` branches into
+        ``routes/transactions/_shadow_mutations``, which carries its own call of
+        the shared reading -- and a third spelling of one rule is three chances
+        for one of them to launder.  It reads the SHADOW's own recorded pair,
+        which is the pair for both legs (Transfer Invariant 3).
+
+        Drop the ``recorded`` argument there and this fails while the two doors
+        above stay green, which is the point of grading all three.
+        """
+        with app.app_context():
+            day = display_today() - timedelta(days=6)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, day,
+            )
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, is_deleted=False,
+            ).all()
+            for shadow in shadows:
+                record_settle_day(shadow, an_observed_day(day))
+            db.session.commit()
+            shadow_id = shadows[0].id
+
+            response = auth_client.patch(
+                f"/transactions/{shadow_id}",
+                data={"settled_on": day.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            db.session.expire_all()
+            assert recorded_settle_day(
+                db.session.get(Transaction, shadow_id),
+            ) == an_observed_day(day), (
+                "the shadow branch laundered a bank OBSERVATION into the "
+                "owner's own day"
+            )
 
     def test_correcting_the_day_moves_both_shadows_and_the_ledger(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1981,7 +2368,7 @@ class TestTransferSettleDayEditDoor:
                 status_id=ref_cache.status_id(StatusEnum.DONE),
             )
             transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, settled_on=settled_day,
+                xfer.id, seed_user["user"].id, settle_day=an_entered_day(settled_day),
             )
             db.session.commit()
 
@@ -2048,14 +2435,14 @@ class TestTransferSettleDayEditDoor:
             # the settlement record entirely -- settled status, nothing recorded
             # -- so all three columns are cleared together.  That is narrower
             # than what the schema forbids: only the DAY needs a figure beside
-            # it (``ck_transactions_settle_day_needs_basis``), and a record with
+            # it (``ck_transactions_settle_day_needs_a_record``), and a record with
             # no day is the legal RETAINED state.
             for row in (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id, is_deleted=False)
                 .all()
             ):
-                row.settled_on = None
+                record_settle_day(row, None)
                 row.settled_amount = None
                 row.settled_basis_id = None
             db.session.commit()
@@ -2193,7 +2580,6 @@ def _create_second_user_transfer(second_user_data):
         Transfer: the created transfer.
     """
     from datetime import date as _date  # pylint: disable=import-outside-toplevel
-    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     savings = account_service.create_account(
@@ -2211,7 +2597,7 @@ def _create_second_user_transfer(second_user_data):
         user_id=second_user_data["user"].id,
         first_payday=_date(2026, 1, 2),
         num_periods=3,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
 
@@ -2224,7 +2610,7 @@ def _create_second_user_transfer(second_user_data):
         scenario_id=second_user_data["scenario"].id,
         status_id=projected.id,
         name="Other Transfer",
-        amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
     )
     db.session.add(xfer)
     db.session.commit()
@@ -2242,7 +2628,9 @@ class TestTransferNegativePaths:
         with app.app_context():
             resp = auth_client.patch(
                 "/transfers/instance/999999",
-                data={"amount": "100.00"},
+                # A well-formed payload, so the 404 is about the missing row
+                # rather than the schema refusing an unaccompanied figure.
+                data={"amount": "100.00", "amount_as_rendered": "100.00"},
             )
 
             assert resp.status_code == 404
@@ -2475,7 +2863,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "300.00", "source_txn_id": str(shadow.id)},
+                data={"amount": "300.00", "amount_as_rendered": str(xfer.amount), "source_txn_id": str(shadow.id)},
             )
 
             assert resp.status_code == 200
@@ -2493,9 +2881,10 @@ class TestShadowContextResponse:
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("300.00")
 
-            # Verify the shadow amount was synced.
+            # Verify the shadow FOLLOWS the parent.  It holds no copy since
+            # plan step X-au-g-2c-2; Transfer Invariant 3 is what it READS.
             db.session.refresh(shadow)
-            assert shadow.estimated_amount == Decimal("300.00")
+            assert shadow_amount(shadow) == Decimal("300.00")
 
     def test_mark_done_from_shadow_renders_transaction_cell_with_grid_refresh(
         self, app, auth_client, seed_user, seed_periods_today
@@ -2576,7 +2965,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "350.00"},
+                data={"amount": "350.00", "amount_as_rendered": str(xfer.amount)},
             )
 
             assert resp.status_code == 200
@@ -2605,7 +2994,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "400.00", "source_txn_id": "999999"},
+                data={"amount": "400.00", "amount_as_rendered": str(xfer.amount), "source_txn_id": "999999"},
             )
 
             assert resp.status_code == 200
@@ -2648,7 +3037,11 @@ class TestShadowContextResponse:
             # Send it with transfer A's update.
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer_a.id}",
-                data={"amount": "450.00", "source_txn_id": str(shadow_b.id)},
+                data={
+                    "amount": "450.00",
+                    "amount_as_rendered": str(xfer_a.amount),
+                    "source_txn_id": str(shadow_b.id),
+                },
             )
 
             assert resp.status_code == 200
@@ -2677,8 +3070,18 @@ class TestUnarchiveUsesService:
     ):
         """Verify that the unarchive route uses the transfer service to
         restore soft-deleted transfers, including the service's invariant
-        correction logic.  An intentionally drifted shadow amount should
+        correction logic.  An intentionally drifted shadow PERIOD should
         be corrected on unarchive, proving the service was called.
+
+        **The drift was the shadow's AMOUNT until plan step X-au-g-2c-2.**  A
+        shadow stores no figure now -- it declares ``PARENT_TRANSFER`` and reads
+        its parent -- so ``ck_transactions_amount_ownership`` refuses the write
+        the simulation made, and ``restore_transfer``'s amount corrector is
+        deleted along with the drift it repaired.  The PERIOD corrector
+        (Transfer Invariant 5) is still a hand-written repair and still the
+        proof this route reaches the service rather than flipping ``is_deleted``
+        itself; the amount half is graded as unconstructible in
+        ``test_transfer_service.TestRestoreTransfer``.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -2690,13 +3093,16 @@ class TestUnarchiveUsesService:
             transfer_service.delete_transfer(xfer_id, seed_user["user"].id, soft=True)
             db.session.commit()
 
-            # Drift one shadow's amount while soft-deleted.
+            # Drift one shadow's period while soft-deleted.
             shadow = (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer_id)
                 .first()
             )
-            shadow.estimated_amount = Decimal("999.00")
+            drifted_period_id = next(
+                p.id for p in seed_periods_today if p.id != xfer.pay_period_id
+            )
+            shadow.pay_period_id = drifted_period_id
             db.session.commit()
 
             # Deactivate the template to match the route's expectations.
@@ -2715,7 +3121,7 @@ class TestUnarchiveUsesService:
             db.session.refresh(xfer)
             assert xfer.is_deleted is False
 
-            # Both shadows restored AND the drifted amount corrected.
+            # Both shadows restored AND the drifted period corrected.
             # This proves the service's invariant correction ran.
             shadows = (
                 db.session.query(Transaction)
@@ -2725,7 +3131,8 @@ class TestUnarchiveUsesService:
             assert len(shadows) == 2
             for s in shadows:
                 assert s.is_deleted is False
-                assert s.estimated_amount == Decimal("200.00")
+                assert s.pay_period_id == xfer.pay_period_id
+                assert shadow_amount(s) == Decimal("200.00")
 
 
 # ── One-Time Transfer Tests ────────────────────────────────────────────
@@ -2785,7 +3192,7 @@ class TestOneTimeTransfer:
                 )
                 .one()
             )
-            assert tmpl.recurrence_rule_id is None
+            assert tmpl.recurrence_rule is None
             assert tmpl.recurrence_rule is None
 
             # Transfer was created via the service.
@@ -2941,9 +3348,11 @@ class TestOneTimeTransfer:
         so a submission naming no pattern skipped the probe entirely -- which
         was harmless while no-pattern meant "generate nothing", and is not
         once no-pattern is what materialises a Transfer into exactly the
-        submitted period.  ``_materialize_one_time_transfer`` re-checks as
-        defence in depth ("Invalid pay period for one-time transfer."); this
-        asserts the FIRST guard fires, before any row is written.
+        submitted period.  ``_materialize_one_time_transfer`` re-checked as
+        defence in depth ("Invalid pay period for one-time transfer.") until
+        plan step ``pay_calendar:C13-b``, which deleted that second resolution
+        and threads the route's own down instead; the FIRST guard is the only
+        one now, and this asserts it fires before any row is written.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -3002,7 +3411,7 @@ class TestOneTimeTransfer:
                 .filter_by(user_id=seed_user["user"].id, name="No Pattern Key")
                 .one()
             )
-            assert tmpl.recurrence_rule_id is None
+            assert tmpl.recurrence_rule is None
             xfer = (
                 db.session.query(Transfer)
                 .filter_by(transfer_template_id=tmpl.id)
@@ -3066,20 +3475,26 @@ class TestOneTimeTransfer:
             .one()
         )
 
-    def test_changing_accounts_on_a_non_repeating_transfer_is_refused(
+    def test_changing_accounts_on_a_non_repeating_transfer_moves_the_pair(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """An account change its existing Transfer could not follow is refused.
+        """An account change reaches the Transfer and BOTH of its shadows.
 
-        The edit propagates amount, name and category through
-        ``transfer_service.update_transfer``, which does NOT accept the two
-        account columns -- a shadow's ``account_id`` is derived from them when
-        the pair is created.  Letting the template claim accounts its own
-        Transfer does not use is the divergence the propagation exists to
-        prevent, so the change is refused rather than half-applied.
+        **RE-RULED at plan step R10-b** (developer decision, 2026-08-20).  This
+        case asserted a REFUSAL -- "cannot be moved between accounts" -- and
+        that refusal existed for one reason: ``transfer_service.update_transfer``
+        could not move a transfer between accounts, so the propagation door
+        carried amount, name and category and nothing else.  It was a limit of
+        the door, not a rule about transfers: a RECURRING template with the
+        identical edit had it applied, by a regeneration that destroyed and
+        rebuilt every generated row to do it.  The door moves a pair now
+        (``transfer_service._endpoints``), so the edit applies here too and one
+        edit stops meaning two different things.
 
-        Asserts the TEMPLATE is unchanged too: refusing after the field loop
-        had already written would leave exactly the state being refused.
+        Asserts all three rows, because moving the parent alone would leave the
+        shadows on the accounts the money no longer moves between -- and each
+        shadow's display NAME is derived from the endpoints, so a moved leg
+        keeping its old name is a row that contradicts itself.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -3107,23 +3522,110 @@ class TestOneTimeTransfer:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"cannot be moved between accounts" in resp.data
             db.session.expire_all()
             tmpl = db.session.get(TransferTemplate, tmpl.id)
-            assert tmpl.to_account_id == savings.id
+            assert tmpl.to_account_id == other.id
             xfer = db.session.query(Transfer).filter_by(
                 transfer_template_id=tmpl.id).one()
-            assert xfer.to_account_id == savings.id
+            assert xfer.to_account_id == other.id
+            assert xfer.from_account_id == seed_user["account"].id
+            shadows = {
+                shadow.transaction_type_id: shadow
+                for shadow in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id, is_deleted=False,
+                )
+            }
+            expense = shadows[ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)]
+            income = shadows[ref_cache.txn_type_id(TxnTypeEnum.INCOME)]
+            assert expense.account_id == seed_user["account"].id
+            assert income.account_id == other.id
+            assert expense.name == f"Transfer to {other.name}"
+            assert income.name == f"Transfer from {seed_user['account'].name}"
+
+    def test_a_non_repeating_transfer_holding_a_record_is_retained_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The rule-less path asks the same question the recurring one does.
+
+        **Found by an adversarial review of plan step R10-b.**  Removing the
+        "cannot be moved between accounts" refusal made the two account columns
+        propagate here -- and this door applied the definition unconditionally,
+        so a non-repeating transfer carrying a settlement record retained
+        through a revert had its pair moved in SILENCE, while the identical edit
+        on a RECURRING template was retained and reported.  That is the very
+        inconsistency the step removed, re-created in the opposite direction.
+
+        The record is the one ``status_seam`` keeps when the owner reverts in
+        order to edit: a figure read off the OLD destination's statement, which
+        re-pointing the pair would re-file against an account nobody asserted it
+        on.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            other = Account(
+                user_id=seed_user["user"].id, name="Other Savings",
+                account_type_id=savings.account_type_id, is_active=True,
+            )
+            db.session.add(other)
+            db.session.commit()
+            future = [
+                p for p in seed_periods_today if p.start_date > display_today()
+            ]
+            tmpl = self._create_non_repeating(
+                auth_client, seed_user, savings, future[0], name="Has A Record",
+            )
+            xfer = db.session.query(Transfer).filter_by(
+                transfer_template_id=tmpl.id).one()
+            transfer_service.settle_transfer(
+                xfer.id, seed_user["user"].id, submitted=Decimal("412.90"),
+                settle_day=an_entered_day(display_today()),
+            )
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+            tmpl_id, xfer_id, other_id = tmpl.id, xfer.id, other.id
+            savings_id = savings.id
+
+            resp = auth_client.post(f"/transfers/{tmpl_id}", data={
+                "name": "Has A Record",
+                "default_amount": "500.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(other_id),
+                "recurrence_unit": "",
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "version_id": str(tmpl.version_id),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"kept the value it already had" in resp.data
+            db.session.expire_all()
+            assert db.session.get(
+                TransferTemplate, tmpl_id,
+            ).to_account_id == other_id, "the definition itself still moves"
+            held = db.session.get(Transfer, xfer_id)
+            assert held.to_account_id == savings_id, (
+                "the row carrying a recorded figure was re-filed anyway"
+            )
+            legs = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id, is_deleted=False,
+            ).all()
+            assert [leg.account_id for leg in legs].count(savings_id) == 1
+            assert all(
+                leg.settled_amount == Decimal("412.90") for leg in legs
+            )
 
     def test_changing_accounts_is_allowed_with_no_live_transfer(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The refusal is about the Transfer, so with none it does not fire.
+        """A rule-less template with NO live Transfer re-points cleanly.
 
-        A template whose recurrence was CLEARED is rule-less with no upcoming
-        Transfer (the clear swept them).  Nothing can diverge, so re-pointing
-        it must not be blocked -- otherwise the guard would be a rule about
-        templates rather than about the row it protects.
+        The propagation loop has nothing to iterate here -- a template whose
+        recurrence was CLEARED keeps no upcoming Transfer -- so the edit must
+        land on the template alone and raise nothing.  It is the empty half of
+        the case above, and it is the half that would break if the propagation
+        ever assumed a row was there to write.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -3159,11 +3661,16 @@ class TestOneTimeTransfer:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"cannot be moved between accounts" not in resp.data
             db.session.expire_all()
             assert db.session.get(
                 TransferTemplate, tmpl.id,
             ).to_account_id == other.id
+            # The propagation had nothing to write and said nothing about it:
+            # no retained notice, and no Transfer came back.
+            assert b"kept the value it already had" not in resp.data
+            assert db.session.query(Transfer).filter_by(
+                transfer_template_id=tmpl.id,
+            ).count() == 0
 
     def test_a_settled_transfer_does_not_follow_the_definition(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3172,7 +3679,7 @@ class TestOneTimeTransfer:
 
         A Paid transfer carries posting-ledger entries and real money that
         already moved; the same rule
-        ``_recurrence_common.partition_regeneration_rows`` applies to every
+        ``_recurrence_common.classify_maintain_work`` applies to every
         recurring template's regeneration applies here.
         """
         with app.app_context():
@@ -3228,7 +3735,7 @@ class TestOneTimeTransfer:
                 transfer_template_id=tmpl.id).one()
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("123.45"), is_override=True,
+                amount=Decimal("123.45"), amount_authored=True, is_override=True,
             )
             db.session.commit()
             xfer_id = xfer.id
@@ -3326,7 +3833,7 @@ class TestOneTimeTransfer:
             # $500.00, under a plain "updated." flash.
             assert after[0].name == "Renamed"
             assert after[0].amount == Decimal("650.00")
-            assert {s.estimated_amount for s in shadows} == {Decimal("650.00")}
+            assert {shadow_amount(s) for s in shadows} == {Decimal("650.00")}
 
     def test_recurring_transfer_idor_period(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3343,7 +3850,7 @@ class TestOneTimeTransfer:
 
         **The probe MOVED at plan step R7b-4 and this test is now its
         primary coverage.**  It sat in the kind-agnostic F-24 builder
-        (``build_recurrence_rule_from_form``) because that ``<select>`` was
+        (``recurrence_spec_from_form``) because that ``<select>`` was
         also the recurrence's "First paycheck"; the recurrence takes a DATE
         now, so the field has one job -- which period a NON-repeating transfer
         lands in -- and ``create_transfer_template`` owner-checks it before
@@ -3550,7 +4057,8 @@ class TestTransferTemplateHardDelete:
         """C21-6: A transfer template with a RECEIVED transfer is archived, not deleted.
 
         Mirror of the transaction-template CRIT-05 fix proof.  The
-        pre-fix predicate enumerated ``[DONE, SETTLED]`` and silently
+        pre-fix predicate enumerated ``[DONE, SETTLED]`` (SETTLED being the
+        terminal archive plan step **balance:X-am** has since deleted) and silently
         omitted ``RECEIVED``; ``RECEIVED`` carries ``is_settled=True``
         in ``ref_seeds.py`` so the post-fix
         ``transfer_template_has_paid_history`` -- now filtering on
@@ -3732,7 +4240,7 @@ class TestTransferTemplateHardDelete:
             for shadow in surviving_shadows:
                 assert shadow.is_deleted is False
                 assert shadow.status_id == received_status.id
-                assert shadow.estimated_amount == Decimal("250.00")
+                assert shadow_amount(shadow) == Decimal("250.00")
             assert {s.id for s in surviving_shadows} == set(received_shadow_ids)
 
             # Non-settled (Projected) transfer was deleted by the
@@ -3974,10 +4482,16 @@ class TestTransferPeriodMove:
             assert 'name="pay_period_id"' in html
             start = html.index('name="pay_period_id"')
             period_select = html[start:html.index("</select>", start)]
-            assert own.label in period_select
+            # Labels off the CALENDAR since pay-calendar plan step C4-a-5,
+            # which deleted ``PayPeriod.label``: the ``<option>`` renders
+            # ``DerivedPeriod.label``.
+            calendar = calendar_for(seed_user["user"].id)
+            assert calendar.period_by_id(own.id).label in period_select
             assert f'value="{own.id}" selected' in period_select
-            assert future.label in period_select
-            assert excluded_past.label not in period_select
+            assert calendar.period_by_id(future.id).label in period_select
+            assert calendar.period_by_id(
+                excluded_past.id,
+            ).label not in period_select
 
     def test_move_relocates_transfer_and_both_shadows(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4068,7 +4582,7 @@ class TestTransferPeriodMove:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "250.00", "version_id": xfer.version_id},
+                data={"amount": "250.00", "amount_as_rendered": str(xfer.amount), "version_id": xfer.version_id},
             )
             assert resp.status_code == 200
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
@@ -4126,7 +4640,7 @@ class TestTransferActualBox:
             status_id=ref_cache.status_id(StatusEnum.DONE),
         )
         transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id, settled_on=day,
+            xfer.id, seed_user["user"].id, settle_day=an_entered_day(day),
         )
         db.session.commit()
         return xfer
@@ -4363,27 +4877,40 @@ class TestTransferActualBox:
                 )
                 assert leg.settled_basis_id is None
 
-    def test_an_ARCHIVE_carrying_a_correction_does_BOTH(
+    def test_a_status_IN_HAND_carrying_a_correction_does_BOTH(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Paid -> Settled with a corrected Actual records AND archives.
+        """A status IN HAND with a corrected Actual records on BOTH legs.
 
         The transfer half of the defect this step measured on the transaction
-        door: the correction and the status change were treated as alternatives,
-        so the archive was silently dropped and the response still said 200.
-        ``Settled`` is terminal, so this is the LAST moment the figure can be
-        corrected -- dropping either half loses something that cannot be
-        restated.
+        door: the correction and the status change were treated as
+        alternatives, so one of them was silently dropped and the response
+        still said 200.
+
+        It was ``Paid -> Settled`` -- an ARCHIVE, a real status MOVE -- until
+        plan step **balance:X-am** deleted that status.  A settled transfer's
+        only remaining status move is the revert, and a revert carrying a
+        changed figure is refused rather than composed, so the surviving legal
+        instance is the identity re-submit the popover actually produces: it
+        posts the whole row, so the status box arrives beside the Actual box on
+        every Save.  The reduction is recorded on the transaction twin's class
+        docstring, ``TestTheDoorAppliesTheStatusANDTheCorrection``.
+
+        What this still grades that its transaction sibling cannot: the
+        correction reaches BOTH SHADOWS and the pair stays mirrored (transfer
+        invariant 3).
         """
         with app.app_context():
             day = _THREE_DAYS_AGO()
             xfer = self._settled_transfer(seed_user, seed_periods_today, day)
-            version = db.session.get(Transfer, xfer.id).version_id
+            stored = db.session.get(Transfer, xfer.id)
+            version = stored.version_id
+            paid_id = stored.status_id
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    "status_id": str(ref_cache.status_id(StatusEnum.SETTLED)),
+                    "status_id": str(paid_id),
                     "settled_amount": "187.65",
                     "version_id": str(version),
                 },
@@ -4391,11 +4918,11 @@ class TestTransferActualBox:
 
             assert response.status_code == 200, response.get_data(as_text=True)
             db.session.expire_all()
-            assert db.session.get(Transfer, xfer.id).status_id == (
-                ref_cache.status_id(StatusEnum.SETTLED)
-            ), "the archive was dropped while the figure was recorded"
+            assert db.session.get(Transfer, xfer.id).status_id == paid_id, (
+                "the status was dropped while the figure was recorded"
+            )
             for leg in self._legs(xfer.id):
-                assert leg.status_id == ref_cache.status_id(StatusEnum.SETTLED)
+                assert leg.status_id == paid_id
                 assert leg.settled_amount == Decimal("187.65")
             assert net_posted_by_day(
                 JournalEntry.transfer_id == xfer.id,
@@ -4407,7 +4934,7 @@ class TestTransferActualBox:
         """The legacy shape's repair, and it needs BOTH halves in one save.
 
         A settled row carrying no settlement record predates the record
-        entirely (finding **N-181**).  ``ck_transactions_settle_day_needs_basis``
+        entirely (finding **N-181**).  ``ck_transactions_settle_day_needs_a_record``
         pairs the day with the record, so stating the DAY alone violates it --
         measured: the day-only save returns a designed 400 rather than
         repairing anything.  Stating both is the repair, and the Actual box is
@@ -4424,7 +4951,7 @@ class TestTransferActualBox:
             # The legacy shape, reproduced the only way it can be: straight at
             # the columns, behind the seam's back.
             for leg in self._legs(xfer.id):
-                leg.settled_on = None
+                record_settle_day(leg, None)
                 leg.settled_amount = None
                 leg.settled_basis_id = None
             db.session.commit()
@@ -4702,3 +5229,135 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
             ), "a refused request reverted the transfer anyway"
             for leg in self._legs(xfer.id):
                 assert leg.settled_amount == Decimal("214.37")
+
+
+class TestTransferDoorsResolveOwnershipStructurally:
+    """The transfer write doors prove a paycheck's owner without loading it.
+
+    Plan step **pay_calendar:C13-b**, the transfer half of ledger row
+    **P75**'s EIGHT primary-key refetches.  Five of them lived here: two
+    ``_user_owns(PayPeriod, ...)`` calls in ``transfers/mutations``, one in
+    ``transfers/templates``, a bare ``db.session.get`` + compare in
+    ``transfers/_instances``, and the service tier's own
+    ``transfer_service._ownership._get_owned_period``.  Four were duplicates
+    of the fifth -- every create and update path reaches the service one
+    unconditionally -- and the developer ruled them collapsed into it
+    (2026-09-03), with the service call answering the owner's derived CALENDAR
+    instead of comparing a fetched row.  ``transfers/templates`` keeps ONE
+    resolution because it needs the period's ``start_date`` as a ``due_date``,
+    and it threads that value down rather than letting the materializer
+    re-fetch it.
+
+    **Why a hydration count.**  The 404s themselves are graded above and pass
+    either way; what tells a calendar lookup apart from a primary-key compare
+    is that the calendar loads COLUMN TUPLES and never an entity.  An empty
+    hydration list cannot hold while the old guard exists, so this fires.
+
+    ``expunge_all`` FIRST, for the reason
+    :func:`tests._test_helpers.pay_periods_hydrated` gives: a ``session.get``
+    served from the identity map fires no load event, so without it the probe
+    reads zero on the very code it exists to refuse.
+    """
+
+    @staticmethod
+    def _foreign_period(other):
+        """Return one pay period belonging to *other*."""
+        from app.models.pay_period import PayPeriod
+        return (
+            db.session.query(PayPeriod)
+            .filter_by(user_id=other["user"].id)
+            .first()
+        )
+
+    def test_ad_hoc_create_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /transfers/ad-hoc refuses a foreign period, loading none."""
+        with app.app_context():
+            other = _create_other_user_with_template()
+            savings = _create_savings_account(seed_user)
+            payload = {
+                "pay_period_id": self._foreign_period(other).id,
+                "from_account_id": seed_user["account"].id,
+                "to_account_id": savings.id,
+                "amount": "50.00",
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.post("/transfers/ad-hoc", data=payload)
+            assert resp.status_code == 404
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )
+
+    def test_instance_update_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """PATCH /transfers/instance/<id> refuses a foreign period, loading none.
+
+        The transfer is the REQUESTER'S own, so the refusal can only come from
+        the submitted ``pay_period_id``.
+        """
+        with app.app_context():
+            other = _create_other_user_with_template()
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings, with_rule=False)
+            xfer = _create_transfer(
+                seed_user, seed_periods_today, savings, template=template,
+            )
+            xfer_id = xfer.id
+            foreign_period_id = self._foreign_period(other).id
+            version = xfer.version_id
+
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.patch(
+                    f"/transfers/instance/{xfer_id}",
+                    data={
+                        "pay_period_id": str(foreign_period_id),
+                        "version_id": str(version),
+                    },
+                )
+            assert resp.status_code == 404
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )
+
+    def test_template_create_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /transfers refuses a foreign start period, loading none.
+
+        The refusal itself -- and that it fires for a RECURRING cadence, where
+        the id is never used -- is
+        :meth:`TestOneTimeTransfer.test_recurring_transfer_idor_period`'s; this
+        asserts the ONE structural property that says the check is the calendar
+        rather than a fetched row.
+        """
+        with app.app_context():
+            other = _create_other_user_with_template()
+            savings = _create_savings_account(seed_user)
+            payload = {
+                "name": "IDOR Attempt",
+                "default_amount": "100.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "recurrence_unit": "",
+                "start_period_id": str(self._foreign_period(other).id),
+            }
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.post(
+                    "/transfers", data=payload, follow_redirects=True,
+                )
+            assert resp.status_code == 200
+            assert b"Invalid start period" in resp.data
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )

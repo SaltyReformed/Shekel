@@ -1,23 +1,18 @@
 # Process lessons
 
-**One copy of what this project has already paid to learn, shared by every arc.** They lived in the
-balance README's section 8, which is why three of the four arc documents did not have them -- the
-same denormalization `conventions.md` exists to remove, on the one artifact whose whole value is
-being read before the mistake is repeated.
+**One copy of what this project has already paid to learn, shared by every arc.**
 
 **One line each, and the line is the LANDMINE, not the story.** A lesson earns its place by having
-COST something -- a rebuild, a wrong figure in production, a review round -- and it names the step
-or finding that paid, so a reader can go and check. The narrative of what went wrong stays in that
-commit: this file only works if it is read straight through, and prose is what stops that happening.
+COST something -- a rebuild, a wrong figure, a review round -- and it names the step or finding that
+paid. The narrative stays in that commit: this file only works if it is read straight through, and
+prose is what stops that happening. An append-only file nobody finishes reading loses its lessons as
+completely as deleting them would.
 
-**This document IS capped (rule 4), and it has two ways back under the cap.** CONDENSE a lesson that
-has grown into a paragraph, and RETIRE one that has been MECHANIZED into a gate -- its line moves to
-that gate's own rationale, where a reader meets it at the moment it fires. An append-only file
-nobody finishes reading loses its lessons just as completely as deleting them would.
+**A lesson MECHANIZED into a gate is RETIRED from here**, its line moving to that gate's own
+rationale, where a reader meets it at the moment it fires.
 
-What this file must never become is a place to record STATE -- what shipped, what is next, what
-production runs. That is `steps.md`'s, and a sentence about it here would be a second answer beside
-no reconciler.
+**Never record STATE here** -- what shipped, what is next, what production runs. That is
+`steps.md`'s, and a sentence about it here would be a second answer beside no reconciler.
 
 ## The rule itself
 
@@ -77,6 +72,19 @@ no reconciler.
   caller meant drops the other (X-au-c3: a corrected Actual archived nothing, and answered 200).
 - **A CONSTRAINT CANNOT HOLD A CONVERSATION.** The door owes the CHECK's rule in words with the
   repair in the message, or the user meets it as "invalid reference" (X-au-c3).
+- **FIVE RULES FOR ONE EXTRAPOLATION, EACH MEASURED WRONG (`salary:R14-b`, 2026-09-04).** Past the
+  saved calendar a modelled payroll deduction has to come from somewhere, and every rule that
+  GUESSES it is exact on the shape its author had in mind. On a window holding no whole year: the
+  last payday that PAID something reads a capped deduction's clamped final payment as its rate
+  (**10.4x**); a year average over the paydays OBSERVED reads **2.00x** the cap at 13 paydays and
+  **15.6x** at 1; refusing outright never overstates but flattens the committed line while the
+  what-if overlay beside it stays at the user's figure, so a SMALLER what-if reads as LARGER. One
+  cause under all three: a sub-year window has thrown the cap away, since a `$500`-a-payday
+  deduction and a `$1,000`-capped one price IDENTICALLY for two paydays. Two more failed on windows
+  that DO hold a year -- dividing it by the CADENCE (**+3.846%** on the 9.07% of default windows
+  whose year holds 27 biweekly paydays) and grading completeness by a COUNT (a 27-payday year passes
+  at 26 observed; **60%** understated). **The remedy was not a sixth rule.** It is `S3`: the engine
+  prices every payday of the horizon, and nothing extrapolates.
 
 ## The surface a human actually sees
 
@@ -97,7 +105,8 @@ no reconciler.
 ## Tests and controls that cannot fail
 
 - **Every guard gets a negative control shown to fire, and a REPAIR for a dead control is itself a
-  control needing the same mutation.** A correction can carry the defect it corrects.
+  control needing the same mutation.** A correction carries the defect it corrects, and
+  **a CARVE-OUT needs a mutation per DIRECTION**: absent and too-permissive are ONE experiment.
 - **A TEST THAT REPLACES A DELETED FEATURE'S TEST MUST BE RUN AGAINST THE REVERT.** Deleting a
   behaviour and its test lowers coverage silently unless the replacement is shown to fail without
   the change (two of X-f1e1's four controls passed on the old code).
@@ -117,15 +126,14 @@ no reconciler.
 - **WHEN A CHANGE MAKES THE CORRECT FIGURE EQUAL THE OLD DEFECT'S FIGURE, THE FIXTURE MUST MOVE.**
   X-f3b made a part-spent envelope `posted + reserved`, which for an under-budget row is exactly the
   estimate F-002 printed, so the `$500` assertion stopped telling them apart (fixture: OVERSPEND).
-- **`hasattr` on a dataclass is not a test**, and neither is `is not None` after `isinstance`.
-- **A list returned for its COUNT must have its count asserted.**
+- **An assertion that cannot fail is not a test**: `hasattr` on a dataclass, `is not None` after
+  `isinstance`, and a list returned for its COUNT whose count is never asserted.
 - **CONVERTING A SURFACE TO "RAISE" BLINDS EVERY TEST WHOSE FIXTURE CANNOT REACH IT.**
 - **A SUITE THAT PASSES ON 353 DAYS A YEAR IS NOT A GATE**, and the day it fails it will look like
   your change.
 - **Ask what a test's failure would have COST before deleting it, and write the answer down.**
-- **THE STATE A GUARD DEFENDS AND THE STATE THE APP IS IN CAN BE OPPOSITES.**
-- **A guard written against the wrong failure mode can still be a good guard** -- write the reason
-  beside it.
+- **THE STATE A GUARD DEFENDS AND THE STATE THE APP IS IN CAN BE OPPOSITES**, and one written
+  against the wrong failure mode can still be a good guard -- write the reason beside it.
 - **A skip is safer to state than a fire**, when the operation being guarded is the one under test.
 - **A GATE OVER A MAPPING NEEDS BOTH ARMS, OR IT CATCHES A RENAME AND MISSES AN ADDITION**, and its
   docstring will claim otherwise -- read what a gate asserts, not what it says it asserts (R7c-c).
@@ -142,21 +150,21 @@ no reconciler.
 - **A GATE MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES**, never only synthetically: row
   **P52**'s `grep` canary is line-based against a call site that WRAPS, so "the gate passes" has
   always meant "nothing matched".
-- **An ORACLE that states a different rule than the engine lets both be wrong together.**
-- **AN AGREEMENT ORACLE CANNOT SEE A PRODUCER THAT READS THE VALUE IT IS REPLACING.** The control
-  that sees it is INVARIANCE -- perturb the input the new rule must not be reading and require the
-  answer not to move (X-au-b scored 997 of 997 replaced by `return txn.estimated_amount`).
-- **A SERIES MINED OUT OF A COLUMN CANNOT INDEPENDENTLY GRADE A READER OF THAT SERIES.** Ask where
-  the oracle's expected value came from, not just whether it differs from the code under test
+- **AN ORACLE IS WORTH ONLY ITS INDEPENDENCE FROM WHAT IT GRADES**, and there are three ways to lose
+  it: STATING a different rule than the engine, which lets both be wrong together; AGREEING with a
+  producer that READS the value being replaced (X-au-b scored 997 of 997 by
+  `return txn.estimated_amount`); and MINING the expected series out of the column under test
   (X-au-a backfilled the price history FROM the rows X-au-b's 452 agreements then re-attested).
+  **INVARIANCE is the control that sees all three** -- perturb the input the new rule must not be
+  reading and require the answer not to move. Ask where the expected value came FROM, not just
+  whether it differs from the code under test.
 - **A BASELINE IS ONLY A BASELINE AGAINST THE DATABASE IT WAS TAKEN FROM**, and widening an
   instrument is a shape change needing the same normalization the code does.
-- **Scan with an AST, not a regex -- and an AST census is a grep with better manners unless it
-  FOLLOWS THE DATA.** A census and a gate can be blind the same way, and then they confirm each
-  other.
-- **A static guard that greps for a NAME cannot tell code from prose.**
+- **A CENSUS'S METHOD BOUNDS WHAT IT CAN FIND.** Scan with an AST, not a regex; an AST census is a
+  grep with better manners unless it FOLLOWS THE DATA; one that greps for a NAME cannot tell code
+  from prose; and COUNT THE CALL GRAPH, NOT THE CALL SITES -- one finding said four spellings, the
+  tree held 18. A census and a gate can be blind the same way, and then they confirm each other.
 - **A CENSUS THAT IS NOT COMMITTED IS AN UNCITED CLAIM.**
-- **COUNT THE CALL GRAPH, NOT THE CALL SITES.** One finding said four spellings; the tree held 18.
 - **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.**
 - **BEFORE READING A CLEAN DIFF, CHECK THE FIGURE THE STEP IS ABOUT IS NOT NULL IN IT.** C2-f2c's
   harness was byte-identical over 39,939 lines while `retirement_marker_index` (**P48**) was `None`
@@ -176,5 +184,13 @@ no reconciler.
 - **A TABLE THAT NAMES ITS OWN `HEAD` IS FALSE THE MOMENT IT LANDS**, because the commit that writes
   it moves `HEAD` past the hash it just wrote. Record the last CODE commit and the remote, which are
   stable, and tell the reader to re-measure the rest.
+- **A WITHDRAWN HAZARD IS THE SENTENCE NOBODY RE-CHECKS**: it closes the question a stated one keeps
+  open. The withdrawer owns the correction -- say what a SHA touches, not what you do not.
 - **Documents rot in days here.** This file is the only one allowed to rot, and every edit re-dates
   it.
+- **IN FIVE CONSECUTIVE ADVERSARIAL PASSES, THE DEFECTIVE PART WAS A SENTENCE THE FIX WROTE ABOUT
+  ITSELF** (`salary:R14-b`, 2026-09-04). Every measurement held; the self-descriptions did not. The
+  fourth instance was written WHILE fixing the third, and two more surfaced only because a line
+  ceiling forced a docstring to be re-read. A fix's claims about its own correctness are written
+  LAST, under post-measurement confidence, and are the one thing its own tests cannot grade. **Grade
+  them separately, and never let the pass that fixes them also be the pass that wrote them.**

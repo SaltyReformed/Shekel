@@ -31,6 +31,7 @@ from app.utils.archive_helpers import (
     template_has_paid_history,
     transfer_template_has_paid_history,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_template_with_status_txn(app, db_, seed_user, period, status_name):
@@ -59,13 +60,14 @@ def _make_template_with_status_txn(app, db_, seed_user, period, status_name):
 
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=expense_type.id,
         name=f"Txn-{status_name}",
-        estimated_amount=Decimal("500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("500.00")),
         status_id=status.id,
     )
     db_.session.add(txn)
@@ -97,13 +99,14 @@ def _make_income_template_with_status_txn(app, db_, seed_user, period, status_na
 
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Salary"].id,
         transaction_type_id=income_type.id,
         name=f"Paycheck-{status_name}",
-        estimated_amount=Decimal("2000.00"),
+        amount_ownership=AmountOwnership.own(Decimal("2000.00")),
         status_id=status.id,
     )
     db_.session.add(txn)
@@ -150,7 +153,7 @@ def _make_transfer_template_with_status(app, db_, seed_user, period, status_name
         status_id=status.id,
         transfer_template_id=xfer_template.id,
         name=f"Transfer-{status_name}",
-        amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
     )
     db_.session.add(xfer)
     db_.session.commit()
@@ -198,14 +201,20 @@ class TestTemplateHasPaidHistorySemanticIsSettled:
             )
             assert template_has_paid_history(template.id) is True
 
-    def test_settled_returns_true(self, app, db, seed_user, seed_periods_today):
-        """C21-2 (predicate half): SETTLED -> True.
+    def test_received_returns_true(self, app, db, seed_user, seed_periods_today):
+        """C21-2 (predicate half): RECEIVED -> True.
 
-        Regression keep.  ``Settled`` carries ``is_settled=True``.
+        Regression keep, and the case CRIT-05 was actually about: the pre-fix
+        code enumerated ``[DONE, SETTLED]`` by name and silently omitted
+        RECEIVED, letting a normal user permanently destroy real received
+        income history.  The specimen here was ``Settled`` -- the terminal
+        archive -- until plan step **balance:X-am** deleted that status, which
+        is the second time the settled SET has moved under this predicate
+        without it needing an edit: it reads ``Status.is_settled``.
         """
         with app.app_context():
             template, _ = _make_template_with_status_txn(
-                app, db, seed_user, seed_periods_today[0], "Settled",
+                app, db, seed_user, seed_periods_today[0], "Received",
             )
             assert template_has_paid_history(template.id) is True
 
@@ -252,17 +261,55 @@ class TestTemplateHasPaidHistorySemanticIsSettled:
             )
             assert template_has_paid_history(template.id) is False
 
-    def test_soft_deleted_settled_ignored(self, app, db, seed_user, seed_periods_today):
-        """Soft-deleted settled rows do not block deletion.
+    def test_soft_deleted_settled_BLOCKS_deletion(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A soft-deleted settled row is payment history (**R-JE**).
 
-        The predicate filters by ``is_deleted=False``, mirroring the
-        pre-fix behavior at ``archive_helpers.py``.  Pins that the
-        is_settled refactor preserves this gate -- a row the user
-        already discarded cannot block subsequent template cleanup.
+        **This assertion was ``is False`` until plan step balance:X-au-e**, on
+        the ground that "a row the user already discarded cannot block
+        subsequent template cleanup".  The developer ruled the opposite on
+        2026-09-03, closing finding **N-444**, and the reason is that the two
+        halves of one door disagreed: this predicate filtered
+        ``is_deleted = False`` while ``crud.hard_delete_template``'s bulk
+        delete did not, so such a row was invisible to the GATE and excluded
+        from the DELETE.  The template went, ``fk_transactions_template`` is ON
+        DELETE SET NULL, and the row was left holding its money with no link to
+        the definition that made it.
+
+        Harmless while that survivor OWNED its figure.  X-au-e declares every
+        non-override template row DERIVED, so the same survivor now carries
+        ``amount_source_id = template`` with no template to read: unpriceable
+        on any revert to Projected, and unrestorable by the cutover migration's
+        own downgrade, whose restore joins on the ``template_id`` that is now
+        NULL (**N-440**).
+
+        The cost is stated rather than hidden: such a template is archived
+        instead of permanently deleted.  Zero rows of this shape exist on the
+        2026-09-03 production clone.
         """
         with app.app_context():
             template, txn = _make_template_with_status_txn(
                 app, db, seed_user, seed_periods_today[0], "Paid",
+            )
+            txn.is_deleted = True
+            db.session.commit()
+            assert template_has_paid_history(template.id) is True
+
+    def test_soft_deleted_PROJECTED_still_does_not_block(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The negative control for the case above: it is SETTLED that counts.
+
+        Without this, ``template_has_paid_history`` returning ``True`` for
+        every soft-deleted row -- a predicate that had dropped the status test
+        rather than the ``is_deleted`` one -- would pass the case above and
+        block the permanent deletion of any template with a discarded
+        projected row.
+        """
+        with app.app_context():
+            template, txn = _make_template_with_status_txn(
+                app, db, seed_user, seed_periods_today[0], "Projected",
             )
             txn.is_deleted = True
             db.session.commit()
@@ -299,13 +346,25 @@ class TestTransferTemplateHasPaidHistorySemanticIsSettled:
             )
             assert transfer_template_has_paid_history(xfer_template.id) is True
 
-    def test_settled_returns_true(self, app, db, seed_user, seed_periods_today):
-        """SETTLED transfer -> True (regression keep)."""
+    def test_cancelled_returns_false(self, app, db, seed_user, seed_periods_today):
+        """CANCELLED transfer -> False: it is immutable but NOT settled.
+
+        The pair that keeps the predicate honest about WHICH column it reads.
+        ``Cancelled`` carries ``is_immutable=True`` and ``is_settled=False``,
+        so a predicate that had drifted onto immutability -- the plausible
+        wrong column, since every non-Projected status is immutable -- would
+        block a permanent delete that this one permits.
+
+        This case was ``Settled -> True`` until plan step **balance:X-am**
+        deleted the terminal archive.  That specimen only ever restated the
+        Paid case beside it; this one grades something neither of the others
+        could.
+        """
         with app.app_context():
             xfer_template, _ = _make_transfer_template_with_status(
-                app, db, seed_user, seed_periods_today[0], "Settled",
+                app, db, seed_user, seed_periods_today[0], "Cancelled",
             )
-            assert transfer_template_has_paid_history(xfer_template.id) is True
+            assert transfer_template_has_paid_history(xfer_template.id) is False
 
     def test_projected_returns_false(self, app, db, seed_user, seed_periods_today):
         """PROJECTED transfer only -> False (intended permanent-delete path)."""
@@ -352,9 +411,18 @@ class TestPredicateSourceUsesIsSettledNotIds:
         back to enumerating status IDs.
         """
         source = Path("app/utils/archive_helpers.py").read_text(encoding="utf-8")
+        # **These name the band as it was when CRIT-05 was written, and one
+        # of them can no longer fail**: plan step **balance:X-am** deleted the
+        # ``Settled`` status, so an enumeration spelling it would not import.
+        # They are kept as the historical record of the exact defect...
         assert "[paid_id, settled_id]" not in source
         assert "[DONE_ID, SETTLED_ID]" not in source
         assert "[StatusEnum.DONE, StatusEnum.SETTLED]" not in source
+        # ...and THIS is the one that grades the regression as it would be
+        # spelled today.  Without it the guard pointed only at a band that no
+        # longer exists, which is a control aimed at the past.
+        assert "[StatusEnum.DONE, StatusEnum.RECEIVED]" not in source
+        assert "[paid_id, received_id]" not in source
         # And the post-fix expression is actually present in both
         # predicates -- guards against a future "fix" that drops the
         # boolean filter entirely.

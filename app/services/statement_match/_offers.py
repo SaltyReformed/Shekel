@@ -1,11 +1,24 @@
 """What a match IS, as values -- the shapes every other module here passes.
 
 Ruling **R-FS** gives a match three shapes and this module gives them one
-type.  A :class:`MatchProposal` is a candidate the app OFFERS; a
-:class:`MatchSubmission` is what the owner sent back.  They are deliberately
-different types rather than one reused both ways: a proposal carries what the
-screen needs to explain itself, and a submission carries only ids, so nothing
-a user posts can smuggle a figure the app computed.
+type.  A :class:`MatchProposal` is a candidate the app OFFERS -- and that is
+now the whole of what lives here.
+
+**What the owner sends BACK lives in** :mod:`._submission` **since plan step
+``bank_import:X-f6d-3``**, and the seam is the DIRECTION rather than the line
+count.  The distinction was always this module's own -- *a proposal carries
+what the screen needs to explain itself, and a submission carries only ids* --
+and finding **N-336** is where the two stopped fitting in one file: a
+submission now carries the STATE each row was reviewed in, which is a value
+read off a hostile request body, and nothing on this side ever is.
+
+**What a CREATION is lives in** :mod:`._creations` **since plan step
+``bank_import:X-f6d-1``**, and the seam is the subject rather than the line
+count: this module is about a correspondence between what the bank recorded
+and what the app already holds, and those five names are about a budget row
+that does not exist yet.  Five of the six modules that import them import
+this one too, and that is the honest statement: the seam is the
+SUBJECT, not the import graph -- a review screen is about both.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): frozen dataclasses,
 no Flask import, no query, no clock read.
@@ -17,6 +30,10 @@ import enum
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+
+from app.enums import SettledDayBasisEnum
+
+from ._sides import MatchSides
 
 
 class RowKind(enum.Enum):
@@ -38,19 +55,103 @@ class RowKind(enum.Enum):
 
 
 @dataclass(frozen=True)
+class NotShownAlone:
+    """Why a bank statement can never show one of the app's rows BY ITSELF.
+
+    **The panel that lists the rows a statement did not explain asserts an
+    INFERENCE, and for two row shapes that inference is false** (plan step
+    ``bank_import:X-gc``, ruling **R-GO**, the 2026-08-24 adversarial design
+    review).  Its
+    caption claims of every row that the owner's records say its money moved
+    and the statement never showed it moving, which only follows if that money
+    would have reached the bank as a line of its own.  A CC PAYBACK's does
+    not -- it leaves inside one lump
+    payment to the card, so the bank shows the payment and never the payback --
+    and an ENVELOPE whose figure is its purchases is the opposite shape with
+    the same consequence: the bank showed the purchases, not the container.
+    **The caption also named one DIRECTION until finding
+    bank_import:N-380** -- it said *a payment ... your bank did not make*,
+    which is a claim about an outflow, over a list that is 17 deposits in 49;
+    plan step ``bank_import:X-gf-3b-2`` took the direction out of the sentence
+    and left each row to state its own by its figure.
+
+    Measured on the developer's own dev database 2026-08-25: **18 of the
+    panel's 67 rows are CC Paybacks**, and the left-hand list beside them holds
+    **9 unexplained ``ACH DEBIT CAPITAL ONE ... PMT`` lines** those paybacks
+    are the counterpart of.
+
+    **So the rows are ANNOTATED and never withheld.**  That panel is also the
+    row-picker of the hand-build group form, and ruling **R-GJ** leaves the
+    group match as the only ACT a parked card-payment line has -- its other arm
+    is to PARK, which disposes of nothing -- so dropping the paybacks out of it
+    would close the one path the ruling kept open.  What was false was the
+    caption, not the membership.
+
+    Attributes:
+        label: The chip's own text, short enough to sit beside a row label.
+        sentence: The whole reason, carried as the chip's title.  It ends in
+            the ACT rather than in the diagnosis, which is
+            :attr:`~._bars.BarredLine.reason`'s shape one card over: a row the
+            owner cannot act on is a row they will read once.
+    """
+
+    label: str
+    sentence: str
+
+
+#: The one statement of it, because ONE property returns it and every surface
+#: subscripts that property.  It does not fork on WHICH of the two shapes a row
+#: is, and the measurement is why -- but the measurement is narrower than a
+#: first draft of this comment claimed, and the difference matters.
+#:
+#: **The ENVELOPE arm is unreachable through PRICING, not merely unexercised.**
+#: An envelope that derives its figure from entries values at
+#: ``gross - Sigma(card entries) - Sigma(posted purchases)``
+#: (:func:`~._candidates._price`), and
+#: :func:`~._candidates.transaction_candidate` drops a row worth nothing --
+#: measured 2026-08-25 on the developer's account, **63 of 63** such envelopes
+#: price to ``Decimal("0")`` and all 63 are dropped, so none can reach a panel.
+#: Every one of the 22 candidates stating no figure of its own is a CC payback.
+#: One sentence covering both therefore costs nothing today, and a fourteenth
+#: field on :class:`CandidateRow` to fork it would buy nothing.
+#:
+#: **What the panel DOES hold is a different envelope shape, and this
+#: deliberately does not claim it**: 7 envelope-tracked containers carrying
+#: ZERO entries (``Groceries`` `-163.95`, ``Gas`` `-40.00`, ``Mint Mobile`
+#: `-132.69`, ``Father's Day`` `-100.00` and three more).  Their figure IS
+#: their own -- there are no entries to derive it from, which is exactly what
+#: ``settles_from_entries``' second half exists to say -- and whether the bank
+#: showed such a row as ONE line or as several is a fact the app does not hold.
+#: ``Mint Mobile`` is plainly one.  Chipping them on ``tracks_purchases`` would
+#: withdraw the alarm from rows the bank may really have failed to show, which
+#: is the one direction this caveat may not fail in.
+NOT_SHOWN_ALONE = NotShownAlone(
+    label="not a line of its own",
+    sentence=(
+        "This row's figure is not its own to state -- it is the purchases "
+        "inside it, or the card spending it repays -- so your bank never "
+        "shows it as a line by itself.  Tick it here together with the line "
+        "that does carry its money, and match them."
+    ),
+)
+
+
+@dataclass(frozen=True)
 class CandidateRow:  # pylint: disable=too-many-instance-attributes
     """One app row a bank line could be, priced and dated as the app holds it.
 
-    Pylint: too-many-instance-attributes -- **nine fields because the subject
-    genuinely has nine**, not because the value wants splitting.
-    It describes ONE row drawn from either of two tables, for five consumers
-    that each read a different subset: the proposer reads the amount and the
-    days, the assignment reads the days, the screen reads the label and the
-    kind, the accept door reads the kind, the id and the routing links, and the
-    unmatched-rows panel reads the projection day.  ``TransferSpec`` carries
-    the same disable for the same reason.  Two fields were MERGED rather than
-    disabled around: ``earliest_day`` and ``expected_on`` were one fact for the
-    only kind that has both.
+    Pylint: too-many-instance-attributes -- **thirteen fields because the
+    subject genuinely has thirteen**, not because the value wants splitting.
+    It describes ONE row drawn from either of two tables, for six consumers
+    that each read a different subset: the proposer reads the amount, the days
+    and whether the bank's own figure could be written here, the assignment
+    reads the days, the screen reads the label and the kind, the accept door
+    reads the kind, the id and the routing links, the unmatched-rows panel
+    reads the projection day, and :func:`~._submission.as_reviewed` reads
+    the figure and the revision together.  ``TransferSpec`` carries the same
+    disable for the same reason.  Two fields were MERGED rather than disabled around:
+    ``earliest_day`` and ``expected_on`` were one fact for the only kind that
+    has both.
 
     Attributes:
         kind: Which table it came from.
@@ -64,6 +165,26 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         is_settled: Whether the row is already in the settled band.  A match
             SETTLES the first and CORRECTS the second, and which of the two a
             proposal would do is the one thing a reviewer most needs told.
+        states_own_figure: Whether this row's amount is a fact about THIS row
+            rather than about some other one.  ``False`` for the two shapes
+            ``transaction_service`` publishes a predicate for -- an ENVELOPE
+            whose figure is its purchases (``settles_from_entries``) and a CC
+            PAYBACK whose figure is the card spend it repays
+            (``repays_card_spend``) -- and ``True`` for every purchase, which
+            stores its own.
+
+            **It is CARRIED rather than re-asked, because two modules need one
+            answer** (plan step ``bank_import:X-f6d-1``).  The accept door has
+            always asked it, to refuse a correction the next sibling write
+            would silently revert (finding **N-252**); the PROPOSER now needs
+            the same fact, because a near miss it offers on such a row is an
+            Accept button that can never succeed -- and the proposer is pure,
+            with no session to ask.  Carrying it is the shape
+            :attr:`settle_day_basis` beside it took for the same reason: a
+            fact the row states once, read by whoever needs it, rather than
+            two derivations that can disagree.  See
+            :attr:`figure_is_correctable`, which is the question those two
+            modules actually ask.
         transfer_id: The parent transfer when this row is a shadow leg, else
             ``None``.  Carried because a shadow settles through
             ``transfer_service`` and not through the transaction verb, and a
@@ -75,10 +196,11 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             purchase inside it, which the accept door always refuses because
             the envelope's figure already covers its own purchases; without it
             the screen renders an Accept button that can never succeed.
-        expected_on: The day the app PROJECTS this row on -- its pay period's
-            start for a transaction, the purchase day for a purchase.  Two
-            consumers, and for a PURCHASE it is one fact doing both jobs, which
-            is why there is one field rather than two:
+        expected_on: The FIRST day the app believes this row's money could
+            have moved -- its pay period's start for a transaction, the
+            purchase day for a purchase.  Three consumers, and for a PURCHASE
+            it is one fact doing all three jobs, which is why there is one
+            field rather than three:
 
             * it makes "the bank never showed this" answerable for a row
               carrying no settle day.  A projection dated eighteen months out
@@ -89,7 +211,48 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
               bank before it was made, so ``update_entry`` refuses that write
               (``_reject_settled_before_purchase``) and a proposal pairing one
               with an earlier line is one the accept door always rejects --
-              measured at 23 such pairs on the developer's own clone.
+              measured at 23 such pairs on the developer's own clone;
+            * it opens :attr:`expected_window`, which is what BOUNDS a row the
+              app has never settled.
+        expected_through: The LAST such day -- the pay period's END for a
+            transaction, and the purchase day again for a purchase, whose
+            budget clock is a single day rather than a span.  **It is the half
+            that was missing, and its absence had no bound at all**: plan step
+            ``bank_import:X-f6a-3c``, finding **N-312**.  See
+            :attr:`expected_window`.
+        settle_day_basis: WHICH KIND of day :attr:`settled_on` is, read
+            straight off ``settled_day_basis_id``
+            (:class:`app.enums.SettledDayBasisEnum`): ``asserted`` is the
+            reconcile panel's UPPER BOUND, ``observed`` is a day a bank
+            statement showed, ``entered`` is the owner's own.  ``None`` exactly
+            when :attr:`settled_on` is.  The three settle days this package can
+            meet are not the same kind of fact and the difference decides a
+            window, which is why the basis travels rather than being re-derived
+            per asking site.  See :attr:`expected_window`.
+
+            **It was a BOOLEAN derived from ``reconciled_by_id`` until plan step
+            X-az** (finding **N-332**), and the column it was derived from
+            answered a different question -- WHICH statement was seen to show
+            this money, not what kind of day the row records.  The two agreed by
+            coincidence of the writers that existed: exact over the panel's
+            bound and the bank's observation, and BLIND to the third case, so a
+            day the owner typed read as a day the bank had shown.  Carrying the
+            basis is not a wider boolean, it is the fact itself.
+        version_id: WHICH REVISION of the row this is -- its
+            ``OptimisticLockMixin`` counter, read straight off the column.
+            Both matchable tables carry one, and SQLAlchemy advances it on
+            every ORM-emitted UPDATE of the row.
+
+            **It is carried for the same reason** :attr:`states_own_figure`
+            **is: a second module needs the fact and cannot ask for it.**  A
+            review has two moments -- the screen states a correction, the owner
+            presses Apply later -- and until plan step ``bank_import:X-f6d-3``
+            nothing compared the row the screen described with the row the door
+            was about to write (finding **N-336**).
+            :class:`~._submission.ReviewedRow` is where that comparison lives,
+            and its docstring carries the measurement for why this coordinate
+            and the figure are BOTH needed: neither one sees the other's
+            writers.
     """
 
     kind: RowKind
@@ -98,9 +261,233 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
     cash_amount: Decimal
     settled_on: "date | None"
     is_settled: bool
+    states_own_figure: bool
+    version_id: int
     transfer_id: "int | None" = None
     parent_id: "int | None" = None
     expected_on: "date | None" = None
+    expected_through: "date | None" = None
+    settle_day_basis: "SettledDayBasisEnum | None" = None
+
+    @property
+    def expected_window(self) -> "tuple[date, date] | None":
+        """Return the days the app believes this row's money moved between.
+
+        **The one place "when does the app think this happened" is answered**,
+        because the answer differs by row kind and by whether the row has been
+        settled, and stating it at each asking site is how a whole kind came to
+        have no answer at all.
+
+        * a row settled by an OBSERVED day is a point: that ``settled_on`` is
+          the day a statement showed the money moving, and an observation beats
+          a belief, so the projection is not consulted;
+        * a PURCHASE settled by the RECONCILE PANEL spans ``purchased_on`` to
+          ``settled_on``, because that day is a BOUND and not an observation --
+          see the measurement below.  A BILL ticked the same way keeps its
+          point for now, which the same passage explains;
+        * a PURCHASE is a point at ``purchased_on``.  Every purchase has one
+          -- ``transaction_entries.purchased_on`` is NOT NULL -- so "undated"
+          is true of a purchase's CASH clock and false of the purchase.  Plan
+          step ``bank_import:X-f6a-3a``, ruling **R-FW**;
+        * a TRANSACTION is its PAY PERIOD, start to end.  Its ``expected_on``
+          alone is a budgeting fact rather than an observation, so a rule
+          reading it as a point would be claiming the app knows a day it does
+          not; the period is the span the app actually asserts, and it is the
+          whole of what it asserts.
+
+        **The bound this produces is CADENCE-RELATIVE, and saying so is part
+        of stating it.**  ``budget.pay_schedule.cadence_days`` is
+        user-selectable 1..365, so the days a line may be posted on and still
+        claim a bill run to the period's length plus twice
+        :data:`~._pairing.DAY_WINDOW`: 35 for a weekly owner, 42 for the
+        biweekly one this was measured against, 58 monthly, and 393 at an
+        annual cadence -- where it is barely a bound at all.  That is the
+        honest consequence of bounding a row by what the app itself asserts: an
+        owner who budgets in coarser blocks has asserted less about when the
+        money moves, and inventing a tighter claim on their behalf is the
+        substitution ruling **R-FW** rejected one clock over.  What keeps it
+        safe at every cadence is that a proposal is reviewed before it commits
+        (**R-FP**).
+
+        **A TRANSACTION answered ``None`` here until plan step X-f6a-3c, and
+        that was finding N-312: a bill the app has never marked as paid could
+        be claimed by a bank line of any date whatever.**  Measured on the
+        developer's own clone: 610 unsettled transactions, 600 of them
+        projections dated past the statement's last day, and when the settled
+        partner is removed from an amount group **44 of the statement's own
+        lines immediately pair with a future projection** -- the worst a
+        2026-04-01 line taking a mortgage transfer budgeted 2026-08-27, 148
+        days later.  It never fired on the first import only because a settled
+        row won every amount race; the second import is where the app's own
+        rows have run out.  The earlier reasoning -- that bounding a bill would
+        refuse the arm which settles a row nobody has marked as having happened
+        -- was re-measured and does not hold: every one of the 51 rows that arm
+        settles today is a PURCHASE, already bounded by its own day, and 0
+        proposals name an unsettled transaction on either the first pass or the
+        second.
+
+        **An ASSERTED settle day is a BOUND, and reading it as a point made
+        the matcher blind to the rows it most needed to see.**  The reconcile
+        panel stamps the day the owner asserted the BALANCE for --
+        ``reconcile_service._purchases.record_settled_days`` says so in as many
+        words, *"``settled_on`` is an UPPER BOUND on the true posting day"* --
+        while this property read every settle day as the day a statement
+        showed.  Two packages, one column, two meanings.
+
+        **The row now SAYS which it holds** (plan step X-az, finding **N-332**).
+        This branch asked ``reconciled_by_id IS NOT NULL`` until then, which is
+        a different question -- WHICH statement was seen to show this money --
+        and it happened to answer the same way for the two writers it met.  It
+        could not see the third: a day the owner typed carries no link, so it
+        read as a bank observation and got a point.  ``settled_day_basis_id`` is
+        the fact itself, and the branch names the member it is about.  Measured on the
+        developer's own dev database 2026-08-21: all 61 reconciled purchases on
+        Checking carry ``settled_on = 2026-08-18``, and **59 of them sit more
+        than** :data:`~._pairing.DAY_WINDOW` **days after their purchase day**
+        (worst: 128).  So a point at ``settled_on`` put them out of reach of
+        their own bank lines, every such line read as unexplained, and the
+        merchant rule offered to RECORD it -- **50 duplicate
+        purchases worth `$3,590.00`**, among them a `$18.64` Food Lion the app
+        already held on the bank's own day.  The remedy is to say what the app
+        actually knows: the money moved between the day the row was budgeted
+        for and the day the balance was asserted.
+
+        **PURCHASES only, and that is a measured scope rather than a
+        half-finished one** (developer decision 2026-08-22).  The panel stamps
+        bills and transfer shadows identically, so the argument for widening
+        them is the same -- but the EVIDENCE is not, and neither is the risk.
+        ``budget.transactions`` carries **zero** reconciled rows today, so that
+        arm would ship on argument alone; and a purchase's floor is a database
+        fact (``ck_transaction_entries_settled_not_before_purchase``) while a
+        bill's is its pay-period start, which this docstring calls a budgeting
+        fact and refuses to read as a point *for that very reason*.  Widening a
+        bill therefore opens a span with no floor and no cost signal: a
+        `$1,910.95` payment budgeted 2026-01-05..01-18 and reconciled 08-18
+        spans **225 days** in which :func:`~._pairing.days_outside` scores
+        every day zero, so March, May and July lines of that same amount all
+        become legal top-ranked pairings -- against a
+        :data:`~._pairing.DAY_WINDOW` measured at 14 precisely so *"a monthly
+        commitment cannot reach its neighbour"*.  Found by two independent
+        adversarial reviews 2026-08-22.
+
+        **The bound is applied only when it TIGHTENS nothing away.**  A
+        reconciled row whose ``expected_on`` falls after its ``settled_on``
+        keeps the point: the panel would then be asserting the money moved
+        before the app expected it, which bounds the span from ABOVE and says
+        nothing about its floor, and inventing one would be the looser reading
+        this property refuses everywhere else.  **That branch is UNREACHABLE
+        through every door today** and is kept for the reason
+        :func:`corrected_purchase_day` keeps its own: a total accessor states
+        its impossible case rather than trusting the callers who make it so.
+        ``ck_transaction_entries_settled_not_before_purchase`` makes
+        ``purchased_on <= settled_on`` a database fact, so no purchase can
+        reach it; a pay-period ``start_date`` edit in the ``pay_calendar`` arc
+        is what would.
+
+        Returns:
+            ``(first, last)``, or ``None`` for a row the app can date no way at
+            all -- which the proposer reads as NOT OFFERABLE rather than as
+            unbounded (:func:`~._pairing.within_window`).  A row stating only
+            :attr:`expected_on` is read as a POINT rather than as unbounded for
+            the same reason, so a half-stated window is always TIGHTER than a
+            whole one and never looser: that is the direction a missing fact
+            has to fail in on a money path.
+        """
+        if self.settled_on is not None:
+            if (
+                self.kind is RowKind.PURCHASE
+                and self.settle_day_basis is SettledDayBasisEnum.ASSERTED
+                and self.expected_on is not None
+                and self.expected_on <= self.settled_on
+            ):
+                return (self.expected_on, self.settled_on)
+            return (self.settled_on, self.settled_on)
+        if self.expected_on is None:
+            return None
+        return (self.expected_on, self.expected_through or self.expected_on)
+
+    @property
+    def figure_is_correctable(self) -> bool:
+        """Return whether a bank line's own figure may be WRITTEN to this row.
+
+        **The one statement of "could the accept door take a variance here",
+        and it exists because two modules ask it** (plan step
+        ``bank_import:X-f6d-1``).  Ruling **R-GD(a)** made the bank's figure
+        the record, so a one-to-one match whose sides disagree is RECORDED
+        rather than refused -- but three row shapes are still refused, and a
+        proposer blind to them would offer a near miss whose Accept can never
+        succeed.  That is the shape this package has now named five times.
+
+        The two facts it reads are the row's own, and each is stated once:
+
+        * a transfer SHADOW cannot be corrected alone -- ``CLAUDE.md`` transfer
+          invariant 3 holds its amount equal to its parent's, so the correction
+          is to the TRANSFER.  :attr:`transfer_id` is that fact;
+        * a row whose figure is not its own to state cannot be corrected at
+          all, because the next sibling write reverts it (finding **N-252**).
+          :attr:`states_own_figure` is that fact, and it is TWO published
+          predicates rather than one -- see that attribute.
+
+        **The refusals that are not here must not be**: a group's difference is
+        the owner's to ACCEPT rather than any row's fault (nothing says WHICH
+        member it belongs to), a sign disagreement is a fact about the PAIR,
+        and a figure too large to store is a fact about the SUM.  Each belongs
+        to :func:`~._variance.reject_unrecordable`, which owns everything
+        about the two sides disagreeing.
+
+        **A PURCHASE gets no branch of its own**, and the omission is
+        deliberate: it stores its own figure and belongs to no transfer, so
+        both terms already answer for it and a short-circuit on
+        :attr:`kind` would be a second spelling that could disagree with the
+        first.  Ruling **R-GE** -- a statement's evidence justifies correcting
+        a SETTLED purchase's amount -- bounds that permission by the DOOR
+        rather than by the row, so nothing here narrows it either.
+
+        Returns:
+            Whether :func:`~._variance._reject_uncorrectable_row` would let a
+            differing figure through for this row.
+        """
+        return self.transfer_id is None and self.states_own_figure
+
+    @property
+    def not_shown_alone(self) -> "NotShownAlone | None":
+        """Return why the bank never shows this row alone, or ``None``.
+
+        **Server-derived rather than a Jinja branch**, for the reason
+        :attr:`~._bars.BarredLine.reason` is: a template restating a partition
+        is a second place for it to be wrong, and this one is a claim about
+        money -- the panel that reads it is asserting the bank failed to make a
+        payment.  ``app.routes.accounts.bank_agreement._anchor_is_assumed``
+        makes the same argument for the same kind of decision.
+
+        **It reads** :attr:`states_own_figure` **and asks nothing else**, which
+        is what keeps this a naming rather than a second derivation: that
+        attribute is already carried and already published by
+        ``transaction_service`` as two predicates.  It is a NARROWER question
+        than that attribute answers, and the two are not the same fact -- a row
+        whose amount is a fact about some OTHER row is one the bank accounts
+        for through that other row, which is a SUFFICIENT reason for the bank
+        never to show it alone and not a necessary one.
+
+        **The converse is deliberately not claimed, and its gap is measured
+        rather than assumed.**  A ``None`` here means the app cannot PROVE the
+        bank would have shown this row separately, not that it would have.  Two
+        shapes on the developer's own panel answer ``None`` and are arguably
+        never their own line: the ``Phone Allowance`` and ``Health Insurance
+        Allowance`` rows, which arrive inside one payroll deposit; and the 7
+        envelope-tracked containers holding no entries (see
+        :data:`NOT_SHOWN_ALONE`).  Neither carries a fact that says so, and the
+        only predicates that would claim them -- a row-name list, or
+        ``tracks_purchases`` -- would withdraw the alarm from rows the bank may
+        really have failed to show.  **A predicate with no false positives and
+        stated gaps is the honest shape here**; the alternative is the
+        allowlist this project removes rather than writes.
+
+        Returns:
+            :data:`NOT_SHOWN_ALONE`, or ``None`` when the row states its own
+            figure.
+        """
+        return None if self.states_own_figure else NOT_SHOWN_ALONE
 
 
 @dataclass(frozen=True)
@@ -124,9 +511,53 @@ class Candidates:
     unpriceable_ids: "tuple[int, ...]"
 
 
+def merchant_label(merchant: "str | None", description: str) -> str:
+    """Return what to CALL a line's merchant, always non-empty.
+
+    The merchant's own name where the source named one, else the whole
+    description.  **Two consumers, and both need a string rather than an
+    answer**: the new-envelope name box on the review screen, and the
+    description :func:`~._create.create_purchase_from_line` gives the purchase
+    it writes.  ``transactions.name`` and ``transaction_entries.description``
+    are both NOT NULL, and neither door goes through a schema that would supply
+    a default, so the fallback is what makes those writes total.
+
+    **It is a LABEL and never a key**, which is the whole distinction plan step
+    ``bank_import:X-f6a-3d`` drew: a merchant rule is keyed by the merchant
+    ROW, and a source that names none has no row -- so a rule fires on nothing
+    there.  This falls back to the description instead, because a name box
+    cannot show ``None`` -- and if the two were one function, that fallback
+    would become a key and a whole truncated OFX statement would share it.  The
+    predecessor (``merchant_of(description)``) WAS one function, parsing the
+    description at render time; what replaced it is the adapter recording the
+    fact and this reader choosing how to display it.
+
+    **It takes the two VALUES it uses** (plan step ``bank_import:X-gd-1``).  It
+    took a line and duck-typed over :class:`BankLine` and
+    :class:`~app.models.statement_import.BankStatementLine`, which each
+    exposed a ``merchant`` string; the ORM row's is a
+    :class:`~app.models.merchant.Merchant` now, so one spelling no longer
+    reaches both -- and a function taking a name and a description says what it
+    needs without either caller having to be a particular shape.
+
+    Args:
+        merchant: What the merchant is called, or ``None`` where the source
+            named none.
+        description: What the bank called the line, verbatim.
+
+    Returns:
+        The label.
+    """
+    return merchant or description
+
+
 @dataclass(frozen=True)
-class BankLine:
+class BankLine:  # pylint: disable=too-many-instance-attributes
     """One recorded statement line, as a proposal needs to show it.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- eight because the
+    subject is one ROW and eight of its columns are read, which is
+    :class:`CandidateRow`'s argument above.
 
     Attributes:
         line_id: The ``budget.bank_statement_lines`` row.
@@ -140,6 +571,28 @@ class BankLine:
             is carried here rather than re-read at the write door: the
             proposer has to know it too, because whether that write can
             succeed is what decides whether the pairing may be OFFERED.
+        merchant_id: The :class:`~app.models.merchant.Merchant` this line was
+            with, or ``None`` where the source names none.  **This is the KEY**
+            (plan step ``bank_import:X-gd-1``): a stated destination is about
+            this row, so the two sides of that join are one id rather than two
+            copies of one string compared by equality.
+        merchant: What that merchant is CALLED, carried beside its id for the
+            reason every label on this value is carried: the screen prints it
+            and the refusals name it, and re-reading a name a query has already
+            fetched is the N+1 this package pays for at 90 lines a statement.
+            ``None`` exactly when :attr:`merchant_id` is -- both come from the
+            same row, and a source that names no merchant has neither.
+            **Carried from the recorded fact rather than parsed from
+            :attr:`description`** (plan step ``bank_import:X-f6a-3d``): a
+            reader that derived it would have to be total, which on a source
+            with no merchant field means every line keying one rule.
+        source_category: What the BANK filed this line under, verbatim, or
+            ``None`` where the source states none.  **Provenance the screen
+            prints and NOTHING may branch on**: the one decision this package
+            makes on a bank's category is :mod:`._vocabulary`'s, asked in SQL
+            against that adapter's own vocabulary (**bank_import:R-GJ**), and
+            a second reader comparing this text would be the ref-name
+            comparison forbidden everywhere else.
     """
 
     line_id: int
@@ -147,6 +600,49 @@ class BankLine:
     amount: Decimal
     description: str
     transaction_on: "date | None" = None
+    merchant_id: "int | None" = None
+    merchant: "str | None" = None
+    source_category: "str | None" = None
+
+    @property
+    def merchant_label(self) -> str:
+        """Return what to call this line's merchant (:func:`merchant_label`)."""
+        return merchant_label(self.merchant, self.description)
+
+    @property
+    def states_impossible_days(self) -> bool:
+        """Return whether the bank dates this line MADE after it POSTED.
+
+        Two of a source's own facts contradicting each other, which the schema
+        deliberately admits: ``bank_statement_lines`` imposes no
+        ``transaction_on <= posted_on`` CHECK because 2 of 361 lines in the
+        developer's own OFX carry an ``DTUSER`` one day after their
+        ``DTPOSTED``, and a constraint a real statement violates would make the
+        truth unimportable.
+
+        **So the guard is a reader's, and it is stated HERE because three
+        readers ask it** (finding **N-325**): :func:`~._pairing.within_window`,
+        to decide whether a purchase recorded after the line posted may still
+        be paired -- it may, because the bank's own stated day is later too;
+        :func:`~._leftovers._add_refusal`, to WITHHOLD the ADD control, because
+        ``entry_service.create_entry`` refuses a purchase whose money left
+        before it was spent; and :func:`~._scope.reject_impossible_days` at the
+        DOOR, so that withholding is a refusal rather than a paragraph.  *It
+        said TWO until plan step ``bank_import:X-gm`` gave the rule its door*,
+        re-read off the callers rather than incremented.  Two spellings of one
+        predicate on a money screen is this arc's own root cause 1 -- and this
+        sentence was FALSE when first written: the proposer went on spelling it
+        inline, so the claim described an intention rather than the tree.  Both
+        adversarial reviews of 2026-08-19 caught it.
+
+        0 of the developer's 361 recorded lines are this shape; the OFX
+        adapter's own measurement found 2 of 361, so a second source makes it
+        live.
+        """
+        return (
+            self.transaction_on is not None
+            and self.transaction_on > self.posted_on
+        )
 
     @property
     def happened_on(self) -> date:
@@ -296,7 +792,8 @@ class MatchProposal:
 
     Ruling **R-FP**: *a match is a PROPOSAL, never a silent apply*.  Nothing
     here is written anywhere; :func:`~._accept.accept_match` takes a
-    :class:`MatchSubmission` built from the owner's own choice.
+    :class:`~._submission.MatchSubmission` built from the owner's own
+    choice.
 
     Attributes:
         lines: The bank lines this proposal explains.  One for R-FS's first
@@ -317,26 +814,59 @@ class MatchProposal:
     day_gap: "int | None"
 
     @property
+    def _sides(self) -> "MatchSides":
+        """Return what this proposal's two halves come to.
+
+        **The package's ONE derivation of it** (plan step
+        ``bank_import:X-f6d-4``).  This class summed and subtracted for
+        itself until then, which made four spellings of one subtraction --
+        and a proposal whose screen figure disagreed with the door's by a
+        cent would be an Accept the owner did not review.
+        """
+        return MatchSides.of(self.lines, self.rows)
+
+    @property
     def bank_amount(self) -> Decimal:
         """Return the signed total the bank states for this proposal."""
-        return sum((line.amount for line in self.lines), Decimal("0.00"))
+        return self._sides.bank
 
     @property
     def app_amount(self) -> Decimal:
         """Return the signed total the app currently holds for it."""
-        return sum((row.cash_amount for row in self.rows), Decimal("0.00"))
+        return self._sides.app
 
     @property
     def difference(self) -> Decimal:
         """Return what the bank states MINUS what the app holds.
 
-        ``0.00`` for a proposal that balances.  Non-zero is not a rounding
-        detail to be absorbed: measured on the developer's own statement, 6 of
-        16 payroll deposits sit `$0.05`-`$0.06` apart from the app's own rows,
-        which is finding **N-239** and is why
-        :func:`~._accept.accept_match` refuses rather than apportions.
+        ``0.00`` for a proposal that balances.  Non-zero is what a NEAR MISS
+        is, and ruling **R-GD(a)** made it the PRODUCT rather than a refusal:
+        the bank's figure becomes the record and this is the correction
+        accepting would write.  The screen states it before anything is
+        pressed -- *bank `$178.29`, your row `$178.32`* -- which is plan step
+        ``bank_import:X-f6d-1``'s own sentence.
+
+        **Every proposal this app makes is EXACT or one-to-one**, so this is
+        non-zero only on the near tier: the group tier sums to the line by
+        construction, and nothing scores a group (**R-GD**).  A group whose
+        sides differ is one the OWNER built by hand, and since plan step
+        ``X-f6d-4`` its difference is recordable -- as **R-FN**'s ordinary
+        accepted row rather than as a figure anything here invents for a
+        member.  This docstring said such a group was "still refused" until
+        that step made it false, on the property that computes the figure.
         """
-        return self.bank_amount - self.app_amount
+        return self._sides.difference
+
+    @property
+    def reprices(self) -> bool:
+        """Return whether accepting would change an AMOUNT and not only a day.
+
+        The template's own question, answered here rather than as a
+        ``difference != 0`` test in a Jinja condition -- the rule
+        :attr:`review_class` states for the partition it heads, applied to the
+        term that partition now turns on.
+        """
+        return self.difference != 0
 
     @property
     def confirms(self) -> bool:
@@ -347,6 +877,48 @@ class MatchProposal:
         would be captioned as confirming a day it never had.
         """
         return self.day_gap == 0
+
+    @property
+    def review_class(self) -> str:
+        """Return which of four things accepting this proposal would DO.
+
+        ``"reprice"`` when the two sides state different figures,
+        ``"confirm"`` when it changes no recorded day, ``"correct"`` when it
+        moves one the app had wrong, ``"settle"`` when no member carries a day
+        at all and the match is what marks the money as having moved.
+
+        **A PARTITION, and that is what the review screen's sweep controls
+        rest on** (plan step ``bank_import:X-f6a-3c-2``, developer ruling
+        2026-08-19).  R-FP's *reviewed before it commits* survives 124
+        proposals only if the sweep is per class rather than one "tick all":
+        the classes are different acts with different consequences, so the
+        riskiest is never swept by the same click as the safest.  Measured on
+        the developer's own statement, the three day classes came to
+        27 / 46 / 51 of 124 and they sum -- which is the property a caption
+        counting them has to be able to rely on.
+
+        **``"reprice"`` is the fourth member and it takes PRECEDENCE, on
+        ruling R-FZ(c)'s own criterion** (plan step ``bank_import:X-f6d-1``,
+        developer decision 2026-08-22).  A near miss moves an AMOUNT as well
+        as a day, which is the only act on this card that changes what money
+        was spent; classing it by its day effect alone would put it on the
+        same "tick all" checkbox as 104 day-only corrections, and *the
+        riskiest class may not ride the same click as the safest* is the
+        sentence that rules out exactly that.  The day effect is still printed
+        per row, so nothing is hidden by the reclassification -- what changes
+        is which sweep the proposal answers to.
+
+        It is derived HERE rather than as a Jinja condition for the reason
+        :attr:`confirms` is: ``day_gap`` is three-valued, and a template
+        reading ``None`` as falsy would sweep the settle class in with the
+        confirm class -- the exact collapse that caption was made three-valued
+        to stop.
+        """
+        if self.reprices:
+            return "reprice"
+        if self.day_gap is None:
+            return "settle"
+        return "confirm" if self.day_gap == 0 else "correct"
 
     @property
     def days(self) -> MatchDays:
@@ -424,29 +996,3 @@ class MatchProposal:
         prevent.  Found by two adversarial reviews 2026-08-18.
         """
         return self.days.posts_on
-
-
-@dataclass(frozen=True)
-class MatchSubmission:
-    """What the owner accepted: ids only.
-
-    Deliberately carries no amount and no day.  Everything the accept door
-    needs it re-derives from the rows the ids name, inside the same
-    transaction, so a stale screen cannot commit a figure the database no
-    longer holds -- the same reason
-    :func:`~app.services.reconcile_service._rows.record_settled` re-derives its
-    ids through the arm's own scope rather than trusting them.
-
-    Attributes:
-        owner_id: The user the route proved owns the account.
-        account_id: The account both sides must belong to.
-        line_ids: The bank lines to explain.
-        transaction_ids: The transactions that explain them.
-        entry_ids: The purchases that explain them.
-    """
-
-    owner_id: int
-    account_id: int
-    line_ids: "frozenset[int]"
-    transaction_ids: "frozenset[int]"
-    entry_ids: "frozenset[int]"

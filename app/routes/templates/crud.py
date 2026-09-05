@@ -22,8 +22,6 @@ from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
-from app.models.category import Category
-from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
 from app import ref_cache
@@ -37,13 +35,10 @@ from app.services import (
     recurrence_engine,
     template_amount_service,
 )
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.account_projection import (
-    AccountProjectionKind,
-    classify_account,
-)
-from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
+from app.routes.templates._validation import validate_template_form
 from app.routes._commit_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
@@ -67,7 +62,8 @@ from app.routes._recurrence_conflict_chooser import (
 )
 from app.routes._recurrence_form_helpers import (
     RecurrenceFormContext,
-    build_recurrence_rule_for_create,
+    author_recurrence_for_create,
+    recurrence_spec_for_create,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._recurrence_form_render import recurrence_form_state
@@ -117,97 +113,6 @@ _AMOUNT_VERSION_ACTION = AmountVersionAction(
 # entry and a hand-crafted request) falls back to expense, the most common
 # recurring definition.
 _NEW_TYPE_INCOME = "income"
-
-def _is_tracking_on_non_expense(data, template=None):
-    """Check whether tracking is being set on a non-expense template.
-
-    Defense-in-depth fallback for the cross-field schema validator
-    ``validate_envelope_only_on_expense``.  The schema validator catches
-    the bug whenever both ``is_envelope`` and ``transaction_type_id``
-    appear in the deserialized payload (the normal HTML form path); this
-    helper closes the gap on partial updates that omit one field by
-    falling back to the existing template's stored value.
-
-    Args:
-        data: Deserialized form data from Marshmallow schema.
-        template: Existing TransactionTemplate (for updates) or None (for creates).
-
-    Returns:
-        True if the combination is invalid (tracking on non-expense), False otherwise.
-    """
-    track = data.get(
-        "is_envelope",
-        getattr(template, "is_envelope", False),
-    )
-    if not track:
-        return False
-    type_id = data.get(
-        "transaction_type_id",
-        getattr(template, "transaction_type_id", None),
-    )
-    return type_id != ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-
-
-def _validate_template_form(data, on_invalid, template=None):
-    """Validate submitted template data against ownership and tracking rules.
-
-    Shared by :func:`create_template` and :func:`update_template`, whose
-    create-vs-update difference is only that the create schema makes
-    ``account_id`` / ``category_id`` required (always present) while the
-    update schema makes them optional -- so guarding each check with
-    ``in data`` is correct for both paths.  Checks, in order:
-
-      1. ``account_id`` (when present) names an Account the user owns.
-      2. ``account_id`` (when present) is NOT an amortizing loan -- a
-         template on a loan would have the recurrence engine generate raw
-         transactions onto it (finding N-11 / ruling D4; the create routes
-         refuse the same shape via
-         :func:`app.routes.transactions.create._reject_transaction_on_loan`).
-      3. ``category_id`` (when present) names a Category the user owns.
-      4. The resulting envelope-tracking state is expense-only
-         (:func:`_is_tracking_on_non_expense`).
-
-    Args:
-        data: Deserialized form data (post ``schema.load``).
-        on_invalid: Redirect destination for the first failed check.
-        template: Existing TransactionTemplate for an update, or ``None``
-            for a create, so the tracking check can fall back to the
-            stored value on a partial update.
-
-    Returns:
-        A redirect ``Response`` for the first failed check, or ``None``
-        when every check passes.
-    """
-    if "account_id" in data:
-        acct = db.session.get(Account, data["account_id"])
-        if not acct or acct.user_id != current_user.id:
-            flash("Invalid account.", "danger")
-            return on_invalid.to_response()
-        if classify_account(acct) is AccountProjectionKind.AMORTIZING:
-            # N-11 / ruling D4: a loan's balance is ledger-derived, not a
-            # transaction sum.  A template targeting a loan would have the
-            # recurrence engine generate raw transactions onto the loan
-            # account (``recurrence_engine`` copies ``template.account_id``),
-            # posting a bare cash leg the fold cannot see -- the same shape
-            # the create routes refuse (``_reject_transaction_on_loan``) and
-            # the transfer service forbids for a transfer out of a loan (R6).
-            flash(
-                "A loan's balance is not a transaction sum, so a template "
-                "cannot target a loan account. Record loan payments as "
-                "transfers.",
-                "danger",
-            )
-            return on_invalid.to_response()
-    if "category_id" in data:
-        cat = db.session.get(Category, data["category_id"])
-        if not cat or cat.user_id != current_user.id:
-            flash("Invalid category.", "danger")
-            return on_invalid.to_response()
-    if _is_tracking_on_non_expense(data, template):
-        flash("Purchase tracking is only available for expense templates.", "danger")
-        return on_invalid.to_response()
-    return None
-
 
 def _apply_fields_and_propagate_rename(template, data):
     """Apply allowlisted field updates, propagating a rename to instances.
@@ -293,7 +198,7 @@ def create_template():
     data = payload
 
     # Validate account/category ownership + expense-only tracking.
-    invalid = _validate_template_form(
+    invalid = validate_template_form(
         data, on_invalid=RedirectTarget("templates.new_template"),
     )
     if invalid is not None:
@@ -310,8 +215,8 @@ def create_template():
     # ``start_period_id`` afterwards and a wrapper popping it internally would
     # have had to thread it back out.  That field is the transfer form's alone
     # now, so the preamble hoisted into
-    # :func:`build_recurrence_rule_for_create` and there is one copy of it.
-    rule = build_recurrence_rule_for_create(
+    # :func:`recurrence_spec_for_create` and there is one copy of it.
+    spec = recurrence_spec_for_create(
         data,
         user_id=current_user.id,
         redirect=RedirectTarget("templates.new_template"),
@@ -321,31 +226,43 @@ def create_template():
     # Create the template.
     template = TransactionTemplate(
         user_id=current_user.id,
-        recurrence_rule_id=rule.id if rule else None,
         **data,
     )
     db.session.add(template)
     db.session.flush()
 
+    # **The definition comes FIRST and the rule is authored onto it** (plan
+    # step R-F6).  A recurrence rule carries its owner's FK now, so it cannot
+    # be written before there is an owner -- which is the same fact that makes
+    # the orphan finding **F-6** measured inexpressible.  The order reversed
+    # here; nothing else about the create did.
+    rule = author_recurrence_for_create(spec, template)
+
     # Open the amount's dated series at today (plan step X-au-a).  The
     # constructor above also carries the figure because the column is NOT NULL;
-    # this call is what makes the SERIES exist, and plan step X-au-e removes the
-    # redundancy by removing the column.  A template created today generates
-    # rows into historical pay periods too, and those resolve by the series
-    # holding flat before its earliest version
+    # this call is what makes the SERIES exist, and after plan step X-au-e the
+    # series is the only thing that prices this definition's rows -- generation
+    # writes no figure, so a template whose series never opened generates rows
+    # ``_stated_amount`` REFUSES.  *An earlier version of this comment said
+    # X-au-e "removes the redundancy by removing the column"; it does not, and
+    # no step in ``docs/plans/steps.md`` removes ``default_amount`` -- see
+    # ``template_amount_service.set_amount`` for what still reads it.*  A
+    # template created today generates rows into historical pay periods too,
+    # and those resolve by the series holding flat before its earliest version
     # (``template_amount_service.amount_as_of``).
     template_amount_service.set_amount(
         template, template.default_amount, effective_on=display_today(),
     )
 
-    # Auto-generate transactions from the rule into future periods.
+    # Auto-generate transactions from the rule into future periods.  ONE read
+    # pass carries the baseline scenario and the owner's schedule (plan step
+    # R7d-c-1), where this held a ``get_baseline_scenario`` beside a
+    # ``calendar_for`` -- the two facts a pass already pins.
     if rule:
-        scenario = get_baseline_scenario(current_user.id)
-        if scenario:
+        ctx = BalanceContext.build(current_user.id)
+        if ctx.scenario is not None:
             recurrence_engine.generate_for_template(
-                template,
-                GenerationSchedule.for_user(current_user.id),
-                scenario.id,
+                template, GenerationSchedule.for_pass(ctx), ctx.scenario_id,
             )
 
     db.session.commit()
@@ -416,6 +333,12 @@ _TXN_TEMPLATE_KIND = RecurrenceConflictKind(
     regenerate_fn=recurrence_engine.regenerate_for_template,
     resolve_fn=recurrence_engine.resolve_conflicts,
     update_endpoint="templates.update_template",
+    # **"Use" states no figure for this kind since plan step balance:X-au-e**
+    # (ruling **R-JD**).  A generated transaction stores no amount, so the
+    # offer is "hand this row back to its definition" and the definition's own
+    # price series answers it on the row's due date.  The transfer kind still
+    # answers True; both answer False after plan step X-au-f.
+    use_states_a_figure=False,
 )
 
 
@@ -506,7 +429,7 @@ def update_template(template_id):
     # template never recurred", which must not.
     before = PreEditTemplateState(
         amount=template.default_amount,
-        had_recurrence_rule=template.recurrence_rule_id is not None,
+        had_recurrence_rule=template.recurrence_rule is not None,
     )
 
     # Re-point, rebuild, or clear the recurrence rule from the update payload
@@ -532,7 +455,7 @@ def update_template(template_id):
 
     # Validate account/category ownership + expense-only tracking on the
     # resulting state.  Shared with create_template via _validate_template_form.
-    invalid = _validate_template_form(
+    invalid = validate_template_form(
         data,
         on_invalid=RedirectTarget(
             "templates.edit_template", {"template_id": template_id},
@@ -547,10 +470,13 @@ def update_template(template_id):
     # form's "Amount effective from" date, which also bounds the regeneration
     # below -- ONE value, though the two apply it with different predicates: the
     # series answers by a row's own DUE date and the sweep selects by its pay
-    # PERIOD's end, so an edit can rewrite a row whose due date precedes the
-    # date it states (finding **N-247**, owned by X-au-e, which deletes the
-    # sweep's amount arm and dissolves it).  Absent from a partial update means
-    # the amount was not restated, and the series is untouched.
+    # PERIOD's end.  **That divergence used to let an edit REWRITE a row whose
+    # due date preceded the date it states (finding N-247); plan step X-au-e
+    # dissolved it** -- the sweep writes a DECLARATION rather than a figure, so
+    # which rows it reaches decides nothing about money and every row resolves
+    # by its own due date whether the sweep touched it or not.  Absent from a
+    # partial update means the amount was not restated, and the series is
+    # untouched.
     #
     # **BEFORE the field loop, because that loop can FLUSH.**  A rename issues a
     # bulk UPDATE over this template's instances, which autoflushes whatever is
@@ -601,7 +527,7 @@ def update_template(template_id):
     # actual -- is now RETAINED rather than removed (ruling R-R19), so the
     # earlier wording asserted a removal that did not happen and contradicted
     # the warning ``_flash_retained`` emits in the same response.
-    if before.had_recurrence_rule and template.recurrence_rule_id is None:
+    if before.had_recurrence_rule and template.recurrence_rule is None:
         flash(
             f"'{template.name}' no longer repeats. Its upcoming projected "
             "entries were removed; settled ones, hand-edited ones, and any "
@@ -765,14 +691,13 @@ def unarchive_template(template_id):
             txn, settled=txn.status.is_settled,
         )
 
-    # Regenerate to fill in any missing future periods.
+    # Regenerate to fill in any missing future periods, on the one read pass
+    # this restore's generate runs in (plan step R7d-c-1).
     if template.recurrence_rule:
-        scenario = get_baseline_scenario(current_user.id)
-        if scenario:
+        ctx = BalanceContext.build(current_user.id)
+        if ctx.scenario is not None:
             recurrence_engine.generate_for_template(
-                template,
-                GenerationSchedule.for_user(current_user.id),
-                scenario.id,
+                template, GenerationSchedule.for_pass(ctx), ctx.scenario_id,
                 effective_from=date.today(),
             )
 
@@ -803,10 +728,13 @@ def hard_delete_template(template_id):
     """Permanently delete a transaction template if it has no settled history.
 
     Two-path logic:
-      1. If the template has any settled transaction (Paid, Received, or
-         Settled -- anything with ``Status.is_settled = True``), permanent
-         deletion is blocked.  The template is archived instead (if not
-         already) and the user is warned.
+      1. If the template has any settled transaction (Paid or Received --
+         anything with ``Status.is_settled = True``), OR any
+         standing merchant rule files a merchant's bank spending into it
+         (``archive_helpers.template_has_standing_rule``, plan step
+         ``bank_import:X-gd-2``), permanent deletion is blocked.  The template
+         is archived instead (if not already) and the user is warned, with the
+         sentence naming which of the two reasons applied.
       2. If no settled history exists, all linked NON-SETTLED transactions
          are deleted first, then the template itself is permanently
          removed.  ``Transaction.template_id`` is a FK with ON DELETE SET
@@ -818,10 +746,11 @@ def hard_delete_template(template_id):
     non-settled rows via the semantic ``Status.is_settled`` boolean.
     Even if the guard predicate above regresses, is bypassed, or races a
     concurrent mark-done that lands between the guard check and the
-    delete, settled financial history (Paid, Received, Settled) cannot
+    delete, settled financial history (Paid, Received) cannot
     be physically destroyed by this route.  The pre-fix code enumerated
     ``[DONE, SETTLED]`` and silently omitted RECEIVED, then bulk-deleted
     unconditionally -- the irreversible data-loss path CRIT-05 documents.
+    (``SETTLED`` is quoted as written; plan step **balance:X-am** deleted it.)
     """
     template = get_or_404(TransactionTemplate, template_id)
     if template is None:
@@ -838,12 +767,35 @@ def hard_delete_template(template_id):
     # branch mirrors ``transfers.hard_delete_transfer_template`` but is too
     # thin and too coupled to extract (see plan.md Phase 2 notes).
     # pylint: disable=duplicate-code
+    # **TWO reasons a permanent delete is refused, and each gets its own
+    # sentence** (plan step ``bank_import:X-gd-2``).  The second was missing:
+    # ``fk_merchant_rules_template_account`` is ON DELETE CASCADE, so deleting
+    # a template destroyed every standing merchant rule filing into it, under
+    # a flash that mentioned only the template.  Under ruling R-GS a rule is
+    # never un-stated by its owner, which made that cascade the only way one
+    # could disappear at all.  Measured 2026-08-26: template 19 on the
+    # developer's own data carries a rule and no settled history, so the
+    # permanent arm was live on it.
+    #
+    # The REASON is resolved before the branch rather than inside it, because
+    # the archive body below is long and identical for both -- and telling an
+    # owner their template "has payment history" when what it has is a
+    # merchant rule is the screens-stating-what-is-false defect this arc keeps
+    # closing.
+    refusal = None
     if archive_helpers.template_has_paid_history(template.id):
-        flash(
+        refusal = (
             f"'{template.name}' has payment history and cannot be permanently "
-            "deleted. It has been archived instead.",
-            "warning",
+            "deleted. It has been archived instead."
         )
+    elif archive_helpers.template_has_standing_rule(template.id):
+        refusal = (
+            f"'{template.name}' is where a merchant's bank spending goes and "
+            "cannot be permanently deleted -- that answer would go with it. "
+            "It has been archived instead."
+        )
+    if refusal is not None:
+        flash(refusal, "warning")
         if template.is_active:
             template.is_active = False
             # pylint: enable=duplicate-code
@@ -877,7 +829,7 @@ def hard_delete_template(template_id):
     # No settled history -- safe to permanently delete.  Restrict the
     # bulk delete to non-settled rows via ``Status.is_settled`` so a
     # race-window mark-done (or any future caller that bypasses the
-    # guard above) cannot destroy real Paid/Received/Settled history.
+    # guard above) cannot destroy real Paid/Received history.
     # The FK ON DELETE SET NULL on ``Transaction.template_id`` means
     # any row that survives this filter keeps its financial data with
     # a null template_id rather than being cascaded away.

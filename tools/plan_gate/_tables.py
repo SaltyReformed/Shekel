@@ -39,6 +39,7 @@ STEPS_HEADER = (
     "arc", "id", "also", "what this step does", "order", "commit", "starts",
 )
 FORKS_HEADER = ("defect", "competing remedies", "ruled")
+RULINGS_HEADER = ("arc", "id", "also", "date", "what was ruled")
 
 #: An ``order`` cell placing a step in the sequence: ``#12``.  The three legal
 #: spellings of that column are this, ``container`` and ``SHIPPED``; anything
@@ -138,10 +139,14 @@ class StepRow:
         **Declared, never derived, and that is the whole design.**  Rule 2 puts
         a decomposition in the id, so deriving the relation by longest id
         prefix is the obvious implementation -- and it is wrong on this corpus:
-        ``R-F1`` is a string prefix of ``R-F10``, ``R-F12`` and ``R-F13``,
-        which are unrelated findings-steps, and ``R-F1`` is SHIPPED while all
-        three are open.  A derived arm would have reported three false
-        failures on its first run.
+        ``pay_calendar:C1`` is SHIPPED and is a string prefix of ``C10``,
+        ``C11`` and ``C12``, three unrelated OPEN steps, so a derived arm
+        reports three false failures.  **The worked example was the recurrence
+        arc's ``R-F1`` against ``R-F10`` / ``R-F12`` / ``R-F13`` until
+        2026-08-20**, and it went stale in both directions -- R-F13 is not in
+        the index at all and the other two have SHIPPED -- which is why
+        :func:`_staging.a_prefix_trap` now derives the specimen instead of
+        three docstrings naming one.
 
         Consulting only DECLARED parents removes that class by construction
         rather than by an exception list -- which is finding **N-147**'s defect
@@ -178,6 +183,89 @@ class StepRow:
         as a key.
         """
         return _key_list(self.blocked)
+
+
+@dataclass(frozen=True)
+class RulingRow:
+    """One developer ruling, as ``rulings.md`` states it.
+
+    **The arc is a CELL and the key is the pair**, which is the whole reason
+    this registry exists.  Ruling ids came from one global sequence spelled
+    across five arc documents, none of them parsed, so two arcs taking one id
+    was invisible to every gate -- FOUR instances by 2026-08-27, the last with
+    every minting session having checked, because a ``docs/`` grep cannot
+    see an unmerged branch.  Holding the pair here
+    makes the collision LEGAL and gradeable rather than silent: what a shared
+    id costs is a bare citation resolving to two rules, which is a property of
+    the CITATION and not of the ruling.
+    """
+
+    arc: str
+    ident: str
+    also: str
+    date: str
+    rule: str
+
+    @property
+    def bare_ident(self) -> str:
+        """The id ALONE, with any provenance annotation stripped.
+
+        The same ``id (annotation)`` grammar :attr:`LedgerRow.bare_ident`
+        reads, through the same expression, because a key that means one thing
+        in one registry and another in its sibling is how a rule stated for one
+        artifact comes to be graded on one artifact (conventions.md rule 3).
+        """
+        return _IDENT_ANNOTATION_RX.split(self.ident, maxsplit=1)[0].strip()
+
+    @property
+    def key(self) -> str:
+        """The ruling's real primary key: the arc AND the id, never the id."""
+        return f"{self.arc}:{self.bare_ident}"
+
+    def also_keys(self) -> list[str]:
+        """The keys this ruling is ALSO recorded under, arc-qualified here.
+
+        The cell carries BARE ids rather than ``arc:id`` keys, and that is not
+        an inconsistency with :meth:`StepRow.alias_keys`: a step aliases ACROSS
+        arcs (``pay_calendar:C2`` is ``balance:X-l``) and a ruling never does,
+        so the arc is redundant in every cell it could appear in.  It is added
+        back here so a caller compares keys with keys.
+
+        TWO cells use it today, and both are one rule taken on two days:
+        ``R-L`` / ``R-Y`` and ``R-T`` / ``R-X``.
+
+        **``R-FA`` is deliberately NOT a third**, and an adversarial review is
+        why.  Its cell held only the parenthetical naming the ``R-EX`` that
+        commit ``daa9c402`` recorded it as -- which parsed to nothing, so the
+        arm read no alias while the docstring claimed one.  Spelling it in
+        this grammar instead makes the gate RED and correctly so:
+        ``balance:R-EX`` is separately a LIVE ruling (``X-ad``'s), so claiming
+        ``R-FA`` is "also known as R-EX" would assert that a citation of
+        ``R-EX`` resolves here -- which is **N-217**'s defect, not its remedy.
+        That provenance is a fact about a commit, so it lives in the rule
+        text, and this column carries only aliases that RESOLVE.
+        """
+        if self.also.strip() == "--":
+            return []
+        out = []
+        for part in self.also.split(" / "):
+            token = _IDENT_ANNOTATION_RX.split(part, maxsplit=1)[0].strip()
+            if token:
+                out.append(f"{self.arc}:{token}")
+        return out
+
+    @property
+    def width(self) -> int:
+        """The row's total character width, which rule 4's per-row cap grades.
+
+        Read by :func:`_rulings.row_width_violations` against
+        :data:`_rulings.RULINGS_ROW_CAP`.  It shipped unread for one draft --
+        the property written and no arm behind it -- which is the half of the
+        2026-08-25 cap precedent this registry had not brought across.
+        """
+        return sum(len(cell) for cell in (
+            self.arc, self.ident, self.also, self.date, self.rule,
+        ))
 
 
 @dataclass(frozen=True)

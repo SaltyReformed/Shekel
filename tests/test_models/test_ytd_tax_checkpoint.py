@@ -32,7 +32,6 @@ def _make_profile(seed_user, name="Checkpoint Model Profile"):
         scenario_id=seed_user["scenario"].id,
         name=name,
         annual_salary=Decimal("120000.00"),
-        pay_periods_per_year=26,
         filing_status_id=filing_status.id,
         state_code="NC",
         is_active=True,

@@ -57,12 +57,14 @@ from app.services.cash_ledger import (
     resolve_anchor,
 )
 from app.utils.dates import display_today
+from tests._test_helpers import account_never_asserted
 
 
 def _make_anchor_history(
     *,
     account_id: int,
     anchor_balance: Decimal,
+    observed_on: _date | None = None,
 ) -> AccountAnchorHistory:
     """Insert and flush an ``AccountAnchorHistory`` row.
 
@@ -70,13 +72,23 @@ def _make_anchor_history(
     top of the origination row that ``account_service.create_account``
     writes.  Returns the inserted row so the caller can read
     ``created_at`` (the resolver's tiebreaker is ``created_at desc``).
+
+    **The business day is a PARAMETER and is stated at INSERT** (plan step
+    X-f3c-2c).  Callers used to assign ``row.observed_on`` after the flush; the
+    table is append-only, so what a row says about which day it is true for is
+    decided when it is written.
+
+    Args:
+        account_id: The owning account.
+        anchor_balance: The asserted balance.
+        observed_on: The civil day that balance was TRUE.  ``None``, the
+            default, is today in the USER's zone (ruling R-DH (b)) -- the row
+            means "asserted now".
     """
     history = AccountAnchorHistory(
         account_id=account_id,
         anchor_balance=anchor_balance,
-        # No explicit instant: the row means "asserted now", so its business
-        # day is today in the USER's zone (ruling R-DH (b)).
-        observed_on=display_today(),
+        observed_on=display_today() if observed_on is None else observed_on,
     )
     db.session.add(history)
     db.session.flush()
@@ -155,13 +167,13 @@ class TestResolveAnchor:
             current = _make_anchor_history(
                 account_id=account.id,
                 anchor_balance=Decimal("2500.00"),
+                observed_on=today,
             )
-            current.observed_on = today
             superseded = _make_anchor_history(
                 account_id=account.id,
                 anchor_balance=Decimal("4444.44"),
+                observed_on=today - timedelta(days=7),
             )
-            superseded.observed_on = today - timedelta(days=7)
             db.session.commit()
 
             # The later-recorded row has the HIGHER id, so id-descending alone
@@ -229,13 +241,13 @@ class TestResolveAnchor:
             newer = _make_anchor_history(
                 account_id=account.id,
                 anchor_balance=Decimal("2500.00"),
+                observed_on=today,
             )
-            newer.observed_on = today
             older = _make_anchor_history(
                 account_id=account.id,
                 anchor_balance=Decimal("4444.44"),
+                observed_on=today - timedelta(days=7),
             )
-            older.observed_on = today - timedelta(days=7)
             db.session.commit()
 
             assert resolve_anchor(account).observed_on == today
@@ -325,11 +337,11 @@ class TestResolveAnchorMissingHistory:
         account id and points at the canonical factory.
         """
         with app.app_context():
-            account = seed_user["account"]
-            (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=account.id)
-                .delete()
+            # **Built rather than emptied** (plan step X-f3c-2c): an assertion
+            # is append-only at the database tier, so an account that has
+            # asserted nothing is one the assertion factory never touched.
+            account = account_never_asserted(
+                seed_user, db.session, name="Silent",
             )
             db.session.commit()
 

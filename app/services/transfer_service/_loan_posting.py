@@ -30,7 +30,6 @@ from app.enums import TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
@@ -38,6 +37,7 @@ from app.services import (
     loan_posting_service,
     loan_recurrence_sync,
 )
+from app.services.pay_calendar import DerivedPeriod
 from app.services.transfer_service._ownership import _get_owned_period
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -56,9 +56,11 @@ def _reject_transfer_out_of_loan(from_account: Account) -> None:
     (``linked == settled_income_cash - per_loan_corrections``) all rest on it.
     A disbursement would instead post a raw cash movement onto the loan's linked
     ledger with no split correction and misproject every forward balance, so it
-    is forbidden at the sole transfer-creation chokepoint
-    (:func:`app.services.transfer_service.create_transfer`) rather than silently
-    corrupting the loan's balance.
+    is forbidden at BOTH doors that can put a transfer on a source account --
+    :func:`app.services.transfer_service.create_transfer`, and, since plan step
+    R10-b, :func:`._endpoints._resolve_endpoints`, which is where an update
+    MOVES one -- rather than silently corrupting the loan's balance.  Refusing
+    at only the first would have left the second a way straight past it.
 
     Args:
         from_account: The transfer's source account (already ownership-checked).
@@ -74,7 +76,7 @@ def _reject_transfer_out_of_loan(from_account: Account) -> None:
 
 
 def _reject_payment_before_origination(
-    to_account: Account, pay_period_id: int, due_date: date | None,
+    to_account: Account, period: DerivedPeriod, due_date: date | None,
 ) -> None:
     """Reject a loan payment whose installment precedes the loan's origination.
 
@@ -84,7 +86,8 @@ def _reject_payment_before_origination(
     * the fold orders events by installment and applies each anchor as a RESET,
       with a payment sorting BEFORE an anchor on a shared date, so a payment due
       at or before origination splits against a running balance of ZERO.
-      ``split_payment_cash``'s closed-loan branch routes the entire cash to
+      The ONE allocation's closed-loan arm
+      (``app.utils.money.apply_payment_cash``) routes the entire cash to
       ``excess`` -- measured $0.00 interest, $0.00 principal, $1,200.00 to a
       Refund Receivable -- and the origination anchor then resets the balance to
       the full principal over the top of it.
@@ -99,7 +102,7 @@ def _reject_payment_before_origination(
     **The boundary is ``<=``, not ``<``.**  A payment due exactly ON the
     origination date is subsumed by that anchor's reset -- the same strict
     ``anchor_date < due_date`` post-anchor rule
-    (:func:`~app.services.loan_ledger.merge_anchor_and_payment_events`) -- so it
+    (:func:`~app.services.loan_ledger.replay_loan_events`) -- so it
     is erased identically.  Swept and measured: due 02-01, 02-28 and 03-01
     against a 03-01 origination all book $0.00 principal; 03-02 pays down
     $366.67.
@@ -121,11 +124,22 @@ def _reject_payment_before_origination(
     -- ``classify_account`` reads the account TYPE only, so a Mortgage-typed
     account can be unconfigured).
 
+    **It TAKES the period rather than its id** (plan step
+    ``pay_calendar:C13-b``).  This was ``pay_period_id`` plus a
+    ``db.session.get(PayPeriod, ...)`` of its own -- a SECOND read, in the same
+    request, of the row the caller's :func:`~._ownership._get_owned_period` had
+    just resolved -- and a ``None`` arm underneath it that had to explain why
+    it stayed silent about a row the caller would refuse anyway.  Taking the
+    value deletes the read, the arm and the explanation, and makes the ordering
+    the caller's comment used to assert ("deliberately AFTER
+    ``_get_owned_period``") a data dependency the signature enforces.
+
     Args:
         to_account: The transfer's destination account (already
             ownership-checked).
-        pay_period_id: The pay period the payment lands in (supplies the
-            installment fallback when *due_date* is ``None``).
+        period: The paycheck the payment lands in, as the owner's calendar
+            derives it -- it supplies the installment fallback when *due_date*
+            is ``None``.
         due_date: The payment's due date, or ``None``.
 
     Raises:
@@ -136,11 +150,6 @@ def _reject_payment_before_origination(
         return
     params = loan_loaders.load_loan_params(to_account.id)
     if params is None:
-        return
-    period = db.session.get(PayPeriod, pay_period_id)
-    if period is None:
-        # The caller's own ownership loader raises for a missing period; leave
-        # that error to it rather than masking it with a different one.
         return
     installment = loan_loaders.installment_for(
         due_date, period.start_date, params.payment_day,
@@ -155,20 +164,30 @@ def _reject_payment_before_origination(
     )
 
 
-# The ``update_transfer`` kwargs that can move WHICH INSTALLMENT a loan payment
-# satisfies, and therefore whether it lands before its loan originated (ruling
-# R-C, plan step C9b).  ``due_date`` names the installment directly;
-# ``pay_period_id`` supplies the fallback basis for a payment carrying no due
-# date (``loan_loaders.installment_for``).  Nothing else moves it -- an amount
-# or status edit leaves the installment where it is -- so an edit touching
-# neither is never re-checked, which is what keeps a pre-existing
+# The ``update_transfer`` kwargs that can move a loan payment across its loan's
+# origination, and therefore into the state ruling R-C refuses (plan step C9b).
+# ``due_date`` names the installment directly; ``pay_period_id`` supplies the
+# fallback basis for a payment carrying no due date
+# (``loan_loaders.installment_for``); and ``to_account_id`` moves WHICH LOAN --
+# and so which origination date -- the installment is graded against, which is
+# plan step R10-b's addition.  A payment sitting comfortably after loan A's
+# origination can sit before loan B's without its own installment moving at all,
+# so an endpoint move re-asks the question even when neither date field is in
+# the payload.  Nothing else moves it -- an amount or status edit leaves both
+# the installment and the loan where they are -- so an edit touching none of the
+# three is never re-checked, which is what keeps a pre-existing
 # pre-origination row (legacy data the C9a purge deliberately left, e.g. a
 # settled one) editable in every other respect.
-_POSTING_RELEVANT_INSTALLMENT_FIELDS = frozenset({"pay_period_id", "due_date"})
+_POSTING_RELEVANT_INSTALLMENT_FIELDS = frozenset(
+    {"pay_period_id", "due_date", "to_account_id"}
+)
 
 
 def _reject_installment_move_before_loan(
-    xfer: Transfer, user_id: int, updates: dict[str, object],
+    xfer: Transfer,
+    user_id: int,
+    updates: dict[str, object],
+    to_account: Account,
 ) -> None:
     """Refuse an ``update_transfer`` edit that drags a loan payment behind its loan.
 
@@ -185,9 +204,9 @@ def _reject_installment_move_before_loan(
     :func:`app.services.transfer_service._status.apply_status_to_all_three` follows
     for an illegal status transition.
 
-    Only ``pay_period_id`` / ``due_date`` can move which installment a payment
-    satisfies (:data:`_POSTING_RELEVANT_INSTALLMENT_FIELDS`), so an edit
-    touching neither is never re-checked.  That is deliberate: it keeps a
+    Only the three kwargs in :data:`_POSTING_RELEVANT_INSTALLMENT_FIELDS` can
+    put a payment on the wrong side of an origination date, so an edit touching
+    none of them is never re-checked.  That is deliberate: it keeps a
     PRE-EXISTING pre-origination row -- legacy data the C9a purge intentionally
     leaves behind, such as a settled payment whose cash really moved -- editable
     in every other respect instead of frozen.
@@ -200,25 +219,75 @@ def _reject_installment_move_before_loan(
     indistinguishable 404.  The later block's own call stays -- it is
     idempotent, and dropping it would make that section depend on this one.
 
+    **That second call is a SECOND walk, and plan step ``pay_calendar:C13-b``
+    measured what it costs rather than arguing about it.**  Both resolutions
+    now derive the owner's calendar (``_ownership._get_owned_period``), where
+    both used to load a ``budget.pay_periods`` row.  Measured 2026-09-03 on
+    ``PATCH /transfers/instance/<id>`` moving a transfer between periods:
+    **21 statements before the step and 23 after, TWO payday reads either
+    side.**  So the duplication is older than this step and this step costs it
+    two statements -- collapsing it would return one of those, which is not
+    enough to restructure a pre-write guard block for.  Left as it is,
+    deliberately, with the number recorded so the next reader weighs a figure
+    rather than this paragraph.
+    **The destination account is the caller's already-owned value for the same
+    reason** (plan step R10-b): the guard names that account in its refusal
+    message, so resolving an unowned id here would answer a cross-user probe
+    with that account's NAME.
+
     Args:
         xfer: The transfer being updated (supplies the current period / due date
-            for any field the edit does not move, and the destination account).
+            for any field the edit does not move).
         user_id: The acting user, for the pay-period ownership check.
         updates: The :func:`update_transfer` kwargs about to be applied --
             read, not written; *xfer* still holds its pre-edit values.
+        to_account: The destination this edit LEAVES the transfer with, already
+            ownership-checked by the caller -- ``xfer.to_account`` when the edit
+            moves no endpoint.
 
     Raises:
-        NotFoundError: If a submitted ``pay_period_id`` is not the user's.
+        NotFoundError: If a submitted ``pay_period_id`` is not the user's, or
+            the paycheck this edit leaves the transfer in is not in the
+            owner's calendar.
         ValidationError: If the resulting installment falls at or before the
             destination loan's origination.
     """
     if not _POSTING_RELEVANT_INSTALLMENT_FIELDS & updates.keys():
         return
-    if "pay_period_id" in updates:
-        _get_owned_period(updates["pay_period_id"], user_id)
+    # ONE resolution for both jobs (plan step ``pay_calendar:C13-b``).  This
+    # was a conditional ``_get_owned_period`` for the ownership half and a
+    # second ``db.session.get(PayPeriod, ...)`` inside the guard for the
+    # installment half -- two reads of one row whenever the edit moved the
+    # period.  The unconditional form also states the paycheck the edit LEAVES
+    # the transfer in, which is the value the guard actually grades.
+    #
+    # **It resolves on paths that previously touched nothing**, because an
+    # argument is evaluated before the guard's own two early returns (a
+    # non-loan destination, a loan with no params): an edit carrying only
+    # ``due_date`` or ``to_account_id`` now reads the transfer's OWN period.
+    # That read can refuse, and what makes it safe to be total is a key on a
+    # DIFFERENT TABLE: ``budget.transfers`` has a plain ``pay_period_id`` FK
+    # and no composite owner key -- that is finding **P83**, still open -- so
+    # the guarantee is transitive, through the shadows, and the key that
+    # carries it is ``fk_transactions_owner_ACCOUNT``.
+    #
+    # *A first version of this comment named ``fk_transactions_owner_period``,
+    # which is the one key in migration ``d4a92f6b13c8`` that CANNOT grade
+    # this*: the backfill is
+    # ``SET user_id = p.user_id FROM budget.pay_periods p``, so that key is
+    # satisfied by construction and refuses nothing.  The account key is not.
+    # A legacy transfer owned by A but filed in B's period puts its shadows on
+    # A's accounts -- ``create_transfer`` owner-checks both endpoints against
+    # ``spec.user_id`` -- while the backfill stamps ``user_id = B``, so
+    # ``(A's account_id, B)`` matches no ``budget.accounts`` row and the
+    # ``ADD CONSTRAINT`` aborts.  **The migration's own docstring says exactly
+    # this** ("the backfill reads the PAY PERIOD, and the account key is what
+    # grades it"), which is where this should have been read the first time.
     _reject_payment_before_origination(
-        xfer.to_account,
-        updates.get("pay_period_id", xfer.pay_period_id),
+        to_account,
+        _get_owned_period(
+            updates.get("pay_period_id", xfer.pay_period_id), user_id,
+        ),
         updates.get("due_date", xfer.due_date),
     )
 
@@ -289,25 +358,38 @@ def _sync_loan_postings_if_loan(xfer: Transfer) -> None:
         )
 
 
-def _reverse_loan_payment_before_delete(xfer: Transfer) -> bool:
-    """Reverse a loan payment's split correction before its transfer is deleted.
+def _reverse_loan_payment_before_it_leaves(xfer: Transfer) -> bool:
+    """Reverse a loan payment's split correction while it is still the loan's.
 
-    When *xfer* pays an amortizing loan, reconcile the deleted payment's Step-4
+    When *xfer* pays an amortizing loan, reconcile that payment's Step-4
     correction to zero
     (:func:`app.services.loan_posting_service.reverse_loan_payment_postings_for_shadow`)
-    while the income shadow's id still exists -- load-bearing for a HARD delete,
-    whose ``ON DELETE SET NULL`` on ``journal_entries.transaction_id`` would
-    otherwise strand the correction's legs once the shadow row is gone.
-    Mirrors the Step-2 cash reverse-before-delete already run at the delete
-    chokepoint.
+    while the income shadow is still ON the loan and still exists.
+    Mirrors the Step-2 cash reverse-before-delete run at the delete chokepoint.
+
+    **BOTH ways a payment leaves need it, and the second was measured** (plan
+    step R10-b).  A HARD DELETE needs it because ``ON DELETE SET NULL`` on
+    ``journal_entries.transaction_id`` would strand the correction's legs once
+    the shadow row is gone.  An ENDPOINT MOVE needs it because the loan-side
+    reconcile finds a loan's payments through the ACCOUNT its income shadow
+    sits on (``loan_loaders.query_shadow_income`` filters
+    ``Transaction.account_id == account_id``) -- so once the shadow has moved,
+    the correction is invisible to every later pass and the loan keeps a split
+    for a payment it no longer has.  Measured: re-pointing a settled `$250.00`
+    payment off a 5% loan left `-$4.17` of interest on the loan's linked
+    ledger, and the very next ``sync_loan_postings`` refused to commit --
+    *"the posted linked ledger diverges from the fold of the loan's events at 1
+    date(s) [walk 0.00 vs posted -4.17]"*.  The checked-projection assert was
+    right; what was missing was this call.
 
     Args:
-        xfer: The transfer about to be deleted.
+        xfer: The transfer about to be deleted or re-pointed, still holding the
+            destination it is leaving.
 
     Returns:
         ``True`` when *xfer* pays an amortizing loan (so the caller re-splits
-        the downstream payments after the row is removed via
-        :func:`_resync_loan_postings_after_delete`), ``False``
+        the downstream payments after the row has left, via
+        :func:`_resync_loan_after_payment_left`), ``False``
         otherwise.
     """
     if classify_account(xfer.to_account) is not AccountProjectionKind.AMORTIZING:
@@ -320,26 +402,69 @@ def _reverse_loan_payment_before_delete(xfer: Transfer) -> bool:
     return True
 
 
-def _resync_loan_postings_after_delete(
+def _resync_loan_after_payment_left(
     loan_account_id: int, scenario_id: int,
 ) -> None:
-    """Re-sync a loan's downstream ledger after one payment is deleted.
+    """Re-sync a loan's downstream ledger after one payment LEAVES it.
 
-    Run AFTER the deleted transfer's row is gone (its payment correction already
-    reversed by :func:`_reverse_loan_payment_before_delete`): re-reconciles the
-    loan's full genesis ledger
+    Run AFTER the payment is no longer the loan's: re-reconciles the loan's
+    full genesis ledger
     (:func:`app.services.loan_posting_service.sync_loan_postings`) --
-    re-splitting the LATER confirmed payments whose running balance the deletion
-    changed AND re-deriving any true-up whose ``owed_before`` the deletion moved
-    (deleting a pre-true-up payment).  Takes the loan / scenario ids explicitly
-    because the caller has captured them before deleting the transfer (a
-    hard-deleted ``xfer`` can no longer be read).
+    re-splitting the LATER confirmed payments whose running balance the
+    departure changed AND re-deriving any true-up whose ``owed_before`` it moved
+    (a pre-true-up payment leaving) -- then re-bounds the recurring payment's
+    window to the loan's new projected payoff.  Takes the loan / scenario ids
+    explicitly because the caller has captured them before the payment moved (a
+    hard-deleted ``xfer`` can no longer be read at all).
+
+    **A payment leaves a loan in two ways, and it was named for only one of
+    them until plan step R10-b.**  It is DELETED (the transfer row goes, its
+    correction already reversed by
+    :func:`_reverse_loan_payment_before_it_leaves`), or its transfer's DESTINATION
+    is re-pointed at another account, which is what
+    :func:`app.services.transfer_service.update_transfer`'s endpoint arm can now
+    do.  The re-reconcile the loan needs is identical in both cases -- it reads
+    the loan's remaining payment set rather than the departing row -- so the two
+    callers share one body rather than the second growing a near-copy of it.
 
     Args:
         loan_account_id: The loan whose downstream ledger to re-reconcile.
-        scenario_id: The deleted payment's scenario.
+        scenario_id: The departing payment's scenario.
     """
     loan_posting_service.sync_loan_postings(loan_account_id, scenario_id)
-    # R-4: deleting a payment moves the projected payoff, so re-bound the
+    # R-4: losing a payment moves the projected payoff, so re-bound the
     # recurring payment's window to it (baseline scenario).
     loan_recurrence_sync.sync_recurring_payment_bounds(loan_account_id)
+
+
+def _resync_vacated_loan(account_id: int, scenario_id: int) -> None:
+    """Re-reconcile *account_id* when a transfer's endpoint move just left it.
+
+    The endpoint-move half of :func:`_resync_loan_after_payment_left` (plan step
+    R10-b), and the only thing it adds is the classification: a vacated endpoint
+    is an ordinary account far more often than it is a loan, and the caller --
+    :func:`app.services.transfer_service._update._reconcile_postings_after_update`
+    -- holds an account ID rather than a row, so asking "was that a loan" here
+    keeps this package's loan knowledge in this module.
+
+    **Only the vacated DESTINATION is offered to it, and an adversarial review
+    of plan step R10-b is why the source is not.**  A loan reached as a
+    transfer's SOURCE carries that transfer's EXPENSE shadow, and a loan's
+    payment set is :func:`app.services.loan_loaders.query_shadow_income` --
+    INCOME shadows only -- so such a transfer was never one of the loan's
+    payments and losing it re-derives nothing.  A first version offered both
+    endpoints and justified it by a legacy loan-source row "holding a payment it
+    no longer has", which is not what that row holds; removing the call left the
+    legacy case green while both destination cases failed.
+
+    Args:
+        account_id: The account the transfer just moved OFF.
+        scenario_id: The transfer's scenario.
+    """
+    account = db.session.get(Account, account_id)
+    if (
+        account is None
+        or classify_account(account) is not AccountProjectionKind.AMORTIZING
+    ):
+        return
+    _resync_loan_after_payment_left(account_id, scenario_id)

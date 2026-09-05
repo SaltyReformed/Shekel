@@ -11,7 +11,9 @@ Mixins are NOT registered in ``app/models/__init__.py`` -- they
 represent shared declarations, not concrete tables.
 """
 
-from sqlalchemy.orm import declared_attr
+from datetime import date, datetime
+
+from sqlalchemy.orm import declared_attr, validates
 
 from app.extensions import db
 
@@ -22,11 +24,35 @@ class UserScopedMixin:
     Adds one column:
 
       ``user_id`` -- INTEGER NOT NULL, ``FK auth.users.id ON DELETE
-                     CASCADE``.  Identifies the user who owns the row;
-                     deleting a user cascades to every row they own.
+                     CASCADE``.  Identifies the user who owns the row.
+
+    **The CASCADE does not make a user deletable, and a first version of
+    this line said it did** ("deleting a user cascades to every row they
+    own").  A user holding transactions cannot be deleted at all:
+    ``budget.transactions.user_id`` is ``ON DELETE RESTRICT`` (see
+    :class:`app.models.transaction.Transaction` for that ruling), so the
+    statement dies there.  Driven 2026-09-02 on a clone of the
+    developer's DEV database -- 9 accounts, 63 pay periods, 1,057
+    transactions -- at plan step ``pay_calendar:C13-a``'s revision:
+    ``DELETE FROM auth.users WHERE id = 1`` raises ``violates RESTRICT
+    setting of foreign key constraint "fk_transactions_user_id"``, under
+    both referential-trigger orderings.
+
+    *Two things a first version of this paragraph got wrong, and both are
+    one mistake -- a measurement quoted without saying which side of a
+    same-day schema change it was taken on.*  It quoted the
+    ``transactions_account_id_fkey`` refusal, which is what the PRE-C13-a
+    schema raises and not this one; and it called that database "a clone
+    of production", where production holds 1,028 transactions and 1,057
+    is the dev clone.
+
+    Nothing in ``app/`` deletes a user, so this is the shape of a door
+    nobody has built rather than a live defect -- but the CASCADE here
+    describes what the column does when it is REACHED, and never a
+    guarantee about the statement.
 
     Applied to the user-owned tables whose ``user_id`` is exactly this
-    shape: a NOT NULL CASCADE FK with no ``unique`` qualifier.  Three
+    shape: a NOT NULL CASCADE FK with no ``unique`` qualifier.  Four
     ``user_id`` columns are deliberately EXCLUDED because their DDL
     differs:
 
@@ -35,9 +61,19 @@ class UserScopedMixin:
         marks a seeded, system-owned row).
       * ``auth.user_settings`` / ``auth.mfa_configs`` -- 1:1 satellite
         tables whose ``user_id`` carries ``unique=True``.
+      * ``budget.transactions`` -- the FK is ``ON DELETE RESTRICT``; see
+        below.
 
-    ``Transaction`` has NO ``user_id`` at all -- it is scoped through
-    ``pay_period_id`` / ``account_id`` -- so it does not use this mixin.
+    ``Transaction`` HAS a ``user_id`` since plan step
+    ``pay_calendar:C13-a`` (ruling **R-PC32**) -- until then it had none
+    at all and was scoped by walking ``pay_period_id`` / ``account_id``
+    -- but it is a FOURTH exclusion, on the same ground as the first:
+    its ``ondelete`` is ``RESTRICT``, not ``CASCADE`` (developer,
+    2026-09-02).  Reusing this mixin there was measured to convert
+    ``DELETE FROM auth.users`` from refused into a statement that empties
+    the database; the column comment on
+    :class:`app.models.transaction.Transaction` carries the table of
+    driven results and the ruling.
 
     DDL-ORDERING NOTE (differs from the end-positioned mixins below).
     SQLAlchemy renders mixin columns AFTER a class's own columns, so
@@ -388,3 +424,167 @@ class OptimisticLockMixin:
         SQLAlchemy-mandated convention here.
         """
         return {"version_id_col": cls.version_id}
+
+
+def reject_settle_instant(value: date | None) -> date | None:
+    """Return *value*, refusing a ``datetime`` where a civil DAY is required.
+
+    **The ONE statement of finding N-179's rule**, consumed by the column's own
+    ORM validator below and by :class:`app.services.settle_day.SettleDay`'s
+    constructor -- which runs at the CALLER, so a wrong-typed day cannot even be
+    packaged for a settle door, let alone reach a row.
+
+    ``datetime`` subclasses ``date``, so a type annotation catches nothing and
+    the value flows all the way to PostgreSQL, which coerces it into the
+    ``DATE`` column on the SESSION clock -- UTC.  An instant at
+    2026-03-04 04:30 UTC is 2026-03-03 23:30 Eastern, so the row stores
+    2026-03-04: one day later than the user's civil day, silently, which is
+    exactly the UTC-vs-display split ruling **R-DH (b)** exists to delete,
+    reintroduced one layer down.  Measured during the X-f1 conversion: 16 test
+    sites handed the seam an instant and 8 of them stayed GREEN while doing it,
+    one writing a journal entry whose ``DATE`` column held
+    ``2026-03-20T13:00:00+00:00``.
+
+    Args:
+        value: The candidate settle day, or ``None``.
+
+    Returns:
+        *value* unchanged, so the function composes into an assignment.
+
+    Raises:
+        TypeError: When *value* is a ``datetime``.  A programming error at the
+            call site rather than user input -- no form can submit an instant
+            into a date field -- so it is not a ``ValidationError``.
+    """
+    if isinstance(value, datetime):
+        raise TypeError(
+            f"settled_on must be a date, got datetime {value!r}.  A "
+            "settle records the CIVIL DAY its money moved, and an instant "
+            "handed here is truncated by PostgreSQL on the session clock "
+            "(UTC), so an evening-Eastern settle would be filed on the "
+            "following day.  Pass the user's civil day -- display_today(), or "
+            "the day the bank showed."
+        )
+    return value
+
+
+class SettleDatedMixin:
+    """The day a row's money moved, and HOW that day is known.
+
+    Adds three NULLABLE columns, and they are ONE fact in three parts -- the
+    ASSERTION that this money moved, on this day, that is what kind of day it
+    is, and that statement showed it:
+
+      ``settled_on``           -- DATE.  The civil day the money moved.  NULL is
+                                  the row's own invariant rather than a gap; see
+                                  each model for which one (a transaction is
+                                  dated exactly while it is in a settled status;
+                                  a purchase is dated exactly when the bank has
+                                  been seen to take it).
+      ``settled_day_basis_id`` -- INTEGER, ``FK ref.settled_day_bases.id ON
+                                  DELETE RESTRICT``.  WHICH KIND of day that is:
+                                  ``observed`` / ``asserted`` / ``entered``
+                                  (:class:`app.enums.SettledDayBasisEnum`).
+                                  Paired to the day above by each table's own
+                                  BICONDITIONAL check constraint, so a day with
+                                  no basis and a basis with no day are both
+                                  unstorable.
+      ``reconciled_by_id``     -- INTEGER.  WHICH statement was seen to show this
+                                  money -- an ``account_anchor_history`` row.
+                                  Declared bare here because its foreign key is
+                                  COMPOSITE over the table's own ``account_id``
+                                  (ruling **R-FL**) and lives in each model's
+                                  ``__table_args__`` beside the rest of that
+                                  table's constraints.
+
+    Used by :class:`~app.models.transaction.Transaction` and
+    :class:`~app.models.transaction_entry.TransactionEntry`.
+
+    **It exists because plan step X-az made the duplication a gate finding.**
+    The two tables carried ``settled_on`` and ``reconciled_by_id`` separately for
+    as long as both have existed; adding the basis column to each pushed the
+    block past pylint's ``duplicate-code`` threshold, which is the gate saying
+    what was already true -- these are the same three columns recording the same
+    fact about two kinds of row.  Extracting them is the same cleanup
+    :class:`SoftDeleteOverridableMixin` and :class:`TrackingVisibilityMixin` are.
+
+    **The ``datetime`` refusal is now on BOTH tables, and that is a widening
+    rather than a move** (finding **N-179**).  It was a ``@validates`` on
+    ``Transaction`` alone, and ``TransactionEntry.settled_on`` had the identical
+    exposure with no guard: ``datetime`` subclasses ``date``, so a type
+    annotation catches nothing and PostgreSQL truncates the instant on the UTC
+    session clock, filing an evening-Eastern purchase under the following day.
+    A rule stated for one table and enforced on one table is a rule the second
+    table does not have.
+
+    ``settled_day_basis_id`` is the one column declared through
+    ``@declared_attr``, because its foreign key carries a per-table NAME
+    (``fk_transactions_settled_day_basis_id`` /
+    ``fk_transaction_entries_settled_day_basis_id``) and a shared
+    ``ForeignKey`` object would give both tables one constraint name.  The other
+    two are class-level, so their DDL is byte-identical to the prior inline
+    declarations and ``flask db migrate --autogenerate`` against a migrated
+    schema produces an empty diff.
+    """
+
+    settled_on = db.Column(db.Date)
+
+    @declared_attr
+    def settled_day_basis_id(cls):  # pylint: disable=no-self-argument
+        """Map the day's basis so each table names its own foreign key.
+
+        Pylint: ``no-self-argument`` -- ``declared_attr`` passes the mapped
+        CLASS, not an instance, and SQLAlchemy's own documented signature for
+        the decorator names that parameter ``cls``.  The same disable
+        :meth:`OptimisticLockMixin.__mapper_args__` carries for the same reason.
+
+        Args:
+            cls: The mapped class, supplied by ``declared_attr``.  Its
+                ``__tablename__`` is what makes the constraint name per-table.
+
+        Returns:
+            The ``settled_day_basis_id`` :class:`sqlalchemy.Column` for *cls*.
+        """
+        return db.Column(
+            db.Integer,
+            db.ForeignKey(
+                "ref.settled_day_bases.id",
+                name=f"fk_{cls.__tablename__}_settled_day_basis_id",
+                ondelete="RESTRICT",
+            ),
+        )
+
+    reconciled_by_id = db.Column(db.Integer)
+
+    @validates("settled_on")
+    def _refuse_a_settle_instant(self, _key, value):
+        """Refuse a ``datetime`` written to :attr:`settled_on`, on ANY path.
+
+        The type guard lives on the COLUMN rather than only at the write door,
+        and that placement is the point (finding **N-179**).  The seam refuses
+        an instant it is handed, but nothing stopped a caller -- or a fixture --
+        assigning the attribute directly, and PostgreSQL then truncates the
+        instant on the UTC session clock in silence.  A validator fires for the
+        constructor, for a plain ``txn.settled_on = ...``, and for every ORM
+        write path, so the wrong type is a loud ``TypeError`` wherever it is
+        written instead of a day that is wrong by one.
+
+        It is not a fence with an allowlist and it hunts no call sites: the
+        column simply does not accept the type.  The residual, stated because
+        an unstated limit reads as stronger than it is: a bulk
+        ``query.update({"settled_on": ...})`` bypasses the ORM attribute layer
+        and is not seen here, the same boundary
+        ``LoanAnchorEvent``'s append-only guard states for itself.
+
+        Args:
+            value: The candidate settle day.  (SQLAlchemy also passes the
+            attribute name, always ``settled_on``, which this ignores.)
+
+        Returns:
+            *value* unchanged when it is a civil ``date`` or ``None``.
+
+        Raises:
+            TypeError: When *value* is a ``datetime`` (from
+                :func:`reject_settle_instant`).
+        """
+        return reject_settle_instant(value)

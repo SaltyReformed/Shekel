@@ -2,9 +2,11 @@
 
 The Spending report's first act: turn a :class:`._types.SpendingWindow` into
 period ids, a date span and a human label; load that window's settled expenses;
-and walk the same window type backwards to build the trailing series the chart
-draws and the hero's vs-prior / vs-average chips are DERIVED from -- so the
-chart and the chips cannot disagree.
+and DERIVE the trailing same-type series the chart draws and the hero's
+vs-prior / vs-average chips are read off -- so the chart and the chips cannot
+disagree.  That series was a per-slot backwards WALK until plan step C2-f3d,
+whose pay-period arm ran a stored-ordinal query per bar; it is now one
+derivation over the calendar the scope already carries (:func:`_series_windows`).
 
 :func:`_spent_total` lives here rather than with the hero because BOTH read it:
 a window's total is what :func:`_load_window` answers for a prior window and
@@ -14,11 +16,8 @@ window spend" is the drift the shared series exists to prevent.
 Boundary discipline: no Flask import; DB reads only, ``Decimal`` out.
 """
 
-from datetime import date
 from decimal import Decimal
 
-from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import spending_analysis
 from app.services.row_valuation import owned_contribution
@@ -33,8 +32,13 @@ from ._types import (
 
 # Bars on the hero chart: the chosen window plus its predecessors of the
 # same type (D7: a trailing-12 month chart for the exposed month picker).
-# Must exceed ``_hero._TRAILING_WINDOW_COUNT`` so the vs-average baseline
-# derives from the same series the chart draws.
+# **At least 2**, because the series' last two slots are named positions --
+# ``[-1]`` is the chosen window and ``[-2]`` its prior -- which
+# ``_series_windows``, ``_build_series``, ``_hero._build_hero`` and the
+# chart's ``compare_index`` all index directly.  And it must EXCEED
+# ``_hero._TRAILING_WINDOW_COUNT``, so the vs-average baseline derives from
+# the same series the chart draws; neither bound is enforced, and both are
+# stated at both ends rather than only at the one read first.
 _CHART_WINDOW_COUNT = 12
 
 _MONTHS_PER_YEAR = 12
@@ -49,21 +53,35 @@ def _resolve_window(ids: _ScopeIds, window: SpendingWindow) -> _ResolvedWindow:
     itself (:func:`_window_transactions`) -- plus the overlapping periods
     as the tracked-window signal.
 
+    **The pay-period arm reads the scope's CALENDAR, not the table** (plan
+    step C2-f3a).  It was ``db.session.get(PayPeriod, window.period_id)``: a
+    second read of ``budget.pay_periods`` on a render that already holds the
+    owner's whole schedule, and an UNSCOPED one -- any owner's id resolved,
+    and its dates went into the window label.  Nothing reachable submits a
+    ``period_id`` to ``/analytics/spending`` today (the route exposes only
+    month and year), so this hardens a door rather than closing a live leak;
+    the calendar carries ONE owner's periods, so a foreign id now resolves
+    nothing by construction.
+
     Args:
-        ids: The report's scope, whose ``calendar`` answers the overlap.
+        ids: The report's scope, whose ``calendar`` answers both the overlap
+            and the pay-period window's own identity lookup.
         window: The window to resolve.
 
     Returns:
         The :class:`_ResolvedWindow`.  ``period_ids`` is empty when a
-        pay-period window's id resolves no row, or a calendar window overlaps
-        none.  ``calendar_window_bounds`` never crosses its bounds (C2-f).
+        pay-period window's id names none of this owner's periods, or a
+        calendar window overlaps none.  ``calendar_window_bounds`` never
+        crosses its bounds (C2-f).
     """
     if window.window_type == "pay_period":
-        period = db.session.get(PayPeriod, window.period_id)
+        period = ids.calendar.period_by_id(window.period_id)
         if period is None:
             return _ResolvedWindow([], None, None, "")
         return _ResolvedWindow(
-            [period.id], None, None, _window_label(window, period),
+            [period.period_id], None, None, spending_analysis.window_label(
+                window.window_type, window.month, window.year, period,
+            ),
         )
 
     first_day, last_day = spending_analysis.calendar_window_bounds(
@@ -71,33 +89,10 @@ def _resolve_window(ids: _ScopeIds, window: SpendingWindow) -> _ResolvedWindow:
     )
     return _ResolvedWindow(
         [p.period_id for p in ids.calendar.overlapping(first_day, last_day)],
-        first_day, last_day, _window_label(window, None),
+        first_day, last_day, spending_analysis.window_label(
+            window.window_type, window.month, window.year, None,
+        ),
     )
-
-
-def _window_label(window: SpendingWindow, period: PayPeriod | None) -> str:
-    """Return the human label for a window.
-
-    Args:
-        window: The window to label.
-        period: The resolved period for a ``"pay_period"`` window (``None``
-            for calendar windows).
-
-    Returns:
-        ``"Feb 21 - Mar 06, 2026"`` (pay period), ``"January 2026"``
-        (month), ``"2026"`` (year), or ``""`` when a pay-period window has
-        no resolved period.
-    """
-    if window.window_type == "pay_period":
-        if period is None:
-            return ""
-        return (
-            f"{period.start_date:%b %d} - {period.end_date:%b %d}, "
-            f"{period.end_date.year}"
-        )
-    if window.window_type == "month":
-        return f"{date(window.year, window.month, 1):%B} {window.year}"
-    return str(window.year)
 
 
 def _window_transactions(
@@ -175,95 +170,159 @@ def _load_window(
 # ── Trailing series ─────────────────────────────────────────────────
 
 
+def _series_windows(
+    ids: _ScopeIds, window: SpendingWindow,
+) -> "list[SpendingWindow | None]":
+    """Return the chart's :data:`_CHART_WINDOW_COUNT` windows, chosen last.
+
+    **The whole series in ONE derivation, which is what plan step C2-f3d
+    bought.**  Each slot used to be resolved by its own ``_shift_window(window,
+    steps)`` call, and for a ``"pay_period"`` window each of those eleven calls
+    ran a ``WHERE period_index = <chosen> - <steps>`` query against
+    ``budget.pay_periods`` -- a NINTH hand-rolled period search (ledger row
+    **P45**), reading the stored ordinal plan step **C4-c** dropped, on a render
+    that already holds the owner's whole derived calendar.  A run of
+    consecutive paychecks ending at a known one is exactly what
+    :meth:`~app.services.pay_calendar.PayCalendar.window` answers, so the
+    eleven searches collapse into one slice and the ordinal walk stops existing
+    rather than moving from SQL into Python.
+
+    **On a schedule whose stored ordinals agree with payday order the answer is
+    unchanged, and THAT equality is structural rather than measured**: a derived
+    ``period_index`` is the period's position in the owner's payday order and
+    runs ``0..n-1`` dense (:func:`~app.services.pay_calendar.derive_periods`),
+    so the ordinal range ``[chosen - 11, chosen)`` names the same eleven
+    predecessors the eleven queries found one at a time, and a range reaching
+    below zero simply comes back short -- which is the blank leading slot the
+    queries produced by matching nothing.
+
+    **TWO classes of answer DO change, and both change toward the right one.**
+
+    *The stored ordinal can be wrong and the derived one cannot.*  This arc's
+    own taxonomy names three expressible faults in that column
+    (:mod:`app.services.pay_calendar`): an index out of payday order, a gap,
+    and an overlap.  The first TRANSPOSED two bars, taking the vs-prior
+    baseline with them.  The second cost the walk a SLOT: an unmatched
+    ordinal left a blank bar mid-chart, so eleven steps reached only ten
+    paychecks and the series began one paycheck LATER than it should --
+    which moves the vs-average wherever the twelfth slot is occupied
+    (measured on a twenty-period owner: `$1,300.00` against a true
+    `$1,250.00`; on a ten-period one only the bar POSITIONS move, since both
+    sides then hold the same six windows).  Neither fault is constructible
+    here: the periods are derived from the paydays, so their ordinals are
+    dense and in payday order by construction.
+
+    *An unknown ``period_id`` resolves nothing rather than something.*  The
+    walk read it with an UNSCOPED ``db.session.get``, so another owner's id
+    supplied an ordinal and then THIS owner's paychecks beneath it --
+    :func:`_resolve_window` states why the calendar closes that door and why it
+    hardens rather than fixes.  **What moves is more than the blank slots**:
+    ``[-2]`` is the prior window, so the hero's vs-prior and vs-average chips,
+    every per-category delta and every By-change row moved with it.
+
+    Every slot is filled, including the ones no window exists for, so index
+    arithmetic on the result is stable: the chosen window is always ``[-1]``
+    and its prior is always ``[-2]``, which is what :mod:`._hero` reads its two
+    baselines off and what the chart's ``viewed_index`` / ``compare_index``
+    name.  **The pay-period arm seats each paycheck at its own ordinal OFFSET,
+    and that is a READING choice rather than a safety one** -- mutation
+    testing of this step showed appending and left-padding to be an equivalent
+    mutant that no test can distinguish, because the calendar's ordinals are
+    dense (``test_pay_calendar_derivation`` asserts that directly) and the
+    slice therefore always arrives ascending and gap-free.  What the offset
+    buys is that the assignment names the same ordinal range that selected the
+    period, so it is checkable at the line rather than by carrying the density
+    argument to it.
+
+    Args:
+        ids: The report's scope, whose ``calendar`` answers the pay-period
+            arm.  A calendar built by
+            :func:`~app.services.pay_calendar.calendar_for` holds only
+            MATERIALISED periods, which is what makes every ``period_id``
+            below a real ``budget.pay_periods.id``;
+            :meth:`~app.services.pay_calendar.PayCalendar.window` does not
+            enforce that itself, which is ledger row **P72**.
+        window: The chosen window, which is the last slot.
+
+    Returns:
+        :data:`_CHART_WINDOW_COUNT` entries, oldest first, the chosen window
+        last.  An entry is ``None`` where no window exists, which happens two
+        ways and only in a ``"pay_period"`` series: the slot falls before the
+        owner's first payday, or the chosen id names none of their periods.  A
+        ``"month"`` / ``"year"`` series is calendar arithmetic and always names
+        a window -- whether such a window has any DATA is
+        :func:`_window_total`'s answer, not this one's.
+    """
+    history = _CHART_WINDOW_COUNT - 1
+    if window.window_type == "pay_period":
+        earlier: "list[SpendingWindow | None]" = [None] * history
+        chosen = ids.calendar.period_by_id(window.period_id)
+        if chosen is not None:
+            first = chosen.period_index - history
+            for period in ids.calendar.window(first, history):
+                earlier[period.period_index - first] = SpendingWindow(
+                    window_type="pay_period", period_id=period.period_id,
+                )
+    elif window.window_type == "month":
+        earlier = [
+            SpendingWindow(window_type="month", month=month, year=year)
+            for year, month in (
+                _shift_month(window.year, window.month, step)
+                for step in range(history, 0, -1)
+            )
+        ]
+    else:
+        earlier = [
+            SpendingWindow(window_type="year", year=window.year - step)
+            for step in range(history, 0, -1)
+        ]
+    return [*earlier, window]
+
+
 def _build_series(
     ids: _ScopeIds,
-    window: SpendingWindow,
+    windows: "list[SpendingWindow | None]",
     *,
     viewed_total: Decimal | None,
-    prior_window: SpendingWindow | None,
     prior_total: Decimal | None,
 ) -> list[SeriesPoint]:
-    """Build the trailing same-type window series, oldest first.
+    """Load each of *windows* into the :class:`SeriesPoint` the chart draws.
 
-    The series is :data:`_CHART_WINDOW_COUNT` points: the chosen window
-    (last) plus its predecessors, each stepped back with
-    :func:`_shift_window`.  A step past the user's pay-period history (a
-    ``"pay_period"`` walk that runs out of earlier periods) still occupies
-    its slot with an all-``None`` point, so index arithmetic on the series
-    is stable: the chosen window is always ``series[-1]`` and its prior is
-    always ``series[-2]``.
+    One point per slot :func:`_series_windows` produced, oldest first, so the
+    chosen window is always ``series[-1]`` and its prior always ``series[-2]``
+    -- a blank slot becomes an all-``None`` point rather than shortening the
+    series, which is what keeps that arithmetic true for an owner whose
+    schedule does not reach back twelve paychecks.  The LENGTH is the
+    producer's: this returns one point per slot it was given, and
+    :func:`_series_windows` is where :data:`_CHART_WINDOW_COUNT` of them is
+    guaranteed.
 
-    The chosen and prior windows' totals are passed in rather than
-    re-loaded: the caller already loaded both windows' transactions for the
-    breakdown and change rows, and reusing the totals keeps the chart bar,
-    the hero figure, and the ledger summing one dataset.
+    The chosen and prior windows' totals are passed in rather than re-loaded:
+    the caller already loaded both windows' transactions for the breakdown and
+    change rows, and reusing the totals keeps the chart bar, the hero figure,
+    and the ledger summing one dataset.
 
     Args:
         ids: The report's scope ids.
-        window: The chosen window (the series' last point).
+        windows: The chart's windows from :func:`_series_windows`, oldest
+            first and the chosen window last.
         viewed_total: The chosen window's settled spend (``None`` when the
             window overlaps no pay period).
-        prior_window: The step-1 window, or ``None`` when none exists.
-        prior_total: The step-1 window's settled spend, or ``None``.
+        prior_total: The ``windows[-2]`` window's settled spend, or ``None``.
 
     Returns:
-        The :class:`SeriesPoint` list, oldest first.
+        The :class:`SeriesPoint` list, oldest first, one per slot.
     """
     points: list[SeriesPoint] = []
-    for step in range(_CHART_WINDOW_COUNT - 1, 0, -1):
-        if step == 1:
-            points.append(SeriesPoint(window=prior_window, total=prior_total))
-            continue
-        shifted = _shift_window(ids.user_id, window, step)
-        if shifted is None:
+    for earlier in windows[:-2]:
+        if earlier is None:
             points.append(SeriesPoint(window=None, total=None))
             continue
-        _, total = _load_window(ids, shifted)
-        points.append(SeriesPoint(window=shifted, total=total))
-    points.append(SeriesPoint(window=window, total=viewed_total))
+        _, total = _load_window(ids, earlier)
+        points.append(SeriesPoint(window=earlier, total=total))
+    points.append(SeriesPoint(window=windows[-2], total=prior_total))
+    points.append(SeriesPoint(window=windows[-1], total=viewed_total))
     return points
-
-
-def _shift_window(
-    user_id: int, window: SpendingWindow, steps: int,
-) -> SpendingWindow | None:
-    """Return the window shifted ``steps`` back, or ``None``.
-
-    For a ``"pay_period"`` window the shift walks ``period_index`` back by
-    ``steps`` and returns ``None`` when no such earlier period exists (before
-    the user's first period).  For a ``"month"`` / ``"year"`` window the
-    shift is pure calendar arithmetic and always yields a window (whether it
-    holds any data is decided by :func:`_load_window`).
-
-    Args:
-        user_id: The owning user (scopes the pay-period lookup).
-        window: The reference window.
-        steps: How many windows to step back (>= 1).
-
-    Returns:
-        The shifted :class:`SpendingWindow`, or ``None``.
-    """
-    if window.window_type == "pay_period":
-        current = db.session.get(PayPeriod, window.period_id)
-        if current is None:
-            return None
-        prior = (
-            db.session.query(PayPeriod)
-            .filter(
-                PayPeriod.user_id == user_id,
-                PayPeriod.period_index == current.period_index - steps,
-            )
-            .first()
-        )
-        if prior is None:
-            return None
-        return SpendingWindow(window_type="pay_period", period_id=prior.id)
-
-    if window.window_type == "month":
-        year, month = _shift_month(window.year, window.month, steps)
-        return SpendingWindow(window_type="month", month=month, year=year)
-
-    return SpendingWindow(window_type="year", year=window.year - steps)
 
 
 def _shift_month(year: int, month: int, steps: int) -> tuple[int, int]:
@@ -282,14 +341,31 @@ def _shift_month(year: int, month: int, steps: int) -> tuple[int, int]:
     return absolute // _MONTHS_PER_YEAR, absolute % _MONTHS_PER_YEAR + 1
 
 
-
 def _spent_total(txns: list[Transaction]) -> Decimal:
-    """Return total settled spend as a non-negative ``Decimal``.
+    """Return total settled spend, SIGNED.
+
+    **It was ``abs()`` per row until plan step ``bank_import:X-gj-2b``, and
+    that was a money defect once the CHECK moved.**  ``abs()`` could not change
+    an answer while ``ck_transaction_entries_positive_amount`` said
+    ``amount > 0`` -- a settled envelope is worth the sum of its purchases, so
+    its contribution was non-negative by construction.  Ruling **R-II** relaxed
+    the CHECK so a merchant refund files as a NEGATIVE purchase, and a
+    per-row ``abs()`` then reported a refunded envelope as SPENDING of the same
+    magnitude: measured ``-86.67 -> +86.67``, a `$173.34` error against the
+    truth on a window where the account received the money.
+
+    The total can therefore be negative, for a window whose refunds exceeded
+    its purchases.  That is the honest figure, and it is deliberately NOT the
+    breakdown's share denominator: dividing by a net that refunds have pulled
+    toward zero is what printed **600%** on a `$600.00` category, so
+    :func:`~._breakdown._share_base` divides by what the window MOVED
+    (developer ruling **bank_import:R-IL**, 2026-09-01).  The two are the same figure wherever no
+    category went negative.
 
     Args:
         txns: Settled expense transactions.
 
     Returns:
-        The sum of ``abs(owned_contribution(txn))`` over ``txns``.
+        The sum of ``owned_contribution(txn)`` over ``txns``.
     """
-    return sum((abs(owned_contribution(txn)) for txn in txns), ZERO)
+    return sum((owned_contribution(txn) for txn in txns), ZERO)

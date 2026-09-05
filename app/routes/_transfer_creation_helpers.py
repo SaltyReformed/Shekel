@@ -41,7 +41,6 @@ from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import (
@@ -52,8 +51,8 @@ from app.schemas.validation import (
     end_bound_before_start_message,
 )
 from app.services import loan_loaders, loan_recurrence_sync, transfer_recurrence
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.scenario_resolver import require_baseline_scenario
 from app.utils.auth_helpers import get_or_404
 
 logger = logging.getLogger(__name__)
@@ -143,18 +142,24 @@ def build_recurring_transfer_template(
     *,
     source_account: Account,
     dest_account: Account,
-    rule: RecurrenceRule,
     name: str,
     default_amount: Decimal,
 ) -> TransferTemplate:
     """Construct + session-add a recurring :class:`TransferTemplate`.
 
     Shared template-construction step of the investment and loan
-    transfer creators.  Builds the row from the resolved accounts and a
-    pre-flushed recurrence ``rule``, adds it to the session, and returns
-    it; the caller flushes (via
+    transfer creators.  Builds the row from the resolved accounts, adds it to
+    the session, and returns it; the caller flushes (via
     :func:`flush_template_or_namedup_redirect`) so name-collision
     handling stays at the route layer.
+
+    **It no longer takes the recurrence rule, since plan step R-F6.**  The rule
+    carries the owning FK now, so it is authored ONTO this template
+    (:func:`app.services.recurrence.author_rule`) once the template exists --
+    which is after the caller's name-collision flush, because ``author_rule``
+    flushes and an earlier one would surface a duplicate name as an unhandled
+    ``IntegrityError``.  A template returned from here does not repeat yet, and
+    both callers make it repeat one call later.
 
     Loan-payment settings are intentionally NOT set here: an investment
     contribution and every generic transfer get NO
@@ -169,8 +174,6 @@ def build_recurring_transfer_template(
             (``from_account``).
         dest_account: The investment / loan destination account
             (``to_account``).
-        rule: The already-added-and-flushed :class:`RecurrenceRule`
-            whose ``id`` links the template.
         name: Display name for the template.
         default_amount: Per-period transfer amount (Decimal).
 
@@ -183,7 +186,6 @@ def build_recurring_transfer_template(
         user_id=current_user.id,
         from_account_id=source_account.id,
         to_account_id=dest_account.id,
-        recurrence_rule_id=rule.id,
         name=name,
         default_amount=default_amount,
     )
@@ -353,6 +355,11 @@ def generate_transfers_for_all_periods(
     answered by the one application-level handler, which rolls the pending
     create back and renders the repair.
 
+    **The scenario and the schedule come off ONE read pass since plan step
+    R7d-c-1**, where they were a ``require_baseline_scenario`` beside a
+    ``calendar_for``.  ``BalanceContext.scenario_id`` makes the same R-BW
+    refusal with the same exception, so the raise below is unchanged.
+
     Args:
         template: The flushed :class:`TransferTemplate` whose recurrence
             rule drives generation.
@@ -367,11 +374,15 @@ def generate_transfers_for_all_periods(
             today -- registration writes one and nothing deletes one -- which
             is why this changes no live behaviour.
     """
-    scenario = require_baseline_scenario(current_user.id)
+    ctx = BalanceContext.build(current_user.id)
+    # Dereferenced BEFORE the schedule is built, so the R-BW refusal still
+    # runs ahead of any derivation -- argument evaluation is left to right, so
+    # naming it inline would derive the owner's calendar and then raise.
+    scenario_id = ctx.scenario_id
     transfer_recurrence.generate_for_template(
         template,
-        GenerationSchedule.for_user(current_user.id),
-        scenario.id,
+        GenerationSchedule.for_pass(ctx),
+        scenario_id,
         effective_from=effective_from,
     )
 

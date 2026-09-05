@@ -6,13 +6,20 @@ Registered on the application in :func:`app.create_app` via
 ceiling and so display helpers have a home that is not the
 already-large factory.
 
-Every filter here is a DISPLAY transform: it formats or relabels a
-value the route or service already computed.  None performs financial
-arithmetic -- monetary math lives in the services per the project's
-"templates display, never compute" rule (CLAUDE.md).  The two arithmetic
-helpers below (``to_percent``, ``months_to_years``) operate on rates and
-term lengths, not money, and exist precisely so templates do not inline
-that math.
+Every filter here transforms a value the route or service already
+computed -- most for DISPLAY, and :func:`reviewed_token` for the WIRE.
+None performs financial arithmetic: monetary math lives in the services
+per the project's "templates display, never compute" rule (CLAUDE.md).
+The two arithmetic helpers below (``to_percent``, ``months_to_years``)
+operate on rates and term lengths, not money, and exist precisely so
+templates do not inline that math.
+
+**A wire transform belongs here for the same reason a display one does**,
+and :func:`reviewed_token` is the first: the value it emits is READ BACK
+by :class:`~app.schemas.validation.statements.ReviewedRowField`, so the
+format has to be stated once and reached from both sides.  A template
+composing those fields itself would be the second spelling, and nothing
+in the tree fails when a template and a validator drift apart.
 """
 
 from datetime import datetime
@@ -21,6 +28,12 @@ from decimal import Decimal
 from flask import Flask
 
 from app.services.salary_cockpit_service import clean_raise_label
+from app.services.statement_match import (
+    CandidateRow,
+    MatchProposal,
+    as_reviewed,
+    spell_figure,
+)
 from app.utils.dates import month_name, to_display_tz
 
 # Months in a year -- named so the year conversion is not a bare literal.
@@ -151,6 +164,70 @@ def raise_label(value: str | None) -> str:
     return clean_raise_label(value)
 
 
+def reviewed_token(row: CandidateRow) -> str:
+    """Render one candidate row as the form value a match submits for it.
+
+    Thin filter wrapper over
+    :func:`app.services.statement_match.as_reviewed`, the same shape
+    :func:`raise_label` is, and for a sharper reason: this string is not
+    read by a person, it is read back by
+    :class:`~app.schemas.validation.statements.ReviewedRowField` on the
+    next request.  The statement review screen emits one per row it
+    offers, carrying the row's kind, its id, and the figure and revision
+    the owner is looking at -- which is what lets the accept door refuse
+    an item whose row has MOVED since the page was rendered (finding
+    **N-336**, plan step ``bank_import:X-f6d-3``).
+
+    No arithmetic and no decision: the service builds the value, this
+    hands it to the form.
+
+    Args:
+        row: A :class:`~app.services.statement_match.CandidateRow` the
+            review screen is rendering.
+
+    Returns:
+        Its token, ``"<kind>:<row_id>:<cash_amount>:<version_id>"``.
+    """
+    return as_reviewed(row).token
+
+
+def stated_difference(proposal: MatchProposal) -> str:
+    """Render the difference a proposal states, as the form value it submits.
+
+    Plan step ``bank_import:X-gj-1b``.  The SECOND wire transform here, and it
+    is here for :func:`reviewed_token`'s reason one grain up: the accept door
+    exempts no shape since the developer's ruling of 2026-08-30, so every
+    match states the difference it was reviewed against, and this string is
+    read back by
+    :class:`~app.schemas.validation.statements.ReviewedFigureField` on the
+    next request.  ``reviewed_token`` carries the state of one ROW; this
+    carries the SUM over them, which is the one figure no per-row guard can
+    see being wrong (finding **N-336**).
+
+    **A filter rather than a property on the proposal**, which is where a
+    first version put it.  ``MatchProposal`` already publishes
+    :attr:`~app.services.statement_match.MatchProposal.difference` as the
+    ``Decimal`` every reader wants; what a template needs is its WIRE
+    SPELLING, and that is a fact about the form rather than about the
+    proposal -- the same boundary that keeps ``as_reviewed`` in the service
+    and its token here.  The module's own line ceiling is what surfaced it:
+    adding this there put ``_offers`` at 1,014 lines, which is finding
+    **balance:N-365** asking the question the answer to which was that the
+    code was in the wrong module.
+
+    No arithmetic and no decision: the service subtracts, this hands the
+    result to the form.
+
+    Args:
+        proposal: The :class:`~app.services.statement_match.MatchProposal` a
+            card is rendering.
+
+    Returns:
+        Its plain decimal spelling, ``"0.00"`` for the exact and group tiers.
+    """
+    return spell_figure(proposal.difference)
+
+
 def register_template_filters(app: Flask) -> None:
     """Register every presentation filter on the given Flask app.
 
@@ -167,3 +244,5 @@ def register_template_filters(app: Flask) -> None:
     app.add_template_filter(months_to_years, "months_to_years")
     app.add_template_filter(month_name, "month_name")
     app.add_template_filter(raise_label, "raise_label")
+    app.add_template_filter(reviewed_token, "reviewed_token")
+    app.add_template_filter(stated_difference, "stated_difference")

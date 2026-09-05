@@ -1,0 +1,340 @@
+{% from "_money_macros.html" import money %}
+
+{# THE HAND-BUILD WORKBENCH, and its own door's answer.
+
+   Plan step bank_import:X-gf-3b, ruling bank_import:R-HC.  It is a partial
+   rather than part of the page for the reason both sibling statement surfaces
+   are: recording a match ANSWERS WITH THIS -- the receipt at the top says what
+   landed and quotes every refusal, and the lists below it are re-derived from
+   the state that act left.  One template, so what htmx swaps in after a POST
+   cannot drift from what a reload shows.
+
+   THE FORM MOVED HERE FROM _statement_review_body.html, where it was 59% of
+   the page (finding bank_import:N-374).  The two pick lists below are that
+   form's own markup; what changed is the door it posts to and the names its
+   controls submit.
+
+   ITS FIELDS CARRY NO ORDERING TOKEN, and that is the whole of why this is a
+   surface of its own rather than a section of that one.  This form submitted
+   `apply=hand` and `match-hand-line_ids` while it shared a page with the
+   reviewed pass, and that reserved index was the only thing keeping its ticks
+   out of proposal 0's submission -- the two being separate <form> elements, a
+   property of the DOCUMENT.  One hx-include, or one merge of the two controls,
+   would have unioned proposal 0's hidden row ids with this group's ticks into
+   ONE act naming rows the owner never grouped.  Two surfaces posting to two
+   doors share no namespace, so the fields are now plain `line_ids`, `rows` and
+   `residual` and there is nothing left for that hazard to be expressed in.
+
+   IT MOVES MONEY.  Recording a group settles every row it names onto the
+   bank's posted day, corrects one whose recorded day was wrong, re-prices one
+   whose figure the bank contradicts, and -- where the owner ticks the consent
+   box -- records a row the app did not hold at all (ruling R-FN).
+
+   Every form here swaps with `show:top`, which is load-bearing for the same
+   reason it is on the review body: the receipt is the panel at the top and the
+   button that triggers it is below both lists, and htmx does not scroll on
+   swap.
+
+   Context: account, review (ReviewSet), preselected (the line ids arriving
+   ticked, from ?line=), totals (HandTotals), total_url, outcome (BatchOutcome
+   or None), error (a sentence or None). #}
+
+<div id="statement-workbench-body">
+
+  {# ONE receipt for BOTH surfaces that apply through ``apply_reviewed``.  A
+     group recorded here reports the same BatchOutcome a whole reviewed pass
+     does, off the same value, so the two cannot describe one door in two
+     wordings. #}
+  {% include "accounts/_statement_pass_receipt.html" %}
+
+  <div class="alert alert-warning d-flex gap-2 align-items-start" role="alert">
+    <i class="bi bi-exclamation-triangle mt-1"></i>
+    <div>
+      <strong>Matching these changes your records.</strong>
+      Every row in a match takes the day your bank posted it. A row you had not
+      marked as having happened becomes marked, and a row dated wrongly moves
+      onto the bank's day. Nothing here happens until you press the button
+      below the lists.
+    </div>
+  </div>
+
+  {# ── The two lists a match is built from ─────────────────────────────── #}
+  {# THIS FORM IS WHAT MAKES THE ACCEPT DOOR'S REFUSALS REACHABLE.
+     Without it, _variance.reject_unrecordable and
+     _accept._reject_parent_and_its_own_purchase fire only on a crafted POST --
+     so the $0.05 payroll gap (finding N-239) is never put in front of the
+     person who can fix it, and the proposer's own docstring claim that "the
+     owner may still build such a group by hand" is false about the shipped
+     app.  Found by adversarial design review, 2026-08-17.  Since plan step
+     bank_import:X-f6d-4 it is also the ONLY way that gap can be RECORDED: the
+     seven payroll deposits it names are built here or nowhere.
+
+     ITS WHOLE SUBMISSION IS THE GROUP -- there is nothing here to tick that is
+     not already a member -- so it carries no index, no apply checkbox and no
+     rendered position.  It did carry one, `apply=hand`, while it stood on the
+     review screen; the header at the top of this file records what that index
+     was holding off and why moving the form deleted the hazard rather than
+     relocating it. #}
+  <form method="post" id="hand-build-form"
+        action="{{ url_for('accounts.apply_hand_match', account_id=account.id) }}"
+        hx-post="{{ url_for('accounts.apply_hand_match', account_id=account.id) }}"
+        hx-target="#statement-workbench-body"
+        hx-swap="outerHTML show:top"
+        hx-disabled-elt="find button[type=submit]">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {# The two tick lists, and the only thing that re-prices the panel below.
+
+       `change` bubbles, so one binding here covers every checkbox in both
+       cards -- and NOTHING ELSE in the form is inside this wrapper, which is
+       the point: the consent box lives in the panel, so ticking it cannot
+       trigger the swap that would replace it.  This element is never swapped,
+       so the binding survives every re-render.
+
+       `hx-disabled-elt` is UNSET because the form's is inherited and resolves
+       against the triggering element -- this wrapper, which holds no submit
+       button, so htmx logged "returned no matches" on every tick.  Unset
+       rather than re-pointed: this is a READ, and disabling the Apply button
+       while it runs would fight the owner for the control they are heading
+       towards.  Caught by driving the real screen in a browser. #}
+    <div class="row g-3 mb-3"
+         hx-post="{{ total_url }}"
+         hx-trigger="change"
+         hx-include="#hand-build-form"
+         hx-target="#hand-totals"
+         hx-swap="outerHTML"
+         hx-disabled-elt="unset">
+      <div class="col-12 col-lg-6">
+        <div class="card h-100">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-bank"></i> Lines your bank shows and nothing explains</span>
+            <span class="badge text-bg-secondary">{{ review.unmatched | length }}</span>
+          </div>
+          <div class="card-body">
+            <p class="text-body-secondary small mb-2">
+              Nothing this account holds matches these on amount. Many are card
+              purchases the app records inside an envelope rather than one by one.
+              If some of your rows add up to one of these, or nearly do, tick
+              them here and on the right, then match them.
+            </p>
+            {% if review.unmatched %}
+            <div class="table-responsive stmt-pick-list">
+              <table class="table table-sm mb-0">
+                <tbody>
+                  {% for line in review.unmatched %}
+                  <tr>
+                    <td class="align-middle">
+                      {# ARRIVING TICKED, where an exception on the queue linked
+                         here about this line (ruling bank_import:R-HC).  The
+                         set is the ROUTE's, intersected there against the very
+                         lines this loop renders, so a `?line=` naming someone
+                         else's line, one another match already claims, or one
+                         that is not a number cannot tick anything: it is not in
+                         `preselected` because it is not in `review.unmatched`.
+                         The template asks membership and decides nothing. #}
+                      <input class="form-check-input" type="checkbox"
+                             name="line_ids" value="{{ line.line_id }}"
+                             id="line-{{ line.line_id }}"
+                             {% if line.line_id in preselected %}checked{% endif %}>
+                    </td>
+                    <td class="text-nowrap"><label for="line-{{ line.line_id }}" class="mb-0">{{ line.posted_on }}</label></td>
+                    <td class="text-end fw-semibold text-nowrap">{{ money(line.amount) }}</td>
+                    <td class="small text-body-secondary">
+                      {{ line.description }}
+                      {# The same fact the create card carries, rendered where
+                         the REMEDY is: this form is how an owner asserts a
+                         pairing the score would not guess (ruling R-FP).  One
+                         fact on the review set, two renders -- the danger and
+                         the fix are in different cards.  It was "an inflow
+                         reaches only this one" until ruling bank_import:R-GW gave a
+                         deposit a card of its own, which renders it too. #}
+                      {% set gap = review.search_gap_for(line) %}
+                      {% if gap %}
+                      <div class="text-warning-emphasis">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        {{ gap | capitalize }}.
+                      </div>
+                      {% endif %}
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            <p class="mb-0 text-body-secondary">None.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-lg-6">
+        {# The id is a TEST ANCHOR and it earns its place: this card's own end
+           cannot be found from generic markup -- it renders no table when it
+           lists nothing, so a cut at the next `</table>` ran into the keyboard
+           help modal and graded four assertions against another feature's
+           markup (adversarial review of this step's tests, 2026-08-25). #}
+        <div class="card h-100" id="rows-no-line-explains">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-journal-text"></i> Rows you recorded that no line explains</span>
+            <span class="badge text-bg-secondary">{{ review.unmatched_rows | length }}</span>
+          </div>
+          <div class="card-body">
+            {# **The alarm is stated where it can be TRUE, and withdrawn per
+               row where it cannot** (plan step bank_import:X-gc).  The caption
+               claimed of all 67 rows that the bank had failed to make a
+               payment; 18 of them are CC Paybacks, whose money leaves inside
+               one payment to the card, and they are exactly what the 9
+               unexplained Capital One lines on the left must be grouped
+               against.  The chip is `row.not_shown_alone`, decided in the
+               service on a fact the row already carries -- no name list, and
+               no Jinja reasoning about money. #}
+            {# **THE CAPTION STATES NO DIRECTION** (finding
+               bank_import:N-380, plan step bank_import:X-gf-3b-2).  It read
+               "a payment your records claim happened and your bank did not
+               make", which is a claim about an OUTFLOW -- and 17 of the
+               developer's own 49 bare rows are DEPOSITS, his `Data Manager`
+               salary at $2,473.38 whose payroll credit sits unexplained in
+               the queue at $2,573.42 because the two differ by more than any
+               tier's bound.  One caption over both directions is wrong about
+               one of them whichever way it is written, so this one names the
+               movement and each ROW states its own direction by its figure. #}
+            <p class="text-body-secondary small mb-2">
+              These fall inside the span your statements cover and no line
+              explains them. One you expected the bank to show is money your
+              records say moved that this statement never showed moving --
+              out of this account or into it, as its own figure says. One
+              marked <em>not a line of its own</em> is not: tick it with the
+              line that carries its money.
+            </p>
+            {% if review.unmatched_rows %}
+            <div class="table-responsive stmt-pick-list">
+              <table class="table table-sm mb-0">
+                <tbody>
+                  {% for row in review.unmatched_rows %}
+                  <tr>
+                    <td class="align-middle">
+                      {# The SAME token the proposal card ticks with, for the
+                         same reason: a group the owner builds by hand reaches
+                         the same door and is exactly as stale-able. #}
+                      <input class="form-check-input" type="checkbox"
+                             id="row-{{ row.kind.value }}-{{ row.row_id }}"
+                             name="rows"
+                             value="{{ row | reviewed_token }}">
+                    </td>
+                    <td class="text-nowrap">
+                      <label for="row-{{ row.kind.value }}-{{ row.row_id }}" class="mb-0">
+                        {% if row.settled_on %}{{ row.settled_on }}{% else %}<span class="text-body-secondary">not recorded</span>{% endif %}
+                      </label>
+                      {% if not row.settled_on and row.expected_on %}
+                      <div class="small text-body-secondary">
+                        budgeted {{ row.expected_on }} - {{ row.expected_through }}
+                      </div>
+                      {% endif %}
+                    </td>
+                    <td class="text-end fw-semibold text-nowrap">{{ money(row.cash_amount) }}</td>
+                    <td class="small">
+                      {{ row.label }}
+                      {% set caveat = row.not_shown_alone %}
+                      {% if caveat %}
+                      <span class="badge text-bg-secondary fw-normal"
+                            title="{{ caveat.sentence }}">{{ caveat.label }}</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            <p class="mb-0 text-body-secondary">None.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    {% include "accounts/_statement_hand_totals.html" %}
+  </form>
+
+  {# ── What is NOT in these two lists ──────────────────────────────────── #}
+  {# A list that says nothing about what it excluded reads as a clean sweep,
+     which is the discipline the whole package holds itself to -- and each of
+     the two lists here is SHORTER than the fact it is captioned as.
+
+     WHICH of the pass's four limits belong to THIS screen is decided in the
+     service (ReviewBounds.any_pick_list_limit), not by this template picking
+     two of four: a template restating a partition is a second place for it to
+     be wrong, which is the rule BarredLine.reason and RecordableInflow.withheld
+     both exist to state.  The other two bound the QUEUE and not these lists,
+     and that page renders them. #}
+  {% set proposed = review.explained_by_a_proposal %}
+  {% if review.bounds.any_pick_list_limit or proposed.any %}
+  <div class="alert alert-secondary" role="alert">
+    <div class="fw-semibold mb-1">What is not in these lists</div>
+    <ul class="mb-0 small">
+      {% if proposed.any %}
+      {# THE FIFTH BOUND, and the only one that is not a ReviewBounds field --
+         which is why this panel could not see it and why an adversarial design
+         review 2026-08-28 found it missing.  A line a proposal explains is
+         dropped before `unmatched` exists and a row one names before
+         `unmatched_rows` does, and the developer's own statement carries 124
+         proposals.  It matters most when a proposal is WRONG: that line is
+         then absent from the very tool for pairing it correctly, and while
+         this form stood on the review screen the proposal card was beside it.
+         A COUNT and a link, not a list: this is not missing work, it is work
+         waiting on a decision one screen away. #}
+      <li>
+        {{ proposed.lines }} line(s) and {{ proposed.rows }} row(s) are not here
+        because the review screen is already
+        <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}">proposing
+        a match for them</a>. Accept or leave those first: a proposal you do not
+        agree with keeps its line out of this list until you deal with it.
+      </li>
+      {% endif %}
+      {% if review.bounds.before_calendar_count %}
+      <li>
+        {{ review.bounds.before_calendar_count }} line(s) up to
+        {{ review.bounds.before_calendar_last_day }} are older than your pay calendar,
+        which starts {{ review.bounds.calendar_opens }}. There are no rows before that
+        day for them to match, so they are not on the left.
+      </li>
+      {% endif %}
+      {# The SECOND bound on the line list (balance:X-f3c-2b-2b).  Disjoint
+         from the one above by construction -- review_set splits the calendar
+         off first -- so the two counts never claim the same line.  Both
+         halves are composed in the service; this prints them, and renders
+         the act as a link because a URL is the one fact a service may not
+         build. #}
+      {% if review.bounds.books %}
+      <li>
+        {{ review.bounds.books.said }} They are not on the left.
+        <a href="{{ url_for('accounts.edit_account', account_id=account.id) }}#books-opening">{{ review.bounds.books.restatement_act }}</a>.
+      </li>
+      {% endif %}
+      {% if review.bounds.unpriceable_count %}
+      <li>
+        {{ review.bounds.unpriceable_count }} row(s) on this account could not be
+        valued, so they are not on the right. Nothing can match a row whose
+        figure the app cannot work out.
+      </li>
+      {% endif %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── Back to the decisions ───────────────────────────────────────────── #}
+  <div class="card">
+    <div class="card-body d-flex justify-content-between align-items-center gap-2 flex-wrap">
+      <span class="small text-body-secondary">
+        This is a tool rather than a queue: it holds everything either side
+        could still be paired with, not a list to work through in order. The
+        lines still asking for a decision are on the review screen, and each of
+        them links back here with itself already ticked.
+      </span>
+      <a class="btn btn-sm btn-outline-secondary"
+         href="{{ url_for('accounts.review_statements', account_id=account.id) }}">
+        <i class="bi bi-list-check"></i> Review statement matches
+      </a>
+    </div>
+  </div>
+
+</div>

@@ -9,13 +9,15 @@ lists what it could explain and says nothing about what it could not reads as
 a clean sweep:
 
 * lines that predate the owner's pay calendar, which nothing can ever match --
-  130 of the developer's own 361 lines, and listing them beside genuine
+  130 of the developer's own 378 lines, and listing them beside genuine
   failures would bury the ones worth acting on;
-* days too crowded to search for groups
-  (:func:`~._propose.skipped_group_days`);
+* days too crowded to search for groups, as the SEARCH reports them
+  (:attr:`~._propose.ProposedMatches.crowded_days`);
 * matches whose rows no longer carry the day the bank stated, which is what a
   later hand edit produces and what makes a match re-reviewable rather than
-  quietly stale.
+  quietly stale -- reported by :mod:`._accepted_view` on the REGISTER since
+  plan step ``bank_import:X-gf-2``, this screen having stopped listing
+  accepted acts at all (ruling **bank_import:R-GX**).
 
 Services-boundary discipline: reads only, plain data in, frozen dataclasses
 out, no Flask import.
@@ -23,156 +25,617 @@ out, no Flask import.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy.orm import selectinload
-
-from app.exceptions import AmountUnresolvable
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.statement_import import BankStatementLine
-from app.models.statement_match import StatementMatch, StatementMatchMember
-from app.models.transaction import Transaction
-from app.models.transaction_entry import TransactionEntry
-from app.services import cash_ledger
-from app.utils.balance_predicates import is_balance_contributing
-from app.utils.money import round_money
 
-from ._candidates import candidates_for
-from ._offers import BankLine, CandidateRow, MatchProposal
-from ._propose import propose, skipped_group_days
-
-
-@dataclass(frozen=True)
-class AcceptedRow:
-    """One member of an accepted match, as the screen lists it.
-
-    Attributes:
-        label: What to call the app row.
-        settled_on: The day it currently records, which is the bank's own day
-            for a match still in agreement.
-        cash_amount: Its signed cash effect NOW, or ``None`` when the amount
-            model can no longer price it.  Carried because
-            :func:`_still_holds` re-asks the balance the accept door checked,
-            and a member that has since been soft-deleted contributes zero --
-            which no test over days could see.
-        agrees: Whether that day is still the one the match asserted.
-    """
-
-    label: str
-    settled_on: "date | None"
-    cash_amount: "Decimal | None"
-    agrees: bool
+from ._candidates import (
+    matched_subjects,
+    unmatched_destinations,
+    unmatched_rows,
+)
+from ._offers import (
+    BankLine,
+    CandidateRow,
+    MatchProposal,
+)
+from ._already_held import (
+    ArrivalsAlreadyHeld,
+    arrivals_already_held,
+)
+from ._bars import BarredLine, MerchantAnswers
+from ._gaps import ReviewBounds, search_gap
+from ._leftovers import CreatableLine, RecordableInflow, leftovers
+from ._propose import propose
+from ._queue import StatementQueue, statement_queue
+from ._scope import ReviewScope
+from ._section import MerchantSection
+from ._undisposed import inbox_partition
+from ._verdict import ruled
 
 
 @dataclass(frozen=True)
-class AcceptedGroup:
-    """One accepted match, as the screen lists it.
+class ProposedAlready:
+    """How much of both pick lists this pass's own proposals account for.
+
+    :meth:`ReviewSet.explained_by_a_proposal`'s answer.  **A value rather than
+    a pair**, so the screen asks ``any`` rather than testing two integers with
+    an ``or`` -- the same reason :attr:`~._gaps.ReviewBounds.any_limit` exists,
+    and the same failure it prevents: a third count added later that a Jinja
+    condition silently does not include.
 
     Attributes:
-        match_id: The act, so the screen can offer to release it.
-        posts_on: The day the match asserted -- the latest of its bank days,
-            derived here rather than stored (see
-            :mod:`app.models.statement_match`).
-        amount: The signed total its bank lines state.
-        descriptions: What the bank called each line.
-        rows: Its app rows.
-        agrees: Whether the match still HOLDS -- which is three questions, not
-            one, and a first draft asked only the first.  Every row still
-            carries ``posts_on``; the act still names at least one row; and the
-            rows still SUM to what the bank stated.  The second and third are
-            what a CASCADE breaks: deleting a purchase or destroying a pay
-            period removes that member silently, and a day-only test then
-            reports a group that explains less than it claims -- or, when every
-            row goes, nothing at all -- as still agreeing with the bank.  False
-            is not a corruption; it means the match wants re-reviewing, and the
-            screen offers it for exactly that.
+        lines: Distinct bank lines a proposal explains, so absent from
+            :attr:`ReviewSet.unmatched`.
+        rows: Distinct row SUBJECTS a proposal names, so absent from
+            :attr:`ReviewSet.unmatched_rows`.
     """
 
-    match_id: int
-    posts_on: date
-    amount: Decimal
-    descriptions: "tuple[str, ...]"
-    rows: "tuple[AcceptedRow, ...]"
-    agrees: bool
-
-
-@dataclass(frozen=True)
-class ReviewBounds:
-    """What the review DID NOT look at, and why.
-
-    **A screen that lists what it could explain and says nothing about what it
-    could not reads as a clean sweep.**  These four facts are one subject --
-    the limits of this pass -- and they travel together so a caller cannot
-    render the proposals while forgetting the caveat.
-
-    Attributes:
-        calendar_opens: The first day the owner's pay calendar covers, or
-            ``None`` for an owner with no periods at all.
-        before_calendar_count: How many recorded lines fall before it, which
-            nothing can ever match: there are no rows to match them to.  A
-            COUNT and a last day rather than the rows themselves -- they are
-            not work, they are the statement being older than the budget.
-            Measured at 130 of 361 on the developer's own export.
-        before_calendar_last_day: The latest of those days, or ``None``.
-        crowded_days: Days :func:`~._propose.skipped_group_days` refused to
-            search for GROUP matches.
-        unpriceable_count: How many of the account's rows the amount model
-            could not price, so they could not be offered
-            (:class:`~._offers.Candidates`).
-    """
-
-    calendar_opens: "date | None"
-    before_calendar_count: int
-    before_calendar_last_day: "date | None"
-    crowded_days: "tuple[date, ...]"
-    unpriceable_count: int
+    lines: int
+    rows: int
 
     @property
-    def any_limit(self) -> bool:
-        """Return whether this pass left anything unexamined.
-
-        The one question the template asks, answered here rather than as three
-        ``or``-ed truth tests in a Jinja condition -- where a fourth limit
-        added later would silently not appear.
-        """
-        return bool(
-            self.before_calendar_count
-            or self.crowded_days
-            or self.unpriceable_count
-        )
+    def any(self) -> bool:
+        """Return whether the proposals take anything out of either list."""
+        return bool(self.lines or self.rows)
 
 
 @dataclass(frozen=True)
-class ReviewSet:
+class RowsNeverShown:
+    """The owner's own rows this statement never showed, BY DIRECTION.
+
+    Finding **bank_import:N-380**, plan step ``bank_import:X-gf-3b-2``.  The
+    other side of the reconciliation: :attr:`ReviewSet.unmatched` is every bank
+    line the owner's records do not explain, and this is every row of theirs no
+    bank line explains.  Both are leftovers of one pass and only one of them
+    was ever stated on the queue.
+
+    **The DIRECTION is the whole point of the value.**  The workbench captioned
+    the same list *a payment your records claim happened and your bank did not
+    make*, which is a claim about an OUTFLOW, while 17 of the developer's own
+    49 are DEPOSITS -- his `Data Manager` salary rows at `$2,473.38`, whose
+    matching payroll credits sit unexplained in the queue at `$2,573.42`
+    because the two differ by more than any tier's bound.  One caption over
+    both directions is wrong about one of them whichever way it is written.
+
+    **Measured 2026-08-28** through the real producer on a clone of the
+    developer's dev data at migration head ``a7c41f9d2b60``: 67 rows, of which
+    18 carry a :attr:`~._offers.CandidateRow.not_shown_alone` withdrawal and 49
+    do not -- 32 payments at `$3,815.64` and 17 deposits at `$18,132.28`.  The
+    signed net of those two is `$14,316.64` and is the misleading figure, since
+    it cancels income the bank never credited against payments it never made;
+    the queue states the two separately for exactly that reason.
+
+    Attributes:
+        payments: The bare OUTFLOW rows -- money the records say left and the
+            bank did not show leaving.
+        deposits: The bare INFLOW rows -- money the records say arrived and the
+            bank did not show arriving.
+
+    **A row whose** :attr:`~._offers.CandidateRow.not_shown_alone` **holds is
+    in NEITHER**, and that is the value's whole narrowing: the bank accounts
+    for its money through some OTHER row -- a ``CC Payback`` leaves inside one
+    lump payment to the card -- so the alarm is not true of it and stating it
+    here would be the claim plan step ``bank_import:X-gc`` withdrew.  They are
+    not carried as a third tuple: nothing reads one, and a field computed
+    every render for no reader is the speculative shape ``CLAUDE.md`` rule 13
+    refuses.
+    """
+
+    payments: "tuple[CandidateRow, ...]"
+    deposits: "tuple[CandidateRow, ...]"
+
+    @property
+    def payments_total(self) -> Decimal:
+        """Return what the unshown payments come to.
+
+        Returns:
+            The total as a POSITIVE figure, so the screen states it without
+            arithmetic in a template -- the rule
+            :attr:`ArrivalsAlreadyHeld.total` already sets.
+        """
+        return -sum(
+            (row.cash_amount for row in self.payments), Decimal("0.00"),
+        )
+
+    @property
+    def deposits_total(self) -> Decimal:
+        """Return what the unshown deposits come to.
+
+        Returns:
+            The total, already positive.
+        """
+        return sum(
+            (row.cash_amount for row in self.deposits), Decimal("0.00"),
+        )
+
+    @property
+    def any(self) -> bool:
+        """Return whether this statement failed to show any row at all.
+
+        The one question the queue asks before stating this, answered here
+        rather than as two truth tests a third direction would silently miss.
+
+        Returns:
+            Whether either direction holds a row.
+        """
+        return bool(self.payments or self.deposits)
+
+
+@dataclass(frozen=True)
+class CardSubject:
+    """One bank line the Reconcile page renders a card for, and what claims it.
+
+    Plan step ``bank_import:X-gj-1b``.  **Two fields and not two lookups**,
+    because a caller that asked for the line and then asked separately whether
+    a proposal claims it could get half an answer: the line resolved and the
+    proposal missed, which is the state that renders a proposed card's rows as
+    ordinary candidates and lets an untick look like a hand-built group.
+
+    Attributes:
+        line: The :class:`~._offers.BankLine` the card is about.
+        proposal: The :class:`~._offers.MatchProposal` whose acceptance this
+            card offers, or ``None`` for a line no tier paired -- an outflow
+            the create door would take, a deposit, or a parked payment.
+    """
+
+    line: "BankLine"
+    proposal: "MatchProposal | None"
+
+
+@dataclass(frozen=True)
+class ReviewSet:  # pylint: disable=too-many-instance-attributes
     """Everything the review screen needs, in one value.
+
+    Pylint: too-many-instance-attributes (11/7) -- **eleven because the
+    screen renders eleven distinct things**, not because the value wants
+    splitting.  Nine are cards the owner reads and acts in;
+    :attr:`declined_lines` annotates two of them; and
+    :attr:`account_payments` is neither -- it is a pass-level MERCHANT set,
+    carried here because the question it answers is asked of every CARD and
+    cannot be answered from any of the lists (its own entry below argues the
+    placement).  *This said NINE over eight cards, and was already wrong by
+    one at plan step ``bank_import:X-gj-4c``, which added ``answered_never``
+    without re-counting; ``X-gj-4b`` added the eleventh.*  Re-counted off the
+    field block rather than incremented, which is the discipline
+    :class:`~._leftovers.Leftovers` states for its own count and this file did
+    not keep.  Named by adversarial review 2026-09-04.  It was TEN until
+    plan step ``bank_import:X-gf-2`` took the accepted matches off this screen
+    (ruling **bank_import:R-GX**): they are not a decision anyone is making,
+    and folding them cost this pass a valuation of all 221 acts on the
+    developer's own account to render a panel he was not reading.
+
+    **``bank_import:X-gf-3a`` did NOT make it ten.**  A first version added a
+    ``rule_verdicts`` map keyed by line id; adversarial design review
+    2026-08-27 pointed out that a per-LINE fact belongs on the per-line value,
+    where :attr:`~._leftovers.CreatableLine.placement` and
+    :attr:`~._leftovers.RecordableInflow.withheld` already are -- which also
+    deleted the map, its accessor, and a ``field(default_factory=dict)`` whose
+    default meant *not asked yet* in a value whose own docstring forbade that
+    reading.
+
+    The obvious way to satisfy the limit is to fold ``declined_lines``
+    back into :attr:`bounds`, where it lived until plan step
+    ``bank_import:X-f6d-3`` -- and that is exactly what the step measured to be
+    wrong, because a bound reported in a panel names no line and cannot be
+    acted on.  The other obvious way is to fold :attr:`parked` back into
+    :attr:`creatable` and let a Jinja condition withhold the control, and that
+    is what ruling **R-GJ** exists because of: a sentence saying *nothing here
+    records it* sat over a working select for as long as those two were one
+    list.  ``AcceptedMatch`` carries the same disable for the same reason, and
+    its docstring says what dropping a field to meet a limit costs: the receipt
+    said *"Nothing moved."* over a rewritten figure.
 
     Attributes:
         proposals: What the app believes goes with what, best first.
         unmatched: Bank lines inside the pay calendar that no proposal
             explains, ascending by day.
         unmatched_rows: The app's OWN rows that no proposal explains, over the
-            span the statement covers -- ruling **R-FP**'s other side, and the
-            more valuable half for a budget: a row the bank never showed is a
-            payment the records claim happened and the bank did not make.  They
-            are :class:`~._offers.CandidateRow` values rather than a type of
-            their own; a second record carrying the same five fields was
-            reported by pylint's cross-file ``duplicate-code`` and was exactly
-            rule 13's speculative shape.
-        accepted: The matches already accepted, newest first.
+            span the recorded statements cover -- ruling **R-FP**'s other side,
+            and the more valuable half for a budget: a row the bank never
+            showed *and would have shown separately* is a payment the records
+            claim happened and the bank did not make.  **That qualifier is
+            load-bearing and was missing until plan step ``bank_import:X-gc``**;
+            :attr:`~._offers.CandidateRow.not_shown_alone` is where the screen
+            withdraws the claim for a row whose money the bank accounts for
+            through some other row, and the membership of this list is
+            deliberately unchanged by it -- it is also the hand-build form's
+            row-picker, and ruling **R-GJ** leaves the group match as a parked
+            card payment's only arm.  They are
+            :class:`~._offers.CandidateRow` values rather than a type of their
+            own; a second record carrying the same five fields was reported by
+            pylint's cross-file ``duplicate-code`` and was exactly rule 13's
+            speculative shape.
+        creatable: The unmatched lines that may become a PURCHASE, each with
+            the budget lines it could become one against
+            (:class:`CreatableLine`).  A SUBSET
+            of ``unmatched`` rather than a partition of it, and deliberately:
+            the same line is offered to the hand-build form as something to
+            GROUP and to the create door as something to RECORD, because those
+            are different acts on the same fact and the owner is the one who
+            knows which it is.  **INFLOWS ARE PRESENT, and which ones is
+            :func:`~._rules.pipeline_for`'s answer rather than the sign's**
+            (ruling **bank_import:R-II**, plan step
+            ``bank_import:X-gj-2b-2``).  This held only outflows while
+            ``ck_transaction_entries_positive_amount`` said ``amount > 0`` and
+            the create door refused every inflow by sign; that CHECK is
+            ``amount <> 0`` now, so a merchant credit IS a purchase the table
+            can hold -- a NEGATIVE one, against the container that merchant's
+            rule names -- and the inflows here are exactly the ones a container
+            answer claims.  Every other inflow is in
+            :attr:`recordable_inflows`.  **A line that ruling R-GJ bars is not
+            here** -- it is in :attr:`parked` or :attr:`answered_never` -- so
+            this list is exactly the lines a create control may be rendered
+            for, and the screen cannot render one for a line the door would
+            refuse.  *That was one list until plan step
+            ``bank_import:X-gj-4c``*, and both halves are still out of this
+            one: which of the two a barred line is in decides where it
+            RENDERS, never whether the create door would take it.
+        parked: The unmatched lines a source files as paying an account the
+            owner holds, IN BOTH DIRECTIONS (it said OUTFLOW until plan step
+            ``bank_import:X-gj-2b-3``; see :attr:`~._leftovers.Leftovers.parked`,
+            which this is assigned from verbatim), with
+            the reason each may not become a purchase
+            (:class:`~._bars.BarredLine`, ruling **R-GJ**).  They are still in
+            ``unmatched``, so the group-match arm the ruling leaves open is
+            reached exactly as it was.
+
+            **It held BOTH of ruling R-GJ's arms until plan step
+            ``bank_import:X-gj-4c``** -- a merchant the owner answered *never a
+            purchase* and a merchant a source files as an account payment --
+            and ruling **bank_import:R-JH** separated them, because only the
+            second is a disposition.  A line carrying BOTH bars is here, since
+            the money did move between two of the owner's accounts whatever
+            else they said about it.
+        answered_never: The unmatched lines barred ONLY by the owner's own
+            *never a purchase* answer (:class:`~._bars.BarredLine`, ruling
+            **bank_import:R-JH**, plan step ``bank_import:X-gj-4c``).  **Inbox
+            work, and that is the whole of the ruling**: the answer shuts the
+            ADD door and claims nothing about what the line IS, since a
+            paycheck is not a purchase either -- so these are rendered under
+            *Nothing suggested* keeping MATCH, rather than filed as though the
+            owner had disposed of them.  A SUBSET of ``unmatched`` like the
+            two lists above it.
+        recordable_inflows: The unmatched INFLOW lines, each with the period
+            that would hold it (:class:`RecordableInflow`, ruling **bank_import:R-GW**).
+            The mirror of ``creatable`` on the direction that had no door at
+            all until plan step ``bank_import:X-gf-1``: no inflow could be a
+            purchase then, and a match needs an app
+            row on the other side -- which left `$58.87` of the developer's own
+            deposits, in eight lines, with no act the screen could offer.
+            Like ``creatable`` this is a SUBSET of ``unmatched`` and not a
+            partition: the same deposit is offered here as something to RECORD
+            and in the hand-build form as something to MATCH, because those are
+            different acts on one fact.  **An inflow CAN be barred out of it, and
+            that is a behaviour change plan step ``bank_import:X-gj-2b-3``
+            states rather than leaves to be discovered.**  This read *nothing
+            is barred out of it: neither arm has anything that could be true of
+            money arriving* -- the argument ``bf500943`` measured FALSE for
+            ``PAYS_AN_ACCOUNT_YOU_HOLD``, which is a claim about the MERCHANT.
+            A credit from a card-payment merchant that ALSO carries a stored
+            spending answer routes to PURCHASE, meets
+            :func:`~._bars.reject_barred_line`, and is PARKED -- so it reaches
+            neither this list nor a create control, and the hand-build match is
+            its only act.  **That is the intended outcome** (recording it as
+            income is the double count against the card transfer ruling
+            **R-GJ** exists to stop), and the sentence *the owner has an act
+            for it either way* was false of exactly that line.  What leaves
+            this list WITHOUT being barred is a deposit a container answer
+            claims: it is a refund, it is in ``creatable``, and that is a
+            routing decision.
+        merchants: The queue's rule control
+            (:class:`~._section.MerchantSection`) -- the merchants this pass
+            has an unexplained outflow for and the owner has NEVER answered
+            about, which is a decision they owe.  **It counts EVERY list a
+            line can land in**, because a merchant a source files as an account
+            payment is barred for want of an answer and this is the control
+            that gives one.  *It said* ``parked`` *beside* ``creatable`` *until
+            plan step ``bank_import:X-gj-4c``*, when ``answered_never`` became
+            a third: those lines were inside ``parked`` and therefore already
+            counted, so naming two lists after the split would have narrowed
+            this control silently.  An ANSWERED merchant is on the register
+            instead (ruling **bank_import:R-GX**).
         bounds: What this pass did NOT look at (:class:`ReviewBounds`).
+        account_payments: The merchant row ids this account's sources file as a
+            payment to an account the owner holds, carried up from
+            :attr:`~._leftovers.Leftovers.account_payments` verbatim (plan step
+            ``bank_import:X-gj-4b``).  **It is the only fact here that is about
+            every card rather than about one of the lists**, and that is why it
+            is a set on the pass instead of a field on a line value: ruling
+            **bank_import:R-JI** shuts SKIP for these merchants, and the lines
+            it has to shut it for include the ones a tier PROPOSED a match for,
+            which are in :attr:`proposals` and in none of the barred lists.
+            :func:`~._cards._offers` is the one reader, and this is the one
+            statement of the argument it points at.
+            **The obvious narrower spelling is wrong**:
+            :attr:`~._bars.BarredLine.also_pays_an_account` answers this for
+            the two BARRED lists only, and a line a tier has proposed a match
+            for never meets :meth:`~._bars.CreationBars.bar_for` at all.
+            **ONE of the two populations it was widened for is gone, and the
+            set stays because the OTHER one is untouched** (plan step
+            ``bank_import:X-gm``).  The argument for reaching past the barred
+            lists was that a line a tier PROPOSED a match for is in
+            :attr:`proposals` and in neither of them.  An OUTFLOW from such a
+            merchant can no longer be proposed --
+            :func:`~._undisposed.inbox_partition` takes the holding states off
+            the proposer (ruling **R-HQ**) -- but an INFLOW from one still can:
+            a deposit no container answer claims routes to INCOME
+            (:func:`~._rules.pipeline_for`), so it is not a holding state, it
+            is in the inbox, and it reaches this pass as a
+            :class:`~._leftovers.RecordableInflow` rather than a
+            :class:`~._bars.BarredLine`.  :attr:`~._bars.BarredLine
+            .also_pays_an_account` cannot answer for such a line AT ALL, which
+            is why the narrower spelling is still wrong and this set is still
+            the one :func:`~._cards._offers` asks.  It is also the DOOR's own
+            set (:func:`~._vocabulary.account_payment_merchants`, read once per
+            pass), so a card builder added later shuts the verb by asking the
+            question :func:`~._skipping.skip_line` asks rather than by
+            remembering a list.  Shutting the verb anywhere but on this set
+            renders a control the door refuses, which is ruling **R-GJ**'s
+            `$7,412.94` shape one verb over.
+            *An earlier draft of this paragraph cited :mod:`._bars`' seven Van
+            Loan lines as the populated case and that was the WRONG SET* --
+            that module records four of them as already MATCHED and three as
+            falling before the pay calendar opens, and a matched line is out of
+            the pass altogether.  Named by adversarial review 2026-09-04.
+            **A line naming NO merchant is never shut**, and that is
+            :meth:`~._bars.CreationBars.bar_for`'s own totality rather than a
+            guard restated by a reader:
+            :func:`~._vocabulary.account_payment_merchants` filters
+            ``merchant_id.isnot(None)``, so ``None`` is absent from this set
+            and falls through to the same answer a branch for it would give.
+            The DOOR asks the same question the same way.
+            **No default**, for :attr:`~._bars.BarredLine.also_pays_an_account`'s
+            own reason: an empty set means *nothing is barred*, which is the
+            value that reads as safe and would open a verb the door refuses.
+        declined_lines: WHAT THIS PASS CONSIDERED and would not conclude
+            about, by line id, in the words of the tier that declined
+            (:attr:`~._propose.ProposedMatches.declined_lines`).  It carried
+            only the near tier's CONTEST until plan step
+            ``bank_import:X-ge-1``; it now carries every rejection a tier makes
+            after admitting the figure, because a bound a tier applies and does
+            not report is one nothing can see.
+
+            **It rides on the SET rather than in the bounds panel** (plan step
+            ``bank_import:X-f6d-3``).  It was a count under *What this page did
+            not look at*, which named no line -- so the owner was told that
+            somewhere among a hundred lines one had a near candidate, with no
+            way to find it.  The act it should prompt belongs to ONE line and
+            is offered in two cards: build this one by hand, rather than record
+            it a second time from the create arm, which is exactly the
+            duplicate **N-335** measures.  The screen asks membership per line;
+            the count is ``len`` and nothing needs it.
     """
 
     proposals: "tuple[MatchProposal, ...]"
     unmatched: "tuple[BankLine, ...]"
     unmatched_rows: "tuple[CandidateRow, ...]"
-    accepted: "tuple[AcceptedGroup, ...]"
+    creatable: "tuple[CreatableLine, ...]"
+    parked: "tuple[BarredLine, ...]"
+    answered_never: "tuple[BarredLine, ...]"
+    recordable_inflows: "tuple[RecordableInflow, ...]"
+    merchants: MerchantSection
     bounds: ReviewBounds
+    account_payments: "frozenset[int]"
+    declined_lines: "dict[int, str]" = field(default_factory=dict)
+
+    def card_subject(self, line_id: int) -> "CardSubject | None":
+        """Return the line this pass renders a card for, and what claims it.
+
+        Plan step ``bank_import:X-gj-1b``.  **The Reconcile page's own
+        membership question, asked of the pass that drew the cards.**  A route
+        serving one card's fragment has to answer *is this line one I rendered
+        a card for* -- and answering it with :attr:`unmatched` alone is wrong
+        by construction, because :func:`_unexplained` takes every proposal's
+        line OUT of that list before it exists.  Measured 2026-08-30 on a
+        restored production clone: **137 of the 137** cards the developer's
+        account proposes resolve to nothing in :attr:`unmatched`, so every one
+        of their MATCH panes answered 404 and its spinner never resolved.
+
+        **It is a membership test and never a second ownership check**, which
+        is the distinction :func:`~app.routes.accounts.statement_workbench
+        ._preselected` states: the pass is already scoped to one owner's one
+        account, so a line it does not hold has no card here whatever the
+        reason.  What the measurement above shows is the hazard in that --
+        a 404 from the URL map, a 404 from ownership and a 404 from asking the
+        WRONG SET are indistinguishable to everything except a reader
+        ([[feedback_a_moved_door_disarms_its_ownership_control]] one surface
+        over) -- so the set lives here beside the two lists it is the union
+        of, rather than being spelled again by each caller.
+
+        Args:
+            line_id: The bank line the card is about, already an ``int``.
+
+        Returns:
+            Its :class:`CardSubject`, or ``None`` where this pass renders no
+            card for that line -- someone else's line, one another match has
+            already claimed, or one outside the pay calendar.
+        """
+        for line in self.unmatched:
+            if line.line_id == line_id:
+                return CardSubject(line=line, proposal=None)
+        for proposal in self.proposals:
+            for line in proposal.lines:
+                if line.line_id == line_id:
+                    return CardSubject(line=line, proposal=proposal)
+        return None
+
+    @property
+    def explained_by_a_proposal(self) -> "ProposedAlready":
+        """Return what this pass's own PROPOSALS take out of both pick lists.
+
+        **The FIFTH bound on the hand-build lists, and the only one that is not
+        a** :class:`~._gaps.ReviewBounds` **field** -- which is exactly why the
+        workbench's *what is not in these lists* panel could not name it and
+        why an adversarial design review 2026-08-28 found it missing. A line a
+        proposal explains is dropped by :func:`_unexplained` before
+        :attr:`unmatched` exists, and a row one names is dropped by
+        :func:`_rows_the_bank_never_showed`; measured on the developer's own
+        statement, this pass has proposed **124** matches, so it is a large
+        absence rather than a corner.
+
+        **It matters most when the proposal is WRONG.**  A proposal is a
+        suggestion the owner has not accepted, so a line the app paired
+        badly is absent from the very tool the owner would use to pair it
+        correctly -- and while the form stood on the review screen the
+        proposal card was beside it, so the line was at least on the page.
+        Plan step ``bank_import:X-gf-3b`` moved the form and that stopped
+        being true, which is what makes this the split's own debt rather than
+        an inherited one.
+
+        **A COUNT and a pointer, not a list**: these lines are not missing
+        work, they are work waiting on a decision one screen away, and the
+        remedy is to go and take it.  Counted here rather than in Jinja for
+        the reason :func:`~._queue._sweeps_for` counts in the service: a caption
+        may not promise a number a template computed.
+
+        Returns:
+            The :class:`ProposedAlready`.  Rows are counted over the SUBJECTS
+            a proposal names -- ``(kind, row_id)`` -- which is the same key
+            :func:`_rows_the_bank_never_showed` withholds on, so the number
+            and the absence cannot disagree.
+
+            **The two halves are not equally falsifiable, and the asymmetry is
+            recorded rather than papered over.**  Every proposal this app
+            builds names exactly ONE line: :func:`~._propose._one_to_one` and
+            :func:`~._propose._groups` and :func:`~._near.near_misses` all
+            construct ``lines=(line,)``.  So counting distinct line ids and
+            counting PROPOSALS give the same number for every input that
+            exists, and a mutation swapping one for the other survives as an
+            EQUIVALENT mutant -- measured 2026-08-28.  It is written the
+            distinct way anyway, because a multi-line tier would make the
+            other spelling wrong silently.  The ROWS half is genuinely
+            checkable: ``_groups`` sets ``rows=combo``, and
+            ``TestAGroupProposalTakesSEVERALRowsOutOfTheList`` is the case that
+            kills it.
+        """
+        return ProposedAlready(
+            lines=len({
+                line.line_id
+                for proposal in self.proposals for line in proposal.lines
+            }),
+            rows=len({
+                (row.kind, row.row_id)
+                for proposal in self.proposals for row in proposal.rows
+            }),
+        )
+
+    @property
+    def queue(self) -> "StatementQueue":
+        """Return the exception queue as ONE list grouped by the decision.
+
+        Ruling **bank_import:R-HB**, plan step ``bank_import:X-gf-3b-2``.  The
+        screen's spelling of :func:`~._queue.statement_queue`, which holds the
+        derivation and the whole argument for it -- delegated for the reason
+        :meth:`search_gap_for` delegates to :mod:`._gaps`: this value is what
+        the queue is assembled FROM, and a module that also assembled it would
+        be two subjects wearing one name.
+
+        **It replaced** ``placed_by_class``, which counted the sweep over every
+        creatable line whatever the evidence said about it.  The sweep belongs
+        to one group now (:class:`~._queue.QueueSweep`), so the count and the
+        control's reach are the same fact.
+
+        Returns:
+            The :class:`~._queue.StatementQueue`.
+        """
+        return statement_queue(self)
+
+    @property
+    def rows_never_shown(self) -> RowsNeverShown:
+        """Return the owner's own rows this statement never showed.
+
+        Finding **bank_import:N-380**, plan step ``bank_import:X-gf-3b-2``.
+        **A property over** :attr:`unmatched_rows` **rather than a field**, for
+        the reason :meth:`arrivals_already_held_in` is one: those rows are
+        derived after the leftovers are split, and a value built from a second
+        read of them could disagree with the list the workbench renders --
+        which is where this summary sends the owner.
+
+        Returns:
+            The :class:`RowsNeverShown`, partitioned by DIRECTION and with the
+            rows whose money the bank accounts for elsewhere counted apart.
+        """
+        return RowsNeverShown(
+            payments=tuple(
+                row for row in self.unmatched_rows
+                if row.not_shown_alone is None and row.cash_amount < 0
+            ),
+            deposits=tuple(
+                row for row in self.unmatched_rows
+                if row.not_shown_alone is None and row.cash_amount > 0
+            ),
+        )
+
+    def arrivals_already_held_in(
+        self, line: BankLine,
+    ) -> ArrivalsAlreadyHeld | None:
+        """Return what the books already hold for *line*'s period, or ``None``.
+
+        The per-line safeguard on an unexplained INFLOW
+        (:class:`ArrivalsAlreadyHeld`).  **A method over
+        :attr:`unmatched_rows` rather than a field on
+        :class:`~._leftovers.RecordableInflow`**, because those rows are
+        derived AFTER the leftovers are split -- and a value built from a
+        second read of them could disagree with the list the hand-build form
+        renders, which is where the owner is being sent.
+
+        **The period is tested by the row's own SPAN**, which is what a
+        candidate carries (``expected_on`` .. ``expected_through``), rather
+        than by a pay-period id the row does not publish.  The span IS the
+        period, so the two are the same test asked of the value that has it.
+
+        Args:
+            line: A recordable inflow's bank line.
+
+        Returns:
+            The :class:`ArrivalsAlreadyHeld`, or ``None`` when this period's
+            books hold nothing arriving that no line explains -- which is the
+            state that
+            makes recording safe, and the screen says nothing rather than
+            saying it is fine.
+        """
+        return arrivals_already_held(self.unmatched_rows, line)
+
+    def search_gap_for(self, line: BankLine) -> "str | None":
+        """Return why this pass cannot say *line* has no counterpart, or ``None``.
+
+        The screen's spelling of :func:`~._verdict.search_gap`, which holds the
+        derivation and the whole argument for it.  It moved out of this class
+        at plan step ``bank_import:X-gf-3a`` so the rule verdict could ask the
+        same question of the same pass without importing this value -- and one
+        spelling is the point of the move rather than a side effect of it: the
+        sentence the screen prints beside a line and the sentence ruling
+        **R-GH**'s automatic door withholds on are the same sentence.
+
+        Args:
+            line: The bank line, which must be one this pass considered.
+                **THREE surfaces take it off three different lists**, and the
+                claim that "every caller takes it off :attr:`creatable`" was
+                already false when it was written: the queue's OUTFLOW rows
+                read it off :attr:`creatable`, the hand-build form off
+                :attr:`unmatched` (which is the only one an inflow used to
+                reach), and since ruling **bank_import:R-GW** its INFLOW
+                rows off :attr:`recordable_inflows`.  What every caller does share is
+                that the line was in THIS pass, which is what makes
+                :attr:`declined_lines` answerable for it.
+
+        Returns:
+            One sentence naming the gap, or ``None`` when this pass searched
+            exhaustively for a counterpart to *line* and found none.
+        """
+        return search_gap(
+            line,
+            self.declined_lines,
+            self.bounds.crowded_days,
+            self.bounds.unpriceable_count,
+        )
 
 
-def _covered_span(account_id: int) -> "tuple[date, date] | None":
+def _covered_span(account_id: int) -> tuple[date, date] | None:
     """Return the first and last day this account has a recorded line for.
 
     Every RECORDED line, matched or not: the span a statement covers is a fact
@@ -192,71 +655,54 @@ def _covered_span(account_id: int) -> "tuple[date, date] | None":
     return None if bounds[0] is None else (bounds[0], bounds[1])
 
 
-def _inside(day: "date | None", covered: "tuple[date, date] | None") -> bool:
-    """Return whether *day* falls in *covered*.
+def _could_have_been_shown(
+    row: CandidateRow, covered: tuple[date, date] | None,
+) -> bool:
+    """Return whether the statement could have shown *row*'s movement.
+
+    **It asks the row's own WINDOW** -- the days the app believes that money
+    moved between (:attr:`~._offers.CandidateRow.expected_window`) -- and the
+    two overlap or they do not.  It used to test one day, ``settled_on or
+    expected_on``, which is that accessor's own rule written a second time and
+    one end short: a bill budgeted across the statement's opening day was
+    dropped from the list because its period STARTS earlier, while every rule
+    beside it had learned that a bill occupies a fortnight.  Found by
+    adversarial design review 2026-08-19.
 
     Args:
-        day: The day to test, or ``None`` for a row the app can date no way at
-            all.
+        row: The candidate.
         covered: The recorded span, or ``None`` when nothing is recorded.
 
     Returns:
-        Whether the statement could have shown a movement on that day.  A row
-        with no day of any kind is IN: the app has no basis for excluding it,
-        and saying so is better than dropping it silently.
+        Whether the two spans overlap.  A row the app can date no way at all is
+        IN: there is no basis for excluding it, and saying so is better than
+        dropping it silently -- the opposite of the proposer's answer for the
+        same row, and deliberately, because this list is a REPORT and that one
+        is a money door.
     """
     if covered is None:
         return False
-    return day is None or covered[0] <= day <= covered[1]
+    window = row.expected_window
+    if window is None:
+        return True
+    return window[0] <= covered[1] and window[1] >= covered[0]
 
 
-def _calendar_opens(owner_id: int) -> "date | None":
-    """Return the first day this owner's pay calendar covers.
-
-    Args:
-        owner_id: The user.
-
-    Returns:
-        The earliest pay-period start, or ``None`` for an owner with no
-        periods.  Read from the periods themselves rather than from the
-        schedule, because what bounds a match is where rows can EXIST.
-    """
-    return (
-        db.session.query(db.func.min(PayPeriod.start_date))
-        .filter(PayPeriod.user_id == owner_id)
-        .scalar()
-    )
-
-
-def _unmatched_lines(account_id: int) -> "list[BankStatementLine]":
-    """Return the account's recorded lines that no match explains.
-
-    Args:
-        account_id: The account.
-
-    Returns:
-        The lines, ascending by posted day then id.
-    """
-    spoken_for = (
-        db.session.query(StatementMatchMember.bank_statement_line_id)
-        .filter(
-            StatementMatchMember.account_id == account_id,
-            StatementMatchMember.bank_statement_line_id.isnot(None),
-        )
-    )
-    return (
-        db.session.query(BankStatementLine)
-        .filter(
-            BankStatementLine.account_id == account_id,
-            BankStatementLine.id.notin_(spoken_for),
-        )
-        .order_by(BankStatementLine.posted_on, BankStatementLine.id)
-        .all()
-    )
-
-
-def _as_bank_line(row: BankStatementLine) -> BankLine:
+def as_bank_line(row: BankStatementLine) -> BankLine:
     """Return *row* as the value the proposer and the screen share.
+
+    **PUBLIC since plan step ``bank_import:X-gj-4c-2``, and the promotion is
+    ``CLAUDE.md`` rule 14 rather than a widening for its own sake.**  A second
+    reader needs it -- :func:`~._skipping.skipped_acts`, which lists the
+    recorded skips the Skipped tab renders -- and every one of its eight fields
+    would otherwise be spelled a second time, including the ``Decimal(str(...))``
+    that keeps a float off a money value.  It stays HERE rather than moving
+    beside :class:`~._offers.BankLine`, which is the placement rule 14 asks for
+    first: :mod:`._offers` stands at 996 lines against pylint's 1,000-line
+    ceiling, so taking it would owe that module a split -- and ruling
+    **balance:R-IR** puts a split on the session that BREAKS the module, which
+    this one does not.  Recorded so the next reader knows the home is a
+    constraint rather than a judgment.
 
     Args:
         row: A recorded line.
@@ -270,212 +716,133 @@ def _as_bank_line(row: BankStatementLine) -> BankLine:
         amount=Decimal(str(row.amount)),
         description=row.description,
         transaction_on=row.transaction_on,
+        merchant_id=row.merchant_id,
+        merchant=row.merchant_name,
+        source_category=row.source_category,
     )
 
 
-def _accepted_groups(
-    owner_id: int, account_id: int,
-) -> "list[AcceptedGroup]":
-    """Return this account's accepted matches, newest first.
+def _rows_the_bank_never_showed(
+    offerable: "list[CandidateRow]",
+    proposals: "tuple[MatchProposal, ...]",
+    account_id: int,
+) -> "tuple[CandidateRow, ...]":
+    """Return the app's own rows the statement could have shown and did not.
+
+    Ruling **R-FP**'s other side, and the more valuable half for a budget: a row
+    the bank never showed, and would have shown as a line of its own, is a
+    payment the records claim happened and the bank did not make.
+
+    **This answers "did any line explain it", never "should the bank have shown
+    it separately"**, and conflating the two is what plan step
+    ``bank_import:X-gc`` corrected on the screen rather than here.  A CC
+    payback's money leaves inside one payment to the card and an envelope's
+    inside its own purchases, so neither is ever a line of its own -- and both
+    stay in this list, because it is the hand-build form's row-picker and those
+    paybacks are what a parked Capital One line is grouped against.  The screen
+    withdraws the inference per row through
+    :attr:`~._offers.CandidateRow.not_shown_alone`; withdrawing MEMBERSHIP
+    would have closed ruling **R-GJ**'s only remaining arm.
+
+    **The span is every RECORDED line's, not the unmatched ones'.**  Taking it
+    from the leftovers made the window SHRINK as matches were accepted --
+    matching the earliest or latest line silently dropped app rows from the
+    list, and matching every line left no span at all -- while the card went on
+    claiming these "fall inside the span your statement covers".
+
+    **A row is measured on the WINDOW the app expects it in**, which is its
+    settle day where it has one and its projection's span where it does not.
+    Using "undated is always in" put every forward projection on the account
+    into the list: 712 rows on the developer's own, most of them dated months
+    ahead.  A projection the bank could not yet have shown is not a payment the
+    bank failed to make.  Both found by adversarial review 2026-08-17.
 
     Args:
-        owner_id: The user whose matches to list.
-        account_id: The account.
+        offerable: The candidate rows no accepted match has claimed.
+        proposals: What this pass proposes, whose rows are already explained.
+        account_id: The account, for the recorded span.
 
     Returns:
-        One :class:`AcceptedGroup` per act.  A group whose rows no longer carry
-        the day it asserted is flagged rather than hidden: it is the shape a
-        later hand edit produces, and the screen is where it can be re-reviewed.
+        The rows, in the candidate order.
     """
-    matches = (
-        db.session.query(StatementMatch)
-        .options(selectinload(StatementMatch.members))
-        .filter(
-            StatementMatch.account_id == account_id,
-            StatementMatch.user_id == owner_id,
-        )
-        .order_by(StatementMatch.created_at.desc(), StatementMatch.id.desc())
-        .all()
-    )
-    if not matches:
-        return []
-
-    member_rows = [member for match in matches for member in match.members]
-    lines = _by_id(BankStatementLine, {
-        member.bank_statement_line_id for member in member_rows
-        if member.bank_statement_line_id is not None
-    })
-    transactions = _by_id(Transaction, {
-        member.transaction_id for member in member_rows
-        if member.transaction_id is not None
-    })
-    entries = _by_id(TransactionEntry, {
-        member.transaction_entry_id for member in member_rows
-        if member.transaction_entry_id is not None
-    })
-
-    groups = []
-    for match in matches:
-        match_lines = [
-            lines[member.bank_statement_line_id] for member in match.members
-            if member.bank_statement_line_id is not None
-        ]
-        if not match_lines:
-            # Every line CASCADED away with its import or its account.  The act
-            # asserts nothing about a bank any more, so it is not listed --
-            # deleting it here would be a write inside a reader.
-            continue
-        posts_on = max(line.posted_on for line in match_lines)
-        rows = [
-            _accepted_row(
-                transactions[member.transaction_id]
-                if member.transaction_id is not None
-                else entries[member.transaction_entry_id],
-                posts_on,
-            )
-            for member in match.members
-            if member.transaction_id is not None
-            or member.transaction_entry_id is not None
-        ]
-        groups.append(AcceptedGroup(
-            match_id=match.id,
-            posts_on=posts_on,
-            amount=sum(
-                (Decimal(str(line.amount)) for line in match_lines),
-                Decimal("0.00"),
-            ),
-            descriptions=tuple(line.description for line in match_lines),
-            rows=tuple(rows),
-            agrees=_still_holds(rows, match_lines, posts_on),
-        ))
-    return groups
-
-
-def _accepted_row(row, posts_on: date) -> AcceptedRow:
-    """Return one member of an accepted match, valued as it stands NOW.
-
-    **The valuation is the cash ledger's, and it is what makes a soft-deleted
-    member visible.**  ``settled_cash_leg`` answers ``0.00`` for a row that
-    contributes nothing -- soft-deleted, Credit or Cancelled -- so a member
-    that has quietly left the balance shows up in :func:`_still_holds`'s sum
-    even though its recorded day is untouched.  A purchase takes the same gate
-    through its PARENT, which is ruling **R-FM**: a non-contributing row's
-    purchases post nothing either.
-
-    Args:
-        row: The :class:`~app.models.transaction.Transaction` or
-            :class:`~app.models.transaction_entry.TransactionEntry` the member
-            names.
-        posts_on: The day the match asserted.
-
-    Returns:
-        Its :class:`AcceptedRow`.
-    """
-    if isinstance(row, Transaction):
-        try:
-            amount = cash_ledger.settled_cash_leg(row)
-        except AmountUnresolvable:
-            # **A member the amount model cannot price stops the match holding
-            # rather than stopping the page.**  This row is already a match
-            # MEMBER, so it is read on every load and the owner cannot
-            # un-select it -- a raise here would make the screen permanently
-            # unreachable for the account, with no in-app repair, which is
-            # finding N-302's shape.  ``None`` propagates into
-            # :func:`_still_holds` as a sum that cannot be taken, so the group
-            # is offered for re-review, which is the honest answer.
-            amount = None
-        return AcceptedRow(
-            label=row.name, settled_on=row.settled_on,
-            cash_amount=amount,
-            agrees=row.settled_on == posts_on,
-        )
-    # **A CARD purchase moves no cash through THIS account at all** -- it
-    # leaves later through its own CC Payback sibling, which is why
-    # ``credit_entry_sum`` removes it from its parent's leg and the posted
-    # walk filters it out.  ``update_entry`` supports that flip, and the
-    # purchase keeps its ``settled_on`` through it, so a valuation reading the
-    # magnitude alone reported a match as still explaining money that had
-    # stopped being on this statement.  Found by adversarial financial review
-    # 2026-08-17.
-    explains_cash = (
-        is_balance_contributing(row.transaction) and not row.is_credit
-    )
-    return AcceptedRow(
-        label=row.description, settled_on=row.settled_on,
-        cash_amount=(
-            -Decimal(str(row.amount)) if explains_cash else Decimal("0.00")
-        ),
-        agrees=row.settled_on == posts_on,
-    )
-
-
-def _still_holds(
-    rows: "list[AcceptedRow]",
-    lines: "list[BankStatementLine]",
-    posts_on: date,
-) -> bool:
-    """Return whether an accepted match still says what it said when accepted.
-
-    Three questions, because a CASCADE can falsify a match without touching a
-    single day:
-
-    * it still names at least one app row (``all([])`` is True, so a match that
-      lost every row would otherwise report agreement while explaining nothing,
-      and its bank line would stay off the unexplained list permanently);
-    * every row still carries the day the match asserted;
-    * the rows still SUM to what the bank stated -- the invariant
-      :func:`~._accept.accept_match` checks before it writes, asked again of
-      what survives.
-
-    Args:
-        rows: The act's app-row members as the screen holds them.
-        lines: Its bank lines.
-        posts_on: The day it asserted.
-
-    Returns:
-        Whether the match still holds.  A soft-deleted member is caught by the
-        SUM rather than by the day: it keeps its ``settled_on`` and contributes
-        nothing to any balance, so only the total can see it has gone.
-    """
-    if not rows:
-        return False
-    if any(row.cash_amount is None for row in rows):
-        return False
-    if any(row.settled_on != posts_on for row in rows):
-        return False
-    # ``round_money`` on BOTH sides, because the accept door rounds before it
-    # compares (``_accept._reject_unbalanced``) and two spellings of one
-    # invariant is a match the door accepted that this reader calls broken
-    # forever.
-    bank = round_money(
-        sum((Decimal(str(line.amount)) for line in lines), Decimal("0.00")),
-    )
-    app_side = round_money(
-        sum((row.cash_amount for row in rows), Decimal("0.00")),
-    )
-    return bank == app_side
-
-
-def _by_id(model, ids: "set[int]") -> dict:
-    """Return ``{id: row}`` for *ids*, in one statement or none at all.
-
-    Args:
-        model: The mapped class to load.
-        ids: The primary keys wanted.  Empty issues no query -- ``IN ()`` is a
-            statement with no rows to find.
-
-    Returns:
-        The rows by id.
-    """
-    if not ids:
-        return {}
-    return {
-        row.id: row
-        for row in db.session.query(model).filter(model.id.in_(ids)).all()
+    spoken_for = {
+        (row.kind, row.row_id)
+        for proposal in proposals for row in proposal.rows
     }
+    covered = _covered_span(account_id)
+    return tuple(
+        row for row in offerable
+        if (row.kind, row.row_id) not in spoken_for
+        and _could_have_been_shown(row, covered)
+    )
 
 
-def review_set(owner_id: int, account_id: int) -> ReviewSet:
+def _unexplained(
+    bank_lines: "list[BankLine]", proposals: "tuple[MatchProposal, ...]",
+) -> "list[BankLine]":
+    """Return the lines no proposal in this pass accounts for.
+
+    Args:
+        bank_lines: Every line inside the calendar that no act has answered --
+            neither an accepted match nor a recorded SKIP (plan step
+            ``bank_import:X-gj-4a``).  *It said "no accepted match already
+            explains" until that step, which is one of two answers rather
+            than the only one.*
+        proposals: What this pass proposes.
+
+    Returns:
+        The leftovers, in the order given.
+    """
+    explained = {
+        line.line_id for proposal in proposals for line in proposal.lines
+    }
+    return [line for line in bank_lines if line.line_id not in explained]
+
+
+def _already_held_by_line(
+    creatable, never_shown,
+) -> "dict[int, ArrivalsAlreadyHeld]":
+    """Return the double-count answer for every creatable INFLOW.
+
+    Plan step ``bank_import:X-gj-2b``.  **Asked of EVERY creatable line, with
+    no direction guard, because the predicate is already total.**  A first
+    version skipped outflows; adversarial review measured that skip an
+    EQUIVALENT MUTANT and it is -- an outflow's amount is negative, every row
+    :func:`~._already_held.arrivals_already_held` selects has positive cash,
+    so ``line.amount < min(...)`` holds and the answer is ``None`` for every
+    outflow the schema allows.  No mutation could reach the branch.  This
+    package has deleted exactly that shape three times by name
+    (:meth:`~._bars.CreationBars.bar_for`'s ``merchant is None`` arm,
+    ``_queue._sweeps_for``'s ``or row.notes``, and :mod:`._income`'s zero arm),
+    and the cost of not having it is one pass over ``never_shown`` per outflow
+    -- 91 lines against 49 rows on the developer's own statement, arithmetic
+    with no query in it.
+
+    It reads the SAME rows :attr:`ReviewSet.unmatched_rows` publishes and the
+    same predicate the income pipeline asks
+    (:func:`~._already_held.arrivals_already_held`), so a refund and a
+    deposit in one period cannot come to different answers about what the books
+    already hold.
+
+    Args:
+        creatable: This pass's creatable lines.
+        never_shown: The candidate rows no bank line explains, derived once by
+            the caller.
+
+    Returns:
+        ``{line_id: ArrivalsAlreadyHeld}``, holding only the lines that have
+        an answer -- absent means nothing to check, which is what
+        :func:`~._verdict.ruled` reads a missing key as.
+    """
+    held_by_line = {}
+    for item in creatable:
+        held = arrivals_already_held(never_shown, item.line)
+        if held is not None:
+            held_by_line[item.line.line_id] = held
+    return held_by_line
+
+
+def review_set(scope: ReviewScope) -> ReviewSet:
     """Return everything the review screen shows for one account.
 
     ONE assembly, so the proposals, the leftovers and the bounds are all
@@ -483,66 +850,121 @@ def review_set(owner_id: int, account_id: int) -> ReviewSet:
     screen whose "unmatched" list came from a second pass could disagree with
     its own proposals.
 
+    **The SCOPE is a parameter since plan step ``bank_import:X-f6a-3c-2``**, so
+    the screen and the doors it posts to derive an account once between them
+    rather than once each.  This reader built its own until then, and the batch
+    door's response re-renders this same set: two derivations of 827 priced rows
+    in one request, at 3.593 s apiece.
+
     Args:
-        owner_id: The user the route proved owns the account.
-        account_id: The account whose statements to review.
+        scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
 
     Returns:
         Its :class:`ReviewSet`.
     """
-    opens = _calendar_opens(owner_id)
-    recorded = _unmatched_lines(account_id)
-    before = [
-        line for line in recorded
-        if opens is not None and line.posted_on < opens
-    ]
-    before_ids = {line.id for line in before}
-    inside = [line for line in recorded if line.id not in before_ids]
-
-    candidates = candidates_for(owner_id, account_id)
-    bank_lines = [_as_bank_line(line) for line in inside]
-    proposals = propose(bank_lines, candidates.rows)
-    explained = {
-        line.line_id for proposal in proposals for line in proposal.lines
-    }
-    spoken_for = {
-        (row.kind, row.row_id)
-        for proposal in proposals for row in proposal.rows
-    }
-    # The rows the STATEMENT could have shown and did not.
-    #
-    # **The span is every RECORDED line's, not the unmatched ones'.**  Taking
-    # it from the leftovers made the window SHRINK as matches were accepted --
-    # matching the earliest or latest line silently dropped app rows from the
-    # list, and matching every line left no span at all -- while the card went
-    # on claiming these "fall inside the span your statement covers".
-    #
-    # **A row is measured on the day the app EXPECTS it**, which is its settle
-    # day where it has one and its projection's day where it does not.  Using
-    # "undated is always in" put every forward projection on the account into
-    # the list: 712 rows on the developer's own, most of them dated months
-    # ahead.  A projection the bank could not yet have shown is not a payment
-    # the bank failed to make.  Both found by adversarial review 2026-08-17.
-    covered = _covered_span(account_id)
-    unmatched_rows = tuple(
-        row for row in candidates.rows
-        if (row.kind, row.row_id) not in spoken_for
-        and _inside(row.settled_on or row.expected_on, covered)
+    account_id = scope.account_id
+    opens = scope.calendar.opening_bound()
+    # **The two DAY bounds, applied in sequence and stated once**
+    # (:func:`~._gaps.bounded_lines`, plan step **balance:X-f3c-2b-2b**).  They
+    # are different facts with different remedies -- the owner's pay schedule
+    # and this ACCOUNT's opening -- and they overlap on real data, so the order
+    # they are applied in decides whether their counts add up.
+    # **What the owner has SAID, read ONCE for the whole pass** (plan step
+    # ``bank_import:X-gm``).  It is read HERE rather than on the scope for the
+    # reason :func:`~._leftovers.leftovers` states -- a pass can restate a
+    # rule, and this screen is re-rendered after the door that does -- and it
+    # is read here rather than THERE because the membership walk below needs
+    # the same answers at the same instant.  Two reads of ``merchant_rules`` in
+    # one request is this project's DRY violation, and the walk and the split
+    # answering from two instants could park a line under an answer this pass
+    # had just replaced.
+    answers = MerchantAnswers.build(scope.owner_id, account_id)
+    # **ONE statement of what the inbox IS**, which the grid's badge counts and
+    # this pass is built from (:func:`~._undisposed.inbox_partition`).  It
+    # applies both day bounds and takes the holding states out, so the
+    # proposer below is given exactly the lines that are TASKS -- ruling
+    # **bank_import:R-HQ** made structural rather than restated per surface,
+    # since nothing should propose a match for a line nobody can act on.
+    lines = inbox_partition(
+        account_id, opens, scope.opening, answers.view.rules, answers.bars,
     )
+
+    # **What is already CLAIMED is read HERE, not carried in the scope.**  The
+    # doors re-read it per act, and this screen is rendered after them inside
+    # the same request, so a reader taking it off the scope would list rows the
+    # batch had just matched.
+    matched = matched_subjects(account_id)
+    candidates = scope.candidates
+    offerable = unmatched_rows(candidates, matched)
+    bank_lines = [as_bank_line(line) for line in lines.inbox]
+    proposed = propose(bank_lines, offerable)
+    proposals = proposed.proposals
+    # **The parked lines rejoin here and nowhere earlier.**  They are still
+    # ``unmatched`` -- no proposal explains them, and the hand-built group
+    # match ruling **R-GJ** leaves open is reached off this list, as is the
+    # MATCH pane's own membership test (:meth:`ReviewSet.card_subject`) -- but
+    # they were never OFFERED to the proposer, which is the half that changed.
+    # Sorted back into the pass's documented order rather than appended, so a
+    # surface rendering this list still reads oldest first.
+    unmatched = sorted(
+        _unexplained(bank_lines, proposals)
+        + [as_bank_line(line) for line in lines.parked],
+        key=lambda line: (line.posted_on, line.line_id),
+    )
+    parts = leftovers(
+        scope, unmatched,
+        unmatched_destinations(scope.destinations, matched),
+        answers,
+    )
+    bounds = ReviewBounds(
+        calendar_opens=opens,
+        before_calendar_count=len(lines.before_calendar),
+        before_calendar_last_day=(
+            max(line.posted_on for line in lines.before_calendar)
+            if lines.before_calendar else None
+        ),
+        # **The days the SEARCH skipped, published by the search** (finding
+        # **N-322**).  This reader re-derived them over every candidate until
+        # plan step X-f6a-3c-2, while ``propose`` searches only the rows no
+        # one-to-one proposal claimed -- a superset, so the screen could name a
+        # day too crowded to search that had been searched.
+        crowded_days=proposed.crowded_days,
+        unpriceable_count=len(candidates.unpriceable_ids),
+        books=lines.books,
+    )
+    # **ONE derivation, read twice below** -- by the set's own field and by the
+    # double-count map beside it.  Asking the producer once per line inside the
+    # comprehension is the redundant-producer-call shape this package treats as
+    # a DRY violation rather than a cost.
+    never_shown = _rows_the_bank_never_showed(offerable, proposals, account_id)
     return ReviewSet(
-        proposals=tuple(proposals),
-        unmatched=tuple(
-            line for line in bank_lines if line.line_id not in explained
+        proposals=proposals,
+        unmatched=tuple(unmatched),
+        # **The bars' own set, carried rather than re-read** (plan step
+        # ``bank_import:X-gj-4b``): ``leftovers`` has already asked
+        # ``account_payment_merchants`` at this pass's instant, and asking
+        # again here would be the redundant producer call inside one request
+        # this package refuses.
+        account_payments=parts.account_payments,
+        unmatched_rows=never_shown,
+        # **What the owner's own rules came to for this pass** (finding
+        # **N-359**), attached to the LINES rather than derived inside ruling
+        # **R-GH**'s door, so that the door and this screen read ONE verdict --
+        # and one SENTENCE, composed where the decision is.
+        creatable=ruled(
+            parts.creatable, proposals, proposed.declined_lines, bounds,
+            _already_held_by_line(parts.creatable, never_shown),
         ),
-        unmatched_rows=unmatched_rows,
-        accepted=tuple(_accepted_groups(owner_id, account_id)),
-        bounds=ReviewBounds(
-            calendar_opens=opens,
-            before_calendar_count=len(before),
-            before_calendar_last_day=(
-                max(line.posted_on for line in before) if before else None
-            ),
-            crowded_days=tuple(skipped_group_days(candidates.rows)),
-            unpriceable_count=len(candidates.unpriceable_ids),
-        ),
+        parked=parts.parked,
+        answered_never=parts.answered_never,
+        recordable_inflows=parts.recordable_inflows,
+        merchants=parts.merchants,
+        bounds=bounds,
+        # **The near tier's own bound, published by the pass that applied it**,
+        # for the reason the crowded days beside it are: a reader re-deriving
+        # it would be scoring a different population.  It sits on the SET
+        # rather than in ``bounds`` because the screen renders it against the
+        # LINE it concerns rather than in the panel of things this page did not
+        # look at (plan step ``bank_import:X-f6d-3``).
+        declined_lines=proposed.declined_lines,
     )

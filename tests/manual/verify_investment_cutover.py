@@ -48,13 +48,11 @@ records.
   ``/accounts/<id>/investment`` and answers for any account the owner holds; an
   account with no :class:`~app.models.investment_params.InvestmentParams` takes
   the empty-chart branch, which is a different path through the same readers.
-* ``derived_vs_stored`` -- per saved period, the stored ``end_date`` /
-  ``period_index`` against the derivation's.  Read this BEFORE reading the
-  diff: it says whether this database can express a disagreement at all.
-* ``readers`` -- ``get_current_period`` and ``get_all_periods`` beside
-  ``period_containing(as_of)`` and ``saved()``.  Both readers survive this leaf
-  (plan step ``C2-f3`` deletes them), so this file runs unchanged on both sides
-  and records what the two answers were on each.
+* ``readers`` -- the stored period COUNT beside ``period_containing(as_of)``
+  and ``saved()``.  *A ``derived_vs_stored`` probe sat beside it -- per saved
+  period, the stored ``end_date`` / ``period_index`` against the derivation's
+  -- and plan step ``pay_calendar:C4-c`` dropped both columns, so there is no
+  second side left to diff.*
 
 **Two axes it CANNOT vary**, named so the next reader does not over-read a
 clean run.  Both are covered by hand-computed cases in
@@ -65,20 +63,20 @@ production clone does not hold belongs.
    schedule has lapsed, where no period covers today and this package's
    ``current_period`` is ``None`` at four readers.
    ``TestTheProjectionMeetsItsSeedOnALapsedSchedule`` holds that state.
-2. **One relationship between the STORED columns and the DERIVATION -- equal.**
-   This is the sharper of the two and an earlier draft of this paragraph
-   understated it (adversarial review, 2026-08-15): it named "the clock in the
-   LAST saved period", as though only a clock position were at stake.  It is
-   not.  ``_cards._compute_default_horizon`` reads the LAST period's end
-   wherever the clock sits, and three more readers take a derived
-   ``end_date`` / ``period_index``, so the exposure is every render on any
-   database where the two disagree.  This harness cannot see it on ANY
-   database a write door built -- ``pay_period_write`` materialises the
-   derivation on every write since plan step C3-b, which is why
-   ``derived_vs_stored`` reports zero mismatches and why no fixture can
-   express one either.  ``TestTheCutoverReadsTheDERIVEDPeriodEnd`` plants the
-   disagreement by hand and pins which column wins; that draft claimed the
-   axis was covered when nothing covered it.
+2. **One relationship between the STORED columns and the DERIVATION**, which
+   plan step ``pay_calendar:C4-c`` settled by deleting the stored side.  This
+   axis was the sharper of the two while it existed, and an earlier draft of
+   this paragraph understated it (adversarial review, 2026-08-15): it named
+   "the clock in the LAST saved period", as though only a clock position were
+   at stake.  It was not.  ``_cards._compute_default_horizon`` reads the LAST
+   period's end wherever the clock sits, and three more readers take a derived
+   ``end_date`` / ``period_index``, so the exposure was every render on any
+   database where the two disagreed.  This harness could not see it on ANY
+   database a write door built, which is why ``derived_vs_stored`` reported
+   zero mismatches and why no fixture could express one either.  The suite
+   planted the disagreement by hand while it was expressible and pinned which
+   column won; that draft claimed the axis was covered when nothing covered
+   it.
 
 **BYTE-IDENTITY IS THE GATE HERE.**  Every replacement in this leaf is claimed
 EQUAL to the query it replaces on any schedule whose stored columns match the
@@ -151,7 +149,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.user import User
-from app.services import pay_period_service
 from app.services.balance_at import BalanceContext
 from app.services.investment_dashboard_service import (
     compute_balance_hero_cell,
@@ -159,6 +156,7 @@ from app.services.investment_dashboard_service import (
     compute_growth_chart_data,
 )
 from app.services.pay_calendar import calendar_for
+
 
 #: The horizon slider positions the growth chart is asked for.  Three rather
 #: than one because the axis LENGTH is what the slider moves, and a single
@@ -245,67 +243,33 @@ def _guard(label, thunk):
 
 
 def _readers(user_id):
-    """Both period readers' answers, side by side, on whichever side runs.
+    """What the calendar answers, beside a direct COUNT of the table.
 
-    ``get_current_period`` / ``get_all_periods`` survive this leaf -- plan step
-    ``C2-f3`` deletes them -- so this probe runs unchanged on both sides and
-    records what each answered.  If they ever disagree with the calendar the
-    dashboard figures above have already moved, and this says why.
+    **The STORED side of this probe is gone, and so is the probe beside it**
+    (plan step ``pay_calendar:C4-c``).  ``budget.pay_periods`` carried
+    ``end_date`` and ``period_index``, so this recorded which paycheck the
+    STORED spans said covered today and how many rows disagreed with the
+    derivation; neither column exists, and a row is now the payday alone.  The
+    row COUNT stays because it is the one stored fact left, and a calendar
+    holding a different number of saved periods from the table would be a real
+    finding.
     """
     ctx = BalanceContext.build(user_id)
     calendar = calendar_for(user_id)
-    stored_current = pay_period_service.get_current_period(user_id)
     derived_current = calendar.period_containing(ctx.as_of)
     return {
         "as_of": ctx.as_of.isoformat(),
         "cadence_days": calendar.cadence_days,
         "opening_bound": _plain(calendar.opening_bound()),
         "horizon": _plain(calendar.horizon()),
-        "stored_all_periods": len(pay_period_service.get_all_periods(user_id)),
+        "stored_all_periods": db.session.query(PayPeriod).filter_by(
+            user_id=user_id,
+        ).count(),
         "derived_saved_periods": len(calendar.saved()),
-        "stored_current_period_id": (
-            None if stored_current is None else stored_current.id
-        ),
         "derived_current_period_id": (
             None if derived_current is None else derived_current.period_id
         ),
         "derived_current": _plain(derived_current),
-    }
-
-
-def _derived_vs_stored(user_id):
-    """Every saved period's stored columns against the derivation's.
-
-    The fact that decides how to read the diff: a byte-identical run over a
-    database where these agree everywhere proves the readers are equal on THIS
-    schedule and nothing more, while a disagreement here explains a moved
-    figure without it being a defect.
-    """
-    stored = (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=user_id)
-        .order_by(PayPeriod.start_date)
-        .all()
-    )
-    derived = {p.period_id: p for p in calendar_for(user_id).saved()}
-    mismatches = []
-    for row in stored:
-        got = derived.get(row.id)
-        if got is None:
-            mismatches.append({"period_id": row.id, "missing_from_calendar": True})
-            continue
-        if got.end_date != row.end_date or got.period_index != row.period_index:
-            mismatches.append({
-                "period_id": row.id,
-                "stored_end": row.end_date.isoformat(),
-                "derived_end": got.end_date.isoformat(),
-                "stored_index": row.period_index,
-                "derived_index": got.period_index,
-            })
-    return {
-        "stored_periods": len(stored),
-        "derived_periods": len(derived),
-        "mismatches": mismatches,
     }
 
 
@@ -347,9 +311,6 @@ def _dump_user(user_id):
     )
     return {
         "readers": _guard("readers", lambda: _readers(user_id)),
-        "derived_vs_stored": _guard(
-            "derived_vs_stored", lambda: _derived_vs_stored(user_id),
-        ),
         "accounts": {
             str(account.id): _account_dump(user_id, account)
             for account in accounts

@@ -16,9 +16,14 @@ from app.models.category import Category
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
+from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service, credit_workflow, pay_period_write
 from app.exceptions import NotFoundError, ValidationError
-from tests._test_helpers import settlement_columns
+from tests._test_helpers import (
+    rhythm_of,
+    settle_day_columns,
+    settlement_columns,
+)
 
 
 class TestCreditWorkflow:
@@ -30,6 +35,7 @@ class TestCreditWorkflow:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -37,7 +43,7 @@ class TestCreditWorkflow:
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal(amount),
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
         )
         db.session.add(txn)
         db.session.flush()
@@ -84,6 +90,7 @@ class TestCreditWorkflow:
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -91,7 +98,7 @@ class TestCreditWorkflow:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -149,6 +156,7 @@ class TestCreditWorkflow:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn = Transaction(
+                user_id=seed_periods[-1].user_id,
                 pay_period_id=seed_periods[-1].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -156,7 +164,7 @@ class TestCreditWorkflow:
                 name="Last Period Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -370,6 +378,7 @@ class TestCarryForward:
             # Create two projected expenses in the first period.
             for name in ("Expense A", "Expense B"):
                 txn = Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -377,14 +386,14 @@ class TestCarryForward:
                     name=name,
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("50.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 )
                 db.session.add(txn)
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -414,6 +423,7 @@ class TestCarryForward:
 
             # One projected, one done.
             t1 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -421,9 +431,10 @@ class TestCarryForward:
                 name="Unpaid",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             t2 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -431,18 +442,18 @@ class TestCarryForward:
                 name="Already Paid",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
-                settled_on=seed_periods[0].start_date,
+                **settle_day_columns(seed_periods[0].start_date),
                 **settlement_columns(seed_periods[0].start_date, Decimal("500.00")),
             )
             db.session.add_all([t1, t2])
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -481,6 +492,7 @@ class TestCarryForward:
             # Create a template-linked transaction.
             txn = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -488,15 +500,15 @@ class TestCarryForward:
                 name="Car Payment",
                 category_id=seed_user["categories"]["Car Payment"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
                 is_override=False,
             )
             db.session.add(txn)
             db.session.flush()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -513,6 +525,7 @@ class TestCarryForward:
 
             # One projected (should move), one cancelled (should stay).
             t1 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -520,9 +533,10 @@ class TestCarryForward:
                 name="Unpaid Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("80.00"),
+                amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             t2 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -530,14 +544,14 @@ class TestCarryForward:
                 name="Cancelled Expense",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
             )
             db.session.add_all([t1, t2])
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -562,6 +576,7 @@ class TestCarryForward:
 
             # One projected expense (should move), one received income (should stay).
             t1 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -569,9 +584,10 @@ class TestCarryForward:
                 name="Unpaid Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("60.00"),
+                amount_ownership=AmountOwnership.own(Decimal("60.00")),
             )
             t2 = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -579,18 +595,18 @@ class TestCarryForward:
                 name="Received Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
-                settled_on=seed_periods[0].start_date,
+                **settle_day_columns(seed_periods[0].start_date),
                 **settlement_columns(seed_periods[0].start_date, Decimal("2000.00")),
             )
             db.session.add_all([t1, t2])
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -613,6 +629,7 @@ class TestCarryForward:
 
             # Soft-deleted projected expense -- should NOT be moved.
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -620,15 +637,15 @@ class TestCarryForward:
                 name="Deleted Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("40.00"),
+                amount_ownership=AmountOwnership.own(Decimal("40.00")),
                 is_deleted=True,
             )
             db.session.add(txn)
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -642,8 +659,8 @@ class TestCarryForward:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    999999, seed_periods[1].id, seed_user["user"].id,
-                    seed_user["scenario"].id,
+                    999999, seed_periods[1].id, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
     def test_carry_forward_target_not_found(self, app, db, seed_user, seed_periods):
@@ -651,29 +668,60 @@ class TestCarryForward:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, 999999, seed_user["user"].id,
-                    seed_user["scenario"].id,
+                    seed_periods[0].id, 999999, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
     def test_carry_forward_empty_source_returns_zero(self, app, db, seed_user, seed_periods):
         """Carry forward returns 0 when the source period has no transactions."""
         with app.app_context():
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 0
 
-    def test_carry_forward_wrong_user_source_raises_not_found(
-        self, app, db, seed_user, seed_periods
+    def test_carry_forward_another_owners_calendar_raises_not_found(
+        self, app, db, seed_user, seed_second_user, seed_periods
     ):
-        """Defense-in-depth: wrong user_id on source raises NotFoundError."""
+        """A REAL second owner's calendar cannot reach these periods.
+
+        **This graded a ``user_id=999999`` argument until pay-calendar plan
+        step C2-f3c**, which deleted that argument: the door takes the owner's
+        read pass -- their
+        :class:`~app.services.pay_calendar.PayCalendar` until plan step
+        R7d-c-1, their
+        :class:`~app.services.balance_at.BalanceContext` since -- and reads
+        the owner off it, so there is no second spelling of "whose periods are
+        these" to get wrong.  What replaces the check is the same defence made
+        structural -- a pass derives one owner's whole schedule and nothing
+        else, so periods that are not in it are not found, whether they exist
+        or not.
+
+        **The second owner is REAL and has their own schedule**, which an
+        adversarial review of that step is why: the first rewrite passed
+        ``calendar_for(999999)``, a nonexistent user, whose calendar is EMPTY
+        and therefore refuses every id trivially.  That cannot tell "not this
+        owner's" from "this owner has no schedule", and it is a state the
+        application cannot produce.  This is the mutating door's only
+        cross-owner case; the preview door's lives in
+        ``test_carry_forward_service``.
+        """
         with app.app_context():
+            other = BalanceContext.build(seed_second_user["user"].id)
+            # The premise: the other owner HAS a schedule, so the refusal below
+            # is about whose periods these are and not about an empty calendar.
+            assert len(other.calendar().saved()) > 0, (
+                "the second user needs their own periods, or this case is the "
+                "empty-calendar tautology it replaced"
+            )
+
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id, user_id=999999,
-                    scenario_id=seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id,
+                    seed_user["scenario"].id,
+                    balance_ctx=other,
                 )
 
     def test_carry_forward_wrong_user_target_raises_not_found(
@@ -706,15 +754,15 @@ class TestCarryForward:
                 user_id=user2.id,
                 first_payday=date(2026, 6, 1),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
             # Source belongs to seed_user (passes), target belongs to user2 (fails).
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, periods2[0].id, seed_user["user"].id,
-                    seed_user["scenario"].id,
+                    seed_periods[0].id, periods2[0].id, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
     def test_carry_forward_nonexistent_source_raises_not_found(
@@ -724,8 +772,8 @@ class TestCarryForward:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    999999, seed_periods[0].id, seed_user["user"].id,
-                    seed_user["scenario"].id,
+                    999999, seed_periods[0].id, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
     def test_carry_forward_nonexistent_target_raises_not_found(
@@ -735,14 +783,15 @@ class TestCarryForward:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, 999999, seed_user["user"].id,
-                    seed_user["scenario"].id,
+                    seed_periods[0].id, 999999, seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
 
 # Import at the bottom to avoid circular issues in the test helpers.
 from app.models.transaction_template import TransactionTemplate
 from app.services import account_service
+from app.models.amount_ownership import AmountOwnership
 
 
 class TestNegativePaths:
@@ -759,6 +808,7 @@ class TestNegativePaths:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -766,7 +816,7 @@ class TestNegativePaths:
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal(amount),
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
         )
         db.session.add(txn)
         db.session.flush()
@@ -937,6 +987,7 @@ class TestNegativePaths:
             # Create a template-linked transaction (is_override=False).
             txn_with_template = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -944,11 +995,12 @@ class TestNegativePaths:
                 name="Template Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 is_override=False,
             )
             # Create an ad-hoc transaction (no template).
             txn_adhoc = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -956,15 +1008,15 @@ class TestNegativePaths:
                 name="Ad-hoc Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("30.00"),
+                amount_ownership=AmountOwnership.own(Decimal("30.00")),
             )
             db.session.add_all([txn_with_template, txn_adhoc])
             db.session.flush()
 
             # Carry forward with source == target -- early return.
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[0].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[0].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1059,7 +1111,7 @@ class TestNegativePaths:
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected.id,
-                amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
                 name="Test Transfer",
             )
             db.session.add(transfer)

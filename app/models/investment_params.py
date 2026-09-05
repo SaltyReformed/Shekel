@@ -94,6 +94,16 @@ class InvestmentParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
             "employer_match_cap_percentage <= 1)",
             name="ck_investment_params_valid_employer_match_cap",
         ),
+        # Child-FK index (F-071 / F-079 / C-42), declared HERE rather than in
+        # the migration alone: ``migrations/env.py`` keeps a
+        # ``_NON_MODEL_INDEXES`` allowlist precisely because an index the
+        # metadata does not know about is one every autogenerate run proposes
+        # dropping.  Plan step salary:R14-b joins these rows to their profile
+        # on every projection that models an employer contribution, so the
+        # index has a reader even though the column does not yet.
+        db.Index(
+            "idx_investment_params_salary_profile", "salary_profile_id",
+        ),
         {"schema": "budget"},
     )
 
@@ -130,8 +140,40 @@ class InvestmentParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
     employer_flat_percentage = db.Column(db.Numeric(5, 4), nullable=True)
     employer_match_percentage = db.Column(db.Numeric(5, 4), nullable=True)
     employer_match_cap_percentage = db.Column(db.Numeric(5, 4), nullable=True)
+    # R-SAL5 (developer, 2026-09-03): an employer contribution NAMES the
+    # salary profile that funds it.  A percentage-of-gross employer
+    # contribution needs a gross, and where no paycheck deduction names this
+    # account there was no link to any profile at all -- the basis fell to
+    # ``income_service.get_current_gross_biweekly``'s unordered ``.first()``
+    # across the owner's active profiles, which R-F16's adversarial review
+    # measured at a 39% swing on a two-job owner.  *That producer was DELETED
+    # at plan step salary:R14-b, having no caller left once this column got
+    # its reader; the shape is recorded here because it is why the column
+    # exists.*  NULL means the account
+    # models no payroll feed, or that the profile is genuinely ambiguous and
+    # the owner has not yet said.  **Plan step salary:R14-b is the reader and
+    # a NULL models NO EMPLOYER MONEY** (developer, 2026-09-04): there is no
+    # gross to take a percentage of, so the surface says the funding job is
+    # not set rather than quoting a figure priced off an arbitrary profile.
+    # An ARCHIVED profile reads the same way -- an employer contribution from
+    # a job the owner has left is not money they receive.  RESTRICT because a
+    # profile is archived rather than deleted here (``salary_profile_service.
+    # archive_profile``), so it constrains nothing today and refuses to let a
+    # future hard delete take a priced basis to NULL.
+    salary_profile_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "salary.salary_profiles.id",
+            name="fk_investment_params_salary_profile_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
 
-    # Relationships
+    # Relationships.  ``salary_profile_id`` deliberately has NO relationship
+    # yet: nothing reads the column in this leaf, and an accessor with no
+    # consumer is the speculative shape CLAUDE.md rule 13 refuses.  Plan step
+    # salary:R14-b adds it with its first reader.
     account = db.relationship("Account", lazy="joined")
     employer_contribution_type = db.relationship(
         "EmployerContributionType", lazy="joined",

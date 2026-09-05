@@ -20,6 +20,15 @@ module's module-level docstring promises "no database access" -- the
 contract Commit 28 / S6-01 set up so pure-data tests can construct
 FakeDeduction / FakeContribution objects without a DB.  Placing the
 DB-touching helpers in a sibling module preserves that boundary.
+
+**That boundary is why :func:`load_payroll_feeds` is here** (plan step
+**salary:R14-b**).  Pricing an account's payroll feed means running the
+paycheck engine, which means resolving a profile and its tax configs, which
+means a session -- so the PRICING happens at this loader and the pure module
+receives a finished
+:class:`~app.services.investment_projection.AccountPayrollFeed`.  It is the
+same split ``PricedContribution`` and ``ShadowContributions`` already sit on,
+applied to the third and last input that was still arriving raw.
 """
 
 import logging
@@ -39,13 +48,17 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services import income_service
 from app.services.cash_ledger import AmountBasis, contributions_by_id
 from app.services.investment_projection import (
+    AccountPayrollFeed,
     InvestmentInputs,
     PricedContribution,
     ShadowContributions,
     calculate_investment_inputs,
 )
+from app.services.pay_calendar import PayCalendar
+from app.utils.money import ZERO
 from app.utils.balance_predicates import status_contributes_to_balance
 
 logger = logging.getLogger(__name__)
@@ -125,11 +138,11 @@ def load_active_deductions_for_account(
     """Return active paycheck deductions targeting a single account.
 
     The single-account variant of :func:`load_active_deductions_for_accounts`
-    used by the investment-detail dashboard, which renders one account
-    at a time.  Returned rows have their ``salary_profile`` relationship
-    eagerly available via the join filter for downstream
-    :func:`~app.services.investment_projection.adapt_deductions`
-    consumption.
+    used by the investment-detail dashboard, which renders one account at a
+    time -- for the contribution PROMPT it shows, which asks whether any
+    deduction funds this account at all.  The dollars come off
+    :func:`load_payroll_feeds` since plan step **salary:R14-b**; these rows
+    are read for their existence, not for their amounts.
 
     Args:
         user_id: ID of the authenticated user (scopes via
@@ -298,7 +311,7 @@ def load_shadow_income_contributions_for_accounts(
     excludes a ``NULL`` ``pay_period_id``.
 
     **Rows that contribute nothing are DROPPED rather than priced at zero.**
-    :func:`~app.services.investment_projection._average_transfer_contribution`
+    :func:`~app.services.investment_projection._inputs._average_transfer_contribution`
     divides by the number of distinct pay periods it sees, so a Cancelled
     contribution carried through as ``$0.00`` would enlarge that denominator and
     silently lower the average.  The screen is applied before the pricing for
@@ -414,12 +427,287 @@ def load_shadow_income_contributions_for_account(
     )
 
 
+def load_payroll_feeds(
+    user_id: int,
+    calendar: "PayCalendar",
+    account_ids: "list[int]",
+    params_by_account: "dict[int, InvestmentParams]",
+    breakdowns: "dict[int, dict] | None" = None,
+) -> "dict[int, AccountPayrollFeed]":
+    """Price each account's payroll feed through the PAYCHECK ENGINE.
+
+    **The producer plan step salary:R14-b puts in place of the feed's own
+    arithmetic** (ruling **R-SAL2**).  What a payroll deduction takes from a
+    paycheck, and what gross an employer contribution is a percentage of, are
+    both facts the paycheck engine establishes when it prices the paycheck.
+    This runs :func:`~app.services.income_service.project_profile` -- the ONE
+    spelling of a profile's projection since ``salary:R14-a`` -- once per
+    profile that funds any of these accounts, and folds the resulting
+    :class:`~app.services.paycheck_calculator.DeductionLine`\\ s by the
+    ``target_account_id`` they already carry.
+
+    It answers R-SAL2's three questions at their source rather than
+    re-deriving any of them:
+
+    * **WHOSE salary** -- each deduction is priced inside its OWN profile's
+      paycheck, because that is the profile whose deductions the engine walked.
+      A two-job owner's two profiles are two projections, and no reader picks
+      between them.
+    * **WHICH gross** -- the paycheck's own, raises applied as of its payday.
+    * **WHICH clock** -- the period's, never ``date.today()``.  Nothing here
+      reads a clock; the CALENDAR is the domain.
+
+    **The profiles are NAMED, never searched**, which is what retires
+    ``income_service.get_current_gross_biweekly`` rather than re-pointing it.
+    That helper resolved a profile with an unordered ``.first()`` across the
+    owner's active profiles -- a measured **39%** swing on a two-job owner,
+    flipping between renders -- and answered ``$0.00`` whenever no period
+    covered today, which silently deleted the whole contribution plan at
+    onboarding and after a horizon lapse.  Here the employee half's profile is
+    the one the DEDUCTION belongs to and the employer half's is the one
+    ``budget.investment_params.salary_profile_id`` names (**R-SAL5**), so
+    there is no search to be non-deterministic about and no clock to answer
+    zero against.
+
+    **An unknown funding profile models NO employer money** (developer,
+    2026-09-04): the account's ``gross_by_payday`` is empty, which is what
+    :attr:`~app.services.investment_projection.AccountPayrollFeed.funds_employer`
+    reports and what the surfaces render as *the funding job is not set*.
+    Unknown covers three states and they are one answer: the column is
+    ``NULL``, it names a profile the owner has ARCHIVED (an employer
+    contribution from a job they have left is not money they receive), or it
+    names a profile that is not theirs -- the forged FK ``salary:R14-a``
+    closed at the write door and this scopes against a second time, because a
+    read that trusts a column's ownership is a read that can be made to price
+    a stranger's salary.
+
+    Args:
+        user_id: The owner these accounts and profiles belong to.  Every
+            profile query here is scoped by it.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
+            Its saved window is the domain every priced payday comes from; a
+            projection past it is the feed's hold rule, not this loader's.
+        account_ids: The accounts to price a feed for.  An empty list returns
+            an empty map without issuing a query.
+        params_by_account: ``{account_id: InvestmentParams}`` from
+            :func:`load_investment_params_for_accounts`, read for the
+            ``salary_profile_id`` that funds each employer contribution.
+        breakdowns: An optional ``{profile_id: {payday: PaycheckBreakdown}}``
+            memo the caller owns, filled here for a profile it does not yet
+            hold.  **Running the engine is the expensive half of this
+            function** -- a projection walks the owner's whole saved window
+            and each paycheck replays the year's prior paydays for its FICA
+            and annual-cap cumulatives -- and the balance seam asks for a feed
+            once per ACCOUNT, so without a memo the engine re-ran the same
+            profile once per account per entry.  ``None`` means "no memo",
+            which is right for the two route callers: each asks once per
+            render.
+
+    Returns:
+        ``{account_id: AccountPayrollFeed}``, TOTAL over *account_ids* -- an
+        account no payroll funds maps to
+        :meth:`~app.services.investment_projection.AccountPayrollFeed.absent`'s
+        value rather than being absent, so a caller indexes rather than
+        defaulting and a missing key is a defect instead of a silently
+        unfunded account.
+    """
+    if not account_ids:
+        return {}
+
+    deductions_by_account = load_active_deductions_for_accounts(
+        user_id, account_ids,
+    )
+    # Every profile that funds any of these accounts, from BOTH sides: the
+    # profile each active deduction belongs to, and the one each account's
+    # params name.  Named rather than searched -- see the docstring.
+    wanted = {
+        ded.salary_profile_id
+        for rows in deductions_by_account.values() for ded in rows
+    }
+    wanted.update(
+        params.salary_profile_id
+        for account_id in account_ids
+        if (params := params_by_account.get(account_id)) is not None
+        and params.salary_profile_id is not None
+    )
+    profiles = _load_funding_profiles(user_id, wanted)
+
+    paydays = [period.start_date for period in calendar.saved()]
+    # KEYED ON THE BREAKDOWN'S OWN PERIOD ID, not paired with ``paydays`` by
+    # position.  ``PaycheckBreakdown.period`` is a
+    # :class:`~app.services.paycheck_calculator.PeriodInfo` carrying the
+    # ``budget.pay_periods.id`` the paycheck was priced for -- structurally
+    # never ``None`` for a projection over the SAVED window -- so the payday
+    # is looked up rather than inferred from ordering.  A ``zip`` against
+    # ``calendar.saved()`` gives the same answer today and is a maintenance
+    # contract between two producers rather than a key, which is the shape
+    # ``CLAUDE.md`` rule 14 names; it would also truncate silently if the two
+    # ever differed in length.
+    payday_by_period_id = {
+        period.period_id: period.start_date for period in calendar.saved()
+    }
+    breakdowns_by_profile = {} if breakdowns is None else breakdowns
+    for profile_id, profile in profiles.items():
+        if profile_id not in breakdowns_by_profile:
+            breakdowns_by_profile[profile_id] = {
+                payday_by_period_id[breakdown.period.period_id]: breakdown
+                for breakdown in income_service.project_profile(
+                    profile, calendar,
+                )
+            }
+    return {
+        account_id: AccountPayrollFeed(
+            employee_by_payday=_employee_by_payday(
+                account_id, deductions_by_account.get(account_id, []),
+                breakdowns_by_profile, paydays,
+            ),
+            gross_by_payday=_gross_by_payday(
+                params_by_account.get(account_id), breakdowns_by_profile,
+            ),
+            # PRESENCE, beside the amounts and never derived from them: an
+            # account funded by a $0.00 deduction is still WIRED UP, and
+            # ``/retirement``'s prompt asks that question rather than a
+            # dollar one.
+            is_payroll_linked=bool(deductions_by_account.get(account_id)),
+        )
+        for account_id in account_ids
+    }
+
+
+def _load_funding_profiles(
+    user_id: int, profile_ids: "set[int]",
+) -> "dict[int, SalaryProfile]":
+    """Return the ACTIVE salary profiles among *profile_ids* this owner holds.
+
+    The one place the three ways a funding profile can be unknown collapse
+    into one answer (plan step **salary:R14-b**): the id is absent, the
+    profile is archived, or the profile belongs to someone else.  Filtering
+    here rather than at each reader is what makes "no funding profile" a
+    single state the feed can report, instead of three branches each caller
+    would have to remember.
+
+    Args:
+        user_id: The owner.  Scopes the query, so a ``salary_profile_id``
+            pointing at a stranger's profile resolves to nothing.
+        profile_ids: The profile ids named by the deductions and the accounts'
+            params.  Empty returns an empty map without a query.
+
+    Returns:
+        ``{profile_id: SalaryProfile}`` for the ids that are this owner's and
+        active, with the relationships the paycheck engine reads eager-loaded.
+    """
+    if not profile_ids:
+        return {}
+    rows = (
+        db.session.query(SalaryProfile)
+        .options(
+            subqueryload(SalaryProfile.raises),
+            subqueryload(SalaryProfile.deductions),
+        )
+        .filter(
+            SalaryProfile.id.in_(profile_ids),
+            SalaryProfile.user_id == user_id,
+            SalaryProfile.is_active.is_(True),
+        )
+        .all()
+    )
+    return {profile.id: profile for profile in rows}
+
+
+def _employee_by_payday(
+    account_id: int,
+    deductions: "list[PaycheckDeduction]",
+    breakdowns_by_profile: dict,
+    paydays: "list[date]",
+) -> "dict[date, Decimal]":
+    """Fold the engine's deduction lines for ONE account, per payday.
+
+    Reads the amount off the
+    :class:`~app.services.paycheck_calculator.DeductionLine` the engine
+    already priced -- raise-aware, inflation-escalated, cadence-placed and
+    clamped to the line's own calendar-year cap -- rather than pricing
+    anything here.  Pre- and post-tax lines both count: what an account
+    RECEIVES does not depend on which side of the tax line the deduction sits.
+
+    Args:
+        account_id: The account whose lines to keep.
+        deductions: The account's active deductions, read only for WHICH
+            profiles fund it; the amounts come off the breakdowns.
+        breakdowns_by_profile: ``{profile_id: {payday: PaycheckBreakdown}}``.
+        paydays: Every payday the calendar reaches, so the map is TOTAL and a
+            cadence skip is an explicit ``$0.00`` rather than a gap.
+
+    Returns:
+        ``{payday: Decimal}`` over every payday, or ``{}`` when no active
+        profile of this owner's funds the account.
+    """
+    # DISTINCT profiles, keyed by id: an account funded by three of one
+    # profile's deductions must read that profile's breakdown ONCE, or every
+    # line on it would be counted as many times as the account has
+    # deductions.  The lines themselves are then filtered by
+    # ``target_account_id`` below, which is what keeps a sibling deduction
+    # feeding a DIFFERENT account out of this sum.
+    # No membership guard: ``_active_deductions_query`` already joins each
+    # deduction to an ACTIVE profile of this owner, and
+    # :func:`_load_funding_profiles` applies exactly those two filters over a
+    # SUPERSET of these ids -- so a deduction whose profile is missing from
+    # the map is not a state either query can produce.  A guard here would be
+    # one that cannot fire, which ``CLAUDE.md`` rule 1 forbids shipping.
+    funding_ids = {ded.salary_profile_id for ded in deductions}
+    if not funding_ids:
+        return {}
+    funding = [breakdowns_by_profile[pid] for pid in funding_ids]
+    return {
+        payday: sum(
+            (
+                line.amount
+                for by_payday in funding
+                if (breakdown := by_payday.get(payday)) is not None
+                for line in (breakdown.deductions.pre_tax
+                             + breakdown.deductions.post_tax)
+                if line.target_account_id == account_id
+            ),
+            ZERO,
+        )
+        for payday in paydays
+    }
+
+
+def _gross_by_payday(
+    params: "InvestmentParams | None", breakdowns_by_profile: dict,
+) -> "dict[date, Decimal]":
+    """Return the FUNDING profile's per-payday gross, or an empty map.
+
+    The employer contribution's basis (**R-SAL5**): the gross of the paycheck
+    the profile named by ``budget.investment_params.salary_profile_id`` was
+    paid on each payday.  Empty when that profile is unknown -- absent,
+    archived, or not this owner's, the three states
+    :func:`_load_funding_profiles` has already collapsed into "not in the
+    map" -- which is the developer's 2026-09-04 ruling that such an account
+    models no employer money at all.
+
+    Args:
+        params: The account's :class:`InvestmentParams`, or ``None``.
+        breakdowns_by_profile: ``{profile_id: {payday: PaycheckBreakdown}}``.
+
+    Returns:
+        ``{payday: Decimal}`` gross per payday, or ``{}``.
+    """
+    profile_id = getattr(params, "salary_profile_id", None)
+    by_payday = breakdowns_by_profile.get(profile_id)
+    if by_payday is None:
+        return {}
+    return {
+        payday: breakdown.earnings.gross_biweekly
+        for payday, breakdown in by_payday.items()
+    }
+
+
 def build_investment_projection_inputs(
     params: InvestmentParams,
-    deductions: list,
+    feed: "AccountPayrollFeed",
     contributions: list,
     current_period,
-    salary_gross_biweekly,
 ) -> InvestmentInputs:
     """Build :class:`InvestmentInputs` for one account.
 
@@ -437,8 +725,7 @@ def build_investment_projection_inputs(
     :func:`load_shadow_income_contributions_for_accounts` dates each
     contribution now, so there is nothing left to look up.
 
-    Callers supply ``deductions`` (already adapted via
-    :func:`~app.services.investment_projection.adapt_deductions`) and
+    Callers supply the ``feed`` (from :func:`load_payroll_feeds`) and
     ``contributions`` because the per-consumer contribution-loading
     queries differ in scenario / status filters (savings + year-end
     apply ``balance_excluded_status_ids`` + scenario scoping;
@@ -447,17 +734,26 @@ def build_investment_projection_inputs(
     average those consumers compute; passing pre-loaded data
     preserves each surface's existing filter contract.
 
-    Positional rather than keyword-only because the verification gate
-    (`grep -nE "salary_gross_biweekly=salary_gross_biweekly,\\s*\\)"
-    app/services/`) treats the kwarg-self-binding pattern as the
-    duplicate-canary; positional consumer calls do not match the
-    pattern, so the gate passes when only this helper site has it.
+    **A verification gate stated here matched NOTHING and was deleted** (plan
+    step C2-f3a, ledger row **P52**); the lesson is kept because it is about
+    gates and not about the argument that has since gone.  It named a ``grep``
+    for the kwarg-self-binding splat below as a duplicate-canary and concluded
+    "the gate passes when only this helper site has it".  ``grep`` is
+    LINE-based and the one call site carrying the pattern closed on the NEXT
+    line, so the expression matched zero lines: the gate passed because
+    nothing matched, which is indistinguishable from passing because one thing
+    matched -- a safety that is not a predicate, which
+    ``docs/plans/conventions.md`` says is worse than no safety at all.  The
+    duplication it claimed to police IS real -- the splat sat in four services
+    before Commit 18 -- and it is really policed, by pylint's
+    ``duplicate-code``, which CI enforces as a hard gate.
 
     Args:
         params: :class:`InvestmentParams` row for the account.
-        deductions: List of adapted deduction objects
-            (:class:`~app.services.investment_projection.AdaptedDeduction`
-            or equivalent), already filtered to this account.
+        feed: The account's
+            :class:`~app.services.investment_projection.AccountPayrollFeed`
+            from :func:`load_payroll_feeds` -- what its payroll puts in per
+            payday, priced by the paycheck engine.
         contributions: List of
             :class:`~app.services.investment_projection.PricedContribution`
             records already filtered to this account.
@@ -467,21 +763,17 @@ def build_investment_projection_inputs(
             pay-calendar plan step C2-f2d-3; this said "an ORM ``PayPeriod`` on
             ``/retirement``, a ``DerivedPeriod`` on ``/investment``" until then,
             and only ``start_date`` is read either way.
-        salary_gross_biweekly: Raise-aware engine gross per pay period
-            (typically from
-            :func:`app.services.income_service.get_current_gross_biweekly`).
 
     Returns:
-        :class:`InvestmentInputs` carrying the periodic contribution,
-        employer params, annual contribution limit, YTD contributions,
-        and engine gross-biweekly fields the growth engine needs.
+        :class:`InvestmentInputs` carrying the current period's contribution,
+        employer params, annual contribution limit and YTD contributions the
+        growth engine and the per-period cards need.
     """
     return calculate_investment_inputs(
         investment_params=params,
-        deductions=deductions,
+        feed=feed,
         all_contributions=contributions,
         current_period=current_period,
-        salary_gross_biweekly=salary_gross_biweekly,
     )
 
 
@@ -490,12 +782,14 @@ def build_investment_projection_inputs(
 # ``app.services.investment_projection`` for the DTO.
 __all__ = [
     "Account",
+    "AccountPayrollFeed",
     "InvestmentInputs",
     "InvestmentParams",
     "build_investment_projection_inputs",
     "load_active_deductions_for_account",
     "load_active_deductions_for_accounts",
     "load_investment_params_for_accounts",
+    "load_payroll_feeds",
     "load_shadow_income_contributions_for_account",
     "load_shadow_income_contributions_for_accounts",
 ]

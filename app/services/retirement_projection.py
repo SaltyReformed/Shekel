@@ -28,28 +28,27 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.services import (
     account_service,
     balance_at,
     cash_ledger,
     growth_engine,
-    income_service,
     pension_calculator,
 )
 from app.services.investment_projection import (
+    AccountPayrollFeed,
     ShadowContributions,
-    adapt_deductions,
+    build_contribution_timeline,
 )
+from app.services.payroll_basis import gross_per_paycheck
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
-    load_active_deductions_for_accounts,
+    load_payroll_feeds,
     load_shadow_income_contributions_for_accounts,
 )
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import DerivedPeriod, PeriodWindow
-from app.utils.money import round_money
+from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
 
 
 @dataclass(frozen=True)
@@ -79,11 +78,12 @@ class RetirementProjectionContext:
     calendar, ``saved()`` is memoized on the calendar in turn, and
     ``period_containing`` is a bisect over it -- so two callers threaded values
     a third could have re-derived and nothing reconciled the two.  That is the
-    shape ruling "How the seam learns WHICH periods to report" deleted at plan
-    step C2-c one tier down, and the same measurement applies: BOTH callers
-    filled the pair from the same pass, so the only thing the arguments could
-    express was a mismatch.  :func:`_periods` and :func:`_current_period` read
-    them off :attr:`balance_ctx` at the two places that ask.
+    shape ruling **R-PC11** ("How the seam learns WHICH periods to report")
+    deleted at plan step C2-c one tier down, and the same measurement applies:
+    BOTH callers filled the pair from the same pass, so the only thing the
+    arguments could express was a mismatch.  :func:`_periods` and
+    :func:`_current_period` read them off :attr:`balance_ctx` at the two places
+    that ask.
 
     Attributes:
         balance_ctx: The read pass this projection runs in -- the owner, the
@@ -104,7 +104,13 @@ class RetirementProjectionContext:
             forwarded to ``growth_engine.project_balance`` so the
             employer-contribution base tracks the projected salary rather
             than freezing at today's gross; ``None`` when there is no
-            salary profile or no horizon (constant-base fallback).
+            salary profile or no horizon.  **Since plan step salary:R14-b it
+            is the LONG-HORIZON arm only**: the paycheck engine's own
+            per-payday gross is composed underneath it
+            (:meth:`~app.services.investment_projection.AccountPayrollFeed.salary_basis`
+            takes it as ``beyond=``), so it answers a payday the owner's
+            calendar does not reach and ``None`` there means a held paycheck
+            rather than a constant base.
     """
 
     balance_ctx: BalanceContext
@@ -130,15 +136,20 @@ class ProjectionBatch:
     :attr:`seed_memo` below).
 
     Attributes:
-        deductions_by_account: Active paycheck deductions keyed by
-            account ID.
+        feeds: ``{account_id: AccountPayrollFeed}`` -- what each account's
+            payroll puts in per payday and what gross funds its employer
+            contribution, both priced by the PAYCHECK ENGINE (plan step
+            **salary:R14-b**, ruling **R-SAL2**).  It replaced
+            ``deductions_by_account``, whose rows the consumer re-priced
+            RAISE-BLIND (finding **D45**), and one ``salary_gross_biweekly``
+            scalar sizing every match at today's paycheck.  Date-independent
+            like every field here: keyed by PAYDAY, so one feed answers every
+            candidate horizon a retire-later probe asks.
         contributions: The priced shadow-income contributions across all
             projected accounts (filtered per account in the loop).
         params_by_account: :class:`InvestmentParams` keyed by account ID
             (accounts with no params row are absent) -- one ``IN`` query
             replacing the pre-P2 per-account ``first()`` lookups.
-        salary_gross_biweekly: The raise-aware engine gross-biweekly used
-            as the employer-match cap basis.
         balance_map: The model-from-anchor END-of-current-period balance
             keyed by account ID -- the DISPLAYED current balance (and the
             weight in the blended-return average
@@ -171,10 +182,9 @@ class ProjectionBatch:
     :func:`project_accounts_with_batch` now resolves it once per axis instead.
     """
 
-    deductions_by_account: dict[int, list[PaycheckDeduction]]
+    feeds: dict[int, AccountPayrollFeed]
     contributions: ShadowContributions
     params_by_account: dict[int, InvestmentParams]
-    salary_gross_biweekly: Decimal
     balance_map: dict[int, Decimal]
     seed_memo: (
         "dict["
@@ -206,8 +216,12 @@ class _AccountProjectionResult:
             project.
         employee_per_period: The capped current-period employee
             contribution fact.
-        employer_per_period: The current-period employer contribution fact
-            (at today's gross).
+        employer_per_period: The current-period employer contribution fact,
+            sized at THAT PERIOD's own gross since plan step **salary:R14-b**
+            (it read "at today's gross", one figure standing in for a series
+            every raise moves), and ``$0.00`` when no period covers the
+            pass's clock -- a card that answers "what does a paycheck put in"
+            has no paycheck to mean there.
     """
 
     projected_balance: Decimal
@@ -222,22 +236,27 @@ def build_employer_salary_basis(
     planned_retirement_date: date | None,
     merit_horizon_years: int,
     as_of: date,
+    cadence: PayCadence,
 ) -> Callable | None:
     """Build the per-period employer-contribution gross basis (P1b / F3).
 
     Grows the employer-contribution base with the SAME P1a salary path the
     pension / income-target projection uses: for each projected year the
-    annual salary is divided by the primary profile's pay-periods-per-year
-    and quantized to cents (house money rules), and the returned resolver
+    annual salary is divided by the OWNER's paycheck count -- off their pay
+    cadence since plan step **R-F16**, where it was a second stored column on
+    the profile that nothing held to the cadence -- and quantized to cents
+    (house money rules), and the returned resolver
     maps a projection period to its year's gross biweekly.  Periods whose
     year falls outside the projected range (defensive only -- the axis runs
     from the pass's as_of to retirement, exactly the projected span) clamp to
     the nearest projected year's gross.
 
-    Returns ``None`` when there is no salary profile or no horizon, so
-    ``growth_engine.project_balance`` falls back to the constant
-    ``employer_params["gross_biweekly"]`` -- the behavior every other
-    engine consumer keeps.
+    Returns ``None`` when there is no salary profile or no horizon.  **Since
+    plan step salary:R14-b that no longer means a constant base**: this is
+    ``AccountPayrollFeed.salary_basis``'s ``beyond=`` arm, not a callable
+    handed to the engine, so ``None`` means the tail holds the last real
+    paycheck; the ``employer_params["gross_biweekly"]`` it used to name is
+    emitted by no builder now (**N-538**).
 
     Args:
         salary_profiles: The user's active salary profiles (the first is
@@ -256,6 +275,9 @@ def build_employer_salary_basis(
             projecting its salary path from year N while the lever card beside
             it projects from N+1, which is the two-cards-two-clocks shape plan
             step C2-f2d-1 measured at ``$4.18`` for the read pass itself.
+        cadence: How often the owner is paid.  Taken rather than resolved so
+            this shares the ONE cadence the render's ``GapInputs`` already
+            carries, and so a pure producer stays pure.
 
     Returns:
         A ``period -> Decimal gross_biweekly`` callable, or ``None``.
@@ -264,7 +286,6 @@ def build_employer_salary_basis(
         return None
 
     profile = salary_profiles[0]
-    pay_periods_per_year = profile.pay_periods_per_year or 26
     salary_by_year = pension_calculator.project_profile_salaries(
         profile, as_of.year, planned_retirement_date.year,
         merit_horizon_years,
@@ -272,8 +293,11 @@ def build_employer_salary_basis(
     if not salary_by_year:
         return None
 
+    # Through the ONE per-paycheck producer (plan step balance:X-aw), not a
+    # second spelling of its arithmetic: this figure is a projected paycheck's
+    # gross, so it must round exactly as the paycheck engine's does.
     gross_by_year = {
-        year: round_money(salary / pay_periods_per_year)
+        year: gross_per_paycheck(salary, cadence.periods_per_year)
         for year, salary in salary_by_year
     }
     min_year = min(gross_by_year)
@@ -533,12 +557,6 @@ def load_projection_batch(
     account_ids = [a.id for a in ctx.accounts]
     period_ids = [p.period_id for p in _periods(ctx)]
 
-    # F-22 / Commit 18: shared batch loaders replace the filter-shape
-    # duplicate that previously lived inline here and in
-    # savings_dashboard_service / year_end_summary_service.
-    deductions_by_account = load_active_deductions_for_accounts(
-        user_id, account_ids,
-    )
     # Pricing a contribution needs the basis its amount resolves under -- the
     # owner, the scenario, and the salary / loan derivations behind a live
     # figure (plan steps X-au-c2 and X-au-c2b).  That basis is the PASS's,
@@ -560,16 +578,20 @@ def load_projection_batch(
         ):
             params_by_account[params.account_id] = params
 
-    # F-20 / MED-06 / F-032: raise-aware engine gross-biweekly (not the
-    # off-engine ``annual_salary / pay_periods_per_year`` recompute that
-    # dropped any applicable SalaryRaise); feeds the employer-match cap.
-    # ``as_of`` is the PASS's (plan step C2-f2d-1, corrected by its
-    # adversarial code review): this resolver defaults to ``date.today()`` and
-    # resolves its own current period from it, so without the argument the
-    # employer-match cap basis came off a clock read of its own -- twice per
-    # ``/retirement`` render, once for the verdict and once for the levers.
-    salary_gross_biweekly = income_service.get_current_gross_biweekly(
-        user_id, ctx.balance_ctx.calendar(), as_of=ctx.balance_ctx.as_of,
+    # **The paycheck ENGINE prices each account's payroll feed** (plan step
+    # salary:R14-b, ruling R-SAL2), replacing the deduction rows the consumer
+    # re-priced raise-blind (D45) and one
+    # ``income_service.get_current_gross_biweekly`` scalar.  That resolver
+    # defaulted to ``date.today()``, so C2-f2d-1 had to thread the pass's
+    # ``as_of`` to stop it reading a clock of its own twice per render; the
+    # feed reads no clock at all, because the PERIOD is the clock.
+    feeds = load_payroll_feeds(
+        user_id, ctx.balance_ctx.calendar(), account_ids, params_by_account,
+        # The PASS's projection memo -- shared with every balance-seam read
+        # this render makes, so the engine runs once per profile rather than
+        # once per reader.  The P2b retire-later probes reuse this batch
+        # across candidate horizons, so it is read many times per render.
+        ctx.balance_ctx.payroll_breakdowns,
     )
 
     # The displayed per-account balance is the model-from-anchor value at the
@@ -580,10 +602,9 @@ def load_projection_batch(
     # baseline scenario.
     balance_map = _resolve_displayed_balances(ctx)
     return ProjectionBatch(
-        deductions_by_account=deductions_by_account,
+        feeds=feeds,
         contributions=contributions,
         params_by_account=params_by_account,
-        salary_gross_biweekly=salary_gross_biweekly,
         balance_map=balance_map,
     )
 
@@ -674,7 +695,7 @@ def _resolve_seed_balances(
     disagree by construction.  The pass now arrives SEPARATELY, and
     :func:`balance_at.balance_at` is a function of it: its scenario scopes the
     row set and its ``as_of`` clamps every still-projected row forward (ruling
-    R-G, ``_cash_fold.assemble``).  A batch shared across two passes would
+    R-G, ``_cash_fold._assemble``).  A batch shared across two passes would
     otherwise hand the second one the first one's seeds, silently.  Keyed on the
     pass's VALUES rather than its identity, so two passes pinned alike share a
     seed -- which is the answer being memoized.  The account-set term is here
@@ -788,8 +809,9 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
     employer salary basis).
 
     Also computes the per-account contribution facts (capped current-period
-    employee amount and its employer match at today's gross, mirroring the
-    investment dashboard's HIGH-07 per-period card).
+    employee amount and its employer match at THAT PERIOD's own gross since
+    plan step **salary:R14-b**, mirroring the investment dashboard's HIGH-07
+    per-period card).
 
     Pylint: ``too-many-arguments`` (6/5) / ``too-many-positional-arguments``
     (6/5) -- the seed joined the five because ruling R-AB makes it a function
@@ -812,18 +834,22 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
     acct_contributions = [
         c for c in batch.contributions.records if c.account_id == acct.id
     ]
-    adapted_deductions = adapt_deductions(
-        batch.deductions_by_account.get(acct.id, []),
-    )
+    feed = batch.feeds.get(acct.id, AccountPayrollFeed.absent())
+    current_period = _current_period(ctx)
     inputs = build_investment_projection_inputs(
-        params, adapted_deductions, acct_contributions,
-        _current_period(ctx), batch.salary_gross_biweekly,
+        params, feed, acct_contributions, current_period,
     )
     annual_return = (
         ctx.return_rate_override
         if ctx.return_rate_override is not None
         else params.assumed_annual_return
     )
+    # **The employer basis is COMPOSED since plan step salary:R14-b**: the
+    # engine's own gross for every payday the calendar reaches, and past it
+    # this page's merit-horizon path (:func:`build_employer_salary_basis`)
+    # where supplied.  Composing rather than replacing is what keeps this step
+    # from REGRESSING the one surface that already grew its base; which of the
+    # app's two long-horizon salary models wins is a separate ruling.
     proj = growth_engine.project_balance(
         current_balance=seed,
         assumed_annual_return=annual_return,
@@ -832,23 +858,42 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
         employer_params=inputs.employer_params,
         annual_contribution_limit=inputs.annual_contribution_limit,
         ytd_contributions_start=inputs.ytd_contributions_seed,
-        salary_basis=ctx.employer_salary_basis,
+        contributions=build_contribution_timeline(
+            feed=feed,
+            contribution_transactions=acct_contributions,
+            periods=projection_periods,
+            as_of=ctx.balance_ctx.as_of,
+        ),
+        salary_basis=feed.salary_basis(beyond=ctx.employer_salary_basis),
     )
-    # P1c per-account contribution facts: the capped current-period employee
-    # amount and its employer match at today's gross.
+    # P1c per-account contribution facts: the capped CURRENT-period employee
+    # amount and its employer match at that period's own gross (plan step
+    # salary:R14-b -- it was "at today's gross", one figure standing in for
+    # the series a raise moves).
     employee_per_period = growth_engine.cap_contribution_at_limit(
         inputs.periodic_contribution,
         inputs.annual_contribution_limit,
         inputs.ytd_contributions_seed,
+    )
+    # **The no-current-period case REFUSES rather than pricing at zero.**  A
+    # card answering "what does a paycheck put in" has no paycheck to mean
+    # when the clock falls outside the schedule.  Stated here because
+    # ``calculate_employer_contribution`` would otherwise take a ``None``
+    # basis and answer ``$0.00`` silently -- the shape ``income_service``'s
+    # deleted helper was deleted FOR (ledger row **N-538**).
+    employer_per_period = (
+        Decimal("0") if current_period is None
+        else growth_engine.calculate_employer_contribution(
+            inputs.employer_params, employee_per_period,
+            feed.gross_at(current_period.start_date),
+        )
     )
     return _AccountProjectionResult(
         projected_balance=proj[-1].end_balance if proj else seed,
         effective_return=annual_return,
         projection_rows=proj,
         employee_per_period=employee_per_period,
-        employer_per_period=growth_engine.calculate_employer_contribution(
-            inputs.employer_params, employee_per_period,
-        ),
+        employer_per_period=employer_per_period,
     )
 
 
@@ -903,14 +948,18 @@ def _project_one_account(
         batch.balance_map[acct.id] if acct.id in batch.balance_map
         else cash_ledger.resolve_anchor(acct).balance
     )
-    acct_deductions = batch.deductions_by_account.get(acct.id, [])
-    # PRESENCE, not contribution: an account whose every contribution is
-    # Cancelled still HAS one linked, and telling its owner to link one would
-    # be wrong.  Read off the unscreened set the loader carries for exactly
-    # this reader (:class:`ShadowContributions`); an adversarial review caught
-    # this flipping when the status screen moved to the boundary.
+    # PRESENCE, not contribution -- on BOTH halves.  An account whose every
+    # contribution is Cancelled still HAS one linked, and so does one whose
+    # payroll deduction currently prices at $0.00; telling either owner to
+    # link a feed would be wrong.  Each half is read off the flag its loader
+    # carries beside the amounts for exactly this reader
+    # (:attr:`ShadowContributions.linked_account_ids` and
+    # :attr:`AccountPayrollFeed.is_payroll_linked`), because pricing destroys
+    # the presence -- an adversarial review caught this flipping when the
+    # status screen moved to the boundary, and plan step salary:R14-b would
+    # have flipped the other half the same way had the flag not come with it.
     none_linked = (
-        not acct_deductions
+        not batch.feeds.get(acct.id, AccountPayrollFeed.absent()).is_payroll_linked
         and acct.id not in batch.contributions.linked_account_ids
     )
 

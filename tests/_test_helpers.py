@@ -21,6 +21,9 @@ from datetime import (
     timezone as _real_timezone,
 )
 from decimal import Decimal
+from app.enums import BusinessDayShiftEnum
+from app.models.amount_ownership import AmountOwnership
+from app.services import pay_schedule_service
 
 
 # The synthetic split-loan fixture shared verbatim by the three parallel
@@ -1152,14 +1155,33 @@ def create_loan_account(
             # ``observed_on`` is left to the factory (today).  A loan's balance
             # is ledger-derived from dated ``LoanAnchorEvent`` rows, not from
             # this cash assertion, so the civil-day partition R-DH governs does
-            # not reach it -- and the suites that DO care restamp the opening
-            # themselves.  Recorded rather than "fixed": a blanket day-before
+            # not reach it -- and the suites that DO care assert their own day.
+            # Recorded rather than "fixed": a blanket day-before
             # default here trips the create-time floor for a fixture whose pay
             # periods start today or later.
         ),
     )
     db_session.add(account)
     db_session.flush()
+    # **Its books open before the loan ORIGINATES *and* before the owner's
+    # calendar** (plan step X-f3c-2b, ruling **R-HG**).  The comment above
+    # explains why this factory leaves ``observed_on`` at the wall clock: a
+    # loan's BALANCE is ledger-derived from dated ``LoanAnchorEvent`` rows, so
+    # the cash assertion's day decides no figure for it.  Its PAYMENTS are
+    # ordinary settled rows on the cash side, though, and they run from the
+    # origination forward -- which is before the wall clock in every fixture
+    # here.
+    #
+    # Origination alone was measured too tight.  An installment may be settled
+    # EARLY, before the loan closes, and the developer ruled that legitimate:
+    # ``test_balance_at.TestLoanNotYetOriginated`` pays a 2026-05-01 installment
+    # on 2026-03-10 against a loan originating 2026-04-15, which is the ONE
+    # shape in which the origination guard is the guard doing the work.  So the
+    # bound is the earliest of the origination, the assertion and the owner's
+    # calendar, which is what the shared helper already computes.
+    open_books_before_the_first_assertion(
+        db_session, account, also_before=origination_date,
+    )
 
     params = LoanParams(
         account_id=account.id,
@@ -1321,7 +1343,9 @@ def create_loan_with_trueup(
     return loan
 
 
-def create_savings_account(seed_user, db_session, name, anchor_balance):
+def create_savings_account(
+    seed_user, db_session, name, anchor_balance, observed_on=None,
+):
     """Create a Savings account via the canonical factory (flushed, uncommitted).
 
     The shared liquid-account builder for goal-track / savings tests, so
@@ -1334,6 +1358,13 @@ def create_savings_account(seed_user, db_session, name, anchor_balance):
         db_session: The test ``db.session``.
         name: The account name.
         anchor_balance: The opening anchor balance (Decimal).
+        observed_on: The civil day the opening balance is asserted for, or
+            ``None`` for the factory's default (today).  **A suite whose money
+            moves BEFORE today states this** (plan step X-f3c-2c): the
+            origination assertion is append-only, so an account opened "today"
+            and then handed movements dated in January carries an assertion
+            that governs every one of them.  Re-stamping the row afterwards was
+            how that used to be repaired, and there is no such act.
 
     **It took an ``anchor_period_id`` until plan step X-f1c3c** (ruling R-EH):
     an account no longer references a pay period at all, so callers that pinned
@@ -1355,15 +1386,26 @@ def create_savings_account(seed_user, db_session, name, anchor_balance):
         "account_type_id": savings_type.id,
         "name": name,
         "anchor_balance": anchor_balance,
-        # ``observed_on`` is left to the factory (today).  See
-        # ``create_loan_account`` for why this helper does not take
-        # ``create_account_of_type``'s day-before default.
+        # ``observed_on`` is left to the factory (today) unless the caller
+        # names a day.  See ``create_loan_account`` for why this helper does
+        # not take ``create_account_of_type``'s day-before default.
     }
+    if observed_on is not None:
+        spec_kwargs["observed_on"] = observed_on
     account = account_service.create_account(
         account_service.AccountSpec(**spec_kwargs),
     )
     db_session.add(account)
     db_session.flush()
+    # **Its books open the day BEFORE its origination assertion** (plan step
+    # X-f3c-2b, ruling **R-HG**).  ``create_account`` defaults ``observed_on``
+    # to ``display_today()`` and the settle door defaults a settle day to the
+    # SAME ``display_today()``, so a fixture meaning "this account existed,
+    # then money moved on it" lands the movement on the very day the books
+    # open -- and an opening equity is that day's CLOSING balance, so the
+    # movement is inside it and is refused.  Moves no figure: the origination
+    # assertion still clears whatever settled on its own day.
+    open_books_before_the_first_assertion(db_session, account)
     return account
 
 
@@ -1384,21 +1426,30 @@ def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-position
     classify INTEREST.  Commits before returning so the account is fully
     resolvable.
 
-    **The opening assertion is stamped at the anchor period's first day**
-    (via :func:`restamp_opening_assertion`).  Since plan step X-c2a, modelled
+    **The opening assertion is DATED at the anchor period's first day, and the
+    factory supplies that day to ``create_account`` rather than moving the row
+    afterwards** (plan step X-f3c-2c).  Since plan step X-c2a, modelled
     interest accrues only forward of an account's latest balance assertion
-    (ruling R-L), and ``account_service.create_account`` writes that row with
-    the WALL CLOCK.  A suite that freezes ``today`` inside its own
-    seeded period range -- ``tests/test_services`` freezes it to 2026-03-20 --
-    would otherwise build an account asserted months AFTER its own last pay
-    period, a state production cannot reach (a true-up files against
-    ``get_current_period``) and one in which the account accrues nothing
-    anywhere.  Pinning the instant to the period's own start makes the fixture
-    deterministic, reachable (an account opened on day 1 of its period), and
+    (ruling R-L), and ``create_account`` defaults ``observed_on`` to today.  A
+    suite that freezes ``today`` inside its own seeded period range --
+    ``tests/test_services`` freezes it to 2026-03-20 -- would otherwise build
+    an account asserted months AFTER its own last pay period, a state
+    production cannot reach (a true-up files against ``get_current_period``)
+    and one in which the account accrues nothing anywhere.  Dating the
+    origination at the period's own start makes the fixture deterministic,
+    reachable (an account opened on day 1 of its period), and
     clock-independent, and it keeps every hand-computed interest figure in the
     suites valid: the accrual window is then the full anchor period, exactly
     what it was before the rule existed.  A test that needs a MID-period
-    assertion (the shape the rule exists for) restamps it itself.
+    assertion (the shape the rule exists for) appends its own.
+
+    **The day now goes through the DOOR, which BOUNDS it** -- an assertion may
+    not be dated in the future (``anchor_service.resolve_observation_day``), so
+    a caller handing this factory a pay period that starts after today is
+    refused, where the old re-stamp wrote that state silently.  That is the
+    point rather than a cost: one route suite was building exactly it (an
+    account anchored two periods AHEAD of today) and grading a shape no owner
+    can produce.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -1445,6 +1496,7 @@ def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-position
             account_type_id=hysa_type.id,
             name=name,
             anchor_balance=balance,
+            observed_on=anchor_period.start_date,
         ),
     )
     db_session.add(account)
@@ -1456,9 +1508,13 @@ def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-position
             compounding or CompoundingFrequencyEnum.DAILY,
         ),
     ))
-    restamp_opening_assertion(
-        db_session, account, settle_instant_on(anchor_period.start_date),
-    )
+    # **And then before every day a row could land on** (plan step X-f3c-2b,
+    # ruling **R-HG**).  ``create_account`` opens the books on the day it was
+    # handed, which is right when the anchor period is the earliest -- and
+    # these factories are routinely handed a LATER period while the suite
+    # records movements in an earlier one.  Backward-only, so it never undoes
+    # the day stated above.
+    open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
 
@@ -1470,47 +1526,36 @@ def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-position
 _LEDGER_SUITE_ANCHOR_BALANCE = Decimal("100.00")
 
 
-def create_account_of_type(
+def create_account_via_service(
     seed_user, db_session, type_name, name, anchor_balance=None,
     observed_on=None,
 ):
-    """Create an account of any built-in type via the canonical factory.
+    """Call ``account_service.create_account`` for *type_name*, and NOTHING else.
 
-    The shared "build an account of type X" helper for the ledger-account
-    (Build-Order Step 2) suites, so the stereotyped ``AccountType`` lookup +
-    ``AccountSpec`` + ``create_account`` block is not copied per file (a
-    duplicate-code finding).  ``create_account`` fires the Step-2
-    ledger-account sync hook, so the returned account already carries its
-    paired ``budget.ledger_accounts`` row.  The opening anchor balance
-    defaults to a fixed sentinel (the ledger-pairing suites assert on
-    pairing, never on balance); the Step-5 account-anchor suites pass an
-    explicit ``anchor_balance`` because the opening correction posts exactly
-    that value.  The anchor period is resolved by the factory from the day the
-    opening is observed on.
+    **The primitive, for the suites whose SUBJECT is what that service
+    records** -- ``tests/test_services/test_account_opening.py`` grades the one
+    ``budget.account_openings`` row the factory writes, so a fixture that
+    appended a second would be grading itself.  Every other caller wants
+    :func:`create_account_of_type`, which is this plus the books an account
+    that has already existed would have.
 
-    **The opening defaults to the day BEFORE today, and that default is the
-    point** (ruling R-DH (a), finding N-133 / F1).  An assertion is the CLOSING
-    balance for its civil day, so a settle dated that same day is INSIDE it --
-    and the ordinary settle idiom in these suites is the seam's own
-    ``settled_on = display_today()``, which under a frozen clock is TODAY.  An account opened
-    "today" therefore swallows every settle the test then records, and the
-    fixture stops exercising the thing it names.  Opening the account
-    yesterday is the production shape (an account exists before money moves in
-    it) and makes "and then things happened" true in the data rather than only
-    in the docstring.  A test that specifically needs a settle on the opening's
-    OWN day passes ``observed_on`` explicitly, which is the honest way to ask
-    for the case rather than inheriting it by accident.
+    Splitting the two is plan step X-f3c-2b's own correction.  The books move
+    was first written as an ``if observed_on is None`` branch inside the shared
+    factory, which bound two unrelated things together: a caller naming the
+    ASSERTION's day got, as a side effect, books that forbade the settles it
+    was about to record.  The twelve callers that pass ``observed_on`` were
+    exactly the ones left broken by it.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
-        db_session: The test ``db.session``.
-        type_name: The ``ref.account_types`` name (e.g. ``"Checking"``,
-            ``"Mortgage"``, ``"401(k)"``).
+        db_session: The test ``db.session``, used for the ``AccountType``
+            lookup below.
+        type_name: The ``ref.account_types`` name (e.g. ``"Checking"``).
         name: The account name.
         anchor_balance: Optional opening anchor balance (``Decimal``);
             ``None`` uses the ledger-suite sentinel.
         observed_on: Optional civil day the opening balance was TRUE.
-            Defaults to the DAY BEFORE the frozen today -- see below.
+            Defaults to the day before the frozen today.
 
     Returns:
         The created :class:`~app.models.account.Account` (flushed,
@@ -1543,6 +1588,76 @@ def create_account_of_type(
             ),
         ),
     )
+
+
+def create_account_of_type(
+    seed_user, db_session, type_name, name, anchor_balance=None,
+    observed_on=None,
+):
+    """Create an account of any built-in type via the canonical factory.
+
+    The shared "build an account of type X" helper for the ledger-account
+    (Build-Order Step 2) suites, so the stereotyped ``AccountType`` lookup +
+    ``AccountSpec`` + ``create_account`` block is not copied per file (a
+    duplicate-code finding).  ``create_account`` fires the Step-2
+    ledger-account sync hook, so the returned account already carries its
+    paired ``budget.ledger_accounts`` row.  The opening anchor balance
+    defaults to a fixed sentinel (the ledger-pairing suites assert on
+    pairing, never on balance); the Step-5 account-anchor suites pass an
+    explicit ``anchor_balance`` because the opening correction posts exactly
+    that value.  The anchor period is resolved by the factory from the day the
+    opening is observed on.
+
+    **What it returns is an account that has ALREADY EXISTED**, and both halves
+    of that are deliberate.
+
+    * The origination ASSERTION defaults to the day BEFORE today (ruling
+      R-DH (a), finding N-133 / F1).  An assertion is the CLOSING balance for
+      its civil day, so a settle dated that same day is INSIDE it -- and the
+      ordinary settle idiom in these suites is the seam's own ``settled_on =
+      display_today()``, which under a frozen clock is TODAY.  An account
+      asserted "today" therefore swallows every settle the test then records,
+      and the fixture stops exercising the thing it names.
+    * The BOOKS are then opened before anything this fixture could date, always
+      (plan step X-f3c-2b, ruling **R-HG**).  An opening equity is the closing
+      balance for its OWN day, so a movement dated on or before it is not
+      absorbed but REFUSED.  ``observed_on`` does not switch this off: it says
+      where the assertion goes, which is a different question.
+
+    **A suite whose subject is the record ``create_account`` writes wants
+    :func:`create_account_via_service` instead** -- this one appends a second
+    ``budget.account_openings`` row, which is the production shape after
+    migration ``d3b6f1c8a274`` and is not what a test of the factory means.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        type_name: The ``ref.account_types`` name (e.g. ``"Checking"``,
+            ``"Mortgage"``, ``"401(k)"``).
+        name: The account name.
+        anchor_balance: Optional opening anchor balance (``Decimal``);
+            ``None`` uses the ledger-suite sentinel.
+        observed_on: Optional civil day the opening balance was TRUE.
+            Defaults to the DAY BEFORE the frozen today -- see below.
+
+    Returns:
+        The created :class:`~app.models.account.Account` (flushed,
+        uncommitted).
+    """
+    account = create_account_via_service(
+        seed_user, db_session, type_name, name, anchor_balance, observed_on,
+    )
+    # **Its BOOKS open before anything a fixture can date, ALWAYS** (plan step
+    # X-f3c-2b, ruling **R-HG**).  ``create_account`` puts the opening record
+    # and the origination assertion on ONE day, so a caller settling a row on
+    # or before that day is building a state the app refuses -- and the default
+    # idiom here settles on the frozen today or earlier.  Unconditional, and
+    # not keyed on whether the caller named ``observed_on``: that argument says
+    # where the ASSERTION goes, which is a different question, and binding the
+    # two left every caller that wanted a dated assertion with books it could
+    # not record against.
+    open_books_before_the_first_assertion(db_session, account)
+    return account
 
 
 def ledger_accounts_for_account(db_session, account_id):
@@ -2018,7 +2133,14 @@ def posted_loan_balance_map(loan_account_id, scenario_id, periods):
     The per-period form of :func:`posted_loan_balance_at`, evaluated at each
     period's END date.  A posting can fall mid-period under the one clock (step
     C2), so a payment settled during period P must count in P's balance, which
-    ``entry_date <= period.end_date`` selects.
+    ``entry_date <= <the period's last covered day>`` selects.
+
+    **It DERIVES that day rather than reading it off the row** (plan step
+    ``pay_calendar:C4-c``, which dropped the column it used to read).  The
+    owner's calendar is resolved once and each requested period's derived twin
+    supplies the bound, which is :func:`period_window`'s shape and it is here
+    for the same reason: a period's end is the day before the NEXT payday, so
+    it is a property of the whole payday set rather than of one row.
 
     **It is the scalar per period, not an independent derivation.**  Comparing
     this against :func:`posted_loan_balance_at` at the same date is therefore
@@ -2036,23 +2158,54 @@ def posted_loan_balance_map(loan_account_id, scenario_id, periods):
     Args:
         loan_account_id: The loan account whose per-period balances to read.
         scenario_id: The budget scenario to scope to.
-        periods: The pay periods to key by (any order; the result keys by
-            ``period.id`` in the given order).  Postings in periods outside this
-            list are still counted -- each period's value is a cumulative, not a
-            slice.
+        periods: The ``PayPeriod`` rows to key by, in any order and all
+            belonging to one user.  Must be non-empty -- an empty request has
+            no owner to resolve a calendar for.  The result keys by
+            ``period.id`` in PAYDAY order, which is the calendar's.  Postings
+            in periods outside this list are still counted -- each period's
+            value is a cumulative, not a slice.
 
     Returns:
         A ``{period.id: Decimal}`` mapping, or ``None`` when the loan has no
         OPENING posting in the scenario.
     """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        calendar_for,
+    )
+
     if _posted_loan_linked_ledger(loan_account_id, scenario_id) is None:
         return None
-    return {
-        period.id: posted_loan_balance_at(
+    # Materialised once: the owner is read off the first row and the id set off
+    # all of them, so a generator argument would be half consumed by the time
+    # the owner is asked for.  Every caller passes a list today; this is what
+    # keeps that from being a precondition nobody states.
+    rows = tuple(periods)
+    assert rows, "posted_loan_balance_map needs at least one period to key by"
+    owners = {period.user_id for period in rows}
+    assert len(owners) == 1, (
+        f"posted_loan_balance_map resolves ONE owner's calendar and was given "
+        f"periods from {sorted(owners)}; the rest would be silently dropped"
+    )
+    wanted = {period.id for period in rows}
+    calendar = calendar_for(rows[0].user_id)
+    answer = {
+        period.period_id: posted_loan_balance_at(
             loan_account_id, scenario_id, period.end_date,
         )
-        for period in periods
+        for period in calendar.saved()
+        if period.period_id in wanted
     }
+    # **One key per REQUESTED period, which is the contract the stored-column
+    # version had for free.**  Selecting from the calendar means a period the
+    # calendar does not hold -- unflushed, or another owner's -- would simply
+    # vanish from the result, and only two of this helper's callers assert the
+    # length.  A short map is a caller reading a KeyError several lines later
+    # about a period it did pass in.
+    assert set(answer) == wanted, (
+        f"periods {sorted(wanted - set(answer))} are not in the owner's saved "
+        f"calendar, so they were never flushed or belong to someone else"
+    )
+    return answer
 
 
 def find_loan_ledger_account(db_session, loan_account_id, kind):
@@ -2118,6 +2271,162 @@ def loan_income_shadow(db_session, transfer_id, loan_account_id):
         )
         .one()
     )
+
+
+#: Plan step ``pay_calendar:C4-c``'s revision, whose ``downgrade()`` is the one
+#: statement in this repository that re-creates ``budget.pay_periods.end_date``
+#: and ``budget.pay_periods.period_index``.
+_C4C_REVISION_FILE = "b7a41e2c9d63_a_pay_period_is_one_fact.py"
+
+
+def restore_pay_period_derived_columns(db_session):
+    """Re-create the two ``budget.pay_periods`` columns C4-c dropped.
+
+    **For a test whose subject is an EARLIER revision's shipped SQL**, which is
+    the only reason this exists.  Plan step ``pay_calendar:C4-c`` dropped
+    ``end_date`` and ``period_index``; several migrations older than it read
+    those columns, and a test that drives one of their callables against the
+    test database therefore meets ``UndefinedColumn`` where it used to find the
+    schema it expected.
+
+    It runs that revision's own ``downgrade()`` rather than issuing DDL of its
+    own, so the columns come back with the constraints, the NOT NULLs and --
+    for every row already in the table -- the VALUES the shipped statement
+    rebuilds.  A hand-written ``ADD COLUMN`` here would be a second statement of
+    the schema that could drift from the migration without failing anything.
+
+    **What it does NOT do, stated because the difference is the whole risk.**
+    It does not put the database at any particular revision: everything else
+    stays at head, so this is head's schema plus two restored columns.  That is
+    enough for a test whose subject is a STATEMENT reading those two columns,
+    and it is not enough for one whose subject is the whole schema at its own
+    revision -- for that, every revision after it has to be undone in order,
+    which is what Alembic does and what no helper here pretends to.  *The
+    general shape -- migration tests in this suite drive their callables at
+    HEAD rather than at the revision's own parent -- is a latent category error
+    that C4-c is simply the first step to make fire; it is recorded as ledger
+    row ``balance:P79`` rather than fixed inside this step.*
+
+    No restore is needed afterwards: the ``db`` fixture drops and re-clones the
+    per-worker database for every test, so a schema this leaves off head cannot
+    reach the next one.
+
+    **Call it on the session whose transaction is the one holding locks**, and
+    in practice that means BEFORE entering a nested ``app.app_context()`` rather
+    than inside one.  ``ADD COLUMN`` takes ACCESS EXCLUSIVE; Flask-SQLAlchemy
+    scopes its session to the app context and a test already runs inside one,
+    so a NESTED context gets a second session on a second connection while the
+    outer one sits idle-in-transaction holding ACCESS SHARE on
+    ``budget.pay_periods`` from whatever its fixtures last read.  The two
+    conflict and the DDL dies on the cluster's 10-second ``lock_timeout`` --
+    measured rather than predicted, and a confusing failure to meet cold.  The
+    commit below ends the handed-in session's own transaction, which is every
+    conflict this function can reach; a session in another scope is not
+    addressable from here.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that currently holds
+            this table's locks.
+    """
+    run_migration_callable(
+        load_migration_module(_C4C_REVISION_FILE).downgrade, db_session,
+    )
+
+
+def relax_pay_schedule_shift_not_null(db_session):
+    """Let ``budget.pay_schedule.shift_id`` be omitted, for one test.
+
+    :func:`restore_pay_period_derived_columns`' MIRROR, and the mirror is the
+    point.  That helper exists because a later revision REMOVED columns an
+    older statement reads; this one exists because plan step
+    ``pay_calendar:C14-b`` ADDED a ``NOT NULL`` column an older statement does
+    not write.  Both break the same assumption -- that head's schema is a
+    superset an old statement can still run against -- and it holds for READS
+    and not for an insert into a table that has since gained a required
+    column.
+
+    Concretely: ``af8254074bef``'s backfill is
+    ``INSERT INTO budget.pay_schedule (user_id, cadence_days) SELECT ...``, and
+    at head PostgreSQL refuses that row with a ``NotNullViolation`` naming a
+    column the statement predates by 95 revisions.
+
+    **It drops the NOT NULL rather than running C14-b's ``downgrade()``, and
+    the difference was measured rather than reasoned.**  The downgrade removes
+    the COLUMN, and every reader in the test then breaks instead: the mapper at
+    head still selects ``shift_id``, so the assertions that read the backfilled
+    row back through the ORM die on ``UndefinedColumn``.  What the old
+    statement needs is not the column's absence but permission to omit it, and
+    that is the smaller change -- it leaves the column, the foreign key and
+    every ORM reader intact.  Hand-written DDL here therefore duplicates no
+    migration statement: it relaxes one constraint for the length of a test
+    rather than restating a schema change.
+
+    Everything :func:`restore_pay_period_derived_columns` says about scope
+    applies unchanged -- the database is left at head minus one constraint
+    rather than at any particular revision, no restore is needed because the
+    ``db`` fixture re-clones per test, and the call belongs on the session
+    holding the table's locks.  This is the same latent category error ledger
+    row ``balance:P79`` records, met from the other direction.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that currently holds
+            this table's locks.
+    """
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import text
+
+    db_session.commit()
+    db_session.execute(text(
+        "ALTER TABLE budget.pay_schedule ALTER COLUMN shift_id DROP NOT NULL"
+    ))
+    db_session.commit()
+
+
+def run_migration_callable(callable_, db_session):
+    """Run one migration ``upgrade``/``downgrade`` against the test connection.
+
+    **The one statement of this bootstrap.**  Eighteen files under
+    ``tests/test_models/`` hand-copy a ``MigrationContext`` / ``Operations`` /
+    ``patch.object(op, "get_bind")`` block; consolidating all of them is ledger
+    row **P79**'s territory rather than a column drop's, so this is the copy
+    the files that plan step ``pay_calendar:C4-c`` touches share, and it exists
+    because that step had otherwise written a second one three lines from
+    :func:`restore_pay_period_derived_columns`'s (adversarial review,
+    2026-09-01).  The two had already drifted: one committed before configuring
+    the context and the other relied on every caller having done so.
+
+    It commits FIRST, and that is the lock rather than tidiness: DDL takes
+    ACCESS EXCLUSIVE, and a session left idle-in-transaction holding ACCESS
+    SHARE on the table blocks it until the cluster's ``lock_timeout``.
+    Committing ends the handed-in session's own transaction, which is every
+    conflict this function can reach; a session in another app-context scope is
+    not addressable from here, so a caller inside a NESTED ``app.app_context()``
+    must have committed the outer one.
+
+    Args:
+        callable_: The migration module's ``upgrade`` or ``downgrade``.
+        db_session: The test ``db.session``, in the scope that holds the
+            table's locks.
+    """
+    # Pylint: ``import-outside-toplevel`` -- alembic's operation plumbing is
+    # needed by this one helper, and importing it at module scope would put it
+    # in the import path of every test that touches this file.
+    from alembic import op  # pylint: disable=import-outside-toplevel
+    from alembic.operations import (  # pylint: disable=import-outside-toplevel
+        Operations,
+    )
+    from alembic.runtime.migration import (  # pylint: disable=import-outside-toplevel
+        MigrationContext,
+    )
+    from unittest.mock import patch  # pylint: disable=import-outside-toplevel
+
+    db_session.commit()
+    connection = db_session.connection()
+    ctx = MigrationContext.configure(connection=connection)
+    with Operations.context(ctx):
+        with patch.object(op, "get_bind", return_value=connection):
+            callable_()
+    db_session.commit()
 
 
 def load_migration_module(filename):
@@ -2255,10 +2564,9 @@ def settle_instant_on(day):
     """Return a deterministic event instant on a given civil date (noon UTC).
 
     A test-side helper for pinning an ASSERTION's recording instant to a
-    specific day without a wall-clock read -- :func:`restamp_opening_assertion`,
-    which :func:`create_hysa_account` uses to pin an account's opening.  Noon
-    UTC is the same civil day in the display zone (Eastern), so a day pinned
-    this way reads back as that day.
+    specific day without a wall-clock read -- :func:`reassert_balance_on` takes
+    one.  Noon UTC is the same civil day in the display zone (Eastern), so a
+    day pinned this way reads back as that day.
 
     **It no longer serves a SETTLE, and that is plan step X-f1** (ruling R-EC).
     A settled transaction stores its civil day in ``transactions.settled_on``,
@@ -2305,6 +2613,7 @@ def register_form_data(**overrides):
         A ``dict`` suitable for ``client.post("/register", data=...)``.
     """
     # pylint: disable=import-outside-toplevel
+    from app import ref_cache
     from app.config import BaseConfig
     from app.utils.dates import display_today
     body = {
@@ -2314,10 +2623,101 @@ def register_form_data(**overrides):
         "confirm_password": "securepass123",
         "last_payday": display_today().isoformat(),
         "cadence_days": str(BaseConfig.DEFAULT_PAY_CADENCE_DAYS),
+        # The payday convention the form's <select> renders (plan step
+        # pay_calendar:C14-b), as the ``ref.business_day_shifts`` id that
+        # control's chosen <option> carries -- a browser posts an id, not an
+        # enum member, and a body that posted anything else would exercise a
+        # payload no browser can produce.  ``none`` is what the page
+        # preselects for a new owner.
+        "shift": str(ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE)),
         "num_periods": str(BaseConfig.DEFAULT_PAY_PERIOD_HORIZON),
+        # EMPTY, because that is what a browser submits for the optional
+        # pay-history date nobody touched (plan step balance:X-bh-2): an HTML
+        # form posts every control it renders, so a body that omitted the key
+        # would exercise a payload no browser can produce.  The schema maps it
+        # to ``None``, which means NOT STATED -- the engine counts only the
+        # paydays the app records.
+        "history_opens_on": "",
     }
     body.update(overrides)
     return body
+
+
+def shift_form_value(shift=BusinessDayShiftEnum.NONE):
+    """Return what a schedule form's payday-convention ``<select>`` posts.
+
+    The ``ref.business_day_shifts`` id, as a string, because that is what a
+    browser sends for the chosen ``<option>`` -- the four schedule forms render
+    the control from ``PAYDAY_SHIFT_OPTIONS``, whose values are ids (plan step
+    ``pay_calendar:C14-b``).  A test body that posted a member name or omitted
+    the key would exercise a payload no browser can produce, which is the
+    defect class ``register_form_data``'s own docstring records.
+
+    Args:
+        shift: The convention the control is set to, defaulting to
+            :attr:`~app.enums.BusinessDayShiftEnum.NONE` -- what every form
+            preselects for an owner who has stated nothing.
+
+    Returns:
+        str -- the id to put in a form body.
+    """
+    return str(shift_id_of(shift))
+
+
+def shift_id_of(shift=BusinessDayShiftEnum.NONE):
+    """Return the ``ref.business_day_shifts.id`` a member is stored as.
+
+    For the handful of tests that build a
+    :class:`~app.models.pay_schedule.PaySchedule` row DIRECTLY rather than
+    through ``pay_schedule_service.upsert_schedule`` -- constraint cases, which
+    need a row the database will accept in every respect except the one under
+    test.  ``shift_id`` is ``NOT NULL`` with no server default (plan step
+    ``pay_calendar:C14-b``), so a row built without it fails on the wrong
+    constraint and the case passes for the wrong reason.
+
+    Args:
+        shift: The convention, defaulting to
+            :attr:`~app.enums.BusinessDayShiftEnum.NONE`.
+
+    Returns:
+        int -- the ``ref`` id.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+
+    return ref_cache.business_day_shift_id(shift)
+
+
+def rhythm_of(cadence_days, shift=BusinessDayShiftEnum.NONE):
+    """Return a :class:`~app.services.pay_schedule_service.Rhythm`.
+
+    Plan step ``pay_calendar:C14-b`` made the pay-schedule writers take the
+    cadence and the payday convention as ONE value, because the two carry a
+    joint rule and a row written through two statements passes through a state
+    neither statement means.  Most tests in this suite are about the paydays
+    rather than the convention, so this defaults the second half to ``none`` --
+    which is what every schedule holds until an owner answers (**R-PC56**) and
+    therefore what those tests were already exercising.
+
+    A helper rather than the constructor spelled out at each of the call sites,
+    for the reason ``seed_periods`` gives of the batch it wraps: the default is
+    stated ONCE, so the day a test needs a real convention it passes one and
+    every other case keeps reading as a cadence.
+
+    Args:
+        cadence_days: Days between the paydays.
+        shift: The convention, defaulting to
+            :attr:`~app.enums.BusinessDayShiftEnum.NONE`.  Pass a displacing
+            member only in a test that is ABOUT the convention -- the write
+            door refuses one on a cadence below
+            :func:`~app.utils.business_days.shortest_collision_free_cadence`.
+
+    Returns:
+        The rhythm.
+    """
+    return pay_schedule_service.Rhythm(
+        cadence_days=cadence_days, shift=shift,
+    )
 
 
 def registration_spec(**overrides):
@@ -2328,25 +2728,56 @@ def registration_spec(**overrides):
     pay-calendar half arrived at plan step X-ad-a, and the tests that call it
     directly should not each restate what a valid sign-up looks like.
 
+    **``cadence_days`` and ``shift`` stay spellable as overrides**, though the
+    spec itself carries the pair as one
+    :class:`~app.services.pay_schedule_service.Rhythm` since plan step
+    ``pay_calendar:C14-b``.  A case about the cadence is not a case about the
+    convention, and making every such case name both halves would have put the
+    default in each of them; assembled here, the default is stated once.  Pass
+    ``rhythm=`` directly to state the pair outright.
+
     Args:
         **overrides: Spec fields to replace.  ``first_payday`` defaults to the
             user's today -- see :func:`register_form_data` for why the clock
-            matters.
+            matters.  ``cadence_days`` and ``shift`` are accepted as halves of
+            the rhythm and may not be combined with an explicit ``rhythm``.
 
     Returns:
         The :class:`~app.services.auth_service.RegistrationSpec`.
+
+    Raises:
+        TypeError: Both ``rhythm`` and one of its halves were given, which
+            would leave which one wins to the order this function happens to
+            apply them in.
     """
     # pylint: disable=import-outside-toplevel
     from app.config import BaseConfig
     from app.services.auth_service import RegistrationSpec
     from app.utils.dates import display_today
+    halves = {
+        key: overrides.pop(key)
+        for key in ("cadence_days", "shift") if key in overrides
+    }
+    if halves and "rhythm" in overrides:
+        raise TypeError(
+            f"registration_spec() got rhythm and {sorted(halves)}; state the "
+            f"pair one way or the other."
+        )
     fields = {
         "email": "newuser@example.com",
         "password": "securepass123",
         "display_name": "New User",
         "first_payday": display_today(),
-        "cadence_days": BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
+        "rhythm": rhythm_of(
+            halves.get("cadence_days", BaseConfig.DEFAULT_PAY_CADENCE_DAYS),
+            halves.get("shift", BusinessDayShiftEnum.NONE),
+        ),
         "num_periods": BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
+        # The column's own default (plan step balance:X-bh-2): a sign-up that
+        # skips the question has stated NOTHING, and the engine counts only
+        # that owner's recorded paydays.  A case about the field passes its
+        # own value.
+        "history_opens_on": None,
     }
     fields.update(overrides)
     return RegistrationSpec(**fields)
@@ -2517,7 +2948,7 @@ def create_transfer(
 def create_settled_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), settled_amount=None,
-    settled_on=_UNSET_SETTLED_ON, name=None, scenario=None,
+    settled_on=_UNSET_SETTLED_ON, name=None, scenario=None, due_date=None,
 ):
     """Create an ad-hoc transfer and settle it (Paid), returning the parent.
 
@@ -2565,6 +2996,13 @@ def create_settled_transfer(
             settled-with-no-day row builds it with the bare :func:`add_txn`
             instead, which is what that builder is for.
         name: Optional transfer display name.
+        due_date: Optional due date stored on the transfer and mirrored to both
+            shadows, passed straight through to :func:`create_transfer`.
+            ``None`` (the default) leaves it unset, and a loan payment's
+            installment then falls back to its pay-period start.  Pass it when a
+            test needs two settled loan payments in ONE accrual period at
+            DIFFERENT installments -- the period-start fallback resolves both to
+            the same date, so it cannot express that shape.
         scenario: The :class:`~app.models.scenario.Scenario` to place the
             transfer (and both shadows) in.  Defaults to ``None``, which uses
             the seed user's baseline scenario (``seed_user["scenario"]``);
@@ -2577,17 +3015,28 @@ def create_settled_transfer(
     # pylint: disable=import-outside-toplevel  -- same lazy-app-import
     # convention every helper in this module follows.
     from app import ref_cache
-    from app.enums import StatusEnum
+    from app.enums import SettledDayBasisEnum, StatusEnum
     from app.extensions import db
     from app.services import transfer_service
+    from app.services.settle_day import SettleDay, record_settle_day
 
     transfer = create_transfer(
         seed_user, db_session, from_account, to_account, period,
-        amount=amount, name=name, scenario=scenario,
+        amount=amount, name=name, scenario=scenario, due_date=due_date,
     )
     update_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
     if settled_on is not _UNSET_SETTLED_ON:
-        update_kwargs["settled_on"] = settled_on
+        # The service's kwarg is the PAIR, not the column (plan step **X-az**):
+        # a day and the basis that says how it is known.  ``entered`` is what
+        # this builder means -- it stands in for the mark-done route, where the
+        # day is the owner's own and no bank document backs it.  An explicit
+        # ``None`` still reaches ``apply_settle_day_correction`` and is still
+        # refused there, which is the behaviour this parameter's docstring
+        # promises.
+        update_kwargs["settle_day"] = (
+            None if settled_on is None
+            else SettleDay(day=settled_on, basis=SettledDayBasisEnum.ENTERED)
+        )
     if settled_amount is not None:
         update_kwargs["settled_amount"] = settled_amount
     transfer_service.update_transfer(
@@ -2663,9 +3112,10 @@ def create_settled_cash_transaction(
     # pylint: disable=import-outside-toplevel  -- same lazy-app-import
     # convention every helper in this module follows.
     from app import ref_cache
-    from app.enums import StatusEnum, TxnTypeEnum
+    from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
     from app.models.transaction import Transaction
     from app.services import posting_service, status_seam
+    from app.services.settle_day import SettleDay, record_settle_day
 
     account = seed_user["account"] if account is None else account
     scenario = seed_user["scenario"] if scenario is None else scenario
@@ -2674,13 +3124,14 @@ def create_settled_cash_transaction(
     )
     txn = Transaction(
         account_id=account.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name=name,
         category_id=None if category is None else category.id,
         transaction_type_id=type_id,
-        estimated_amount=amount,
+        amount_ownership=AmountOwnership.own(amount),
     )
     db_session.add(txn)
     db_session.flush()
@@ -2704,7 +3155,16 @@ def create_settled_cash_transaction(
         ),
     )
     if settled_on is not _UNSET_SETTLED_ON:
-        txn.settled_on = settled_on
+        # Through the app's OWN pair writer (plan step **X-az**), never as a
+        # bare column assignment: the day and its basis are welded by
+        # ``ck_transactions_settle_day_basis_pairing``, and a fixture that moved
+        # one and left the other would build a row the app cannot write.  The
+        # seam above already stamped ``entered``; re-stating it keeps the pair
+        # written in one act whichever day wins.
+        record_settle_day(
+            txn,
+            SettleDay(day=settled_on, basis=SettledDayBasisEnum.ENTERED),
+        )
     posting_service.sync_transaction_postings(txn, settled=True)
     return txn
 
@@ -2810,13 +3270,11 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
     from app.models.transaction import Transaction
     from app.models.transaction_template import TransactionTemplate
 
-    rule = make_every_period_rule(db_session, seed_user["user"].id)
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Groceries"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type_id,
         name=name,
         default_amount=estimated,
@@ -2824,15 +3282,19 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
     )
     db_session.add(template)
     db_session.flush()
+    state_template_price(template)
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db_session, template)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type_id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
         template_id=template.id,
     )
     db_session.add(txn)
@@ -2896,7 +3358,7 @@ def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-argumen
         amount=amount,
         description=description,
         purchased_on=purchased_on,
-        settled_on=settled_on,
+        **settle_day_columns(settled_on),
         is_credit=is_credit,
     ))
     db_session.flush()
@@ -2991,7 +3453,27 @@ def mark_purchase_settled(db_session, account, entry, settled_on=None):
         f"assertion (and entry id={entry.id}'s dates) back inside the clock "
         f"this suite runs on rather than forward past it."
     )
-    entry.settled_on = settled_on
+    # **The pair, through the app's OWN pair writer** (plan step **X-az**): a day
+    # written without the basis that says how it is known is unstorable, and a
+    # fixture that states half of one builds a row no door could write.
+    #
+    # **``entered``, and NOT ``asserted``, which a first version wrote** (found
+    # by adversarial review 2026-08-22).  The temptation is that this helper's
+    # precondition is about an assertion COVERING the day -- but the app's only
+    # ``asserted`` writer is ``reconcile_service._purchases.record_settled_days``,
+    # which in ONE statement writes the anchor's own ``observed_on`` AND the link
+    # naming it.  This helper writes neither: its day is the caller's and may be
+    # strictly earlier than the assertion, and it sets no link.  Calling that
+    # ``asserted`` builds a row the app cannot reach -- the migration's own
+    # backfill classifies exactly that row ``entered`` -- and the matcher would
+    # then hand it the BOUND branch of ``expected_window``, a span, for a row
+    # production would call a point.  That is finding **N-132**'s shape inside
+    # the helper written to prevent N-132.  A caller that wants the panel's own
+    # state ticks through the panel.
+    # pylint: disable-next=import-outside-toplevel
+    from app.services.settle_day import record_settle_day
+
+    record_settle_day(entry, an_entered_day(settled_on))
     db_session.flush()
     return entry
 
@@ -3056,9 +3538,18 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     refused, and leaving the band releases the ASSERTION while KEEPING the
     record.
 
-    The row's own ``estimated_amount`` stands in for the resolver's answer,
-    which is what a bare-built fixture row means by "what this settle books":
-    such rows own their plan, so the two agree.
+    **What the settle BOOKS is the app's own published rule**
+    (``transaction_service.settle_amount`` over a basis built the way the verb
+    builds one), not the row's ``estimated_amount`` column.  It WAS that column
+    until plan step balance:X-au-e, on the stated ground that "such rows own
+    their plan, so the two agree" -- true while a generated row stored a figure
+    and false the moment one stopped.  A generated row is DERIVED now and its
+    column is NULL, so the old spelling handed the seam
+    ``Settlement(amount=None, basis=derived)`` and every fixture that settles a
+    generated row died on the record's own refusal: *a 'derived' settlement
+    must state the figure that moved*.  Reading the rule instead is what makes
+    this helper's promise -- that it answers ARM FOR ARM the way the real verbs
+    do -- true again rather than true of the rows fixtures happened to build.
 
     Args:
         txn: The row being moved, at its PRE-move status.
@@ -3072,20 +3563,25 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     # pylint: disable=import-outside-toplevel  -- the lazy-app-import
     # convention every helper in this module follows.
     from app.enums import SettlementBasisEnum
-    from app.services.status_seam import (
-        Settlement,
-        honoured_correction,
-        recorded_settlement,
+    from app.services.status_seam import Settlement, recorded_settlement
+    from app.services.cash_ledger import amount_basis
+    from app.services.transaction_service import (
+        settle_amount,
+        settles_from_entries,
     )
-    from app.services.transaction_service import settles_from_entries
     from app.utils.balance_predicates import enters_settled_band
 
     if not enters_settled_band(txn, new_status_id):
         return None
     if settles_from_entries(txn):
         return Settlement(amount=None, basis=SettlementBasisEnum.PURCHASES)
-    held = honoured_correction(txn)
-    booked = txn.estimated_amount if held is None else held
+    # ONE basis for the whole act, exactly as ``settle_transaction`` builds it,
+    # and ``settle_amount``'s second arm IS the retained correction -- so this
+    # asks the same rule once rather than re-branching on
+    # ``honoured_correction`` beside it.
+    booked = settle_amount(
+        txn, amount_basis(txn.account.user_id, txn.scenario_id),
+    )
     correction = (
         submitted if submitted is not None and submitted != booked else None
     )
@@ -3119,12 +3615,37 @@ def settlement_basis_id(basis):
     return ref_cache.settlement_basis_id(basis)
 
 
+def settled_day_basis_id(basis):
+    """Return one ``ref.settled_day_bases`` id, for a fixture that states it.
+
+    :func:`settlement_basis_id`'s twin one column over, and it exists for the
+    same reason (plan step **X-az**): the narrow companion of
+    :func:`settle_day_columns`, for a fixture writing the pair through raw SQL
+    -- a simulated concurrent ``UPDATE`` -- where there is no model instance for
+    the pair writer to take.
+
+    Resolved through ``ref_cache`` like every other ref value, so a fixture
+    names the BASIS and never an id.
+
+    Args:
+        basis: The :class:`app.enums.SettledDayBasisEnum` member to resolve.
+
+    Returns:
+        The ``ref.settled_day_bases.id``.
+    """
+    # pylint: disable=import-outside-toplevel  -- the lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+
+    return ref_cache.settled_day_basis_id(basis)
+
+
 def settlement_columns(settled_on, amount, submitted=None):
     """Return the settlement-record kwargs for a DIRECTLY-constructed row.
 
     **The one door a bare-built fixture row goes through** (plan step X-au-c3).
     A row that asserts a settle DAY always records WHAT moved and how the
-    figure is known -- ``ck_transactions_settle_day_needs_basis`` and
+    figure is known -- ``ck_transactions_settle_day_needs_a_record`` and
     ``ck_transactions_settled_amount_needs_basis`` are the two implications that
     make that true of the bare constructor as well as of the seam.  (The reverse
     does NOT hold and must not: a row may carry the record with no day, which is
@@ -3174,6 +3695,124 @@ def settlement_columns(settled_on, amount, submitted=None):
     return {
         "settled_amount": Decimal(str(figure)),
         "settled_basis_id": ref_cache.settlement_basis_id(basis),
+    }
+
+
+def an_entered_day(day):
+    """Return *day* as a settle day the OWNER stated -- the ``entered`` basis.
+
+    The three ``*_day`` builders below are what a test hands a settle door now
+    that the door takes the PAIR rather than a bare ``date`` (plan step
+    **X-az**): the day, and how that day is known.  They exist so a call site
+    reads as the fact it is asserting instead of as a two-line construction, and
+    so the BASIS is visible at the site -- which is the whole subject of the
+    step, and would be invisible if a helper defaulted it.
+
+    ``entered`` is what a manual Mark Paid, a full-edit date box and every
+    fixture standing in for one records: the owner's own day, with no bank
+    document behind it.
+
+    Args:
+        day: The civil ``date``.
+
+    Returns:
+        Its :class:`app.services.settle_day.SettleDay` on the ``entered`` basis.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.enums import SettledDayBasisEnum
+    from app.services.settle_day import SettleDay
+
+    return SettleDay(day=day, basis=SettledDayBasisEnum.ENTERED)
+
+
+def an_asserted_day(day):
+    """Return *day* as the day a BALANCE was asserted for -- an upper BOUND.
+
+    What the reconcile panel records: the owner asserted a balance for this day
+    and this money was inside it, so the true posting day is on or BEFORE it.
+    :func:`an_entered_day` carries why these builders exist.
+
+    Args:
+        day: The civil ``date`` the balance was asserted for.
+
+    Returns:
+        Its :class:`app.services.settle_day.SettleDay` on the ``asserted``
+        basis.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.enums import SettledDayBasisEnum
+    from app.services.settle_day import SettleDay
+
+    return SettleDay(day=day, basis=SettledDayBasisEnum.ASSERTED)
+
+
+def an_observed_day(day):
+    """Return *day* as a day a BANK STATEMENT showed the money post.
+
+    What the statement matcher records.  :func:`an_entered_day` carries why
+    these builders exist.
+
+    Args:
+        day: The civil ``date`` the bank posted the movement.
+
+    Returns:
+        Its :class:`app.services.settle_day.SettleDay` on the ``observed``
+        basis.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.enums import SettledDayBasisEnum
+    from app.services.settle_day import SettleDay
+
+    return SettleDay(day=day, basis=SettledDayBasisEnum.OBSERVED)
+
+
+def settle_day_columns(settled_on, basis=None):
+    """Return the settle-day COLUMN PAIR a bare-built fixture row owes.
+
+    The DAY's twin of :func:`settlement_columns`, and it exists for the same
+    reason (plan step **X-az**): ``settled_on`` and ``settled_day_basis_id`` are
+    one fact in two columns, welded by each table's
+    ``ck_*_settle_day_basis_pairing`` BICONDITIONAL, so a bare
+    ``Transaction(settled_on=...)`` that names only the day is an
+    ``IntegrityError`` at flush rather than a row.
+
+    Every bare builder goes through this rather than spelling the pair, for the
+    reason the app has ONE writer for it
+    (:func:`app.services.settle_day.record_settle_day`): a fixture that states
+    half of a pair builds a row no door could have written, and every test over
+    that row grades a state the app cannot reach.
+
+    **The default basis is ``entered``**, which is what a bare-built settled row
+    MEANS: nobody imported a statement and nobody reconciled a balance to make
+    it, so the day is the fixture's own assertion -- exactly what a manual Mark
+    Paid records.  A suite grading the matcher's window rule passes
+    ``SettledDayBasisEnum.ASSERTED`` or ``.OBSERVED`` explicitly, because there
+    the KIND of day is the subject.
+
+    Args:
+        settled_on: The civil day, or ``None`` for a row that carries none.
+        basis: The :class:`~app.enums.SettledDayBasisEnum` member, or ``None``
+            for the ``entered`` default.  Ignored when *settled_on* is ``None``,
+            where the pair is both-NULL.
+
+    Returns:
+        ``{"settled_on": ..., "settled_day_basis_id": ...}``, ready to splat
+        into a model constructor.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import SettledDayBasisEnum
+
+    if settled_on is None:
+        return {"settled_on": None, "settled_day_basis_id": None}
+    member = SettledDayBasisEnum.ENTERED if basis is None else basis
+    return {
+        "settled_on": settled_on,
+        "settled_day_basis_id": ref_cache.settled_day_basis_id(member),
     }
 
 
@@ -3268,21 +3907,25 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 
     txn = Transaction(
         account_id=account.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario.id,
         status_id=status_id,
         name=name,
         category_id=cat_id,
         transaction_type_id=type_id,
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         due_date=due_date,
         is_deleted=is_deleted,
-        settled_on=settled_on,
+        # The settle DAY and the basis that says how it is known, as one pair
+        # (plan step **X-az**).  ``entered`` is what a bare-built settled row
+        # means: no statement was imported and no balance reconciled to make it.
+        **settle_day_columns(settled_on),
         # The settlement RECORD, complete or absent (plan step X-au-c3).  A
         # settled row states what moved -- the typed figure when the caller gave
         # one, else the row's own -- and a row built WITHOUT a settle day states
         # nothing here, which keeps every bare-built row on the same side of
-        # ``ck_transactions_settle_day_needs_basis`` as the seam's own writes.
+        # ``ck_transactions_settle_day_needs_a_record`` as the seam's own writes.
         # (A row that carries the record with no day is legal -- it is the
         # RETAINED state -- but no factory MEANS that; a fixture wanting it
         # settles a row and then reverts it, as the app does.)
@@ -3367,7 +4010,7 @@ def observed_day_of(instant):
     return to_display_date(instant)
 
 
-def add_anchor_history(db_session, account, period, balance, days_ago=0):
+def add_anchor_history(db_session, account, balance, days_ago=0):
     """Append an :class:`AccountAnchorHistory` row ``days_ago`` before now.
 
     The shared anchor-history builder for the dashboard route and
@@ -3382,8 +4025,6 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
         db_session: The test ``db.session``.
         account: The :class:`~app.models.account.Account` the anchor
             belongs to.
-        period: The :class:`~app.models.pay_period.PayPeriod` the anchor
-            is recorded against.
         balance: The anchor balance (str or Decimal-coercible).
         days_ago: How many days before now to date the row (default 0).
 
@@ -3401,6 +4042,10 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
         anchor_balance=Decimal(str(balance)),
         created_at=created,
         observed_on=observed_day_of(created),
+        # The entered day is the pinned instant's, not today's (**N-299**):
+        # the column default is a plain ``display_today`` and a historical row
+        # must say what it means rather than inherit the wall clock.
+        recorded_on=observed_day_of(created),
     )
     db_session.add(entry)
     db_session.flush()
@@ -3478,119 +4123,537 @@ def override_anchor(db_session, account, period, balance, *, at=None):
         anchor_balance=balance,
         created_at=asserted_at,
         observed_on=observed_day_of(asserted_at),
+        # The entered day is the pinned instant's (**N-299**), as above.
+        recorded_on=observed_day_of(asserted_at),
     )
     db_session.add(history)
     db_session.flush()
     return history
 
 
-def restamp_opening_assertion(db_session, account, at):
-    """Pin the factory-written OPENING assertion's instant to ``at``.
+def reassert_balance_on(db_session, account, at):
+    """Assert *account*'s balance AGAIN, at the instant ``at``.
 
-    ``account_service.create_account`` writes the opening
-    :class:`~app.models.account.AccountAnchorHistory` row with a wall-clock
-    ``created_at``, which would sort AFTER every controlled instant a cash-ledger
-    test uses.  Re-stamping it makes the whole event stream deterministic.
+    **The fixture act that replaced three re-stamping helpers** (plan step
+    X-f3c-2c).  ``restamp_opening_assertion`` / ``restamp_latest_assertion``
+    UPDATEd a stored :class:`~app.models.account.AccountAnchorHistory` row to
+    move its business day and its recording instant onto a day the test had
+    chosen.  ``budget.account_anchor_history`` is append-only, so no such act
+    exists: an assertion records what a bank said on a day and the only way to
+    say something else is to say it again.  This helper is that -- one more
+    assertion, carrying the balance that governs unless the caller names
+    another, dated on ``at``'s civil day.
 
-    The instant-precise counterpart of :func:`add_anchor_history` (which dates
-    relative to now, in whole days): the cash walk partitions settles against an
-    assertion by INSTANT, so its suites need second precision and an absolute
-    moment.  Shared rather than copied per suite -- the walk (plan step X-a) and
-    the fold (X-b) both build their streams this way.
+    **Why the state it builds is production's own and not a fixture's.**  An
+    owner who reconciles twice files two assertions; production's Checking
+    account carries 2-3 on each of three days.  The two rows this leaves --
+    the origination one ``account_service.create_account`` wrote and this one --
+    are exactly what "I opened the account, and later I confirmed the balance
+    again" looks like, and the balance every producer reads on every day at or
+    after ``at`` is the same figure the re-stamp used to produce, because
+    nothing is dated between them.
 
-    Args:
-        db_session: The test ``db.session``.
-        account: The :class:`~app.models.account.Account` whose opening to pin.
-        at: The aware-UTC instant to stamp it with.
-
-    Returns:
-        The re-stamped :class:`AccountAnchorHistory` row (flushed).
-    """
-    return _restamp_assertion(db_session, account, at, newest=False)
-
-
-def restamp_latest_assertion(db_session, account, at):
-    """Pin the account's NEWEST assertion instant to ``at``.
-
-    The twin of :func:`restamp_opening_assertion` for a true-up written through
-    the production path (``anchor_service.stage_anchor_true_up``, which sets the
-    ``current_anchor_*`` cache AND appends the history row): that row also
-    carries a wall-clock ``created_at``, and since plan step X-c2a modelled
-    interest begins at the LATEST assertion's UTC civil day (ruling R-L), so a
-    suite that needs a controlled accrual window has to pin it.
-
-    It FLUSHES first rather than relying on autoflush: the caller has just
-    staged the true-up in the session, and resolving the row without flushing
-    would silently restamp the previous assertion instead -- a test helper
-    quietly pinning the wrong row is worse than one that fails.
+    **What it does NOT do is move the books.**  ``budget.account_openings`` is
+    the account's own opening record and this writes no row there; a caller
+    that needs the books earlier than they stand calls
+    :func:`open_books_before_the_first_assertion`, which is backward-only and
+    says so.  The re-stamp helpers restated the opening as a side effect, which
+    made "place this assertion" and "move the books" one act that no door
+    performs together.
 
     Args:
         db_session: The test ``db.session``.
-        account: The :class:`~app.models.account.Account` whose latest
-            assertion to pin.
-        at: The aware-UTC instant to stamp it with.
+        account: The :class:`~app.models.account.Account` asserting.
+        at: The aware-UTC instant to record the assertion at.  Its display
+            civil day becomes ``observed_on`` -- the day the balance was TRUE
+            -- and the instant itself becomes ``created_at``, which orders two
+            assertions that share a day.
 
     Returns:
-        The re-stamped :class:`AccountAnchorHistory` row (flushed).
-    """
-    return _restamp_assertion(db_session, account, at, newest=True)
+        The appended :class:`AccountAnchorHistory` row (flushed).
 
+    Raises:
+        AssertionError: When *account* carries no assertion to repeat.
+            Reachable -- :func:`account_never_asserted` builds exactly such an
+            account -- and raised rather than defaulted because a fabricated
+            balance is a figure no test author asked for.
 
-def _restamp_assertion(db_session, account, at, *, newest):
-    """Pin the oldest or newest assertion's instant -- the shared core.
-
-    One query with one ordering flag rather than two near-identical copies:
-    both wrappers answer "which stored assertion am I pinning", and the row
-    they resolve must be selected the same way
-    :func:`~app.services.cash_ledger.resolve_anchor` selects the latest
-    (``created_at`` then ``id``), or a same-instant pair would restamp a
-    different row than the producer reads.
-
-    Args:
-        db_session: The test ``db.session``.
-        account: The :class:`~app.models.account.Account` to pin.
-        at: The aware-UTC instant to stamp with.
-        newest: ``True`` for the latest assertion, ``False`` for the opening.
-
-    Returns:
-        The re-stamped :class:`AccountAnchorHistory` row (flushed).
+    **It took a ``balance`` argument until the adversarial review of this
+    step**, so a caller could assert a DIFFERENT figure.  Not one of the 21
+    call sites passed one: every caller means "say the same thing again on
+    another day", which is the whole act.  A test that wants a different figure
+    has :func:`append_balance_assertion`, which takes one and always did.
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above.
     from app.models.account import AccountAnchorHistory
 
     require_assertion_instant(at)
+    # FLUSHES first rather than relying on autoflush: a caller that has just
+    # staged an assertion in the session would otherwise read the one before
+    # it, and a fixture quietly repeating the wrong balance is worse than one
+    # that fails.
     db_session.flush()
-    order = (AccountAnchorHistory.created_at, AccountAnchorHistory.id)
-    if newest:
-        order = tuple(column.desc() for column in order)
-    row = (
-        db_session.query(AccountAnchorHistory)
+    # ``.first()`` and not ``.scalar()``: an account may already carry several
+    # assertions, and ``Query.scalar`` is ``one()`` underneath -- it raises
+    # ``MultipleResultsFound`` on exactly the accounts this helper exists to
+    # add one more to.
+    governing = (
+        db_session.query(AccountAnchorHistory.anchor_balance)
         .filter_by(account_id=account.id)
-        .order_by(*order)
+        .order_by(
+            AccountAnchorHistory.observed_on.desc(),
+            AccountAnchorHistory.created_at.desc(),
+            AccountAnchorHistory.id.desc(),
+        )
         .first()
     )
-    row.created_at = at
-    # The BUSINESS day moves with the recording instant.  Pinning one and
-    # leaving the other is now a reachable state (``observed_on`` is a stored
-    # column since plan step 2), and it is not what any caller of a *restamp*
-    # helper means: they are placing the whole assertion, not editing its date.
-    row.observed_on = observed_day_of(at)
+    assert governing is not None, (
+        f"account {account.id} carries no assertion to repeat; use "
+        "append_balance_assertion to state one"
+    )
+    balance = governing[0]
+    row = AccountAnchorHistory(
+        account_id=account.id,
+        anchor_balance=balance,
+        created_at=at,
+        observed_on=observed_day_of(at),
+        # The entered day is the pinned instant's, never the wall clock
+        # (finding **N-299**): a historical row must say what it means rather
+        # than inherit ``display_today()`` from the column default.
+        recorded_on=observed_day_of(at),
+    )
+    db_session.add(row)
     db_session.flush()
     return row
 
 
+@contextmanager
+def append_only_guard_lifted(db_session, table):
+    """Lift every append-only arm on *table* for the block's duration.
+
+    **This exists to grade the control UNDERNEATH, and nothing else.**  Since
+    plan step X-f3c-2c, ``budget.refuse_append_only_change`` refuses every
+    UPDATE, every DELETE and (since X-f3c-2d) every TRUNCATE on the three
+    account-history tables, whoever asks --
+    which is what makes the rule true, and which also means it SHADOWS the
+    controls it sits on top of.  Three of those still matter and would
+    otherwise go ungraded:
+
+    * ``fk_transactions_reconciled_by``'s ``ON DELETE RESTRICT``, which refuses
+      to un-clear a line by removing the statement it names (ruling **R-FL**);
+    * ``ck_books_open_before_movements``' UPDATE and DELETE arms, which exist
+      precisely for "a raw ``UPDATE`` moving the governing row's ``opened_on``
+      forward, and a raw ``DELETE`` of the governing row" (plan step X-f3c-2b);
+    * the posted-only reversal branch of ``account_posting_service``, defensive
+      against a history row that vanished from under its journal entry.
+
+    A control nobody can reach is a control nobody can trust, and deleting
+    those three because a newer guard happens to stand in front of them would
+    trade a measured refusal for an argument.  So a case that grades one lifts
+    the outer guard for exactly its own statement and says so.
+
+    **It is not an escape hatch for building fixtures.**  A fixture that wants
+    an account with no assertion has :func:`account_never_asserted`; one that
+    wants a different asserted day has :func:`reassert_balance_on`.  Neither
+    needs this, and both were written so that neither would.
+
+    Restores the trigger in a ``finally``, so a failing assertion inside the
+    block cannot leave the rest of the test's transaction unguarded.
+
+    Args:
+        db_session: The test ``db.session``.
+        table: The schema-qualified table, e.g.
+            ``"budget.account_anchor_history"``.  Must be one of
+            :data:`app.append_only_infrastructure.APPEND_ONLY_TABLES`; a typo
+            would otherwise lift nothing and the case would grade the outer
+            guard while claiming to grade the inner one.
+
+    Yields:
+        ``None``.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.append_only_infrastructure import (
+        APPEND_ONLY_TABLES,
+        APPEND_ONLY_TRIGGERS,
+    )
+    from app.extensions import db
+
+    assert table in APPEND_ONLY_TABLES, (
+        f"{table!r} carries no append-only trigger to lift; "
+        f"expected one of {APPEND_ONLY_TABLES}"
+    )
+    from sqlalchemy import exc as sa_exc
+
+    # EVERY arm, not just the update one: since X-f3c-2d the guard is three
+    # triggers with three timings, and lifting one would leave a case that
+    # means to reach the control underneath still refused by another arm.
+    enable = [
+        db.text(f"ALTER TABLE {table} ENABLE TRIGGER {name}")
+        for name in APPEND_ONLY_TRIGGERS
+    ]
+    # Disabling FIRST is load-bearing rather than tidy: the delete arm is a
+    # deferred constraint trigger, so a transaction that has already deleted
+    # from this table holds pending trigger events and PostgreSQL then refuses
+    # ``ALTER TABLE`` on it outright.
+    for name in APPEND_ONLY_TRIGGERS:
+        db_session.execute(db.text(
+            f"ALTER TABLE {table} DISABLE TRIGGER {name}"
+        ))
+    try:
+        yield
+    finally:
+        try:
+            for statement in enable:
+                db_session.execute(statement)
+        except (sa_exc.InvalidRequestError, sa_exc.DBAPIError):
+            # A case that expects the INNER control to refuse leaves no way to
+            # emit further SQL, in one of two shapes: SQLAlchemy refuses
+            # ('prepared' after a failed COMMIT, pending-rollback after a
+            # failed flush), or PostgreSQL does (``InFailedSqlTransaction``
+            # after a constraint aborted the transaction).  Both are caught by
+            # name rather than broadly.  Rolling back is what such a case does
+            # next anyway; doing it here is what makes the guard come back
+            # whether the block passed or raised, which a bare re-enable would
+            # not.
+            db_session.rollback()
+            for statement in enable:
+                db_session.execute(statement)
+
+
+def account_never_asserted(
+    seed_user, db_session, name="Unasserted", type_name="Checking",
+    opening_equity=None,
+):
+    """Build an account the assertion factory never touched.
+
+    **The only honest way to reach "this account has asserted nothing" since
+    plan step X-f3c-2c**, and the reason is that the state is genuinely
+    unreachable through a door.  ``account_service.create_account`` writes an
+    origination assertion and CHECKS that it landed -- it is the E-19 / CRIT-01
+    invariant -- and ``budget.account_anchor_history`` is append-only at the
+    database tier, so nothing may delete that row while the account stands.
+    Every suite that needs the state used to reach it by creating an account
+    and then deleting its assertions; that act does not exist.
+
+    So this builds the row directly and stops there.  What it produces is an
+    account that was never created, which is exactly the premise: the branches
+    it reaches -- ``cash_ledger.resolve_anchor``'s ``RuntimeError``,
+    ``_asset_fold``'s fail-loud window, ``balance_at.cash_anchor_history``'s
+    empty log, ``integrity_check``'s BA-01 -- are the ones that exist because a
+    reader must not fabricate a level for an account whose books it cannot
+    read.  They are defensive arms for an impossible state, and a fixture that
+    could not build one would leave every one of them ungraded.
+
+    **It PAIRS the ledger account**, because that pairing is not part of what
+    the fixture is withholding: a posted-ledger reader asked about an account
+    with no chart row raises for a different reason, and a case meaning "no
+    assertion" would then be graded by the wrong refusal.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict, for the owner.
+        db_session: The test ``db.session``.
+        name: The account name, unique per owner.
+        type_name: The ``ref.account_types`` name.
+        opening_equity: When given, an :class:`AccountOpening` row is written
+            for the day before today carrying this equity -- for a case whose
+            subject is the ASSERTION's absence and which needs the books to be
+            readable.  ``None``, the default, withholds that too, which is what
+            a case about a missing OPENING record wants.
+
+    Returns:
+        The created :class:`~app.models.account.Account`, flushed.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from datetime import timedelta as _td
+
+    from app import ref_cache
+    from app.enums import AccountOpeningSourceEnum
+    from app.models.account import Account
+    from app.models.account_opening import AccountOpening
+    from app.models.ref import AccountType
+    from app.services import ledger_account_service
+    from app.utils.dates import display_today
+
+    account_type = (
+        db_session.query(AccountType).filter_by(name=type_name).one()
+    )
+    account = Account(
+        user_id=seed_user["user"].id,
+        account_type_id=account_type.id,
+        name=name,
+    )
+    db_session.add(account)
+    db_session.flush()
+    if opening_equity is not None:
+        db_session.add(AccountOpening(
+            account_id=account.id,
+            opened_on=display_today() - _td(days=1),
+            opening_equity=opening_equity,
+            source_id=ref_cache.account_opening_source_id(
+                AccountOpeningSourceEnum.USER_DECLARED,
+            ),
+        ))
+    ledger_account_service.create_ledger_account_for_account(account)
+    db_session.flush()
+    return account
+
+
+def open_books_before_the_first_assertion(
+    db_session, account, also_before=None,
+):
+    """Open *account*'s books before ANY day a fixture could date a row on.
+
+    **The factory shape plan step X-f3c-2b requires** (ruling **R-HG**).
+    ``account_service.create_account`` writes the opening record and the
+    origination assertion on ONE day, which is right in production -- the owner
+    types one balance and it is both -- and it means no movement may be dated on
+    or before that day, because an opening equity is the CLOSING balance for its
+    own day.  A fixture that then settles a row on or before the account's own
+    creation day is building a state the app refuses, and on the frozen suite
+    clock that is the ordinary case: ``create_account``'s default ``observed_on``
+    and the settle door's default day are the SAME ``display_today()``.
+
+    **It bounds on every day a row could land on and takes the earliest,
+    because "the day before the assertion" was measured too tight.**  Route
+    suites routinely settle a row days BEFORE the account was created -- a
+    correction to money that moved last week -- so an opening one day back
+    still refuses them.  The bounds:
+
+    * the account's earliest ASSERTION, which is where ``create_account`` put
+      the books;
+    * the owner's earliest PAY PERIOD, which is the floor the settle door itself
+      applies (``pay_period_service.earliest_recordable_day``, ruling R-EL), so
+      nothing a door accepts can precede it;
+    * the earliest day the account ALREADY records money moving, so a helper
+      called after the rows exist cannot strand them;
+    **A matched BANK LINE bounds the books too and is deliberately NOT a term
+    here, because it cannot change the answer** (plan step
+    balance:X-f3c-2b-2b).  It was added as one and then removed on a proof
+    rather than on taste: this helper only ever moves the books BACKWARD (it
+    clamps to the standing opening), and the database constraint already
+    guarantees the standing opening sits strictly below every line the account
+    has matched.  So ``min(matched) - 1`` is never smaller than the clamp, and
+    the term is dead in every state the boundary permits.  A defensive term
+    that cannot fire is the *born dead* shape ``lessons.md`` names, and it
+    would have read as protection nobody had.
+    * *also_before*, when the caller knows a day of its own -- a loan's
+      ORIGINATION is the one that exists, because its payment schedule runs
+      from there and the owner's calendar may start later.
+
+    One day before the earliest of those is the latest day that leaves every
+    recordable day recordable.  It is still a real production shape -- books
+    that opened before the budget did is exactly what finding **N-368**'s import
+    will create for the developer's own Checking account -- and it moves NO
+    figure in a fixture: the origination assertion still clears whatever settled
+    on its own day, so every correction is what it was.
+
+    **BACKWARD only, and that is a rule rather than an accident.**  The books
+    never move forward here, so calling this twice, or calling it on an account
+    some other helper already opened earlier, cannot strand a row that was
+    legal a moment ago.  ``tests/conftest``'s own calendar reset learned the
+    same rule the same way one table over, and plan step
+    ``pay_calendar:C4-b-1`` then measured that its backward-only restatement
+    could not move a day in any world that file builds and deleted it; what
+    enforces the rule there now is a refusal, not a restatement.
+
+    A no-op for an account carrying no assertion, and equally for one carrying
+    no opening ROW -- both production-unreachable, both states a raw-model
+    fixture can build.  Each answers ``None`` rather than a day nothing wrote.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` whose books to move.
+        also_before: An extra civil day the books must precede, or ``None``.
+
+    Returns:
+        The civil day the books now open on, or ``None`` when the account
+        carries no assertion to place them before.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep avoidance
+    # as the loan helpers above.
+    from app.extensions import db
+    from app.models.account import Account, AccountAnchorHistory
+    from app.models.pay_period import PayPeriod
+    from app.models.transaction import Transaction
+    from app.models.transaction_entry import TransactionEntry
+    from app.services import account_posting_service
+
+    db_session.flush()
+    earliest_assertion = (
+        db_session.query(db.func.min(AccountAnchorHistory.observed_on))
+        .filter(AccountAnchorHistory.account_id == account.id)
+        .scalar()
+    )
+    if earliest_assertion is None:
+        return None
+    owner_id = db_session.query(Account.user_id).filter(
+        Account.id == account.id,
+    ).scalar()
+    candidates = [earliest_assertion]
+    for value in (
+        also_before,
+        db_session.query(db.func.min(PayPeriod.start_date))
+        .filter(PayPeriod.user_id == owner_id).scalar(),
+        db_session.query(db.func.min(Transaction.settled_on))
+        .filter(Transaction.account_id == account.id).scalar(),
+        db_session.query(db.func.min(TransactionEntry.settled_on))
+        .filter(TransactionEntry.account_id == account.id).scalar(),
+    ):
+        if value is not None:
+            candidates.append(value)
+    # Clamped against the books as they STAND, so this only ever moves them
+    # backward -- see the docstring's rule.  ``_governing_opening_day`` answers
+    # ``date.max`` for an account carrying no opening row, which makes the
+    # clamp a no-op there rather than a special case.
+    standing = _governing_opening_day(db_session, account)
+    if standing == _real_date.max:
+        # No opening ROW at all, so there is nothing to restate and nothing to
+        # return: ``restate_account_opening`` carries the equity forward from
+        # the governing row and has none to read.  Answering the COMPUTED day
+        # here would name a day the books do not open on, which is worse than
+        # answering nothing -- a raw-model fixture can build this state, and
+        # the docstring's contract is the day the books NOW open.
+        return None
+    opened_on = min(min(candidates) - _real_timedelta(days=1), standing)
+    if opened_on == standing:
+        return opened_on
+    restate_account_opening(db_session, account, opened_on)
+    # **The posted ledger follows the books** (plan step X-f3c-2b).
+    # ``create_account`` has already booked the ``account_opening`` journal
+    # entry keyed on the day it asserted, so a restatement afterwards leaves
+    # that entry on a day the books no longer open -- the stale-key-plus-
+    # reversal shape ``tests/conftest.py``'s own factory comment warns about.
+    # The reconcile is idempotent and self-healing, and re-running it is what
+    # PRODUCTION does after the same restatement (the deploy's
+    # ``backfill_all_account_anchor_postings``), so the fixture takes the same
+    # path rather than a shortcut.
+    account_posting_service.sync_account_anchor_postings_all_scenarios(
+        account.id,
+    )
+    return opened_on
+
+
+def governing_opening_row(db_session, account):
+    """Return the ``budget.account_openings`` row that GOVERNS *account*.
+
+    **The one place the test tree spells "which restatement is in force"**
+    (plan step X-f3c-2b).  The table is append-only and the latest RECORDING
+    instant governs (ruling **R-HE**), ``id`` breaking a same-instant tie --
+    the same order :func:`app.services.cash_ledger.account_opening_fact` reads
+    in Python and ``budget.account_books_opened_on`` reads in SQL, and
+    ``TestTheTwoGoverningLookupsElectTheSameRow`` in
+    ``tests/test_services/test_books_boundary.py`` is what holds all three to
+    it.
+
+    It answers with the ROW rather than through
+    :func:`~app.services.cash_ledger.account_opening_fact` because that loader
+    RAISES on an account carrying no opening, and the fixture helpers here have
+    to tolerate one: a raw-model fixture can build an account the canonical
+    factory never touched.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` to read.
+
+    Returns:
+        The governing :class:`~app.models.account_opening.AccountOpening`, or
+        ``None`` when the account carries none.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep avoidance
+    # as the loan helpers above.
+    from app.models.account_opening import AccountOpening
+
+    return (
+        db_session.query(AccountOpening)
+        .filter_by(account_id=account.id)
+        .order_by(AccountOpening.created_at.desc(), AccountOpening.id.desc())
+        .first()
+    )
+
+
+def _governing_opening_day(db_session, account):
+    """Return the civil day *account*'s books currently open on.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` to read.
+
+    Returns:
+        The governing row's ``opened_on``, or ``date.max`` when the account
+        carries none -- a value that makes a ``min()`` against it a no-op,
+        which is what a caller comparing against "the books as they stand"
+        means for an account with no books yet.
+    """
+    governing = governing_opening_row(db_session, account)
+    return _real_date.max if governing is None else governing.opened_on
+
+
+def restate_account_opening(db_session, account, opened_on):
+    """Append an opening record restating WHEN the account's books opened.
+
+    ``budget.account_openings`` is append-only and the latest recorded row
+    governs, so moving the day means inserting a row rather than updating one.
+    The EQUITY is carried forward unchanged: a restatement places the opening
+    in time and says nothing about how much the books opened with.
+
+    **It writes the row DIRECTLY rather than going through a service, and that
+    is the point** (plan step X-f3c-2b).  ``account_service.create_account``
+    bounds its ``observed_on`` at ``pay_period_service.earliest_recordable_day``
+    -- the calendar's own first day -- so a factory cannot ask it to open books
+    before the calendar starts, which is exactly where a fixture needs them.
+    The floor is a rule about ASSERTIONS (ruling R-ER), not about openings, and
+    production's own restatement is written by migration ``d3b6f1c8a274`` the
+    same unbounded way.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` whose books to
+            re-date.
+        opened_on: The civil day the books now open on.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep avoidance
+    # as the loan helpers above.
+    from app.models.account_opening import AccountOpening
+
+    governing = governing_opening_row(db_session, account)
+    if governing is None or governing.opened_on == opened_on:
+        return
+    db_session.add(AccountOpening(
+        account_id=account.id,
+        opened_on=opened_on,
+        opening_equity=governing.opening_equity,
+        source_id=governing.source_id,
+    ))
+    db_session.flush()
+
+
 def append_balance_assertion(
-    db_session, account, period, balance, at, recorded_at=None,
+    db_session, account, balance, at, recorded_at=None,
 ):
     """Append one balance ASSERTION (a true-up) at a pinned instant.
 
     The instant-precise true-up builder the cash-ledger suites share.  See
-    :func:`restamp_opening_assertion` for why the instant (not the day) is the
+    :func:`reassert_balance_on` for why the instant (not the day) is the
     thing being pinned.
 
-    The row is inserted and then re-stamped, because ``created_at`` carries a
-    server default that the INSERT would otherwise fill with the wall clock.
+    **Every column is stated at INSERT** (plan step X-f3c-2c).  It used to
+    insert and then re-stamp, on the ground that ``created_at`` carries a
+    server default the INSERT would otherwise fill with the wall clock -- which
+    is not so: a value supplied to the constructor appears in the INSERT and no
+    server default is reached, which is what ``override_anchor`` and
+    ``add_anchor_history`` beside it have always relied on.  The table is
+    append-only, so the re-stamp had to go; measuring the reason first is what
+    made it cost no caller anything.
+
+    **It takes no pay period, because an assertion is filed under none** (ruling
+    R-EO deleted ``pay_period_id`` from the row).  It carried a ``period``
+    parameter its body never read until 2026-09-03, and 43 call sites
+    computed one to pass it -- the shape ruling R-EH deleted from
+    ``resolve_anchor``'s ``scenario_id``: a parameter that scopes nothing tells
+    its caller the row is filed under something (finding N-393).
 
     **The row carries TWO clocks and this helper can now separate them**
     (*recorded_at*).  ``observed_on`` is the BUSINESS day the balance was true
@@ -3605,8 +4668,6 @@ def append_balance_assertion(
     Args:
         db_session: The test ``db.session``.
         account: The :class:`~app.models.account.Account` asserting.
-        period: The :class:`~app.models.pay_period.PayPeriod` the assertion is
-            filed against.
         balance: The asserted balance (str or Decimal-coercible).
         at: The aware-UTC instant whose display-timezone day becomes the
             BUSINESS day (``observed_on``).
@@ -3624,137 +4685,17 @@ def append_balance_assertion(
 
     require_assertion_instant(at)
     require_assertion_instant(at if recorded_at is None else recorded_at)
+    typed_at = at if recorded_at is None else recorded_at
     row = AccountAnchorHistory(
         account_id=account.id,
         anchor_balance=Decimal(str(balance)),
         observed_on=observed_day_of(at),
+        created_at=typed_at,
+        recorded_on=observed_day_of(typed_at),
     )
     db_session.add(row)
     db_session.flush()
-    row.created_at = at if recorded_at is None else recorded_at
-    db_session.flush()
     return row
-
-
-def open_calendar_hole(db_session, period, last_covered_day):
-    """Shorten one period's stored ``end_date`` so a calendar hole opens after it.
-
-    **The hole is HAND-BUILT, and since plan step C3-b that is the only way to
-    build one.**  Five suites need a schedule with a day no pay period covers,
-    because that is the state ledger row D7 / finding **P2** describes.  They
-    used to reach it through the REAL writer -- append a batch starting later
-    than the current coverage ends -- deliberately, so that "can this state
-    exist?" was proven rather than assumed.
-
-    **What a hole MEANS to a reader changed at plan step C2-b2**, and the
-    callers changed with it.  The recurrence engine used to answer
-    ``PlacementOutcome.SCHEDULE_GAP`` and log the orphaned dates; it now reads
-    the DERIVED calendar, in which the preceding paycheck runs to the day
-    before the next payday and so absorbs them.  The state is reported by
-    ``scripts/integrity_check.py`` **BA-07** instead, which reads the very
-    column this writes.
-
-    ``pay_period_write`` closed that door: it materialises the payday
-    derivation, in which a period ends the day before the next payday, so an
-    append now ABSORBS the days it used to leave behind.  What the suites are
-    about is unchanged -- how a READER behaves when a day belongs to no
-    paycheck -- and that state is still reachable in the wild, from rows written
-    before C3-b.  So the fixture writes the column directly, and the writer's
-    own tests carry the other half: that no door can produce this any more, and
-    that the next write through one REPAIRS it.
-
-    Args:
-        db_session: The test ``db.session``.
-        period: The :class:`~app.models.pay_period.PayPeriod` to shorten -- the
-            one immediately before the intended hole.
-        last_covered_day: The new stored ``end_date``.  Must be on or after
-            *period*'s ``start_date`` (``ck_pay_periods_date_order`` requires
-            strictly after) and before the next period's payday, or no hole
-            opens.
-
-    Returns:
-        The inclusive ``(first_uncovered_day, last_uncovered_day)`` span, so a
-        caller asserts against the fixture's own arithmetic rather than
-        restating it.
-    """
-    # pylint: disable=import-outside-toplevel
-    from app.models.pay_period import PayPeriod
-
-    # Re-read by primary key rather than writing through the handed-in object.
-    # Callers typically hold a period from a FIXTURE built in an earlier app
-    # context, which is DETACHED: assigning to it writes nothing, the hole
-    # silently fails to open, and the test then measures a contiguous schedule
-    # while claiming to measure a hole.  ``Session.get`` returns the
-    # identity-mapped instance without copying the detached one's (possibly
-    # stale) state over it, which ``merge`` would.
-    period = db_session.get(PayPeriod, period.id)
-    assert last_covered_day > period.start_date, (
-        f"a period must cover at least two days "
-        f"(ck_pay_periods_date_order); {period.start_date} .. "
-        f"{last_covered_day} does not"
-    )
-    following = (
-        db_session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == period.user_id,
-            PayPeriod.start_date > period.start_date,
-        )
-        .order_by(PayPeriod.start_date)
-        .first()
-    )
-    assert following is not None, (
-        "no period follows the one being shortened, so this opens no hole -- "
-        "it moves the schedule's horizon"
-    )
-    period.end_date = last_covered_day
-    db_session.flush()
-    first_uncovered = last_covered_day + _real_timedelta(days=1)
-    last_uncovered = following.start_date - _real_timedelta(days=1)
-    assert first_uncovered <= last_uncovered, "the fixture built no hole"
-    return first_uncovered, last_uncovered
-
-
-def _pp_assert_structure(periods, user_id):
-    """Assert the index/calendar invariants over an ordered period list.
-
-    Invariants 1-3 of :func:`assert_pay_period_invariants`, factored out
-    because they are pure in-memory checks over the already-loaded,
-    index-ordered ``periods`` and need no database access.
-
-    Args:
-        periods: The user's :class:`PayPeriod` rows ordered by
-            ``period_index`` ascending.
-        user_id: The owning user's id, used only in diagnostics.
-    """
-    # 1. Index uniqueness (the schema enforces this; re-checking catches
-    #    any path that bypasses the ORM).
-    indices = [p.period_index for p in periods]
-    assert len(indices) == len(set(indices)), (
-        f"user {user_id}: duplicate period_index among {indices}"
-    )
-
-    for prev, cur in zip(periods, periods[1:]):
-        # 2. Index order == calendar order (strictly ascending dates).
-        assert cur.start_date > prev.start_date, (
-            f"user {user_id}: period_index {cur.period_index} starts "
-            f"{cur.start_date}, not after index {prev.period_index} "
-            f"({prev.start_date}) -- index order != calendar order"
-        )
-        assert cur.end_date > prev.end_date, (
-            f"user {user_id}: period_index {cur.period_index} ends "
-            f"{cur.end_date}, not after index {prev.period_index} "
-            f"({prev.end_date}) -- index order != calendar order"
-        )
-        # 3a. No index gaps (contiguous sequence).
-        assert cur.period_index - prev.period_index == 1, (
-            f"user {user_id}: period_index gap between {prev.period_index} "
-            f"and {cur.period_index}"
-        )
-        # 3b. No date overlap (each period starts after the prior ends).
-        assert cur.start_date > prev.end_date, (
-            f"user {user_id}: period {cur.period_index} ({cur.start_date}) "
-            f"overlaps period {prev.period_index} (ends {prev.end_date})"
-        )
 
 
 def assert_pay_period_invariants(db_session, user_id):
@@ -3772,16 +4713,31 @@ def assert_pay_period_invariants(db_session, user_id):
     Raises ``AssertionError`` (with a diagnostic) on the first violated
     invariant:
 
-      1. ``period_index`` is unique per user.
-      2. ``period_index`` order == calendar order (strictly ascending
-         ``start_date`` AND ``end_date``) -- the exact property the
-         balance resolver walks and trusts.
-      3. No ``period_index`` gaps and no date overlaps (the BA-03 /
-         BA-04 anomalies the production integrity checker flags).
-      4. Every account's anchor points at a live period owned by the user.
-      5. Every transfer has exactly two shadow transactions, both in the
+      1. Every account carries at least one balance ASSERTION, so a producer
+         can resolve a balance for it.
+      2. Every transfer has exactly two shadow transactions, both in the
          transfer's (still-existing) period.
-      6. No transaction references a pay period that no longer exists.
+      3. No transaction references a pay period that no longer exists.
+
+    **FOUR invariants were DELETED at plan step ``pay_calendar:C4-c``, and
+    none of them was replaced.**  They asserted that ``period_index`` was
+    unique per user, that ordinal order matched payday order on BOTH
+    ``start_date`` and ``end_date``, that the ordinals were contiguous, and
+    that no two periods' spans overlapped -- the same functional dependency
+    ``integrity_check`` BA-03 / BA-04 policed in weekly SQL and
+    ``recurrence._calendar.PeriodCalendar.__post_init__`` policed at the value
+    boundary.  All four read columns that no longer exist: a period's ordinal
+    is now its position in payday order and its end is the day before the next
+    payday, so a duplicate ordinal, an ordinal gap, an order disagreement and
+    an overlap are not states this database can hold.  ``uq_pay_periods_user_
+    start`` is what remains, and it is a KEY rather than an assertion.
+
+    *This helper carried the WRITE DOOR's exact blind spot while it existed*
+    (finding **P5**): it asserted ``cur.start_date > prev.end_date`` and
+    nothing about contiguity, so no case in this suite could have failed on a
+    gapped write -- which is why finding **P2** was found by reading rather
+    than by the suite.  Deleting the four is not a loss of that coverage; it is
+    the removal of the state they were the wrong instrument for.
 
     Args:
         db_session: The test ``db.session``.
@@ -3796,17 +4752,12 @@ def assert_pay_period_invariants(db_session, user_id):
     from app.models.transaction import Transaction
     from app.models.transfer import Transfer
 
-    periods = (
-        db_session.query(PayPeriod)
-        .filter_by(user_id=user_id)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
-    _pp_assert_structure(periods, user_id)
+    period_ids = {
+        row.id for row in
+        db_session.query(PayPeriod.id).filter_by(user_id=user_id)
+    }
 
-    period_ids = {p.id for p in periods}
-
-    # 4. Anchor integrity: every account carries at least one balance
+    # 1. Anchor integrity: every account carries at least one balance
     #    ASSERTION (E-19 / Commit 3).  It used to assert that the account's
     #    ``current_anchor_period_id`` named one of the user's live periods;
     #    rulings R-EH and R-EO deleted both that column and the assertion's own
@@ -3821,7 +4772,7 @@ def assert_pay_period_invariants(db_session, user_id):
             "assertion, so no producer can resolve a balance for it"
         )
 
-    # 5. Transfer invariant: exactly two shadows, both in the transfer's
+    # 2. Transfer invariant: exactly two shadows, both in the transfer's
     #    own (surviving) period.
     for transfer in db_session.query(Transfer).filter_by(user_id=user_id):
         shadows = transfer.shadow_transactions
@@ -3840,7 +4791,7 @@ def assert_pay_period_invariants(db_session, user_id):
                 f"transfer's period {transfer.pay_period_id}"
             )
 
-    # 6. No transaction (scoped via its account) references a period that
+    # 3. No transaction (scoped via its account) references a period that
     #    no longer exists -- the CASCADE FK enforces this; re-checking
     #    catches an ORM bypass after a bulk delete.
     orphans = (
@@ -3856,11 +4807,201 @@ def assert_pay_period_invariants(db_session, user_id):
     )
 
 
-def make_every_period_rule(db_session, user_id):  # pylint: disable=unused-argument
-    """Create and flush an every-paycheck recurrence rule for the user.
+def resolved_amount(txn):
+    """Return what the APP says *txn*'s amount is, through the one resolver.
+
+    **The assertion a generated row needs since plan step balance:X-au-e**,
+    where it used to be ``txn.estimated_amount``.  That column is NULL on a
+    derived row -- the whole point of the cutover -- so a test reading it
+    asserts the absence of a cache rather than the presence of money, and
+    ``assert None == Decimal("1200.00")`` is what a correct app now produces.
+
+    Reading the resolver instead keeps the assertion about the FIGURE, which is
+    what the test was always for: it goes through
+    ``cash_ledger.resolve_transaction_amount`` over a basis pinned the way every
+    production reader pins one, so a test asserts the number a screen would
+    show.  Use it for any row whose amount is DERIVED; a row that owns its
+    figure (an ad-hoc one, or one a human re-priced) answers the same through
+    this function, so it is safe everywhere and needed only where the column
+    went away.
+
+    Args:
+        txn: The transaction to price.
+
+    Returns:
+        The row's amount as a ``Decimal``.
+
+    Raises:
+        AmountUnresolvable: When no rule can price the row -- which is a real
+            finding, not a fixture inconvenience.  See
+            :func:`state_template_price` for the fixture shape that causes it.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.cash_ledger import amount_basis, resolve_transaction_amount
+
+    return resolve_transaction_amount(
+        txn, amount_basis(txn.account.user_id, txn.scenario_id),
+    )
+
+
+def state_template_price(template, amount=None, *, effective_on=None):
+    """State *template*'s price through the app's ONE write door.
+
+    **A fixture that constructs a template and stops has built a definition the
+    application cannot build**, and since plan step balance:X-au-e that
+    difference is fatal rather than cosmetic.  Both doors that create a
+    transaction template -- ``routes/templates/crud.create_template`` and
+    ``routes/salary/profiles._salary_template`` -- call
+    ``template_amount_service.set_amount`` immediately after the flush, so every
+    real definition has a price SERIES.  A generated row stores no figure now
+    and is priced by that series on its own due date, and
+    ``cash_ledger._amount_source._stated_amount`` REFUSES a row whose series is
+    empty rather than falling back to ``default_amount`` -- which is X-au-a's
+    ruling, not an oversight: the scalar has no time dimension, so reading it
+    would price a March row at June's figure.
+
+    So a bare-constructed template generates rows nothing can price, and the
+    failure surfaces as ``AmountUnresolvable`` in whatever the test was actually
+    about.  Call this straight after the flush wherever a fixture builds a
+    template by hand.
+
+    Zero production templates have an empty series (measured on the 2026-09-03
+    production clone, all 525 declared rows resolved), so this restores the
+    fixture to the shape the data actually has.
+
+    Args:
+        template: The flushed transaction or transfer template.
+        amount: The price to state; ``template.default_amount`` when omitted,
+            which is what both create doors pass.
+        effective_on: The date it takes effect; the owner's today when omitted,
+            as both doors pass.  One version is enough for any due date --
+            ``amount_as_of`` holds FLAT before the earliest -- so a fixture
+            needs a date only when it is testing the series itself.
+
+    Returns:
+        None.  The caller flushes or commits as it already does.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services import template_amount_service
+    from app.utils.dates import display_today
+
+    template_amount_service.set_amount(
+        template,
+        template.default_amount if amount is None else amount,
+        effective_on=display_today() if effective_on is None else effective_on,
+    )
+
+
+def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
+    """Create and flush an expense template carrying NO cadence.
+
+    The definition a test authors a rule onto when the rule is the subject and
+    the template is only there to own it -- which plan step R-F6 made
+    necessary: ``ck_recurrence_rules_one_owner`` refuses a rule belonging to
+    nothing, so ``author_rule`` takes an owner and there is no such thing as a
+    free-standing rule any more.
+
+    Distinct from :func:`make_expense_template`, which already gives its
+    template an every-paycheck rule -- authoring a second onto that one is
+    refused by ``uq_recurrence_rules_transaction_template_id``, and refused
+    correctly: a definition has one cadence.
+
+    Args:
+        db_session: The test session.
+        seed_user: The seed user fixture dict.
+        name: Display name; distinct per call when a test needs two.
+
+    Returns:
+        The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
+        with ``recurrence_rule`` still ``None``.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import TxnTypeEnum
+    from app.models.transaction_template import TransactionTemplate
+
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=seed_user["categories"]["Rent"].id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        name=name,
+        default_amount=Decimal("100.00"),
+    )
+    db_session.add(template)
+    db_session.flush()
+    state_template_price(template)
+    return template
+
+
+def sole_rule_owned_by(user_id):
+    """Return the ONE recurrence rule *user_id* owns, through its definition.
+
+    ``budget.recurrence_rules`` carries no ``user_id`` column since plan step
+    R-F6 -- the owner is the definition holding the rule, and
+    :attr:`~app.models.recurrence_rule.RecurrenceRule.user_id` reads through to
+    it -- so a Python property cannot be a SQL filter and
+    ``filter_by(user_id=...)`` no longer names a column.  This is the join that
+    replaces it, over both arms of the owning arc.
+
+    It is a TEST helper rather than an application one deliberately: no
+    production reader asks "which rules does this user own", and adding a query
+    nothing calls is the speculative surface coding-standards rule 13 refuses.
+
+    Args:
+        user_id: The owner.
+
+    Returns:
+        The single :class:`~app.models.recurrence_rule.RecurrenceRule`.
+
+    Raises:
+        AssertionError: The owner has no rule, or more than one -- the same
+            two failures ``Query.one()`` reports, named.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.extensions import db
+    from app.models.recurrence_rule import RecurrenceRule
+    from app.models.transaction_template import TransactionTemplate
+    from app.models.transfer_template import TransferTemplate
+
+    rules = []
+    for template, arm in (
+        (TransactionTemplate, RecurrenceRule.transaction_template_id),
+        (TransferTemplate, RecurrenceRule.transfer_template_id),
+    ):
+        rules.extend(
+            db.session.query(RecurrenceRule)
+            .join(template, arm == template.id)
+            .filter(template.user_id == user_id)
+            .all()
+        )
+    assert len(rules) == 1, (
+        f"expected user {user_id} to own exactly one recurrence rule, "
+        f"found {len(rules)}: {[rule.id for rule in rules]}"
+    )
+    return rules[0]
+
+
+def make_every_period_rule(db_session, owner):  # pylint: disable=unused-argument
+    """Author an every-paycheck recurrence ONTO *owner*, and flush it.
 
     The shared rule builder for every fixture that needs a template to repeat,
     so no test re-derives it.
+
+    **It takes the OWNING DEFINITION rather than a user id, since plan step
+    R-F6**, because that is what a rule now needs to exist at all: the owning
+    FK is on ``budget.recurrence_rules`` under
+    ``ck_recurrence_rules_one_owner``, so a rule with no template is not a row
+    the database accepts.  A fixture therefore builds its template first and
+    makes it repeat second, which is the order production runs in.
 
     **Authored through the WRITE DOOR since plan step R7c-b**, and the change is
     a real improvement rather than plumbing.  It used to construct a
@@ -3879,7 +5020,8 @@ def make_every_period_rule(db_session, user_id):  # pylint: disable=unused-argum
             through ``app.extensions.db``; kept because every caller passes it
             and a signature change would touch two dozen call sites for no
             behaviour.
-        user_id: The owner.
+        owner: The ``TransactionTemplate`` or ``TransferTemplate`` the
+            recurrence belongs to.  Mutated: its ``recurrence_rule`` is set.
 
     Returns:
         The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
@@ -3891,14 +5033,15 @@ def make_every_period_rule(db_session, user_id):  # pylint: disable=unused-argum
     from app.services.pay_calendar import calendar_for
     from app.services.recurrence import RecurrenceSpec, author_rule
 
-    calendar = calendar_for(user_id)
+    calendar = calendar_for(owner.user_id)
     return author_rule(
         RecurrenceSpec(
-            user_id=user_id,
+            user_id=owner.user_id,
             unit=RecurrenceUnitEnum.PERIOD,
             starts_on=calendar.opening_bound(),
         ),
         calendar,
+        owner,
     )
 
 
@@ -4018,20 +5161,44 @@ def transient_cadence_rule(user_id, cadence, **kwargs):
     one field is a shape production cannot produce, and a helper reading it
     would resolve something the application never stores.
 
+    **It writes through ``build_transient_rule`` DIRECTLY since plan step
+    R-F6**, rather than through its sibling under a private ``_flush=False``
+    flag.  The two stopped being one function with a switch: an authored rule
+    takes the definition that owns it and an unsaved one has none, so the flag
+    would have had to mean "and also skip the owner", which is two functions
+    wearing one name.  What they still share -- the cadence-to-spec
+    translation -- is :func:`_cadence_spec`, which both call.
+
     Args:
-        user_id: The owner.
+        user_id: Whose pay calendar the cadence resolves against, and whose
+            UNSAVED definition the rule is built on.  Stated rather than taken
+            as an owner object because the caller does not want a definition;
+            it wants a rule it can hand to a pure producer.
         cadence: A :class:`~tests.oracles.recurrence_baseline.ShapeCadence`.
-        **kwargs: Every other argument :func:`make_cadence_rule` takes.
+        **kwargs: Every other argument :func:`_cadence_spec` takes.
 
     Returns:
         The unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
-    return make_cadence_rule(user_id, cadence, _flush=False, **kwargs)
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.pay_calendar import calendar_for
+    from app.services.recurrence import build_transient_rule
+
+    calendar = calendar_for(user_id)
+    # The door builds the unsaved owner itself from the spec's ``user_id``
+    # (plan step R-F6), so ``rule.user_id`` has an answer and nothing reaches
+    # the session.
+    return build_transient_rule(
+        _cadence_spec(user_id, cadence, calendar, **kwargs), calendar,
+    )
 
 
-def make_cadence_rule(
+def _cadence_spec(
     user_id,
     cadence,
+    calendar,
     *,
     starts_on=None,
     fires_on_day=None,
@@ -4040,9 +5207,90 @@ def make_cadence_rule(
     nominal_day=None,
     due_day_of_month=None,
     end_date=None,
-    _flush=True,
 ):
-    """Author one rule of a stated CADENCE, through the write door.
+    """Translate a stated CADENCE into the spec the write door takes.
+
+    The shared half of :func:`make_cadence_rule` and
+    :func:`transient_cadence_rule`, which differ only in whether the resulting
+    rule is written onto a definition or left unsaved.  Split out at plan step
+    R-F6, when the authored path grew an owner argument the transient one
+    cannot have.
+
+    Args:
+        user_id: Whose calendar the cadence resolves against.
+        cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
+            to author.
+        calendar: That owner's :class:`~app.services.pay_calendar.PayCalendar`,
+            passed in because both callers already hold one.
+        starts_on: See :func:`make_cadence_rule`.
+        fires_on_day: See :func:`make_cadence_rule`.
+        fires_in_month: See :func:`make_cadence_rule`.
+        interval_n: See :func:`make_cadence_rule`.
+        nominal_day: See :func:`make_cadence_rule`.
+        due_day_of_month: See :func:`make_cadence_rule`.
+        end_date: See :func:`make_cadence_rule`.
+
+    Returns:
+        The :class:`~app.services.recurrence.RecurrenceSpec`.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.recurrence import (
+        NEVER_ENDS,
+        EndsOnDate,
+        RecurrenceSpec,
+    )
+    from tests.oracles.recurrence_baseline import ShapeCadence
+
+    if starts_on is not None and fires_on_day is not None:
+        raise ValueError(
+            "make_cadence_rule takes starts_on OR fires_on_day, not both: "
+            "they are two statements of the same fact and only one can be "
+            f"authored (got {starts_on!r} and day {fires_on_day!r})",
+        )
+    # The TYPE is checked at the door because every other read of *cadence*
+    # below is an attribute access, so a caller still passing plan step R9's
+    # retired shorthand -- the string "Monthly", or a member of the deleted
+    # ``RecurrencePatternEnum`` -- would otherwise surface as an
+    # ``AttributeError`` from three frames down naming ``interval_n``.
+    if not isinstance(cadence, ShapeCadence):
+        raise TypeError(
+            f"make_cadence_rule takes a ShapeCadence, not {cadence!r}.  Plan "
+            f"step R9 retired the closed pattern set's display names with the "
+            f"table they came from; state the two axes instead, as one of "
+            f"tests.oracles.recurrence_baseline's cadence constants.",
+        )
+    resolved_interval = (
+        interval_n if cadence.interval_n is None else cadence.interval_n
+    )
+    if starts_on is None and fires_on_day is not None:
+        starts_on = first_occurrence_on_day(
+            user_id, fires_on_day, fires_in_month,
+        )
+    if starts_on is None:
+        starts_on = _default_first_occurrence(
+            user_id, calendar, cadence.unit, cadence.placement,
+        )
+    return RecurrenceSpec(
+        user_id=user_id,
+        unit=cadence.unit,
+        placement=cadence.placement,
+        interval_n=resolved_interval,
+        starts_on=(
+            starts_on if starts_on is not None
+            else calendar.opening_bound()
+        ),
+        nominal_day=nominal_day,
+        due_day_of_month=due_day_of_month,
+        end_bound=(
+            NEVER_ENDS if end_date is None else EndsOnDate(end_date)
+        ),
+    )
+
+
+def make_cadence_rule(owner, cadence, **kwargs):
+    """Author one rule of a stated CADENCE ONTO *owner*, through the write door.
 
     :func:`make_every_period_rule`'s general sibling, for the tests that need a
     cadence other than every-paycheck.  Both exist because a rule may not be
@@ -4061,8 +5309,16 @@ def make_cadence_rule(
     captured shape labelled ``quarterly`` still cannot come to mean different
     things, and a mistyped one is a ``NameError`` at import.
 
+    **It takes the OWNING DEFINITION rather than a user id, since plan step
+    R-F6**: the owning FK is on ``budget.recurrence_rules`` under
+    ``ck_recurrence_rules_one_owner``, so a rule with no template is not a row
+    the database accepts.  A fixture builds its template first and makes it
+    repeat second, which is the order production runs in.
+
     Args:
-        user_id: The owner.
+        owner: The ``TransactionTemplate`` or ``TransferTemplate`` the
+            recurrence belongs to.  Mutated: its ``recurrence_rule`` is set.
+            Its ``user_id`` is whose calendar the cadence resolves against.
         cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
             to author -- one of that module's seven constants, or any other
             ``(interval_n, unit, placement)`` a test needs.
@@ -4090,9 +5346,6 @@ def make_cadence_rule(
         due_day_of_month: Real bill due day, when it differs from the
             scheduling day.
         end_date: The rule's closing bound.  ``None`` never ends.
-        _flush: Private.  ``False`` builds the rule WITHOUT adding it to
-            the session; call :func:`transient_cadence_rule` rather than
-            passing it, which is why the name is underscored.
 
     Returns:
         The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
@@ -4101,63 +5354,13 @@ def make_cadence_rule(
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
     from app.services.pay_calendar import calendar_for
-    from app.services.recurrence import (
-        NEVER_ENDS,
-        EndsOnDate,
-        RecurrenceSpec,
-        author_rule,
-        build_transient_rule,
-    )
-    from tests.oracles.recurrence_baseline import ShapeCadence
+    from app.services.recurrence import author_rule
 
-    if starts_on is not None and fires_on_day is not None:
-        raise ValueError(
-            "make_cadence_rule takes starts_on OR fires_on_day, not both: "
-            "they are two statements of the same fact and only one can be "
-            f"authored (got {starts_on!r} and day {fires_on_day!r})",
-        )
-    # The TYPE is checked at the door because every other read of *cadence*
-    # below is an attribute access, so a caller still passing plan step R9's
-    # retired shorthand -- the string "Monthly", or a member of the deleted
-    # ``RecurrencePatternEnum`` -- would otherwise surface as an
-    # ``AttributeError`` from three frames down naming ``interval_n``.
-    if not isinstance(cadence, ShapeCadence):
-        raise TypeError(
-            f"make_cadence_rule takes a ShapeCadence, not {cadence!r}.  Plan "
-            f"step R9 retired the closed pattern set's display names with the "
-            f"table they came from; state the two axes instead, as one of "
-            f"tests.oracles.recurrence_baseline's cadence constants.",
-        )
-    resolved_interval = (
-        interval_n if cadence.interval_n is None else cadence.interval_n
-    )
-    calendar = calendar_for(user_id)
-    if starts_on is None and fires_on_day is not None:
-        starts_on = first_occurrence_on_day(
-            user_id, fires_on_day, fires_in_month,
-        )
-    if starts_on is None:
-        starts_on = _default_first_occurrence(
-            user_id, calendar, cadence.unit, cadence.placement,
-        )
-    write = author_rule if _flush else build_transient_rule
-    return write(
-        RecurrenceSpec(
-            user_id=user_id,
-            unit=cadence.unit,
-            placement=cadence.placement,
-            interval_n=resolved_interval,
-            starts_on=(
-                starts_on if starts_on is not None
-                else calendar.opening_bound()
-            ),
-            nominal_day=nominal_day,
-            due_day_of_month=due_day_of_month,
-            end_bound=(
-                NEVER_ENDS if end_date is None else EndsOnDate(end_date)
-            ),
-        ),
+    calendar = calendar_for(owner.user_id)
+    return author_rule(
+        _cadence_spec(owner.user_id, cadence, calendar, **kwargs),
         calendar,
+        owner,
     )
 
 
@@ -4174,7 +5377,6 @@ def make_expense_template(db_session, seed_user, amount="1200.00", is_active=Tru
     from app.models.ref import TransactionType
     from app.models.transaction_template import TransactionTemplate
 
-    rule = make_every_period_rule(db_session, seed_user["user"].id)
     expense_type = (
         db_session.query(TransactionType).filter_by(name="Expense").one()
     )
@@ -4182,7 +5384,6 @@ def make_expense_template(db_session, seed_user, amount="1200.00", is_active=Tru
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name="Rent",
         default_amount=Decimal(amount),
@@ -4190,7 +5391,42 @@ def make_expense_template(db_session, seed_user, amount="1200.00", is_active=Tru
     )
     db_session.add(template)
     db_session.flush()
+    state_template_price(template)
+    # The definition first, then the cadence onto it (plan step R-F6).
+    make_every_period_rule(db_session, template)
     return template
+
+
+def populate_in_a_fresh_pass(user_id, period_ids):
+    """Open a read pass over the CURRENT state and populate *period_ids*.
+
+    The producer takes a :class:`~app.services.balance_at.BalanceContext` and
+    builds none (ruling **R-R38**), so every caller owes it a pass -- and owes
+    it AFTER the write that created the periods, because a pass resolved
+    earlier holds a calendar that does not contain them and
+    ``GenerationSchedule.__post_init__`` refuses the window.  Route code says
+    that once, in ``app.routes._period_population.populate_new_periods``, which
+    takes the PayPeriod rows a door returned; the suite says it here, because
+    what a test usually holds is a set of ids.
+
+    Args:
+        user_id: The owning user's id.
+        period_ids: The ``budget.pay_periods.id`` values to populate.
+
+    Returns:
+        The number of template-linked records created.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.balance_at import BalanceContext
+    from app.services.period_population import (
+        populate_periods_from_active_templates,
+    )
+
+    return populate_periods_from_active_templates(
+        BalanceContext.build(user_id), period_ids,
+    )
 
 
 def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
@@ -4205,18 +5441,172 @@ def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
     # pylint: disable=import-outside-toplevel
     from app.models.transfer_template import TransferTemplate
 
-    rule = make_every_period_rule(db_session, seed_user["user"].id)
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=to_account.id,
-        recurrence_rule_id=rule.id,
         name="To Savings",
         default_amount=Decimal(amount),
     )
     db_session.add(template)
     db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    make_every_period_rule(db_session, template)
     return template
+
+
+def make_loan_payment_template(
+    db_session, seed_user, loan_account, amount="200.00", *,
+    derive_from_loan=True, extra_principal="0.00", cadence=None,
+    fires_on_day=None,
+):
+    """Create the recurring transfer a LOAN payment actually is.
+
+    :func:`make_transfer_template`'s loan-shaped sibling, and the difference is
+    the ``budget.loan_payment_settings`` row.  ``routes/loan/payment_transfer.py``
+    writes one on every loan payment IT creates -- it is what carries the MODE
+    (``derive_from_loan``) and the standing overpayment -- so a fixture pointing
+    the generic builder at a loan builds a definition the LOAN's own door would
+    never leave behind.
+
+    **A settings-less recurring transfer into a loan is still REACHABLE**, and
+    an adversarial review of plan step R7d-a corrected an earlier version of
+    this paragraph that said otherwise: ``POST /transfers`` offers every active
+    account as a destination and attaches no settings row
+    (``routes/transfers/templates.py``), and production holds ZERO
+    ``loan_payment_settings`` rows, so it is the state the developer's own two
+    loans are in.  What is unreachable is that state arising from the loan
+    dashboard's create-transfer button, which is the door these fixtures stand
+    in for.
+
+    **It went unnoticed while nothing read the definition for an unmaterialised
+    installment.**  R7d-a made the forward plan price every installment no row
+    covers from the loan's own standing payment, so the generic builder's
+    arbitrary base -- ``$200.00``, named "To Savings" -- started meaning "this
+    is what the owner pays the mortgage", and six tests whose docstrings state
+    the CONTRACTUAL figure began asserting against a loan being paid a fifth of
+    it.  The numbers were right; the fixture was not.
+
+    Defaults to DERIVE mode, which is what the loan dashboard's own
+    create-transfer button writes: the payment IS the loan's P&I plus escrow
+    plus any standing extra, so the *amount* is a snapshot and no test has to
+    keep it in step with the loan's terms.  Pass ``derive_from_loan=False`` to
+    build the MANUAL payment an owner types a figure for.
+
+    Args:
+        db_session: The test ``db.session``.
+        seed_user: The ``seed_user`` fixture dict (supplies the owner and the
+            checking account the payment leaves from).
+        loan_account: The destination loan account.
+        amount: The template's stored ``default_amount``.  In derive mode this
+            is the snapshot a generated row carries and the live derivation
+            supersedes; in manual mode it is the figure the owner stated.
+        derive_from_loan: The settings row's mode.
+        extra_principal: The settings row's standing monthly overpayment.
+        cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
+            to author.  ``None`` -- the default -- authors the every-paycheck
+            rule :func:`make_transfer_template` authors, which is what the
+            fixtures this replaced carried.  A loan payment created through
+            ``routes/loan/payment_transfer.py`` is MONTH-unit, so a test about
+            that door states ``MONTHLY`` here.
+        fires_on_day: The day of the month a calendar *cadence* first fires on,
+            forwarded to :func:`make_cadence_rule`.
+
+    Returns:
+        The flushed ``TransferTemplate``, its ``recurrence_rule`` set.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.models.loan_payment_settings import LoanPaymentSettings
+    from app.models.transfer_template import TransferTemplate
+
+    template = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=loan_account.id,
+        name=f"Loan Payment {loan_account.id}",
+        default_amount=Decimal(amount),
+    )
+    # Attached through the relationship so it flushes with the template, the
+    # way the route attaches it.
+    template.settings = LoanPaymentSettings(
+        derive_from_loan=derive_from_loan,
+        extra_principal=Decimal(extra_principal),
+    )
+    db_session.add(template)
+    db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    if cadence is None:
+        make_every_period_rule(db_session, template)
+    else:
+        make_cadence_rule(template, cadence, fires_on_day=fires_on_day)
+    return template
+
+
+def make_retired_loan_payment(
+    db_session, seed_user, *, origination_date, cleared_on, payment_day=1,
+    name="Retired Loan",
+):
+    """Create a MONTHLY loan payment whose loan was trued to ZERO on *cleared_on*.
+
+    The fixture the three surfaces that read a definition's stop share since
+    plan step R7d-e -- the Recurring surface, the obligations aggregator and
+    the ``/savings`` floor -- because each asserts the same money fact: a
+    payment against a loan that is finished leaves the committed totals on the
+    day the loan closed.  One builder, so the three cannot describe three
+    different loans.
+
+    The loan is ``$12,000.00`` at 5% over 24 months, originating
+    *origination_date* with the contractual *payment_day*; its first
+    installment is that day of the month AFTER origination
+    (``rate_period_engine.first_installment_date``: a loan closed 2026-05-01
+    with a ``payment_day`` of 1 owes first on 2026-06-01, not on the day it
+    closed).  The true-up to ``$0.00`` on *cleared_on* retires it, so its
+    closing date is
+    *cleared_on* -- the day it LAST became closed (plan step ``recurrence:R7d-h``)
+    -- and the definition has fired once wherever *cleared_on* follows the
+    first installment, so the derived stop is a date and not "never runs".
+
+    The payment is bound to the loan through the production door for the
+    OPENING bound (``bind_rule_to_loan``), so ``starts_on`` is the contract's
+    first installment rather than a fixture day.  **Its ``end_date`` column is
+    left NULL**: nothing stored could supply the stop, so whatever a reader
+    names about it came from the derivation.
+
+    Args:
+        db_session: The test ``db.session``.
+        seed_user: The ``seed_user`` fixture dict (the owner and the checking
+            account the payment leaves from).
+        origination_date: The loan's origination date.
+        cleared_on: The day the balance is trued to zero.
+        payment_day: The contractual day of the month (default 1).
+        name: The loan account's name.
+
+    Returns:
+        ``(loan, template)``, committed.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.loan_recurrence_sync import bind_rule_to_loan
+    from tests.oracles.recurrence_baseline import MONTHLY
+
+    loan = create_loan_account(
+        seed_user, db_session, name=name,
+        principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
+        origination_date=origination_date, payment_day=payment_day,
+    )
+    insert_trueup_event(
+        loan_params_for(db_session, loan.id), Decimal("0.00"),
+        anchor_date=cleared_on,
+    )
+    template = make_loan_payment_template(
+        db_session, seed_user, loan, cadence=MONTHLY, fires_on_day=payment_day,
+    )
+    bind_rule_to_loan(template.recurrence_rule, loan.id)
+    db_session.commit()
+    return loan, template
 
 
 def make_appreciating_account(seed_user, db_session, anchor_period, balance, rate):
@@ -4232,15 +5622,15 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
     returning so the account is fully resolvable.
 
     **The opening assertion is stamped at the anchor period's first day**
-    (via :func:`restamp_opening_assertion`) -- finding N-77, fixed at plan step
+    (via :func:`reassert_balance_on`) -- finding N-77, fixed at plan step
     X-g2a for the reason :func:`create_hysa_account` was at X-c2a, and read
     there for the full argument.  ``account_service.create_account`` writes that
     row with the WALL CLOCK, and from plan step X-g2b a Property's appreciation
     accrues only forward of its LATEST assertion (ruling R-Y), so an unpinned
     opening is the newest assertion, lands past the suite's seeded horizon, and
     the account then appreciates NOTHING anywhere -- a state production cannot
-    reach.  A test that needs a MID-period or later assertion restamps it
-    itself, exactly as the interest suites do.
+    reach.  A test that needs a MID-period or later assertion appends its own,
+    exactly as the interest suites do.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -4273,6 +5663,7 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
             account_type_id=property_type.id,
             name="House",
             anchor_balance=balance,
+            observed_on=anchor_period.start_date,
         ),
     )
     db_session.add(account)
@@ -4280,9 +5671,13 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
     db_session.add(AssetAppreciationParams(
         account_id=account.id, annual_appreciation_rate=rate,
     ))
-    restamp_opening_assertion(
-        db_session, account, settle_instant_on(anchor_period.start_date),
-    )
+    # **And then before every day a row could land on** (plan step X-f3c-2b,
+    # ruling **R-HG**).  ``create_account`` opens the books on the day it was
+    # handed, which is right when the anchor period is the earliest -- and
+    # these factories are routinely handed a LATER period while the suite
+    # records movements in an earlier one.  Backward-only, so it never undoes
+    # the day stated above.
+    open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
 
@@ -4302,7 +5697,7 @@ def make_investment_account(
     fully resolvable.
 
     **The opening assertion is stamped at the anchor period's first day**
-    (via :func:`restamp_opening_assertion`) -- finding N-77, fixed at plan step
+    (via :func:`reassert_balance_on`) -- finding N-77, fixed at plan step
     X-g2a; see :func:`make_appreciating_account` beside it and
     :func:`create_hysa_account` for the full argument.  From plan step X-g2b an
     investment's growth accrues only forward of its LATEST assertion (ruling
@@ -4345,6 +5740,7 @@ def make_investment_account(
             account_type_id=inv_type.id,
             name=name,
             anchor_balance=balance,
+            observed_on=anchor_period.start_date,
         ),
     )
     db_session.add(account)
@@ -4358,9 +5754,13 @@ def make_investment_account(
         employer_match_percentage=match_pct,
         employer_match_cap_percentage=match_cap_pct,
     ))
-    restamp_opening_assertion(
-        db_session, account, settle_instant_on(anchor_period.start_date),
-    )
+    # **And then before every day a row could land on** (plan step X-f3c-2b,
+    # ruling **R-HG**).  ``create_account`` opens the books on the day it was
+    # handed, which is right when the anchor period is the earliest -- and
+    # these factories are routinely handed a LATER period while the suite
+    # records movements in an earlier one.  Backward-only, so it never undoes
+    # the day stated above.
+    open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
 
@@ -4882,7 +6282,7 @@ def validated_cadence(
 
     The post-``load()`` shape: enum members, a real ``int`` and a real
     ``date``, which is what
-    :func:`app.routes._recurrence_form_helpers.build_recurrence_rule_from_form`
+    :func:`app.routes._recurrence_form_helpers.recurrence_spec_from_form`
     and its siblings read.
 
     **``starts_on`` rides WITH the cadence since plan step R7c-b**, and it is
@@ -5034,6 +6434,126 @@ def cadence_payload(
     return payload
 
 
+def payroll_basis(profile, periods, cadence_days=14, history_opens_on=None):
+    """Return the :class:`PayrollBasis` for *profile* over *periods*.
+
+    **The ONE test-side door onto the paycheck engine's owner input**, added at
+    plan step **R-F16** when ``salary.salary_profiles.pay_periods_per_year``
+    was dropped and the count became a derivation off
+    ``budget.pay_schedule.cadence_days``.  One shared helper rather than a
+    ``for_test`` constructor on the production type or a defaulted ``cadence=``
+    argument on the engine, which is the ruling ledger row **P54** set for the
+    same question about ``BalanceContext``: a production API with only test
+    callers is the speculative shape ``CLAUDE.md`` rule 13 forbids, and a
+    defaulted cadence would let the engine assume biweekly for an owner who is
+    not.
+
+    The default matches the suite's fixtures and
+    ``BaseConfig.DEFAULT_PAY_CADENCE_DAYS``, so a test that does not care about
+    the rhythm says nothing and gets 26 paychecks a year.  A test that DOES
+    care states its cadence and gets the count that follows -- 7 gives 52, 15
+    gives 24, 365 gives 1.
+
+    **It takes the owner's PERIODS since plan step balance:X-bh-1**, because
+    the basis now carries the whole
+    :class:`~app.services.pay_calendar.PayCalendar` rather than a bare cadence:
+    the engine's four calendar judgements -- third-paycheck detection, the
+    first-paycheck-of-month deduction cadence, the FICA wage-base cumulative
+    and a deduction's annual cap -- count paydays off it, where they used to
+    read an ``all_periods`` argument a caller supplied beside the basis.  A
+    case passes here exactly what it used to pass there.
+
+    **It is REQUIRED and has no default, which an adversarial review of this
+    step is why.**  A defaulted empty *periods* builds a paydayless calendar
+    that still answers the paycheck COUNT from *cadence_days*, so a case
+    reading only a gross goes on passing -- while every month and year count
+    over it is ZERO, which INVERTS two arms: a 12-per-year deduction stops
+    applying where the old empty ``all_periods`` list made it apply
+    vacuously, and a 24-per-year one starts applying on a third paycheck.
+    Five oracles were measured still taking the default, agreeing with their
+    producers only because no fixture behind them carries a deduction or
+    reaches the wage base.  An argument a caller can silently omit is the
+    same defect this step removed from the engine, one layer up.
+
+    Args:
+        profile: The ``SalaryProfile`` (or a duck-typed stand-in) to price.
+        periods: The owner's WHOLE schedule as
+            :class:`~app.services.pay_calendar.DerivedPeriod` values, in any
+            order.  Only their paydays are read; the calendar re-derives every
+            end and ordinal, so a case may hand over the same values it prices.
+        cadence_days: Days between the owner's paydays, 1..365.
+        history_opens_on: How far back this owner's paychecks reach, or
+            ``None`` -- **the DEFAULT, and it is the column's own** (plan step
+            **balance:X-bh-2**).  ``budget.pay_schedule.history_opens_on`` is
+            nullable and null means NOT STATED since ruling
+            **balance:R-IA**'s 2026-08-31 amendment, so a case that says
+            nothing here gets what an owner nobody asked gets: the engine
+            counts *periods* and projects nothing below them.  **That makes
+            the default the SAFE one** -- forgetting it cannot silently invent
+            paychecks, which is the direction a defaulted argument should fail
+            in.  A case about the BACKWARD rhythm states a day here, and a
+            case about an owner who genuinely started at the record's opening
+            states that opening.
+
+    Returns:
+        The :class:`~app.services.payroll_basis.PayrollBasis`.
+
+    Raises:
+        PayCalendarError: *cadence_days* falls outside 1..365, which is what
+            ``ck_pay_schedule_cadence_range`` refuses in the database, or two
+            of *periods* share a payday.
+    """
+    from app.services.payroll_basis import (  # pylint: disable=import-outside-toplevel
+        PayrollBasis,
+    )
+
+    return PayrollBasis(profile, derived_calendar(
+        [period.start_date for period in periods], cadence_days=cadence_days,
+        history_opens_on=history_opens_on,
+    ))
+
+
+def derived_calendar(
+    paydays, cadence_days=14, user_id=1, history_opens_on=None,
+):
+    """Return a :class:`PayCalendar` over *paydays*, derived rather than built.
+
+    The calendar-shaped sibling of :func:`derived_window`, for a producer that
+    takes the whole calendar rather than a slice of it -- which
+    :meth:`app.services.income_service.SalaryPricing._breakdown_by_period` does,
+    because the paycheck engine needs the owner's paycheck COUNT as well as
+    their periods and both must come off one derivation (plan step **R-F16**).
+
+    *This sentence named ``recurrence_engine._amounts`` until plan step
+    balance:X-au-d, and a mechanical rename left it naming
+    ``_generated_amount_ownership``, which takes a template and reads no
+    calendar at all.  The requirement did not go away when generation stopped
+    pricing -- it MOVED, to the derivation above.  Caught by an adversarial
+    review of that step.*
+
+    Args:
+        paydays: The paydays opening each period, in any order.
+        cadence_days: Days between paydays, 1..365.
+        user_id: The owner the calendar belongs to.
+        history_opens_on: How far back the owner's paychecks reach, or ``None``
+            -- the default, which is the nullable column's own; see
+            :func:`payroll_basis` for what saying nothing means.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.PayCalendar`.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PayCalendar,
+    )
+
+    return PayCalendar.from_paydays(
+        [(index + 1, payday) for index, payday in enumerate(sorted(paydays))],
+        cadence_days,
+        user_id=user_id,
+        history_opens_on=history_opens_on,
+    )
+
+
 def derived_window(paydays, cadence_days):
     """Return a :class:`PeriodWindow` over *paydays*, derived rather than built.
 
@@ -5080,6 +6600,7 @@ def derived_window(paydays, cadence_days):
         ],
         cadence_days,
         user_id=1,
+        history_opens_on=None,
     )
     return PeriodWindow(periods=calendar.periods)
 
@@ -5219,7 +6740,65 @@ def dashboard_section(user_id, as_of=None):
     )
 
 
-def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
+def current_pay_period(user_id, as_of=None):
+    """Return the ORM :class:`PayPeriod` row covering *as_of* for *user_id*.
+
+    **The ONE place the suite asks "which paycheck is this owner in", and it
+    asks the APPLICATION** (plan step C2-f3a).  It replaced
+    ``pay_period_service.get_current_period``, which that step deleted after
+    moving its three ``app/`` call sites onto
+    :meth:`~app.services.pay_calendar.PayCalendar.period_containing` -- and the
+    two defects it was deleted FOR are exactly the two a hand-rolled test
+    helper would have reproduced.  Its ``.first()`` carried no ``ORDER BY``
+    (ledger row **P19**), and it read the process clock rather than the
+    owner's civil day (row **P49**).
+
+    So this does not re-implement the search.  It runs the same derivation the
+    application runs and then resolves the row, which is what keeps the suite
+    from being able to disagree with the app about which period is current --
+    a test that seeds state into "the current period" and a page that renders
+    "the current period" must mean one period, or the assertion grades nothing.
+
+    **It returns the ORM ROW deliberately**, where ``app/`` now holds
+    :class:`~app.services.pay_calendar.DerivedPeriod` values.  A test needs a
+    row because the factories take one (``make_investment_account``,
+    ``create_loan_account``, every ``Transaction(pay_period_id=...)`` seed) and
+    because ``tests/`` legitimately writes this table where ``app/`` may not
+    (see ``pay_period_write``'s ``TestThereIsOneWriter``).  The identity comes
+    from the derivation either way, so the row and the derived value name the
+    same paycheck by construction rather than by two searches agreeing.
+
+    Args:
+        user_id: The owner whose schedule to search.
+        as_of: The civil day to place.  Defaults to
+            :func:`~app.utils.dates.display_today`, the owner's own day and
+            the clock ``seed_periods_today`` builds its schedule around, so
+            the default lands inside the seeded window rather than one UTC
+            midnight past it.
+
+    Returns:
+        The covering :class:`~app.models.pay_period.PayPeriod`, or ``None``
+        when no SAVED period covers *as_of* -- which is a real answer and the
+        one three routes still branch on.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dependency
+    # avoidance as the factories above.
+    from app.extensions import db as _db
+    from app.models.pay_period import PayPeriod as _PayPeriod
+    from app.services.pay_calendar import calendar_for
+    from app.utils.dates import display_today
+
+    period = calendar_for(user_id).period_containing(
+        display_today() if as_of is None else as_of,
+    )
+    if period is None:
+        return None
+    return _db.session.get(_PayPeriod, period.period_id)
+
+
+def read_pass_over_paydays(
+    paydays, cadence_days, as_of, user_id=1, history_opens_on=None,
+):
     """Return a :class:`BalanceContext` whose pay calendar is *paydays*.
 
     **The ONE place a test seeds the read pass's pay-calendar memo**, and that
@@ -5262,6 +6841,9 @@ def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
         user_id: The owning user (default ``1``).  The calendar is derived for
             the SAME id the pass carries, so the two cannot disagree -- which
             is the pairing the seeded memo could otherwise express.
+        history_opens_on: How far back the owner's paychecks reach, or ``None``
+            -- the default, which is the nullable column's own; see
+            :func:`payroll_basis` for what saying nothing means.
 
     Returns:
         A :class:`~app.services.balance_at.BalanceContext` with no baseline
@@ -5289,12 +6871,62 @@ def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
         ],
         cadence_days,
         user_id=user_id,
+        history_opens_on=history_opens_on,
     )
     return BalanceContext(
         user_id=user_id,
         scenario=None,
         as_of=as_of,
         _calendars={user_id: calendar},
+    )
+
+
+def read_pass(account, scenario, as_of):
+    """Return a :class:`BalanceContext` for *account*'s OWNER, pinned at *as_of*.
+
+    **The DB-backed twin of :func:`read_pass_over_paydays`**, and what a test
+    holds where it used to build a bare
+    :class:`~app.services.cash_ledger.AmountBasis` with :func:`basis_for` and
+    hand it to the cash fold alongside an account and a date.  Plan step
+    **X-i4** made that triple unstateable: the fold comes out of the pass
+    (``assembled_fold(account, ctx)``), which memoizes it and refuses
+    an account the pass does not own.
+
+    **It takes the ACCOUNT rather than a user id, deliberately**, which is the
+    same discipline :func:`read_pass_over_paydays` states for the calendar one
+    tier over: the pass is built for the owner of the very account it is about
+    to be asked for, so a test cannot express the mis-pairing production can no
+    longer express either.  A test that WANTS the mismatch -- the ones grading
+    :class:`~app.exceptions.ForeignAccountError` -- constructs the two halves by
+    hand and says so at the call.
+
+    It builds the context DIRECTLY rather than through
+    :meth:`~app.services.balance_at.BalanceContext.build`, because the caller
+    already holds the scenario its fixture seeded and ``build`` would re-resolve
+    the owner's baseline from the database -- a second answer to a question the
+    test has already answered, and one that would silently pick a different
+    scenario for a fixture holding more than one.  It is therefore invisible to
+    :func:`counting_read_passes`, exactly as ``read_pass_over_paydays`` is.
+
+    Args:
+        account: Any account of the owner the pass is for; ``user_id`` is read
+            off it.
+        scenario: The scenario whose rows the pass values.
+        as_of: The reader's NOW -- ruling R-G's clamp floor, and the date each
+            loan resolves at.  Required, because a fold pinned to the ambient
+            clock is the fixture-depends-on-the-calendar shape
+            ``.claude/rules/testing.md`` names.
+
+    Returns:
+        A real frozen :class:`~app.services.balance_at.BalanceContext` with
+        empty memos.
+    """
+    from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
+        BalanceContext,
+    )
+
+    return BalanceContext(
+        user_id=account.user_id, scenario=scenario, as_of=as_of,
     )
 
 
@@ -5405,59 +7037,86 @@ class PlantedPricing:
     reduction return") need to plant an answer without seeding a salary profile
     or a loan, and this is what they plant it with.
 
-    It satisfies both halves of the seam: :meth:`net_for` is what
-    ``income_service.salary_net_for`` asks, and :meth:`live_cash` is what
-    ``loan_payment_service.LoanPricing`` answers with.  Planting by
-    TRANSACTION id therefore lands on the loan half, which
-    ``cash_ledger.live_override`` asks first.
+    It satisfies the seam: :meth:`net_for` is what
+    ``income_service.salary_net_for`` asks.
+
+    **It answered a LOAN half too until plan step X-au-g-2c-2**, and planting
+    was keyed by TRANSACTION id because that half (``LoanPricing.live_cash``)
+    took a row.  That method is deleted -- a transfer shadow is DERIVED and has
+    no stored figure for a read-time override to supersede -- so the seam is
+    salary alone and the key is the pair the salary derivation is keyed on.
+    Answering the old key would have been worse than failing: the loan half was
+    asked FIRST, so every planted figure landed there, and a helper that kept
+    answering by row id after the arm was deleted would have gone quietly inert.
 
     Use it ONLY where the derivation is an input to the rule under test.  A test
     OF the amount model builds a real basis (``amount_basis``) and seeds the
-    profile or the loan, because a planted map cannot grade a derivation.
+    profile, because a planted map cannot grade a derivation.
     """
 
     def __init__(self, overrides=None):
-        """Plant ``{transaction_id: Decimal}`` as this derivation's answers.
+        """Plant ``{(template_id, pay_period_id): Decimal}`` as the answers.
 
         Args:
-            overrides: The live figures to answer with, or ``None`` for a
-                derivation that answers for nothing -- the common case, and
-                what a row set with no salary row and no loan payment gets.
+            overrides: The live figures to answer with, keyed the way the
+                salary derivation is keyed, or ``None`` for a derivation that
+                answers for nothing -- the common case, and what a row set with
+                no salary row gets.
         """
         self._overrides = dict(overrides or {})
 
     def net_for(self, template_id, pay_period_id):
-        """Answer nothing: a planted figure lands on the LOAN half.
+        """Return the planted net for one template and period, or ``None``.
 
         Args:
-            template_id: Ignored.
-            pay_period_id: Ignored.
-
-        Returns:
-            ``None`` always -- a test that needs a real paycheck seeds a
-            profile and builds a real basis.
-        """
-        return None
-
-    def live_cash(self, txn):
-        """Return the planted figure for *txn*, or ``None``.
-
-        Args:
-            txn: The row being asked about; only its ``id`` is read.
+            template_id: The row's definition.
+            pay_period_id: The row's pay period.
 
         Returns:
             The planted ``Decimal``, or ``None`` when nothing was planted for
-            this row.
+            that pair.
         """
-        return self._overrides.get(getattr(txn, "id", None))
+        return self._overrides.get((template_id, pay_period_id))
+
+    def derive_cash(self, shadow, loan_account_id, extra_principal):
+        """REFUSE: a planted basis cannot price a loan.
+
+        :func:`planted_basis` puts this same object in ``AmountBasis.loans``,
+        where the amount model's rule 4 calls ``derive_cash``.  Without this the
+        call is an ``AttributeError`` on a class that simply has no such method
+        -- a failure that names the DOUBLE rather than the mistake, and one an
+        adversarial review of plan step X-au-g-2c-2 asked to be made legible.
+
+        The class docstring's "use it ONLY where the derivation is an input to
+        the rule under test" was the whole of the guarantee before this; a
+        promise a test can break silently is not one.
+
+        Args:
+            shadow: Ignored.
+            loan_account_id: Ignored.
+            extra_principal: Ignored.
+
+        Raises:
+            AssertionError: Always.
+        """
+        raise AssertionError(
+            "A planted basis cannot price a loan payment: PlantedPricing "
+            "stands in for the SALARY derivation only. This row reached "
+            "AmountRule.LOAN_PAYMENT, so the case needs a real basis "
+            "(amount_basis) over a seeded loan -- a planted map cannot grade "
+            "a derivation."
+        )
 
 
 def planted_basis(*rows, overrides=None):
     """An :class:`~app.services.cash_ledger.AmountBasis` answering *overrides*.
 
-    The basis a producer would hand a valuation rule, with both live
-    derivations planted (:class:`PlantedPricing`) so no test of a reduction
-    needs a salary profile or a configured loan to reach the override seam.
+    The basis a producer would hand a valuation rule, with the live salary
+    derivation planted (:class:`PlantedPricing`) so no test of a reduction needs
+    a salary profile to reach the override seam.  The ``loans`` field is planted
+    with the same object, which answers nothing there: since plan step
+    X-au-g-2c-2 the only thing a caller asks it is ``derive_cash``, and a
+    reduction under test never does.
 
     Args:
         rows: The rows this basis will price.  A basis was built OVER a row set
@@ -5466,7 +7125,8 @@ def planted_basis(*rows, overrides=None):
             SCENARIO the basis declares.  ``resolve_transaction_amount`` refuses
             a row from another scenario, so a double that named the wrong one
             would grade that refusal instead of the rule under test.
-        overrides: ``{transaction_id: Decimal}`` live figures to plant.
+        overrides: ``{(template_id, pay_period_id): Decimal}`` live figures to
+            plant on the salary derivation.
 
     Returns:
         The :class:`~app.services.cash_ledger.AmountBasis`.
@@ -5481,6 +7141,42 @@ def planted_basis(*rows, overrides=None):
         scenario_id=getattr(rows[0], "scenario_id", 0) if rows else 0,
         salary=planted,
         loans=planted,
+    )
+
+
+def shadow_amount(shadow):
+    """What one transfer SHADOW is worth -- Transfer Invariant 3, read.
+
+    **The invariant moved from a COLUMN to a VALUE at plan step X-au-g-2c-2**,
+    and this is what a test asserts it with.  A shadow used to hold a COPY of
+    its parent's ``amount``, kept true by ``update_transfer``'s propagation and
+    by ``restore_transfer``'s drift corrector, so every case could assert
+    ``shadow.estimated_amount == xfer.amount`` and was really asserting that the
+    two repairs had run.  A shadow declares ``PARENT_TRANSFER`` and stores
+    nothing now, so that assertion would compare ``None`` against a figure; what
+    it was ABOUT -- both legs being worth what the transfer is -- is asked of
+    the amount model here.
+
+    A FRESH basis per call: a case that edits a transfer and re-reads must see
+    the new figure, and a basis memoizes for the length of the read pass.
+
+    Args:
+        shadow: A transfer shadow, with its ``account`` reachable.
+
+    Returns:
+        The ``Decimal`` the shadow resolves to.
+
+    Raises:
+        AmountUnresolvable: When the row's rule cannot price it -- which for a
+            shadow means its parent is gone (Transfer Invariant 2 broken).
+    """
+    from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
+        amount_basis,
+        resolve_transaction_amount,
+    )
+
+    return resolve_transaction_amount(
+        shadow, amount_basis(shadow.account.user_id, shadow.scenario_id),
     )
 
 
@@ -5506,3 +7202,654 @@ def basis_for(account, scenario):
     )
 
     return amount_basis(account.user_id, scenario.id)
+
+
+def all_periods(user_id):
+    """Return every one of *user_id*'s pay periods as ORM rows, payday order.
+
+    **A TEST helper because the application has no such reader any more.**
+    ``pay_period_service.get_all_periods`` was the last of that module's six
+    ``get_*`` readers, and pay-calendar plan step C2-f3c deleted it with its
+    last caller: the recurrence generation seam now takes a
+    :class:`~app.services.pay_calendar.PayCalendar`, which IS the owner's whole
+    schedule, so nothing in ``app/`` asks a separate reader for the rows.
+    Keeping a production function alive for test callers alone is the
+    speculative shape ``CLAUDE.md`` rule 13 forbids, and ruling **P54** already
+    settled where the replacement lives: one shared helper here, never a
+    ``for_test`` door on the real API.
+
+    **Ordered by ``start_date``, and since plan step ``pay_calendar:C4-c``
+    there is no other order to ask for**: ``period_index`` was a column until
+    that step dropped it, and a row is now the payday alone.
+
+    A row carries no SPAN either.  A caller that wants one asks
+    :func:`derived_span`, which is the calendar's answer for that row.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        The owner's :class:`~app.models.pay_period.PayPeriod` rows, earliest
+        payday first.  Empty for an owner with no schedule.
+    """
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.models.pay_period import (  # pylint: disable=import-outside-toplevel
+        PayPeriod,
+    )
+
+    return (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=user_id)
+        .order_by(PayPeriod.start_date)
+        .all()
+    )
+
+
+def derived_span(period):
+    """Return the :class:`DerivedPeriod` the application answers for *period*.
+
+    **The suite's one door onto "how far does this paycheck run", and plan step
+    ``pay_calendar:C4-c`` is why it has to be a door at all.**  A test read
+    ``period.end_date`` and ``period.period_index`` off the ORM row until that
+    step dropped both columns.  Neither is a property of a row: the ordinal is
+    the payday's position in the owner's sorted set and the end is the day
+    before the NEXT payday, so both are answers about the WHOLE payday set and
+    ``pay_calendar.calendar_for`` is what computes them.
+
+    Resolving through the owner's real calendar rather than constructing a
+    :class:`DerivedPeriod` by hand is what keeps a case from asserting against
+    bounds the application never computes -- the property
+    :func:`period_window` exists for one level up.
+
+    Args:
+        period: A saved :class:`~app.models.pay_period.PayPeriod` row.
+
+    Returns:
+        Its :class:`~app.services.pay_calendar.DerivedPeriod` -- ``start_date``,
+        ``end_date``, ``period_index`` and ``end_is_projected``.
+
+    Raises:
+        AssertionError: *period* is not in its own owner's calendar, which
+            means it was never flushed or belongs to another owner.  A silent
+            ``None`` here would make every assertion downstream vacuous.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        calendar_for,
+    )
+
+    resolved = calendar_for(period.user_id).period_by_id(period.id)
+    assert resolved is not None, (
+        f"pay period {period.id} is not in user {period.user_id}'s own "
+        f"calendar -- it was never flushed, or it belongs to someone else"
+    )
+    return resolved
+
+
+def last_covered_day(period):
+    """Return the last day *period* covers, DERIVED.
+
+    ``period.end_date`` until plan step ``pay_calendar:C4-c`` dropped that
+    column; :func:`derived_span` carries why it is a question about the whole
+    payday set.  This spelling exists because most callers want the DAY and
+    reading ``derived_span(p).end_date`` at every one of them puts the word
+    ``end_date`` back on a page where the column no longer exists.
+
+    Args:
+        period: A saved :class:`~app.models.pay_period.PayPeriod` row.
+
+    Returns:
+        The inclusive last day of its span.
+    """
+    return derived_span(period).end_date
+
+
+def open_owner_calendar(user_id, first_payday, num_periods=1, cadence_days=14):
+    """Open *user_id*'s pay calendar through the writer that owns the table.
+
+    **Plan step ``pay_calendar:C4-b-1``.**  For a test that hand-builds a
+    ``User`` and needs a pay period before ``account_service.create_account``,
+    which refuses an owner who has none.  The sites this replaced each carried
+    the same five lines -- a bare ``PayPeriod(...)`` setting ``end_date`` and
+    ``period_index``, the two values ``pay_period_write._write_derivation``
+    DERIVES, and no ``budget.pay_schedule`` row beside them.  *No count is
+    stated here: two drafts of this docstring and the plan's own sentence gave
+    three different ones, which is what a number nothing recomputes does.*
+
+    That pairing is one no application door can produce: ``record_paydays``
+    upserts the owner's cadence in the same call that records a payday (the
+    cadence rule, plan step C3-b), and ``auth_service.register_user`` reaches
+    the table only through it.  So every one of those sites built the single
+    owner shape production does not have -- pay-calendar finding **P8** -- and
+    the derived columns they typed were free to disagree with the derivation
+    that reads them.
+
+    Use :func:`rebuild_calendar` instead when the owner ALREADY has periods:
+    this writes, that resets.
+
+    Args:
+        user_id: The owning user's id, already flushed.
+        first_payday: The opening payday.
+        num_periods: How many periods to record from it, default one.
+        cadence_days: Days between them, persisted as the owner's cadence.
+
+    Returns:
+        The created :class:`~app.models.pay_period.PayPeriod` rows, payday
+        ascending -- ``period_index`` 0..n-1 and each end derived, so a caller
+        that wants one period may index ``[0]``.  **EMPTY when every requested
+        payday is already on the table**, which is ``record_paydays``' own
+        contract for a batch that records nothing: an ``[0]`` on that answer is
+        an ``IndexError``.  No caller re-requests an existing payday today, and
+        the day one does it should read the answer rather than index it.
+    """
+    from app.services import (  # pylint: disable=import-outside-toplevel
+        pay_period_write,
+    )
+
+    return pay_period_write.record_paydays(
+        user_id=user_id,
+        first_payday=first_payday,
+        num_periods=num_periods,
+        rhythm=rhythm_of(cadence_days),
+    )
+
+
+def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
+    """Rebuild *user_id*'s WHOLE pay-period schedule through the reset door.
+
+    **Plan step ``pay_calendar:C4-b-1``.**  The one place the test tree says
+    "give this owner that calendar", and it says it by calling
+    ``pay_period_admin.reset_pay_periods`` -- the settings-page correction at
+    ``POST /pay-periods/reset``, which wipes every period, records the new
+    batch through the writer and re-syncs the loan genesis postings and the
+    account anchor corrections onto what it built.
+
+    **A test that builds a pay period by hand builds a row no owner can
+    have**, and that is not a style point.  ``end_date`` and ``period_index``
+    are DERIVED from the payday set; a hand-built row sets them to whatever
+    the author typed, and it wrote no ``budget.pay_schedule`` row, so
+    ``pay_schedule_service.resolve_schedule`` fell back to INFERRING the
+    cadence from that same hand-typed ``end_date``.  Eight cases in
+    ``test_recurrence_engine.TestDueDateGeneration`` passed only through that
+    loop: they wrote a 28-day February period, the fallback read 28 back as
+    the owner's cadence, and the derived span therefore matched the typed one.
+    Give the owner a real cadence and the same rows derive a 14-day span and
+    generate nothing.  Ruling **P54**'s shape: one shared helper here, never a
+    ``for_test`` door on the real API.
+
+    **The LOOP is now unbuildable and the reason to come here is stronger for
+    it** (plan step ``pay_calendar:C4-b-2``).  ``fk_pay_periods_schedule``
+    refuses a pay period whose owner has no ``budget.pay_schedule`` row, so a
+    hand-built row for a schedule-less owner is an ``IntegrityError`` rather
+    than a silently self-confirming assertion.
+
+    **What that does NOT do is make every remaining hand-built site wrong, and
+    this paragraph states a PREDICATE rather than a list** -- an adversarial
+    review measured a first draft's list as a set defined by subtraction,
+    naming two categories where there are at least three.  The predicate: a
+    hand-built ``PayPeriod(...)`` is legitimate exactly when the row it needs
+    is one no application door can write -- a corrupt ordinal, a gap, an
+    overlapping span (take ``bare_user_with_cadence``) -- or when nothing
+    reaches a database at all.  A site that merely finds it convenient is one
+    this helper should have.  ``grep -rn 'PayPeriod($' tests/`` answered 38
+    across 19 files on 2026-09-01, and the third category the draft missed is
+    real: rows hand-built for an owner who already carries a schedule row from
+    a fixture, which the key admits and which nothing here classifies.  Re-run
+    the grep; do not trust the number.
+
+    Args:
+        user_id: The owning user's id.
+        first_payday: The opening payday of the rebuilt schedule.
+        num_periods: How many periods to build from it.
+        cadence_days: Days between them, persisted as the owner's cadence by
+            the writer (the cadence rule, plan step C3-b).
+
+    Returns:
+        The owner's periods, payday ascending -- :func:`all_periods`' answer,
+        for the reason that function gives.
+
+    Raises:
+        PayPeriodResetBlocked: The owner has a settled transaction, which the
+            reset door refuses; build the calendar before settling anything.
+    """
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.models.account import Account  # pylint: disable=import-outside-toplevel
+    from app.services import (  # pylint: disable=import-outside-toplevel
+        pay_period_admin,
+    )
+
+    # **The BOOKS bound the opening payday, and since plan step
+    # ``pay_calendar:C4-b-1`` nothing else does.**  Two accidental protections
+    # went when ``conftest._drop_seed_user_bootstrap`` did, and an adversarial
+    # review of that step found both: the hand-rolled version APPENDED beside
+    # the owner's existing paydays, so ``_reject_backward_payday`` refused any
+    # first payday earlier than one cadence after the latest -- and where that
+    # let something through, a backward-only restatement moved the books to
+    # meet it.  The reset door retires every surviving payday in the SAME call
+    # that records the new batch, so that refusal returns early on an empty
+    # surviving set and every opening day became legal.
+    #
+    # A pay period opening at or before an account's books contradicts ruling
+    # ``balance:R-HG`` -- an opening equity is the CLOSING balance for its own
+    # day -- so it is refused here, loudly, rather than built and left for
+    # whichever balance case notices.  **On this door rather than on one of its
+    # callers**: a second adversarial review found the first placement was on
+    # ``conftest._reset_seed_calendar``, which is one of three callers, and the
+    # one a new case is least likely to use --
+    # ``rebuild_calendar_from_spans`` reaches this directly and already types
+    # arbitrary years.
+    #
+    # **Per account it is the GOVERNING row, not the latest DAY**, and the
+    # difference is not academic: ``budget.account_openings`` is append-only
+    # and the governing row is the one recorded LAST (ruling ``balance:R-HE``),
+    # so an account restated BACKWARD carries a row with a later ``opened_on``
+    # that no longer governs.  The seeded Checking is exactly that -- 2024-01-05
+    # from the factory, then 2024-01-04 from
+    # ``open_books_before_the_first_assertion`` -- and a first cut of this
+    # guard reduced with ``max(opened_on)``, read 2024-01-05, and refused the
+    # legal opening day.  ``test_it_admits_the_first_day_it_legally_can``, the
+    # second direction of this guard's own control, is what measured it.
+    books = max(
+        (
+            day for day in (
+                _governing_opening_day(db.session, account)
+                for account in db.session.query(Account)
+                .filter(Account.user_id == user_id).all()
+            )
+            if day is not _real_date.max
+        ),
+        default=None,
+    )
+    assert books is None or first_payday > books, (
+        f"user {user_id} has an account whose books open {books}, and this "
+        f"asks for a calendar opening {first_payday}, which is on or before "
+        f"them.  An opening equity is the CLOSING balance for its own day "
+        f"(ruling balance:R-HG), so no pay period may open at or before one.  "
+        f"Ask for a later first payday, or open that account's books earlier."
+    )
+    pay_period_admin.reset_pay_periods(
+        user_id, first_payday, num_periods, rhythm_of(cadence_days),
+    )
+    # The door is one transaction its ROUTE commits, so a test caller commits
+    # it, and expires: the caller may hold rows the wipe deleted.
+    db.session.commit()
+    db.session.expire_all()
+    return all_periods(user_id)
+
+
+def rebuild_calendar_from_spans(user_id, spans):
+    """Rebuild *user_id*'s calendar so its periods OPEN on each span's start.
+
+    :func:`rebuild_calendar` for a case that wants several periods the writer
+    cannot space evenly -- "January, April, July and October", which is four
+    paydays 90, 91 and 92 days apart.  One reset opens the schedule and each
+    later payday is appended by the same writer, so every row is still the
+    derivation's.
+
+    **What a span's END is worth here, stated because it is NOT what a
+    hand-built row gave.**  Every period's end is the day BEFORE the next
+    payday, so an interior span's stated end is honoured only when the next
+    span opens the day after it; where the caller asks for gapped spans the
+    interior ends run WIDER than asked, because a gap is not expressible in a
+    derived calendar (``docs/plans/implementation_plan_pay_calendar.md``
+    section 3).  The LAST span is the one end the derivation projects, and it
+    is exact: the owner's cadence is that span's length.  Callers here assert
+    on the occurrence's own day, which lands in the same period under either
+    width.
+
+    Args:
+        user_id: The owning user's id.
+        spans: ``[(start, end), ...]``, ascending and non-overlapping, at
+            least one.  Each ``start`` becomes a payday.
+
+    Returns:
+        The owner's periods, payday ascending -- one per span.
+
+    Raises:
+        ValidationError: Two spans open closer together than the last span's
+            length, which is the forward-only rule
+            ``pay_period_write._reject_backward_payday`` states.
+    """
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.services import (  # pylint: disable=import-outside-toplevel
+        pay_period_write,
+    )
+
+    last_start, last_end = spans[-1]
+    cadence_days = (last_end - last_start).days + 1
+    rebuild_calendar(user_id, spans[0][0], 1, cadence_days)
+    for start, _end in spans[1:]:
+        pay_period_write.record_paydays(
+            user_id=user_id,
+            first_payday=start,
+            num_periods=1,
+            rhythm=rhythm_of(cadence_days),
+        )
+    # COMMIT the appends too.  :func:`rebuild_calendar` commits the opening
+    # payday because the door it wraps leaves the transaction to its caller,
+    # and ``record_paydays`` only FLUSHES -- so without this the calendar was
+    # half committed and half pending.  Nothing broke (a test client reuses the
+    # live app context, so the same session sees both), but a half-committed
+    # calendar is an asymmetry no reader would predict.
+    db.session.commit()
+    return all_periods(user_id)
+
+
+@contextmanager
+def pay_periods_hydrated():
+    """Count the ``PayPeriod`` ORM entities LOADED inside this block.
+
+    The measurement a statement count cannot make: an eager load rides inside
+    another query as a JOIN and issues no statement of its own, and a
+    ``db.session.get`` served from the identity map issues none either.  Both
+    hydrate an entity, which is what this counts.
+
+    **The event and not the identity map**, because the map holds WEAK
+    references: a probe that counted survivors after the call read zero for a
+    producer that had hydrated twelve, since nothing outside the producer
+    holds a ``Transaction`` to keep its ``pay_period`` back-reference alive.
+    That was measured -- a first cut of this helper read the map and could not
+    fire.  ``loaded_as_persistent`` fires per load and cannot be collected
+    away.
+
+    **A caller must EXPUNGE first, and this is the one thing about the probe
+    that is not obvious.**  ``loaded_as_persistent`` fires on a LOAD, so an
+    instance already in the session's identity map is returned by
+    ``db.session.get`` without firing anything: a fixture that hands back live
+    ORM rows makes this read ZERO for a producer that is hydrating on every
+    call, and the guard then passes on exactly the code it exists to refuse.
+    Measured at plan step C2-f3e -- with ten periods preloaded, a
+    ``db.session.get(PayPeriod, ...)`` inside this block records nothing.  An
+    earlier wording of this paragraph claimed the probe counts such a call and
+    it does not.
+
+    Shared here rather than per-suite because two SUITES now assert the same
+    structural property -- no ORM ``PayPeriod`` on this path.  Written for plan
+    step C2-f3d (``test_spending_report_service``), moved here whole by plan
+    step C2-f3e (``test_transaction_auth``); both are pay-calendar steps, and
+    an earlier wording of this sentence said "two arcs".
+
+    Yields:
+        The list of hydrated :class:`~app.models.pay_period.PayPeriod`
+        instances, appended to as the block runs.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+    from app.models.pay_period import PayPeriod
+
+    loaded = []
+
+    def _record(_session, instance):
+        if isinstance(instance, PayPeriod):
+            loaded.append(instance)
+
+    event.listen(Session, "loaded_as_persistent", _record)
+    try:
+        yield loaded
+    finally:
+        event.remove(Session, "loaded_as_persistent", _record)
+
+
+def amount_basis_for(row):
+    """Return the :class:`AmountBasis` that prices ONE row, for a test.
+
+    **Named for the thing it builds, because ``basis_for`` was already taken**
+    by the ``ProjectedBasis`` helper above -- appending a second definition of
+    that name silently shadowed it and took 63 tests down with a
+    ``TypeError``.  Two different "bases" live in this suite and neither may
+    answer to the bare word.
+
+    **The single-row form of what a read pass holds** (plan step X-au-j).  Both
+    ``settle_amount`` twins take their basis as a REQUIRED parameter, because
+    their two live callers are PASSES and an optional one would leave the
+    expensive shape as what a caller gets by saying nothing -- which is how
+    findings **N-295** and **N-309** grew back one tier up after plan step
+    X-au-c2b closed the same cost within a call.
+
+    A test valuing one row is the caller that legitimately holds no pass, so it
+    builds one for that row and says so.  Shared here rather than spelled at
+    each of the sites that need it, which is this project's DRY rule; it stays
+    EXPLICIT at every call (``settle_amount(txn, amount_basis_for(txn))``), so the
+    derivation being built is still visible where it is paid for.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` being valued.
+            Its ``account.user_id`` and ``scenario_id`` are what a basis is
+            pinned to.
+
+    Returns:
+        The :class:`~app.services.cash_ledger.AmountBasis` for that row's owner
+        and scenario.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.cash_ledger import amount_basis
+
+    return amount_basis(row.account.user_id, row.scenario_id)
+
+
+def amount_basis_for_scenario(scenario_id):
+    """Return the amount basis for *scenario_id*, deriving its owner from the scenario.
+
+    **The ONE spelling for a test helper that holds a scenario id and no
+    owner** (plan step balance:X-au-g-2c).  Routing
+    ``loan_payment_service.get_payment_history`` through the amount model gave
+    ``load_loan_context`` an :class:`~app.services.cash_ledger.AmountBasis`
+    where it took a bare ``scenario_id``, and a dozen replay helpers in this
+    suite hold exactly that id: they are built from a loan and a scenario,
+    never from a request with a ``current_user``.
+
+    A scenario belongs to exactly one owner (``budget.scenarios.user_id``), so
+    the owner is DERIVED here rather than taken beside the id.  Spelling both
+    at a dozen call sites would invite a pair naming one owner and another's
+    scenario, which is the mismatch
+    :func:`~app.services.cash_ledger.resolve_transaction_amount` refuses a row
+    for -- and a test is exactly where such a pair would be written by hand.
+
+    **The sibling of :func:`amount_basis_for` above, keyed differently.**  That
+    one takes a ROW and reads its account's owner and its own scenario; this
+    takes the SCENARIO because its callers are replay helpers built from a loan
+    id and a scenario id, with no row in hand at all.  Two keys, one
+    derivation, and neither may answer to the other's name.
+
+    Ruling **P54** is why this is a shared helper here rather than a
+    convenience on the production constructor: a production API with only test
+    callers is the speculative shape ``CLAUDE.md`` rule 13 forbids.
+    **Production has the same asymmetry and it is filed, not fixed here**
+    (finding **N-432**): ``amount_basis`` takes an owner AND a scenario and
+    nothing checks they agree, where the scenario already states its owner.
+
+    Args:
+        scenario_id: The scenario the rows being priced belong to.
+
+    Returns:
+        The unresolved :class:`~app.services.cash_ledger.AmountBasis` for that
+        scenario's owner and that scenario.
+
+    Raises:
+        NoResultFound: When no scenario carries that id -- loud, because a
+            basis built for a scenario that does not exist would price every
+            row it is handed as belonging to another.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.extensions import db
+    from app.models.scenario import Scenario
+    from app.services.cash_ledger import amount_basis
+
+    scenario = db.session.query(Scenario).filter(
+        Scenario.id == scenario_id,
+    ).one()
+    return amount_basis(scenario.user_id, scenario_id)
+
+
+def count_amount_bases(monkeypatch):
+    """Return a list that records every ``AmountBasis`` CONSTRUCTION.
+
+    **It counts the producer, not the factory, and that difference is the
+    whole instrument** (plan step X-au-j).  A first version of this control
+    patched ``amount_basis`` on the modules that import it and PASSED against a
+    planted defect: every module does ``from app.services.cash_ledger import
+    amount_basis``, which binds the function by value at import time, so
+    patching a name in one module says nothing about the copy another module
+    already holds -- and the arm rebuilding its caller's basis was invisible.
+
+    ``amount_basis`` calls ``income_service.salary_pricing`` unconditionally on
+    every construction, through a module ATTRIBUTE resolved at call time, so a
+    patch here is seen no matter which module reached the factory.  One entry
+    per basis built, by anybody.
+
+    Args:
+        monkeypatch: The test's ``monkeypatch`` fixture.
+
+    Returns:
+        The list the counter appends ``(user_id, scenario_id)`` to.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services import income_service
+
+    built = []
+    real = income_service.salary_pricing
+
+    def _counted(user_id, scenario_id):
+        built.append((user_id, scenario_id))
+        return real(user_id, scenario_id)
+
+    monkeypatch.setattr(income_service, "salary_pricing", _counted)
+    return built
+
+
+#: One import, two bank lines and one match naming BOTH, in the shape
+#: ``statement_match._accept.record_match`` leaves: the group's EARLIEST line
+#: posts before the row that explains it settles.
+#:
+#: **Raw SQL, and ONE copy of it.**  It lived in three test modules
+#: byte-identically until an adversarial test-quality review counted them --
+#: and the query has to agree with
+#: :data:`app.opening_infrastructure.MATCHED_LINE_DAYS_SQL`'s row set, so
+#: three copies were three places for that to drift silently.  That is this
+#: arc's own stated root cause, in its own test suite.
+#:
+#: It is raw because what the cases using it grade IS a database trigger and a
+#: raw-SQL reader; a case grading a DOOR should build its match through
+#: ``accept_match`` instead -- what the DOOR leaves is not what this
+#: builds, and a case grading a door has never seen the row shape a
+#: door produces if it uses this.
+_A_MATCHED_GROUP = """
+    WITH import_row AS (
+        INSERT INTO budget.statement_imports
+               (account_id, user_id, source_id, file_name, file_digest,
+                period_start, period_end, line_count, recorded_count)
+        SELECT :a, :u,
+               (SELECT id FROM ref.statement_sources ORDER BY id LIMIT 1),
+               'books-boundary-probe.csv', :digest, :early, :late, 2, 2
+        RETURNING id
+    ), line_rows AS (
+        INSERT INTO budget.bank_statement_lines
+               (account_id, import_id, posted_on, amount, description,
+                sequence_in_group)
+        SELECT :a, import_row.id, day.posted_on, -15.96, 'PROBE', 0
+          FROM import_row, (VALUES (:early), (:late)) AS day(posted_on)
+        RETURNING id
+    ), match_row AS (
+        INSERT INTO budget.statement_matches
+               (account_id, user_id, applied_by_rule)
+        VALUES (:a, :u, false)
+        RETURNING id
+    )
+    INSERT INTO budget.statement_match_members
+           (match_id, account_id, bank_statement_line_id)
+    SELECT match_row.id, :a, line_rows.id FROM match_row, line_rows
+"""
+
+
+def match_two_lines(db_session, account, owner_id, early, late):
+    """Match two bank lines on *account*, posted *early* and *late*.
+
+    The state plan step **balance:X-f3c-2b-2b**'s matched-line bound is about:
+    a group whose earliest line posts strictly before the row explaining it
+    settles, which is every multi-day match.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` to match on.
+        owner_id: Its owner.
+        early: The earlier line's posting day.
+        late: The later one's.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep avoidance
+    # as the loan helpers above.
+    import sqlalchemy as _sa
+
+    db_session.execute(_sa.text(_A_MATCHED_GROUP), {
+        "a": account.id,
+        "u": owner_id,
+        "digest": f"probe-{account.id}-{early}",
+        "early": early,
+        "late": late,
+    })
+    db_session.commit()
+
+
+def write_past_the_amount_seam(row, value):
+    """Write *row*'s figure column DIRECTLY, bypassing ``amount_ownership``.
+
+    **The only supported way for a test to construct a state the mapping
+    refuses** (plan step **X-au-k**), and it exists because the obvious
+    spelling is a trap.  ``Transaction.__estimated_amount`` and
+    ``Transfer.__amount`` are double-underscored, so Python mangles them and a
+    hand-written ``row._estimated_amount = x`` binds a plain instance attribute
+    that reaches no column -- a SILENT no-op, which is the right failure for a
+    typo in application code and the wrong one for a control that means to
+    write.
+
+    Three tests need this: the two that prove a derived row's answer is
+    invariant under a rival figure (``test_amount_source.py``), and the two
+    that prove the database still refuses the drift a transfer shadow could
+    once hold (``test_a_transfer_shadow_is_derived.py``,
+    ``test_transfer_service.py``).  Each is constructing the shape
+    :class:`~app.models.amount_ownership.AmountOwnership` has no member for, so
+    none of them can go through the seam.
+
+    Args:
+        row: A :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer`.
+        value: The figure to write, or ``None`` to empty the column.
+
+    Raises:
+        AttributeError: When *row*'s model maps no such private column, which
+            is what stops this helper from silently binding a new attribute if
+            a later step renames one.
+    """
+    attr = f"_{type(row).__name__}__{_figure_column_of(row)}"
+    if attr not in type(row).__mapper__.attrs:
+        raise AttributeError(
+            f"{type(row).__name__} maps no {attr!r}; the amount seam's private "
+            "column was renamed and this helper would have bound a plain "
+            "attribute that writes nothing"
+        )
+    setattr(row, attr, value)
+
+
+def _figure_column_of(row) -> str:
+    """Return the column *row*'s table stores an owned figure in.
+
+    Args:
+        row: A ``Transaction`` or ``Transfer``.
+
+    Returns:
+        ``"estimated_amount"`` or ``"amount"``.
+
+    Raises:
+        AttributeError: When *row* is neither.
+    """
+    for column in ("estimated_amount", "amount"):
+        if column in type(row).__table__.c:
+            return column
+    raise AttributeError(f"{type(row).__name__} carries no figure column")

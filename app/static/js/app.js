@@ -558,37 +558,6 @@ document.addEventListener('change', function(e) {
     }
 });
 
-// --- Confirmation Modal (replaces browser confirm()) ---
-// Forms with data-confirm="message" show a Bootstrap modal instead of confirm().
-(function() {
-  var pendingForm = null;
-
-  document.addEventListener('submit', function(e) {
-    var form = e.target;
-    var message = form.getAttribute('data-confirm');
-    if (!message) return;
-
-    e.preventDefault();
-    pendingForm = form;
-
-    var modal = document.getElementById('confirmModal');
-    if (!modal) { if (confirm(message)) form.submit(); return; }
-
-    document.getElementById('confirmModalBody').textContent = message;
-    new bootstrap.Modal(modal).show();
-  });
-
-  document.addEventListener('click', function(e) {
-    if (e.target.id === 'confirmModalYes' && pendingForm) {
-      bootstrap.Modal.getInstance(document.getElementById('confirmModal')).hide();
-      // Remove the data-confirm to avoid re-triggering on submit.
-      pendingForm.removeAttribute('data-confirm');
-      pendingForm.submit();
-      pendingForm = null;
-    }
-  });
-})();
-
 // --- Keyboard Help Modal (? key) ---
 document.addEventListener('keydown', function(e) {
   if (e.key === '?' && !e.ctrlKey && !e.metaKey) {

@@ -2,7 +2,18 @@
 {# Transaction cell -- displays amount with status badge.
    Clicking opens the inline edit form via HTMX.
 
-   Expected context: found.txn (or txn) -- a Transaction object.
+   Expected context:
+     found.txn (or txn) -- a Transaction object.
+     due_captions -- `{transaction_id: the due date to caption, or none}`,
+                 from `grid_view_service.due_captions_by_id`.  REQUIRED, and a
+                 MAP so that the read RAISES: Jinja's default `Undefined`
+                 compares unequal to a date without raising, so a caption read
+                 as a bare variable renders on every dated row when a surface
+                 forgets to publish it.  Same rule as `budgets` below and the
+                 same reason.  The caption was decided HERE, as
+                 `t.due_date != t.pay_period.start_date`, until pay-calendar
+                 plan step C4-a-1 -- a database query issued from a template,
+                 once per distinct paycheck on the page.
    Optional:
      wrap_div -- if true, wraps the cell in a <div id="txn-cell-{{ t.id }}">.
      wrap_oob -- if true (requires wrap_div), the wrapper div also
@@ -104,21 +115,51 @@
        aria-label="Edit conflict"></i>
     {% endif %}
 
-    {# Entry progress display for tracked transactions #}
+    {# Entry progress display for tracked transactions.
+
+       **Every figure below goes through ``money``** (gate B7, ruling
+       **bank_import:R-IM**, plan step ``bank_import:X-gj-2b-3``).  Four of them were raw ``"{:,.0f}".format``
+       calls -- the one formatter this project has, spelled a second time in
+       the one file whose own ``detail`` tooltip twenty-one lines up already used the
+       macro.  It could not show a sign while every purchase was positive:
+       ``es.total`` is the sum of a row's purchases and ``recorded`` is what a
+       settled envelope booked, and ruling **bank_import:R-II** made a merchant
+       refund a NEGATIVE purchase, so both can now be negative and the raw
+       spelling printed ``-0 / 100`` where the mobile card beside it prints
+       ``-$0 / $100`` (``grid/_grid_row_macros.html``, the same two figures).
+       ``cents=false`` keeps the compact grid figure; what it gains is the
+       currency mark the rest of the app carries, which is the same agreement
+       with its mobile twin the final arm below already records making over
+       zeros. #}
     {% if show_progress %}
       <span class="font-mono{% if over_budget %} text-danger fw-semibold{% endif %}">
-        {{ "{:,.0f}".format(es.total) }} / {{ "{:,.0f}".format(es.budget) }}
+        {{ money(es.total, cents=false) }} / {{ money(es.budget, cents=false) }}
       </span>
     {# Show crossed-out estimate + actual when they differ #}
     {% elif recorded is not none and recorded != est_display %}
       <span class="text-decoration-line-through small text-muted-shekel">
-        {{ "{:,.0f}".format(est_display) }}
+        {{ money(est_display, cents=false) }}
       </span>
-      <span class="fw-semibold font-mono">{{ "{:,.0f}".format(recorded) }}</span>
+      <span class="fw-semibold font-mono">{{ money(recorded, cents=false) }}</span>
     {% else %}
-      {% if est_display != 0 %}
-        <span class="font-mono">{{ "{:,.0f}".format(est_display) }}</span>
-      {% endif %}
+      {# **A ZERO renders, and until plan step ``bank_import:X-gb`` it did
+         not** -- finding **N-344**'s second limb.  The suppression came from a
+         2026-06 layout commit with no rationale beyond tidiness, and its cost
+         is that a `$0.00` row draws NOTHING inside ``.txn-open``: an
+         inline-flex element with no content is zero pixels wide, so the row is
+         unclickable and its action card unreachable.  Rendered and MEASURED,
+         not read: ``GET /transactions/<id>/cell`` for a `$0.00` Projected
+         envelope returned a ``.txn-open`` span containing only whitespace,
+         while its ``aria-label`` said ``$0.00 -- Projected`` -- so a screen
+         reader could find the row and a mouse could not.
+
+         An EMPTY cell is a different partial (``_transaction_empty_cell.html``,
+         which draws a clickable em-dash), so nothing here is competing with it
+         for the "there is nothing in this cell" reading, and the mobile card
+         has always printed ``money(display_amount)`` unconditionally -- so
+         this is the desktop cell agreeing with its own mobile twin rather than
+         a new decision about zeros. #}
+      <span class="font-mono">{{ money(est_display, cents=false) }}</span>
     {% endif %}
     {{ retained_badge(will_book) }}
 
@@ -162,9 +203,14 @@
   {% endif %}
 </div>
 
-{# Due date indicator -- shown only when due_date differs from period start #}
-{% if t.due_date and t.pay_period and t.due_date != t.pay_period.start_date %}
-  <small class="cell-caption d-block fs-mini">Due: {{ t.due_date.strftime('%-m/%-d') }}</small>
+{# Due date indicator.  The DECISION is the route's -- whether this row's due
+   date says anything its paycheck's own payday does not -- so this draws the
+   answer rather than computing it (pay-calendar plan step C4-a-1, see
+   `grid_view_service.due_captions_by_id`).  Indexed, not guarded: a missing
+   map raises where a missing variable would silently caption every row. #}
+{% set due_caption = due_captions[t.id] %}
+{% if due_caption %}
+  <small class="cell-caption d-block fs-mini">Due: {{ due_caption.strftime('%-m/%-d') }}</small>
 {% endif %}
 
 {# Envelope progress underline (cell hierarchy, audit B2): a thin bar

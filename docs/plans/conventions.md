@@ -5,12 +5,12 @@ balance README Section 9, the recurrence plan's Section 7, the pay-calendar plan
 near-identical wording, which is the same denormalization the arcs keep finding in the code. The
 credit-card plan had none at all and drifted furthest.
 
-**Rules 1-4, 7 and 10-16 are PREDICATES**, graded by `tools/plan_gate/` through a pre-commit hook
+**Rules 1-4, 7 and 9-16 are PREDICATES**, graded by `tools/plan_gate/` through a pre-commit hook
 scoped to these documents and the CI step that runs the custom pylint checkers -- so EDITING a
 planning document is what runs the gate.
-**Rules 5, 6's "replaced, never appended" half, 8 and 9 are DISCIPLINES.** Saying which is which is
-the point: a safety that is not a predicate is not a safety, and labelling a discipline as one is
-the failure being guarded against.
+**Rules 5, 6's "replaced, never appended" half and 8 are DISCIPLINES.** Saying which is which is the
+point: a safety that is not a predicate is not a safety, and labelling a discipline as one is the
+failure being guarded against.
 
 ## The shape
 
@@ -18,6 +18,7 @@ the failure being guarded against.
 |---|---|---|
 | `ledger.md` | every open finding in every arc | registry |
 | `steps.md` | every step IN EXECUTION ORDER, one line each, plus the unruled forks | registry |
+| `rulings.md` | every developer ruling, `arc` a COLUMN | registry |
 | `conventions.md` | this file | registry |
 | `verification.md` | what "done" means for a step in any arc: the oracle discipline | registry |
 | `lessons.md` | what this project has already paid to learn | registry |
@@ -26,20 +27,19 @@ the failure being guarded against.
 | `implementation_plan_pay_calendar.md` | the pay-calendar arc's | argument |
 | `implementation_plan_credit_card.md` | the credit-card arc's | argument |
 | `implementation_plan_bank_import.md` | the statement importer's, split out 2026-08-13 | argument |
+| `implementation_plan_salary.md` | the paycheck engine's, minted 2026-09-03 | argument |
 
-**Merge what shares KEYS; split what shares only a READER.** Findings and steps alias across arcs,
-so they are one table each. A root cause, its evidence, its target model and its rejected
-alternatives are an argument about ONE subject that shares no key with any other arc, so they stay
-split -- and so do RULINGS, which are arc-local and whose three source tables have three different
-shapes.
+**Merge what shares KEYS; split what shares only a READER.** Findings, steps and RULINGS are one
+table each -- the third sat in THREE grammars across five documents no gate parsed, which is how
+`R-EX` and `R-GW` each named two rulings. An arc's own argument shares no key, so THAT stays split.
 
 **A step's SPECIFICATION is argument, not registry.** `steps.md` carries the ORDER and one sentence
 per step; the 82 open specifications in one file would be ~1,150 lines, which is the master document
 this structure exists to avoid.
-**The sentence is not a stub of the specification, it is the whole answer to "what is this step"**
--- rule 14 grades it, because an index that answers that question with a fragment sends the reader
-to a second document to learn what they came for, which is the cross-referencing this structure
-exists to end.
+**The sentence is not a stub of the specification, it is the whole answer to "what is this step"** --
+rule 14 grades it, because an index that answers that question with a fragment sends the reader to a
+second document to learn what they came for, which is the cross-referencing this structure exists to
+end.
 
 ## The rules
 
@@ -50,46 +50,45 @@ exists to end.
    commit", "own step", "own arc", "if ever", "recorded, deferred", "residue", and any wake
    condition -- they all mean nobody. A row with an empty owner, an owner naming no step, or an
    owner naming a TICKED step is a failure. **A finding is BORN with an owner**: the review or trace
-   that records it assigns one in the SAME commit.
+   that records it assigns one in the SAME commit. **The ledger records defects in the CODE**
+   (developer ruling 2026-08-28). A finding whose whole subject is a planning document -- its
+   length, its shape, the gate that grades it -- is not a row here and is not a paragraph in an arc
+   document either. Document upkeep is the assistant's standing job, raised with the developer when
+   it needs a decision.
 
 2. **A step that ships re-points every row that named it.** Ticking a box is the same edit as
    re-pointing its findings; the gate refuses the commit that does one without the other.
    **Step ids are append-only** -- a decomposition appends a suffix, and nothing is renumbered for
    readability, because ids are cited in commit messages, code comments and archived records.
 
-3. **A registry that states its own size has that number CHECKED.** Four sentences carry six numbers
-   and the gate grades all six: `ledger.md`'s `**The ledger stands at N rows.**`, and `steps.md`'s
+3. **A registry that states its own size has that number CHECKED.** Six sentences carry nine numbers
+   and the gate grades all nine: `ledger.md`'s `**The ledger stands at N rows.**`, `rulings.md`'s
+   total AND its per-arc counts (a dropped row hides behind a corrected total), and `steps.md`'s
    `**N steps, M open.**`, `holds N edges over M rows` and
    `N of these steps are legal to start right now`.
-   **The fourth was added 2026-08-11 and was stale when the arm was written** -- it read 38 against
-   a table holding 41 -- which is this rule's own sentence a third time: the READY count moves when
-   a blocker SHIPS, an event that changes neither the size, the open count nor the graph, so no
-   existing arm could catch it. The balance ledger once read 38 against a 40-row table because a
-   step that closed four rows and opened three updated the rows and not the prose about them.
-   **`steps.md`'s four went ungraded until 2026-08-11 and every one of them was stale by the time
-   the arm was written**: "112 steps, 96 open" against 113 and 95, and "93 edges over 58 rows"
-   against 94 and 59 -- wrong in both directions inside one merge, because one session appended a
-   step while another ticked one. The rule had been written about one registry and enforced only
-   there, so its sibling carried the exact defect the rule describes, and a cold reader was told
-   what may start now by a number the gate had no opinion about. **A rule stated for one artifact
-   and graded on one artifact is a rule the second artifact does not have.**
+   **Every one of these was stale by the time its arm was written**, several wrong in both
+   directions inside one merge, because one session appended a row while another ticked one. The
+   READY count is the subtlest: it moves when a blocker SHIPS, an event that changes neither the
+   size, the open count nor the graph, so no other arm can catch it. **A rule stated for one
+   artifact and graded on one artifact is a rule the second artifact does not have.**
 
-4. **Every document is capped, and a cap is a FORCING FUNCTION rather than a ceiling sized to fit
-   the work.** Raising a cap is not the answer when it binds; rule 5 is. Current caps live in the
-   gate's own constants. **"Every document" meant four of nine until 2026-08-11**: the gate capped
-   the arc documents and left every registry uncapped, including the one that actually grows. That
-   is rule 3's own sentence one rule over -- a rule stated for one artifact and graded on one
-   artifact is a rule the second artifact does not have -- and `ledger.md` had reached 166 rows with
-   no forcing function at all. All five registries are capped now.
-   **`ledger.md` also has a per-ROW cap, which is rule 14's twin for the ledger.** A row had reached
-   3,536 characters against a 409-character median; at that size it is not an index entry, it is the
-   arc document's argument living in the registry.
-   **The overflow's destination is the OWNING STEP's specification**, never deletion: when eight
-   rows were brought under the cap on 2026-08-11 their census enumerations, mechanisms and reference
-   lists moved to `C2`, `C2-b2` and `C7`, where the person picking that step up meets them.
+4. **Every ARC DOCUMENT is capped, and a cap is a FORCING FUNCTION rather than a ceiling sized to
+   fit the work.** Current caps live in the gate's own constants.
+   **A cap that binds is a QUESTION FOR THE DEVELOPER -- never a finding, never a paragraph**
+   (developer ruling 2026-08-28). Rule 5 answers it while a completed span is left to archive; where
+   none is, say so and ask. A document may not spend its own lines recording that it ran out of
+   them, and a cap is never raised without being asked for.
+   **`ledger.md`, `steps.md` and `rulings.md` carry no LINE cap** (developer rulings 2026-08-25 and
+   2026-08-27): a cap on ONE LINE PER THING caps how many of that thing the project may have --
+   defects MEASURED, leaves DECOMPOSED, decisions TAKEN -- so
+   **a gate may not refuse to record work somebody has done.** Holding them instead: a per-ROW cap
+   each, which makes dropping the line cap a SWAP and not a removal, a runaway backstop each, and
+   rule 3's counts. **The ledger's per-ROW cap is rule 14's twin** -- a row that swells into its
+   arc's argument stops being an index entry -- and the overflow goes to the step that OWNS it: its
+   AS-BUILT record where it shipped, its live specification where it has not (balance:R-HD).
    **`lessons.md` is capped too, and its retirement path is its own**: a lesson MECHANIZED into a
-   gate stops being a lesson, and its line moves to that gate's rationale. An append-only file
-   nobody finishes reading loses its lessons as completely as deleting them would.
+   gate stops being a lesson and its line moves to that gate's rationale, because an append-only
+   file nobody finishes reading loses its lessons as completely as deleting them would.
 
 5. **The only legal way back under a cap is to archive a COMPLETED span**, condensed to one line per
    step: its id, its commit and what it closed. Never trim a live step's specification to fit.
@@ -123,9 +122,9 @@ exists to end.
    asking. Where a fix must follow another step to be decided correctly it is SEQUENCED behind it
    with the reason stated -- which is a schedule, and is what a deferral is not.
 
-9. **A ruling is recorded as the RULE and its date, one line, in its own arc's document.** The
-   deliberation belongs in the commit that ships it. Rulings are arc-local: no ruling has ever
-   aliased across arcs, which is why they are the one registry-shaped thing that stays split.
+9. **A ruling is recorded as the RULE and its date, one line, in `rulings.md`.** The key is
+   `(arc, id)`, so two arcs may hold one bare id and a citation of an ambiguous one MUST name its
+   arc (rule 10). Since `balance:X-ao-2a` no arc document DECLARES one; each points.
 
 10. **The arc is a COLUMN, never a prefix.** The key is `(arc, id)` and it is unique across the
     corpus. Bare ids keep their exact spelling, because a rename would orphan every citation in
@@ -158,12 +157,13 @@ exists to end.
     **The acyclicity arm is why this rule exists.** "`R6` ships WITH `X-an`" was carried by three
     documents until 2026-08-09, when building `X-an`'s first leaf showed it unsatisfiable: `R6`
     reads a column `R5` creates, and `R5` waits on `X-f4`, three steps behind `X-an` with a
-    moves-money PR between them. `steps.md` had recorded `R6 blocked by balance:X-an`, and nothing
+    moves-money PR between them. `steps.md` had recorded `R6 blocked by balance:X-an` and nothing
     reconciled the two --
     **the column was parsed into `StepRow.blocked` and never read by any arm**, so every edge in it
     was decoration. An unsatisfiable ordering claim is not a scheduling preference; it is work that
-    cannot be done in the order the plan states. **A DECOMPOSITION is NOT an edge in that column**
-    -- rule 2 already puts it in the id -- but it is graded by a sixth arm:
+    cannot be done in the order the plan states.
+    **A DECOMPOSITION is NOT an edge in that column** -- rule 2 already puts it in the id -- but it
+    is graded by a sixth arm:
     **a step that DECLARES itself "the DECOMPOSED parent" may not be SHIPPED while a leaf is open**,
     which is rule 2's own sentence made a predicate. The parent set is DECLARED and only the leaf
     set is derived, and that asymmetry is the design: deriving BOTH by id prefix claims `R-F1` as
@@ -186,13 +186,16 @@ exists to end.
     sequence EXECUTABLE rather than merely written down. A container blocker resolves to the rank
     its last leaf holds. **A CONTAINER is not a position.** A decomposed parent is a name for a
     group, never a thing a reader picks up, so it leaves the order entirely and says which rank it
-    ticks at instead. The previous index listed `X-f`, `X-aj`, `X-i` and `X-x` as though they were
-    pickable work. **The `starts` cell is DERIVED and this rule is its reconciler**: `NOW` exactly
-    when nothing unshipped blocks it, `after #N` naming the LATEST unshipped blocker's rank. Storing
-    it at all is a deliberate exception to the rule against derived copies, and it is only legal
-    because the gate recomputes it on every commit that touches the file -- an unreconciled copy is
-    the root cause three of these arcs exist to remove. A stale `NOW` sends a reader at work they
-    cannot start; a stale `after` hides work they can.
+    ticks at instead. **A container whose leaves have all SHIPPED is SHIPPED**, carrying a commit
+    hash (its last leaf's, by convention) with `starts` reading `--` (finding N-472, 2026-09-03).
+    The previous index listed `X-f`, `X-aj`, `X-i` and `X-x` as though they were pickable work.
+    **The TABLE is SORTED**: ranked rows ascend and are its LEADING block (ungraded to 2026-08-20).
+    **The `starts` cell is DERIVED and this rule is its reconciler**: `NOW` exactly when nothing
+    unshipped blocks it, `after #N` naming the LATEST unshipped blocker's rank. Storing it at all is
+    a deliberate exception to the rule against derived copies, and it is only legal because the gate
+    recomputes it on every commit that touches the file -- an unreconciled copy is the root cause
+    three of these arcs exist to remove. A stale `NOW` sends a reader at work they cannot start; a
+    stale `after` hides work they can.
     **Every step's description is ONE COMPLETE SENTENCE within a cap.** Terminal punctuation is the
     predicate because truncation cannot fake it -- a cell cut at a character boundary ends in a
     letter, a comma or a backtick, never a full stop.
@@ -219,18 +222,13 @@ exists to end.
     where it lives and can see nothing about a copy elsewhere; and
     **a section a live document has RETIRED says so at its own head**, which is rule 15's placement
     argument applied one level down, to a section rather than a file. **Every one of the three was
-    measured on 2026-08-11, and each had already produced a wrong statement in a live document.**
-    The order was restated in four places besides `steps.md`, and two copies were stale: the balance
-    README carried a shipped step as pending work, and it stated that "`R6` ships WITH X-an" -- a
-    claim its OWN signpost, the recurrence plan's section 0, rule 13 here and `steps.md` all
+    measured on 2026-08-11, and each had already produced a wrong statement in a live document**:
+    the balance README carried a shipped step as pending work and an ordering claim its own signpost
     contradicted, so one document disagreed with itself about the one thing a reader consults it
-    for. That README also counted "98 open findings" against a ledger whose own sentence read "The
-    ledger stands at 166 rows", in a section citing a Section 6 whose table had moved out entirely;
-    the paragraph doing the counting NAMED this blind spot ("drift the gate could not see") and kept
-    the number anyway, which is what a discipline without a predicate is worth. And the credit-card
-    plan carried a live-looking ordered list, discharged since 2026-07-19, whose ids `C8` and `D1`
-    now name LIVE steps in two other arcs -- retired only by a paragraph in a DIFFERENT document,
-    which is precisely the placement rule 15 exists to refuse.
+    for; it counted open findings against a ledger stating a different number, in a paragraph that
+    NAMED the blind spot and kept the number anyway; and the credit-card plan carried a live-looking
+    ordered list, discharged since 2026-07-19, whose ids now name LIVE steps in two other arcs,
+    retired only by a paragraph in a DIFFERENT document.
     **The remedy is a POINTER, never a summary**: a summary is a second copy that has merely been
     shortened, and it goes stale on the same commit.
 

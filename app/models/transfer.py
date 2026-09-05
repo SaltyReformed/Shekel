@@ -6,7 +6,10 @@ Supports both template-generated recurring transfers and ad-hoc one-time transfe
 """
 
 
+from sqlalchemy.ext.hybrid import hybrid_property
+
 from app.extensions import db
+from app.models.amount_ownership import from_columns
 from app.models.mixins import (
     OptimisticLockMixin,
     SoftDeleteOverridableMixin,
@@ -83,19 +86,52 @@ class Transfer(
             "amount_source_id IS NULL OR transfer_template_id IS NOT NULL",
             name="ck_transfers_adhoc_owns_amount",
         ),
-        # One non-deleted, non-override transfer per template per period
-        # per scenario.  Mirrors the relaxed transactions index: override
-        # siblings may coexist with their rule-generated parent so
-        # carry-forward can move unpaid recurring transfers into a target
-        # period that already holds the next rule-generated instance.
-        # transfer_recurrence.py already skips generation when an
-        # is_override = TRUE transfer exists in the period.
+        # WHAT A GENERATED ROW IS, stated as storage (plan step **R17**).  A
+        # row answers ONE occurrence of its template's cadence; the pay period
+        # is where that occurrence's money lands, which is a DERIVED placement
+        # and not the row's identity -- the owner may move it, and moving it is
+        # exactly what ledger row **D57** was.  Keyed on the paycheck, this
+        # index made a moved row vacate its own occurrence, so the next
+        # generate pass answered it a second time: 8 rows, $1,482.93, measured
+        # on a production clone 2026-08-28.
+        #
+        # TWO indexes rather than one, because ``occurs_on`` is NULLABLE and
+        # PostgreSQL treats NULLs as distinct -- a single index over it would
+        # let a template hold unlimited undated rows in one paycheck, which is
+        # the "one row per template per paycheck" rule this table has always
+        # had.  A row that answers NO occurrence therefore keeps the OLD key,
+        # and that split is the same rule
+        # ``_recurrence_common.OccurrenceClaims`` applies in Python: identity is
+        # the occurrence where it is known, and the paycheck where it is not.
+        # Letting an undated row claim nothing was measured at 41 phantom
+        # transfers / $20,500 at the unarchive door.
+        #
+        # **The two predicates DIVERGED at plan step X-au-h**, exactly as the
+        # transaction twin did -- see ``models/transaction.py`` for the full
+        # argument, the measurement, and why the UNDATED index below keeps the
+        # exemption this one drops.  In one line: the exemption guarded a
+        # PAYCHECK-keyed collision, R17 re-keyed this index onto ``occurs_on``,
+        # a move does not change a row's occurrence, and X-au-h made a
+        # RE-PRICE raise the flag -- so keeping it here would have dropped
+        # re-priced rows out of a guarantee they never used to lose.
+        # Ruling **R-JR**, developer 2026-09-03.
         db.Index(
-            "idx_transfers_template_period_scenario",
-            "transfer_template_id", "pay_period_id", "scenario_id",
+            "idx_transfers_template_scenario_occurrence",
+            "transfer_template_id", "scenario_id", "occurs_on",
             unique=True,
             postgresql_where=db.text(
                 "transfer_template_id IS NOT NULL "
+                "AND occurs_on IS NOT NULL "
+                "AND is_deleted = FALSE"
+            ),
+        ),
+        db.Index(
+            "idx_transfers_template_scenario_undated",
+            "transfer_template_id", "scenario_id", "pay_period_id",
+            unique=True,
+            postgresql_where=db.text(
+                "transfer_template_id IS NOT NULL "
+                "AND occurs_on IS NULL "
                 "AND is_deleted = FALSE "
                 "AND is_override = FALSE"
             ),
@@ -191,16 +227,31 @@ class Transfer(
     # whose amount is DERIVED does not store one (ruling **R-FI**).  NULL means
     # "ask ``cash_ledger.resolve_transfer_amount``", which for a generated
     # transfer is its definition's effective-dated price series as of the
-    # transfer's own due date.  Structurally paired with ``amount_source_id`` by
-    # ``ck_transfers_amount_ownership`` above.  No production row is NULL as of
-    # this step; plan step X-au-f is what empties it for generated transfers.
-    amount = db.Column(db.Numeric(12, 2))
+    # transfer's own due date.  No production row is NULL as of this step; plan
+    # step X-au-f is what empties it for generated transfers.
+    #
+    # **PRIVATE since plan step X-au-k**, with the SQL name unchanged: read it
+    # through :attr:`amount`, write it through :attr:`amount_ownership`.  The
+    # transaction twin (``Transaction._estimated_amount``) states the argument
+    # in full.
+    #
+    # **The name is DOUBLE-underscored, and that is the seal rather than a
+    # style**: Python mangles it to ``_Transfer__amount``, so the single-underscore
+    # spelling a reader would guess -- ``row._amount`` -- binds a plain
+    # instance attribute that reaches no column at all.  A write that misses
+    # the seam is then a no-op the next read exposes, instead of the
+    # half-written pair this step exists to make unrepresentable.
+    __amount = db.Column("amount", db.Numeric(12, 2))
     # WHICH RELATION prices this transfer, or NULL when it owns its own figure
     # (ruling **R-FI**, plan step X-au-c1).  Only ``template`` is meaningful here
     # -- a transfer has no parent transfer -- and RESTRICT is for the reason the
     # transaction twin states: a vanishing ref row would convert a derived
     # transfer into one claiming to own an amount it does not have.
-    amount_source_id = db.Column(
+    #
+    # **PRIVATE since plan step X-au-k**, for the reason its partner states,
+    # and double-underscored for the same seal.
+    __amount_source_id = db.Column(
+        "amount_source_id",
         db.Integer,
         db.ForeignKey(
             "ref.amount_sources.id",
@@ -208,6 +259,13 @@ class Transfer(
             ondelete="RESTRICT",
         ),
     )
+    # THE PAIR ABOVE, AS ONE ATTRIBUTE (plan step **X-au-k**), and the twin of
+    # ``Transaction.amount_ownership`` -- see that attribute for why the pair
+    # is one assignment and why ``ck_transfers_amount_ownership`` stays.  The
+    # attribute carries the SAME name on both models even though the figure
+    # COLUMN does not, which is what let the write seam stop dispatching on the
+    # model to find out which column a table stores a figure in.
+    amount_ownership = db.composite(from_columns, __amount, __amount_source_id)
     # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
@@ -235,6 +293,21 @@ class Transfer(
     # the PARENT, so a stale parent would be written back over a corrected shadow
     # by a no-op save.
     due_date = db.Column(db.Date, nullable=True)
+    # WHICH OCCURRENCE this transfer is -- the date its template's cadence
+    # named when the transfer recurrence engine wrote it.  The parallel of
+    # ``Transaction.occurs_on``, which carries the full statement; both engines
+    # write it from the same ``PlannedOccurrence.occurrence`` and the shared
+    # skip predicate reads it identically, so a divergence here would be the
+    # drift ``_recurrence_common`` exists to prevent (plan step **R17**).
+    #
+    # **It is NOT mirrored onto the two shadow transactions.**  Transfer
+    # Invariant 3 makes the shadows equal to their parent in amount, status and
+    # period, and a shadow is not the rule's own row: it is created by
+    # ``transfer_service`` from the parent, never by the recurrence engine from
+    # an occurrence, and no generate pass ever asks a shadow whether an
+    # occurrence has been written.  Mirroring it would put a second writer on a
+    # column whose whole purpose is that only the engine writes it.
+    occurs_on = db.Column(db.Date, nullable=True)
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
@@ -249,6 +322,36 @@ class Transfer(
     pay_period = db.relationship("PayPeriod")
     scenario = db.relationship("Scenario")
     category = db.relationship("Category", lazy="joined")
+
+    @hybrid_property
+    def amount(self):
+        """Return the figure this transfer states as its own, or ``None``.
+
+        The read-only projection of :attr:`amount_ownership`, and the twin of
+        ``Transaction.estimated_amount`` -- see it for why there is no setter
+        and why this is a hybrid rather than a plain property.  To state this
+        transfer's amount, assign :attr:`amount_ownership` through
+        ``app.services.amount_ownership``.
+
+        Returns:
+            The stored figure, or ``None`` when this transfer's amount is
+            derived or not yet stated.
+        """
+        return self.__amount
+
+    @hybrid_property
+    def amount_source_id(self):
+        """Return the id of the relation pricing this transfer, or ``None``.
+
+        The read-only twin of :attr:`amount`.  ``None`` means the transfer
+        owns its figure, which is the NULL test
+        ``ck_transfers_amount_ownership`` is written over.
+
+        Returns:
+            The ``ref.amount_sources`` id, or ``None`` when the transfer owns
+            its amount or has not stated its ownership yet.
+        """
+        return self.__amount_source_id
 
     @property
     def settled_on(self):
@@ -310,22 +413,92 @@ class Transfer(
         projection.  A caller that needs the day for MANY transfers must load
         the shadows itself.
         """
+        return self._income_shadow_settle_pair()[0]
+
+    @property
+    def settle_day_columns(self):
+        """Return ``(settled_on, settled_day_basis_id)`` off the income shadow.
+
+        **ONE read of BOTH columns, and that is a correctness property rather
+        than a saving** (plan step **X-az**, corrected by adversarial review
+        2026-08-22).  A transfer carries neither column -- its money moves on
+        its two shadow ``Transaction`` rows -- so a caller that needs the pair
+        must read a shadow, and reading it as two separate PROPERTIES would
+        issue a SELECT per attribute ACCESS: five for one call of
+        ``settle_day.recorded_settle_day``, over a query whose ``limit(1)``
+        deliberately carries no ``ORDER BY`` (:attr:`settled_on` states why it
+        tolerates duplicate shadows rather than raising on them).  Those reads
+        can straddle two rows -- with duplicate income shadows, or across a
+        concurrent commit under READ COMMITTED -- and hand
+        ``settle_day.settle_day_from_columns`` a day from one and a basis from
+        the other, which it correctly refuses as a ``ValueError`` naming a
+        phantom writer: a 500 on the transfer PATCH, which is exactly the
+        outcome the ``limit(1)`` was written to prevent.  One read of two
+        columns cannot straddle anything.
+
+        Both causes are still live, and the concurrent-commit one is now live
+        for a narrower reason: the one caller below is a PATCH, a COMMAND, and
+        plan step balance:X-i3 leaves a command at READ COMMITTED precisely so
+        a lock-then-reread can see a rival's commit.  The duplicate-shadow
+        cause never depended on the isolation level at all.
+
+        **Its ONE caller is the transfer PATCH's echo rule** -- what the pair
+        already records, so a re-submitted day does not restate its basis.  It
+        pairs with ``settle_day.settle_day_from_columns``, which takes the two
+        VALUES rather than a row precisely so a transfer can answer it: a
+        ``Transfer`` is not a ``SettleDatedMixin`` and carries neither column,
+        so the row-shaped reader beside it cannot be handed one.
+
+        Read off the INCOME (to-account) shadow, the same row
+        ``posting_service._entry_date`` reads for the pair, so the day this
+        answers is the day the ledger files the postings under.
+
+        There is no setter, for the reason :attr:`settled_on` has none:
+        ``status_seam.apply_status_change`` and
+        ``settle_day.record_settle_day`` are the writers.
+
+        **SINGLE-ROW reads only**, the boundary :attr:`settled_on` documents:
+        one scoped SELECT per transfer, which is right for a form PATCH and an
+        N+1 the moment anything loops.
+
+        Returns:
+            The pair, or ``(None, None)`` when the transfer has no income shadow
+            at all.
+        """
+        return self._income_shadow_settle_pair()
+
+    def _income_shadow_settle_pair(self):
+        """Return ``(settled_on, settled_day_basis_id)`` in ONE query.
+
+        The single read :attr:`settled_on` and :attr:`settle_day_columns` share,
+        so the row they take and the reasons they take it are stated once.  The
+        ``limit(1)`` is what keeps both total; see :attr:`settled_on` for the
+        ``MultipleResultsFound`` measurement that put it there, and for why
+        naming the row in SQL beats iterating an unordered backref.
+
+        Returns:
+            The pair, or ``(None, None)`` when the transfer has no income
+            shadow.
+        """
         # Imported here rather than at module scope: ``Transaction`` imports
         # this module for its ``transfer`` relationship, so a top-level import
         # would close the cycle.
         # pylint: disable-next=import-outside-toplevel
         from app.models.transaction import Transaction
 
-        return (
-            db.session.query(Transaction.settled_on)
+        row = (
+            db.session.query(
+                Transaction.settled_on, Transaction.settled_day_basis_id,
+            )
             .filter(
                 Transaction.transfer_id == self.id,
                 Transaction.account_id == self.to_account_id,
                 Transaction.is_deleted.is_(False),
             )
             .limit(1)
-            .scalar()
+            .first()
         )
+        return (None, None) if row is None else (row[0], row[1])
 
     def __repr__(self):
         return f"<Transfer '{self.name}' ${self.amount} ({self.id})>"

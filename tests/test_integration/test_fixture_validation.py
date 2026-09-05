@@ -15,6 +15,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import cash_ledger
+from tests.conftest import SEED_USER_BOOTSTRAP_START
 
 
 class TestSeedSecondUser:
@@ -98,21 +99,34 @@ class TestSeedSecondPeriods:
         user_b_ids = {p.id for p in seed_second_periods}
         assert user_a_ids.isdisjoint(user_b_ids)
 
-    def test_anchor_assertion_falls_in_the_first_period(
+    def test_the_anchor_assertion_is_the_owners_own_bootstrap_day(
         self, db, seed_second_user, seed_second_periods,
     ):
-        """The second user's account is asserted on a day its first period holds.
+        """The second user's account resolves an anchor, dated where it was written.
 
         It read ``account.current_anchor_period_id == seed_second_periods[0].id``
-        until plan step X-f1c3c deleted that column.  The fixture property it
-        was really pinning survives and is what the producers now key on: the
-        account's origination ASSERTION is dated inside the first period, so a
-        read scoped to that period finds it.
+        until plan step X-f1c3c deleted that column, and then "the origination
+        assertion is dated inside the first period" until plan step X-f3c-2c
+        made ``budget.account_anchor_history`` append-only.  The periods fixture
+        used to re-point that row onto the calendar it built; a fixture PLACES
+        an assertion now and never edits one, so the account asserts where
+        ``account_service.create_account`` wrote it -- the owner's bootstrap
+        day, which precedes the calendar.
+
+        **That is a production shape rather than a fixture artefact**: an
+        account whose books open before the budget does is exactly what finding
+        **N-368**'s bank import creates for the developer's own Checking.  What
+        the producers key on is unchanged and is what is pinned here -- the
+        account resolves an anchor at all, and it is the row that was written
+        for it.
         """
         account = db.session.get(Account, seed_second_user["account"].id)
-        observed_on = cash_ledger.resolve_anchor(account).observed_on
-        first = seed_second_periods[0]
-        assert first.start_date <= observed_on <= first.end_date
+        anchor = cash_ledger.resolve_anchor(account)
+        assert anchor.observed_on == SEED_USER_BOOTSTRAP_START
+        # The BALANCE too, because the day alone would still be pinned by a
+        # fixture that had lost the row and grown a new one: this is the
+        # ``$2,000.00`` ``build_seed_second_user`` types, unchanged.
+        assert anchor.balance == Decimal("2000.00")
 
 
 class TestSecondAuthClient:

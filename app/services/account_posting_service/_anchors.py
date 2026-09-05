@@ -84,8 +84,10 @@ One limit does survive, and it belongs to the ledger rather than to a
 disagreement.  An entry's ``pay_period_id`` and its ``entry_date`` are NOT "two
 columns that cannot drift": whenever no period contains the day, the entry is
 filed in a period its own date falls outside, by construction and deliberately
--- the alternative is a correction with no period at all, and
-``journal_entries.pay_period_id`` is NOT NULL.  What the derivation buys is that
+-- the alternative is a correction filed under no paycheck at all, which every
+per-period reader would then be unable to place; the ``NOT NULL`` on
+``journal_entries.pay_period_id`` EXPRESSES that rather than causing it (ruling
+**pay_calendar:R-PC53**).  What the derivation buys is that
 the drift is a function of the CALENDAR rather than of which clock a writer
 happened to read, and that it self-heals the moment the containing period
 exists.
@@ -117,11 +119,14 @@ Projecting that cache would have made the posted ledger disagree with the grid's
 production clone across 61 periods: deriving from the day agrees with
 :func:`app.services.balance_at.grid_balance_view` on EVERY period; reading the
 stored column disagrees on two.  **The comparison is over TRUE-UPS, and saying
-so is load-bearing**: ``_assertion_sums`` folds ``anchor_corrections[1:]``,
-excluding the OPENING because ruling R-I moves it into the fold's seed, while
-the ledger keeps an ``account_opening`` entry in a period -- so an unscoped
-comparison could not have agreed on 61 and a draft of this docstring implied
-one had.  The agreement is pinned by
+so is load-bearing**: ``_assertion_sums`` folds every ASSERTION correction,
+while the ledger also keeps an ``account_opening`` entry in a period -- so an
+unscoped comparison could not have agreed on 61 and a draft of this docstring
+implied one had.  *That sentence read ``corrections[1:]`` and "excluding the
+OPENING because ruling R-I moves it into the fold's seed" until plan step
+X-f3c-2a; the fold seeds from the stored opening equity now, so no correction is
+excluded there and the ledger's opening entry books that same stored fact.*
+The agreement is pinned by
 ``TestLedgerAgreesWithTheGridOnAssertionPeriods`` rather than left as a
 measurement in prose (finding N-169's other half).  A mis-filed row is a defect
 in the ROW (finding N-168), repaired at its source -- and until it is, the
@@ -152,7 +157,6 @@ from app.services._posting_reconcile import (
     posted_correction_legs,
 )
 from app.services.account_projection import classify_account
-from app.services.cash_ledger import CashAnchorFact
 from app.services.pay_calendar import PayCalendar
 from app.services.posting_reads import _ledger_account_for
 
@@ -160,33 +164,37 @@ from ._walk import AccountAnchorCorrection
 
 
 def _account_correction_kinds(
-    fact: CashAnchorFact,
+    correction: AccountAnchorCorrection,
 ) -> tuple[PostingSourceEnum, PostingKindEnum]:
-    """Return the (journal source kind, posting leg kind) for an anchor's correction.
+    """Return the (journal source kind, posting leg kind) for one correction.
 
-    The account's earliest history row books the OPENING (source
-    ``account_opening``, leg kind ``opening``); every later row is a user
-    balance assertion and books a TRUE-UP (source ``account_trueup``, leg
-    kind ``trueup``).  The leg kinds are the same ``opening`` / ``trueup``
-    pair the loan corrections use (REUSED by design -- the journal SOURCE
-    distinguishes account from loan corrections).  Keyed off the fact's
-    ``is_opening`` flag, which :func:`app.services.cash_ledger.cash_anchor_facts`
-    derives from the ``(observed_on, created_at, id)`` order -- BUSINESS date
-    first.  *This said ``(created_at, id)`` until plan step X-an-b: that was the
-    key before plan step 2 made ``observed_on`` a user-supplied column, and
-    trusting it here would reproduce the defect that once tagged a ``$1,307.66``
-    true-up as the account's OPENING.*
+    The account's OPENING EQUITY books the opening (source ``account_opening``,
+    leg kind ``opening``); every balance assertion books a TRUE-UP (source
+    ``account_trueup``, leg kind ``trueup``).  The leg kinds are the same
+    ``opening`` / ``trueup`` pair the loan corrections use (REUSED by design --
+    the journal SOURCE distinguishes account from loan corrections).
+
+    **Keyed off a STORED fact since plan step X-f3c-2a**
+    (:attr:`~._walk.AccountAnchorCorrection.opens_the_books`, which the walk
+    sets from ``budget.account_openings``).  It was keyed off
+    ``CashAnchorFact.is_opening`` -- the account's earliest assertion by
+    ``(observed_on, created_at, id)`` -- so a BACK-DATED assertion re-elected
+    the opening and re-dated its journal entry, and the previous opening
+    silently became a true-up.  *That key said ``(created_at, id)`` until plan
+    step X-an-b, before plan step 2 made ``observed_on`` user-supplied, and
+    trusting it tagged a ``$1,307.66`` true-up as the account's OPENING.  Two
+    repairs of one ordering; the third was to stop inferring the answer.*
 
     Args:
-        fact: The :class:`~app.services.cash_ledger.CashAnchorFact` whose
-            correction kinds
-            to resolve.
+        correction: The correction from :func:`._walk.walk_account_ledger`
+            whose kinds to resolve.
 
     Returns:
         ``(PostingSourceEnum, PostingKindEnum)`` -- ``(ACCOUNT_OPENING,
-        OPENING)`` for the earliest row, else ``(ACCOUNT_TRUEUP, TRUEUP)``.
+        OPENING)`` for the opening-equity correction, else ``(ACCOUNT_TRUEUP,
+        TRUEUP)``.
     """
-    if fact.is_opening:
+    if correction.opens_the_books:
         return PostingSourceEnum.ACCOUNT_OPENING, PostingKindEnum.OPENING
     return PostingSourceEnum.ACCOUNT_TRUEUP, PostingKindEnum.TRUEUP
 
@@ -208,7 +216,7 @@ def _correction_delta(correction: AccountAnchorCorrection) -> Decimal:
     Returns:
         The signed linked-ledger delta as a ``Decimal``.
     """
-    return correction.anchor.anchor_balance - correction.ledger_before
+    return correction.target_balance - correction.ledger_before
 
 
 def _counter_ledger_accounts(
@@ -277,7 +285,7 @@ def _counter_ledger_accounts(
             counters.append(None)
             continue
         kind = ledger_account_service.anchor_correction_counter_kind(
-            projection_kind, is_opening=correction.anchor.is_opening,
+            projection_kind, is_opening=correction.opens_the_books,
         )
         if kind not in resolved:
             resolved[kind] = (
@@ -326,7 +334,7 @@ def _account_anchor_correction_target(
     delta = _correction_delta(correction)
     if delta == 0:
         return {}
-    _source_enum, posting_kind_enum = _account_correction_kinds(correction.anchor)
+    _source_enum, posting_kind_enum = _account_correction_kinds(correction)
     posting_kind_id = ref_cache.posting_kind_id(posting_kind_enum)
     return {
         linked.id: (delta, posting_kind_id),
@@ -385,16 +393,14 @@ def _account_anchor_correction_targets(
     """
     targets: dict[CorrectionKey, LegMap] = {}
     for correction, counter in zip(corrections, counters, strict=True):
-        source_enum, _posting_kind = _account_correction_kinds(
-            correction.anchor,
-        )
+        source_enum, _posting_kind = _account_correction_kinds(correction)
         # The correction's journal entry is dated the day the assertion is the
         # CLOSING BALANCE for, read off the fact rather than re-derived from
         # its recording instant (ruling R-DH).  It was
         # ``_utc_civil_date(asserted_at)``, a second statement of a rule
         # ``cash_anchor_facts`` already resolves -- and one that put a
         # late-evening Eastern true-up on the next day's entry.
-        observed_on = correction.anchor.observed_on
+        observed_on = correction.observed_on
         key = (
             ref_cache.posting_source_id(source_enum),
             calendar.filing_period(observed_on).period_id,

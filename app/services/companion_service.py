@@ -59,9 +59,9 @@ class CompanionPageRead(NamedTuple):
     cut returned the ``PayCalendar`` itself, and its only consumer was one
     route helper asking exactly these two searches.  Handing a whole schedule
     across this module's security boundary so a presentation layer can search
-    it is the shape the arc already refused once, when the ruling "How the
-    CONTRIBUTION tier learns its periods" rejected an OWNER value riding on a
-    per-account record.  The neighbours are computed here, beside the
+    it is the shape the arc already refused once, when ruling **R-PC19** ("How
+    the CONTRIBUTION tier learns its periods") rejected an OWNER value riding
+    on a per-account record.  The neighbours are computed here, beside the
     validation that decided whose calendar it is.
 
     Attributes:
@@ -164,10 +164,11 @@ def get_visible_transactions(
     Raises:
         NotFoundError: User is not a companion, has no linked owner,
             period not found, or period belongs to a different owner.
-        PayCalendarError: The owner's paydays cannot define a calendar -- in
-            practice a cadence outside 1..365 inferred for an owner with no
-            ``budget.pay_schedule`` row (plan findings **P8** / **P35**).
-            Loud rather than defaulted, for the reason
+        PayCalendarError: The owner's paydays cannot define a calendar.  *The
+            practical route was a cadence outside 1..365 inferred for an owner
+            with no ``budget.pay_schedule`` row (plan findings **P8** /
+            **P35**); plan step C4-b-2 made that owner unstorable and deleted
+            the inference.*  Loud rather than defaulted, for the reason
             :func:`~app.services.pay_calendar.calendar_for` gives.
     """
     user = _validate_companion(companion_user_id)

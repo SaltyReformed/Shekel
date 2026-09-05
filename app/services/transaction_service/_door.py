@@ -17,23 +17,21 @@ Flask-isolated: plain data and ORM rows in, mutations applied in place, no
 ``request`` / ``session`` imports, no commit.
 """
 
-from datetime import date
 from decimal import Decimal
 
 from app.exceptions import ValidationError
 from app.services import posting_service
 from app.models.transaction import Transaction
 from app.services.row_valuation import recorded_figure
+from app.services.settle_day import SettleDay
 from app.services.status_seam import (
     Settlement,
     apply_status_change,
     correction_record,
     figure_for_status,
 )
-from app.services.transaction_service._settle import (
-    settle_transaction,
-    settles_from_entries,
-)
+from app.services.transaction_service._row_rules import settles_from_entries
+from app.services.transaction_service._settle import settle_transaction
 from app.services.transaction_service._status_rules import (
     reject_mismatched_settled_status,
 )
@@ -44,7 +42,7 @@ def apply_requested_status(
     txn: Transaction,
     new_status_id: int,
     *,
-    settled_on: date | None = None,
+    settle_day: SettleDay | None = None,
     submitted: Decimal | None = None,
 ) -> None:
     """Apply the status a DOOR requested, and reconcile the ledger to it.
@@ -91,9 +89,13 @@ def apply_requested_status(
         new_status_id: The ``ref.statuses.id`` the door asked for -- the
             SUBMITTED status when the form carried one, else the row's own (an
             edit that changes only the settle day is an identity transition).
-        settled_on: The civil day the money moved, when the door knows it, after
-            the door's own :func:`app.services.status_seam.settle_day_for_status`
-            reading of the submission.  ``None`` leaves the seam's rule in force.
+        settle_day: The civil day the money moved and HOW that day is known
+            (:class:`app.services.settle_day.SettleDay`), when the door knows
+            it, after the door's own
+            :func:`app.services.status_seam.settle_day_for_status` reading of
+            the submission -- which is what stamps the ``entered`` basis on a
+            day that came out of a date box.  ``None`` leaves the seam's rule in
+            force.
         submitted: The figure a HUMAN supplied, when the door collected one.
             Read only by the SETTLE arm, which decides whether it is a
             correction to record; ``None`` means nobody typed one, and the
@@ -116,7 +118,7 @@ def apply_requested_status(
     # second reconcile of the same row.
     if enters_settled_band(txn, new_status_id):
         reject_mismatched_settled_status(txn, new_status_id)
-        settle_transaction(txn, submitted=submitted, settled_on=settled_on)
+        settle_transaction(txn, submitted=submitted, settle_day=settle_day)
         return
     # Everything else is ONE seam pass carrying every fact the door was given:
     # the status, the day, and what the row records as having moved.
@@ -125,9 +127,15 @@ def apply_requested_status(
     # status changes on the floor** -- measured, not reasoned: a row moving
     # Paid -> Settled (the archive) while carrying a corrected figure recorded
     # the figure, returned, and left the row Paid, answering 200.  The archive
-    # is offered by the popover's own Status dropdown beside the Actual box, so
-    # a user correcting a figure on the way to filing the row away silently got
-    # only half of what they asked for.  The revert direction failed the same
+    # WAS offered by the popover's own Status dropdown beside the Actual box,
+    # so a user correcting a figure on the way to filing the row away silently
+    # got only half of what they asked for.  (That status is deleted at plan
+    # step **balance:X-am**; the measurement is quoted as it was taken.  What it
+    # established is about the DOOR -- two independent facts in one request are
+    # not alternatives -- and the popover still posts a status beside the Actual
+    # box on every Save, so the composition it forced is still live.)
+    #
+    # The revert direction failed the same
     # way one step further out: a service caller reverting a settled row while
     # naming a figure recorded it, posted the ledger difference, and never
     # reverted -- booking money for a row it had just been told had not moved.
@@ -157,7 +165,7 @@ def apply_requested_status(
     # KIND, because nothing here is released at all.
     settlement = _correction_for_status(txn, new_status_id, submitted)
     apply_status_change(
-        txn, new_status_id, settled_on=settled_on, settlement=settlement,
+        txn, new_status_id, settle_day=settle_day, settlement=settlement,
     )
     posting_service.sync_transaction_postings(
         txn, settled=txn.status.is_settled,
@@ -220,7 +228,7 @@ def _correction_for_status(
         return None
     submitted = figure
     # **The door owns its own precondition**, which is the rule
-    # :func:`._settle.reject_unsettleable` states for the settle verbs: an
+    # :func:`._row_rules.reject_unsettleable` states for the settle verbs: an
     # envelope's figure IS the sum of its purchases (ruling **R-FF**), so a
     # typed one would be written and then contradicted by the row's own
     # children.  The PATCH handler refuses it first with a message naming the

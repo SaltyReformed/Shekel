@@ -19,7 +19,7 @@ the balance it describes come from the ONE total producer and cannot disagree:
 * :func:`loan_interest_in_year` (steps **C3c** / **C6c**) -- the tax year's WHOLE
   mortgage-interest figure (Schedule A): the SETTLED interest above PLUS the
   interest still PROJECTED to be paid in the year, folded from the loan's forward
-  payment PLAN (:func:`app.services.balance_at._plan.plan_interest_in_year`, step
+  payment PLAN (:func:`app.services.balance_at._plan_fold.plan_interest_in_year`, step
   **C6c**) -- the SAME plan the loan's projected balance folds, so the deduction and
   the balance agree on the FUTURE as C3c made them agree on the PAST.  It replaced
   the ledger-reader-plus-schedule HYBRID that lived in ``tax_report_service``,
@@ -44,7 +44,7 @@ counts every payment in the fold's WALK (``walk.payment_splits`` -- clock-blind,
 splits every settled payment) attributed by its DISPLAY paid year (the L9 wall
 clock).  So :func:`loan_interest_in_year` excludes from the projected sum every
 installment slot a WALK payment occupies (:func:`_due_slot`), and hands that set to
-:func:`~app.services.balance_at._plan.plan_interest_in_year`.
+:func:`~app.services.balance_at._plan_fold.plan_interest_in_year`.
 
 **Why the WALK, not the plan's own de-dup.**  ``loan_plan``'s ESTIMATED tier
 already skips a slot covered by ``confirmed_shadows_through(as_of)``, and
@@ -85,7 +85,8 @@ from app.utils.balance_predicates import settled_day
 from ._context import BalanceContext
 from . import _kernel
 from ._inputs import _require_scenario
-from ._plan import memoized_plan, plan_interest_in_year
+from ._plan import memoized_plan
+from ._plan_fold import plan_interest_in_year
 from ._resolution import resolved_loan
 
 _ZERO_MONEY = Decimal("0.00")
@@ -231,7 +232,7 @@ def loan_interest_in_year(
       posting reader cannot value (no genesis opening posting) is still valued from
       its facts -- closing B-6 -- rather than falling back to the schedule.
     * **PROJECTED (future) interest -- the PLAN.**  Each of the loan's forward
-      payment records (:func:`app.services.balance_at._plan.plan_interest_in_year`
+      payment records (:func:`app.services.balance_at._plan_fold.plan_interest_in_year`
       over :meth:`~app.services.balance_at.BalanceContext.loan_plan`), folded
       from the SAME ``projection_seed`` the loan's projected BALANCE folds and
       attributed to the year the payment is projected to be PAID (its EFFECTIVE

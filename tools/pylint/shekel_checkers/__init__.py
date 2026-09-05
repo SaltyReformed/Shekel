@@ -108,16 +108,23 @@ positives, so that judgment lives in the code-reviewer subagent instead.
 """
 
 from .balance_seam import (
+    ShekelBalanceSeamChecker,
+    _is_public_export_surface,
+)
+# W9909's answer table and its scope sets, split out of ``balance_seam`` at
+# plan step ``balance:X-f3c-2b-2a``: that module stood at EXACTLY pylint's
+# 1000-line ceiling, and a FAIL-CLOSED registry that cannot grow refuses the
+# next honest edit rather than the next unsafe one.
+from ._fence_rulings import (
     _CASH_LEDGER_MODULES,
     _FENCED_MODULE_RULINGS,
     _KIND_CLASSIFIER_MODULES,
     _LOAN_LEDGER_DEFINING_MODULES,
     _LOAN_PAYMENT_SEAM_MODULES,
     _LOAN_RESOLVER_ENGINE_MODULES,
+    _RECURRING_DEFINITION_MODULES,
     _ROW_VALUATION_MODULES,
     _SEAM_PRIVATE_CONTEXT_MODULES,
-    ShekelBalanceSeamChecker,
-    _is_public_export_surface,
 )
 from .disable_rationale import ShekelDisableRationaleChecker
 from .ledger_model_fence import (
@@ -149,6 +156,7 @@ __all__ = [
     "_LOAN_LEDGER_DEFINING_MODULES",
     "_LOAN_PAYMENT_SEAM_MODULES",
     "_LOAN_RESOLVER_ENGINE_MODULES",
+    "_RECURRING_DEFINITION_MODULES",
     "_ROW_VALUATION_MODULES",
     "_SEAM_PRIVATE_CONTEXT_MODULES",
     "_is_public_export_surface",

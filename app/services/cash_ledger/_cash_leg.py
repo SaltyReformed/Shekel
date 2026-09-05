@@ -153,7 +153,7 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     the loan side, where the payment split lived inside the posting package and
     every other consumer had to reach through its privates for it.  Two
     consumers need this rule now: the writer, which posts the effect, and the
-    cash WALK (:func:`app.services.cash_ledger.walk_cash_ledger`), which folds
+    cash WALK (:func:`app.services.cash_ledger.walk_cash_ledger`), whose facts fold
     it.  A second copy would let the projection and the posted ledger disagree
     about what a settled row was worth -- measured on production 2026-07-25
     before this move, a ``effective_amount``-only walk diverged from the posted

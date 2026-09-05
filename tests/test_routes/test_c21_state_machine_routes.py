@@ -26,6 +26,7 @@ from app.services import status_seam
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from tests._test_helpers import settlement_if_settling
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_projected_expense(seed_user, seed_periods_today):
@@ -40,6 +41,7 @@ def _create_projected_expense(seed_user, seed_periods_today):
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     txn = Transaction(
+        user_id=seed_periods_today[0].user_id,
         pay_period_id=seed_periods_today[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -47,30 +49,31 @@ def _create_projected_expense(seed_user, seed_periods_today):
         name="Test Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("123.45"),
+        amount_ownership=AmountOwnership.own(Decimal("123.45")),
     )
     db.session.add(txn)
     db.session.commit()
     return txn
 
 
-def _walk_to_settled(txn):
+def _walk_to_paid(txn):
     """Drive a freshly-projected row through projected -> done -> settled.
 
-    The state machine forbids a direct projected -> settled jump, so
-    tests that need a settled row to attack must first land on Done.
     Bypasses the ROUTE layer to keep the helper terse -- the transitions
     exercised here are themselves covered by the legal suite and by the
     existing transfer-service tests -- but goes through the status SEAM rather
     than assigning the column: since plan step X-f1 the seam writes the settle
     day in the same call, and a bare assignment leaves a settled row with no
     day, which every balance reader refuses.
+
+    It walked one step further, to the terminal ``Settled`` ARCHIVE, until plan
+    step **balance:X-am** deleted that status.  The tests below that used it
+    were attacking the archive; each is restated over a rule that is still
+    live, or deleted where the move it called illegal has become legal --
+    which for ``Settled -> Projected`` is the whole point of the step.
     """
     done_id = ref_cache.status_id(StatusEnum.DONE)
-    settled_id = ref_cache.status_id(StatusEnum.SETTLED)
     status_seam.apply_status_change(txn, done_id, settlement=settlement_if_settling(txn, done_id))
-    db.session.commit()
-    status_seam.apply_status_change(txn, settled_id, settlement=settlement_if_settling(txn, settled_id))
     db.session.commit()
 
 
@@ -82,66 +85,65 @@ class TestPatchRejectsIllegalTransition:
     state-machine message when the proposed status_id is unreachable
     from the row's current status."""
 
-    def test_settled_to_projected_rejected(
+    def test_paid_to_cancelled_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A settled row PATCHed to projected returns 400 and stays settled."""
+        """A Paid row PATCHed to Cancelled returns 400 and stays Paid.
+
+        The route-level control for the transaction map's refusal, restated
+        over a live rule at plan step **balance:X-am**.  It attacked the
+        terminal ARCHIVE before -- ``Settled -> Projected``, ``Settled ->
+        Cancelled``, ``Projected -> Settled``.  The first of those is now
+        LEGAL, which is the step's whole content: a settled row can always be
+        reverted and corrected.  ``Paid -> Cancelled`` is the refusal that
+        remains and it is the same one in substance -- money that moved cannot
+        be un-moved by re-labelling it; revert first, so the audit log carries
+        both legs.
+        """
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            _walk_to_settled(txn)
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            assert txn.status_id == settled_id
-
-            response = auth_client.patch(
-                f"/transactions/{txn.id}",
-                data={"status_id": str(projected_id)},
-            )
-            assert response.status_code == 400
-            # Body names the transition so the user understands why
-            # the request was refused.
-            body = response.data.decode()
-            assert "transaction" in body
-            assert str(settled_id) in body
-            assert str(projected_id) in body
-
-            db.session.refresh(txn)
-            assert txn.status_id == settled_id
-
-    def test_settled_to_cancelled_rejected(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A settled row cannot be cancelled via PATCH."""
-        with app.app_context():
-            txn = _create_projected_expense(seed_user, seed_periods_today)
-            _walk_to_settled(txn)
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            _walk_to_paid(txn)
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
             cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
+            assert txn.status_id == paid_id
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
                 data={"status_id": str(cancelled_id)},
             )
             assert response.status_code == 400
-            db.session.refresh(txn)
-            assert txn.status_id == settled_id
+            # Body names the transition so the user understands why
+            # the request was refused.
+            body = response.data.decode()
+            assert "transaction" in body
+            assert str(paid_id) in body
+            assert str(cancelled_id) in body
 
-    def test_projected_to_settled_rejected(
+            db.session.refresh(txn)
+            assert txn.status_id == paid_id
+
+    def test_paid_to_received_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Projected rows must land on Done/Received first before Settled."""
+        """A Paid row cannot become Received without reverting first.
+
+        The WITHIN-BAND refusal, and the reason it is worth a route test of its
+        own: since **X-am** the settled band is exactly ``{Paid, Received}``, so
+        this is the only non-identity move inside it -- the one case
+        ``balance_predicates.is_identity_move`` exists to be narrower than.
+        """
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            _walk_to_paid(txn)
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"status_id": str(settled_id)},
+                data={"status_id": str(ref_cache.status_id(StatusEnum.RECEIVED))},
             )
             assert response.status_code == 400
             db.session.refresh(txn)
-            assert txn.status_id == projected_id
+            assert txn.status_id == paid_id
 
 
 # ── Route accepts legal transitions ─────────────────────────────────
@@ -211,12 +213,17 @@ class TestPatchAcceptsLegalTransition:
 
 
 class TestPatchRejectsFinalisedFieldEdit:
-    """A finalised (Paid/Received/Settled/Credit/Cancelled) row's
+    """A finalised (Paid/Received/Credit/Cancelled) row's
     money / period / category / due-date fields cannot be rewritten via
     PATCH unless the same request reverts it to Projected.  Each test
-    drives a row to Paid (or Settled), edits a locked field with NO
+    drives a row to Paid, edits a locked field with NO
     status change, and asserts a 400 plus an unchanged stored value --
-    the gap was that a status-less PATCH skipped every guard."""
+    the gap was that a status-less PATCH skipped every guard.
+
+    **The lock is what the ARCHIVE was reached for and never added to**, which
+    is part of why plan step **balance:X-am** deleted that status: every
+    ``is_immutable`` row already refuses these edits, and the archive's only
+    extra content was that it could not be reverted to lift the lock."""
 
     def test_paid_row_amount_edit_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -230,7 +237,7 @@ class TestPatchRejectsFinalisedFieldEdit:
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "999.99"},
+                data={"estimated_amount": "999.99", "estimated_amount_as_rendered": "123.45"},
             )
             assert response.status_code == 400
             body = response.data.decode()
@@ -243,13 +250,13 @@ class TestPatchRejectsFinalisedFieldEdit:
             # survives -- the rewrite never reached the row.
             assert txn.estimated_amount == Decimal("123.45")
 
-    def test_settled_row_category_edit_rejected(
+    def test_paid_row_category_edit_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Re-categorising a Settled row is refused; category unchanged."""
+        """Re-categorising a Paid row is refused; category unchanged."""
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            _walk_to_settled(txn)
+            _walk_to_paid(txn)
             original_category_id = txn.category_id
             other_category_id = seed_user["categories"]["Rent"].id
             assert other_category_id != original_category_id
@@ -262,13 +269,13 @@ class TestPatchRejectsFinalisedFieldEdit:
             db.session.refresh(txn)
             assert txn.category_id == original_category_id
 
-    def test_settled_row_period_move_rejected(
+    def test_paid_row_period_move_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Moving a Settled row to another period is refused; period kept."""
+        """Moving a Paid row to another period is refused; period kept."""
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            _walk_to_settled(txn)
+            _walk_to_paid(txn)
             original_period_id = txn.pay_period_id
             other_period_id = seed_periods_today[1].id
             assert other_period_id != original_period_id
@@ -281,25 +288,36 @@ class TestPatchRejectsFinalisedFieldEdit:
             db.session.refresh(txn)
             assert txn.pay_period_id == original_period_id
 
-    def test_paid_row_amount_edit_while_archiving_rejected(
+    def test_paid_row_amount_edit_while_re_submitting_paid_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A combined PATCH that archives (Paid -> Settled) AND rewrites the
-        amount is refused -- archiving is not a revert, so the lock holds."""
+        """A PATCH that re-states Paid AND rewrites the amount is refused.
+
+        A status change that does not REVERT the row cannot lift the lock, and
+        the identity move is the case the popover actually produces: it posts
+        the whole row on every Save, so an untouched status box arrives as
+        ``Paid -> Paid`` beside whatever else the form carried.
+
+        Written over ``Paid -> Settled`` (the archive) until plan step
+        **balance:X-am**.  The rule under test is *a new status lifts the lock
+        only when it is mutable*, which is about ``is_immutable`` on the target
+        and never about which status it is, so the specimen moved and the rule
+        did not.
+        """
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE), settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)))
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(txn, done_id, settlement=settlement_if_settling(txn, done_id))
             db.session.commit()
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"status_id": str(settled_id), "estimated_amount": "5.00"},
+                data={"status_id": str(done_id), "estimated_amount": "5.00", "estimated_amount_as_rendered": "123.45"},
             )
             assert response.status_code == 400
             db.session.refresh(txn)
             # Neither the status nor the amount moved.
-            assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
+            assert txn.status_id == done_id
             assert txn.estimated_amount == Decimal("123.45")
 
 
@@ -317,7 +335,7 @@ class TestPatchAllowsEditableField:
 
             response = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "200.00"},
+                data={"estimated_amount": "200.00", "estimated_amount_as_rendered": "123.45"},
             )
             assert response.status_code == 200
             db.session.refresh(txn)
@@ -357,6 +375,7 @@ class TestPatchAllowsEditableField:
                 data={
                     "status_id": str(projected_id),
                     "estimated_amount": "200.00",
+                    "estimated_amount_as_rendered": "123.45",
                 },
             )
             assert response.status_code == 200

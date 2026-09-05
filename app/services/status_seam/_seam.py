@@ -26,10 +26,16 @@ from decimal import Decimal
 from typing import Optional
 
 from app import ref_cache
+from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.transaction import Transaction, reject_settle_instant
+from app.models.transaction import Transaction
 from app.services import pay_period_service
+from app.services.settle_day import (
+    SettleDay,
+    record_settle_day,
+    submitted_settle_day,
+)
 from app.services.state_machine import verify_transition
 from app.services.status_seam._record import Settlement
 from app.services.status_seam._refusals import (
@@ -48,8 +54,11 @@ from app.utils.dates import display_today
 
 
 def settle_day_for_status(
-    user_id: int, new_status_id: int, submitted_day: Optional[date],
-) -> Optional[date]:
+    user_id: int,
+    new_status_id: int,
+    submitted_day: Optional[date],
+    recorded: Optional[SettleDay] = None,
+) -> Optional[SettleDay]:
     """Return the settle day a FORM submission means, and refuse an impossible one.
 
     **The edit doors' half of the settled-iff-dated invariant, stated once**
@@ -116,13 +125,38 @@ def settle_day_for_status(
             an explicit ``None`` (the field is not ``allow_none``), because a
             settled row always carries a day: the way to remove one is to leave
             the settled band, which clears it.
+        recorded: What the row ALREADY records
+            (:func:`app.services.settle_day.recorded_settle_day`), or ``None``
+            when it records no day.  **It is what makes this function
+            ECHO-AWARE**, which is exactly why :func:`figure_for_status` takes
+            the row beside it: without the stored value a door cannot tell an
+            untouched prefill from a day the user just retyped, and both
+            popovers prefill the control.  Defaulting to ``None`` treats every
+            submission as a fresh assertion, which is the SAFE direction for a
+            caller that genuinely has no stored pair -- a row settling for the
+            first time -- and the wrong one for a re-save, which is why all
+            three route doors pass it.
 
     Returns:
-        *submitted_day* when *new_status_id* is settled -- which is
+        A :class:`~app.services.settle_day.SettleDay` on the ``entered`` basis
+        wrapping *submitted_day* when *new_status_id* is settled -- which is
         ``None`` itself when the form submitted none, and that is the same
         answer the unsettled branch gives; ``None`` otherwise.  The seam reads
         ``None`` as "derive the day from the status", i.e. preserve on a
         re-settle and clear on a revert.
+
+        **The basis is ``entered`` for a day that MOVED, and *recorded*'s own
+        basis for one that did not** (plan step X-az). A day that arrived in a
+        date box and differs from the stored one is the owner's own record: no
+        bank statement showed it and no balance assertion bounds it, which is
+        exactly what :attr:`~app.enums.SettledDayBasisEnum.ENTERED` names.  A
+        day EQUAL to the stored one is the control coming back untouched and
+        asserts nothing, so the row's existing basis stands --
+        :func:`app.services.settle_day.submitted_settle_day` is that rule, and
+        it carries the ``$4,173.07`` this function cost production without it.
+        Stating it there rather than at the three routes is the same argument
+        that put the rest of this function here -- the transaction PATCH, the
+        transfer PATCH and the entry PATCH are doors onto ONE rule.
 
     Raises:
         ValidationError: When the day would be FORWARDED and precedes the
@@ -130,26 +164,39 @@ def settle_day_for_status(
             ordinary user input from the correction box.
 
     Note:
-        There is deliberately no ``if submitted_day is None`` short-circuit.
-        It would be unreachable as a DECISION -- both branches already answer
+        **The ``submitted_day is None`` arm was forbidden here until plan step
+        X-az and is load-bearing now**, and the reversal is worth stating
+        because the rule behind the old prohibition has not changed.  It read:
+        the arm is unreachable as a DECISION -- both branches already answer
         ``None`` for a ``None`` day -- so no single-line mutation of this
-        function could fail a test written against it.  A neutral review found
-        one here, in the same step that deleted exactly that shape from
-        ``_normalize_empty_inputs`` (finding **N-184**); a guard whose only
-        possible test cannot fail is not a guard.
+        function could fail a test written against it, and a guard whose only
+        possible test cannot fail is not a guard (finding **N-184**).  That was
+        exact while the settled branch returned the day it was handed.  It now
+        returns a :class:`~app.services.settle_day.SettleDay`, which cannot
+        wrap a ``None``, so the two branches answer differently and deleting
+        this line raises rather than returning the same value by another route.
+        The test that fails when it goes is a settled status with no submitted
+        day -- the ordinary re-settle, which must reach the seam as "derive the
+        day" and not as a malformed value.
     """
     if new_status_id not in settled_status_ids():
         return None
-    if submitted_day is not None:
-        floor = pay_period_service.earliest_recordable_day(user_id)
-        if submitted_day < floor:
-            raise ValidationError(
-                f"A settle day of {submitted_day.isoformat()} is before this "
-                f"budget's schedule starts ({floor.isoformat()}).  Check the "
-                "year -- or generate earlier pay periods first if the money "
-                "really moved then."
-            )
-    return submitted_day
+    if submitted_day is None:
+        return None
+    floor = pay_period_service.earliest_recordable_day(user_id)
+    if submitted_day < floor:
+        raise ValidationError(
+            f"A settle day of {submitted_day.isoformat()} is before this "
+            f"budget's schedule starts ({floor.isoformat()}).  Check the "
+            "year -- or generate earlier pay periods first if the money "
+            "really moved then."
+        )
+    # **The floor is asked BEFORE the echo rule, and the order is deliberate.**
+    # It preserves exactly today's refusal on a legacy row whose stored day
+    # precedes the schedule: such a row 400s on any save, echo or not, and
+    # loosening that is not this step's to decide.  What the echo rule changes
+    # is only WHICH BASIS a surviving day records.
+    return submitted_settle_day(submitted_day, recorded)
 
 
 def figure_for_status(
@@ -224,7 +271,7 @@ def apply_status_change(
     row: StatusBearingRow,
     new_status_id: int,
     *,
-    settled_on: Optional[date] = None,
+    settle_day: Optional[SettleDay] = None,
     settlement: Optional[Settlement] = None,
 ) -> None:
     """Apply a status transition -- the single status seam, for either row type.
@@ -241,12 +288,13 @@ def apply_status_change(
 
       1. ``verify_transition`` -- the state-machine legality gate, which picks
          the workflow from *row*'s own model class; raises ``ValidationError``
-         on an illegal move (e.g. Settled -> Projected), which the route layer
+         on an illegal move (e.g. Cancelled -> Paid), which the route layer
          surfaces as a 400.
       2. assign ``status_id``.
-      3. maintain the SETTLEMENT RECORD -- ``settled_on``, ``settled_amount``,
-         ``settled_basis_id`` and the clearing link -- as ONE act (see the
-         *settled_on* and *settlement* args).  **Transactions only**, because
+      3. maintain the SETTLEMENT RECORD -- ``settled_on``,
+         ``settled_day_basis_id``, ``settled_amount``, ``settled_basis_id`` and
+         the clearing link -- as ONE act (see the *settle_day* and *settlement*
+         args).  **Transactions only**, because
          ``Transfer`` carries none of those columns: a transfer's money moves on
          its two shadow rows, and the transfer service applies this seam to those
          shadows, so a transfer settle still records what moved and when.
@@ -271,15 +319,28 @@ def apply_status_change(
             ``status_id`` is read as the current state for the transition check
             and its CLASS selects the workflow.
         new_status_id: The ``ref.statuses.id`` to move to.
-        settled_on: Settle-day policy, read only for a ``Transaction``.
+        settle_day: Settle-day policy, read only for a ``Transaction``.
             ``None`` (the default) DERIVES the day from *new_status_id*: stamp
-            ``display_today()`` on entering a settled status (Paid / Received /
-            Settled) that has none yet, **preserve an existing one on an
+            ``display_today()`` on entering a settled status (Paid or
+            Received) that has none yet, **preserve an existing one on an
             idempotent re-settle**, and clear it on entering a non-settled
             status (so a reverted / cancelled / credited row drops its stale
-            settle day).  A non-``None`` ``date`` is written verbatim, and its
-            ONE legitimate meaning is "the user typed this day" -- the transfer
-            edit door, and the transfer service's pair resolution.
+            settle day and the basis that described it).  A non-``None``
+            :class:`~app.services.settle_day.SettleDay` is written verbatim,
+            and it states BOTH the day and HOW that day is known.
+
+            **The basis is the CALLER's to state and there is no default**
+            (plan step **X-az**, finding **N-332**).  A door that knows a day
+            knows where it came from: the statement matcher writes a day the
+            bank POSTED (``observed``), the reconcile panel writes the day a
+            BALANCE was asserted for and so an UPPER BOUND (``asserted``), and
+            an edit box writes the owner's own (``entered``).  ``settled_on``
+            carried all three with nothing saying which, and the matcher told
+            the panel's apart by testing whether ``reconciled_by_id`` was
+            populated -- exact over those three writers, blind to the third of
+            them, and one new writer from wrong.  Packaging the day WITH its
+            basis is what leaves no default to get wrong: a caller cannot pass
+            a day without saying what kind it is.
 
             **A day supplied for a NON-settled status is REFUSED**
             (:func:`reject_settle_day_without_settled_status`, finding
@@ -307,13 +368,17 @@ def apply_status_change(
             by however long ago it really settled.  Neither route passes one
             now, so the preserve rule is the only rule.
 
-            **``Paid -> Settled`` is a RE-ENTRY, not a first entry**, and that
-            is why preservation matters beyond the edit forms: archiving a
-            payment must not move its money to the day it was archived.  That
-            transition has zero production rows today (finding N-177, which
-            proposes deleting the status), and the rule is pinned by a test
-            regardless, because a status with no rows is not a status with no
-            transitions.
+            **A RE-SETTLE is a RE-ENTRY, not a first entry**, and that is why
+            preservation matters beyond the edit forms: re-submitting a row's
+            own settled status -- which the full-edit popover does on every
+            Save, since it posts the whole row and not a delta -- must not move
+            its money to the day the form was saved.
+
+            The sharpest case used to be ``Paid -> Settled``, the ARCHIVE: it
+            was a genuine STATUS CHANGE that still had to preserve the day.
+            Plan step **X-am** deleted that status, so every within-band move
+            left is the identity one, and preservation is what makes an
+            untouched Save a no-op instead of a re-dating.
 
         settlement: WHAT moved, when this change RECORDS a settle
             (:class:`Settlement`).  Written to ``settled_amount`` and
@@ -336,13 +401,14 @@ def apply_status_change(
             ``None`` leaves whatever the row already records untouched -- which
             is what an identity re-submit, a settle-day correction, an archive
             and a REVERT each mean.  A revert releases the ASSERTION
-            (``settled_on`` and ``reconciled_by_id``, above) and keeps what
-            moved, because the two are different facts with different
-            lifetimes; the comment at that assignment carries the argument.
+            (``settled_on``, ``settled_day_basis_id`` and ``reconciled_by_id``,
+            above) and keeps what moved, because the two are different facts
+            with different lifetimes; the comment at that assignment carries the
+            argument.
 
     Raises:
         ValidationError: If the transition is illegal for *row*'s workflow
-            (propagated from ``verify_transition``), if *settled_on* is
+            (propagated from ``verify_transition``), if *settle_day* is
             supplied for a *new_status_id* that is not settled (propagated from
             :func:`reject_settle_day_without_settled_status`), or if
             *settlement* is (propagated from
@@ -350,47 +416,52 @@ def apply_status_change(
         ValueError: If a ``Transaction`` ENTERS the settled band with no
             *settlement*.  A programming error at the call site -- no form can
             express it -- so it is not a ``ValidationError``.
-        TypeError: If *settled_on* is a ``datetime`` rather than a civil
-            ``date`` (finding **N-179**), or if *row* is not a status-bearing
-            model (propagated from the state machine -- a programming error at
-            the call site).
+        TypeError: If *row* is not a status-bearing model (propagated from the
+            state machine -- a programming error at the call site).  The
+            ``datetime`` refusal (finding **N-179**) is no longer raised HERE:
+            it moved to :class:`~app.services.settle_day.SettleDay`'s
+            constructor at plan step X-az, which runs at the CALLER before this
+            function is entered -- strictly earlier than a guard at the top of
+            this body, and it keeps the "a refused call leaves the row
+            untouched" property for free.
     """
-    # A ``datetime`` is REFUSED rather than accepted and truncated (finding
-    # N-179).  The rule and its message live on the column
-    # (:func:`app.models.transaction.reject_settle_instant`, wired as an ORM
-    # validator) so EVERY write path refuses it, not just this door; it is
-    # called again here, ahead of ``verify_transition``, purely for the ordering
-    # -- the validator would not fire until the assignment below, by which point
-    # ``status_id`` has already moved, and a refused call must leave the row
-    # untouched.
-    reject_settle_instant(settled_on)
-
-    # The other half of the settled-iff-dated invariant, and it is checked here
-    # so EVERY caller inherits it (finding **N-183**).  Without it the explicit
-    # arm below writes a day onto whatever status it is handed, which is how
+    # **The ``datetime`` refusal used to be the first statement here and is now
+    # a CONSTRUCTOR invariant** (finding **N-179**, moved at plan step X-az).
+    # Its rule still lives once, on the column
+    # (:func:`app.models.mixins.reject_settle_instant`, wired as an ORM
+    # validator), and :class:`app.services.settle_day.SettleDay` calls it in
+    # ``__post_init__`` -- so a caller cannot even PACKAGE an instant for this
+    # door, let alone hand one over.  That is strictly earlier than a guard at
+    # the top of this body, which is what the deleted call was here to buy: a
+    # refused call must leave the row untouched, and one that never reaches this
+    # function trivially does.
+    #
+    # The other half of the settled-iff-dated invariant, checked here so EVERY
+    # caller inherits it (finding **N-183**).  Without it the explicit arm below
+    # writes a day onto whatever status it is handed, which is how
     # ``transfer_service.update_transfer`` could date a Projected transfer; the
     # invariant then held only because no caller happened to do it.  Ordered
-    # before ``verify_transition`` for the same reason the ``datetime`` refusal
-    # is: a rejected call must not have mutated the row.
-    reject_settle_day_without_settled_status(new_status_id, settled_on)
+    # before ``verify_transition`` because a rejected call must not have mutated
+    # the row.
+    reject_settle_day_without_settled_status(new_status_id, settle_day)
 
     # A day that has not happened yet is refused (ruling **R-EJ**), ordered with
-    # the two refusals above for the same reason: a rejected call must leave the
+    # the refusals around it for the same reason: a rejected call must leave the
     # row untouched.  See :func:`reject_future_settle_day` for the measurement --
     # a future-dated settle puts already-spent money back in the balance.
-    reject_future_settle_day(settled_on)
+    reject_future_settle_day(settle_day)
 
     # The settlement record's own half of the same invariant (plan step
     # X-au-c3): a row records what moved only while it is settled.  Ordered with
     # the refusals above, and for the identical reason.
     reject_settlement_without_settled_status(new_status_id, settlement)
 
-    # ``ck_transactions_settle_day_needs_basis`` said in WORDS, and only a
+    # ``ck_transactions_settle_day_needs_a_record`` said in WORDS, and only a
     # ``Transaction`` carries either column.  Without it the legacy row the
     # correction box exists to repair failed as a raw CHECK violation rendered
     # as "invalid reference"; see :func:`reject_settle_day_without_a_record`.
     if isinstance(row, Transaction):
-        reject_settle_day_without_a_record(row, settled_on, settlement)
+        reject_settle_day_without_a_record(row, settle_day, settlement)
 
     # Read BEFORE the assignment below, because it is a question about the
     # status the row is LEAVING.  A row entering the settled band owes a record
@@ -411,19 +482,22 @@ def apply_status_change(
     verify_transition(row, new_status_id)
     row.status_id = new_status_id
 
-    # settled_on maintenance.  An explicit day wins; otherwise derive from the
-    # new status: clear when leaving the settled band, stamp the user's today on
-    # the first entry into it, and leave an existing day untouched on a
-    # re-settle (so editing a Paid row -- which re-submits its unchanged
-    # status_id -- never churns the day its money moved).  Skipped whole for a
-    # Transfer, which has no such column; its shadows carry the day and get
-    # their own call.
+    # Settle-day maintenance -- the day AND the basis that says how it is known,
+    # written as one pair by ``settle_day.record_settle_day`` (plan step
+    # **X-az**).  An explicit day wins; otherwise derive from the new status:
+    # clear when leaving the settled band, stamp the user's today on the first
+    # entry into it, and leave an existing day untouched on a re-settle (so
+    # editing a Paid row -- which re-submits its unchanged status_id -- never
+    # churns the day its money moved).  Skipped whole for a Transfer, which has
+    # neither column; its shadows carry them and get their own call.
     #
     # The three arms are exhaustive and the invariant falls out of them: the
     # guard above has already refused an explicit day on a non-settled status,
     # so arm 1 fires only INTO the settled band, arm 2 clears whenever the row
     # leaves it, and arm 3 fills the band's first entry.  A settled row always
-    # leaves here dated and a non-settled row always leaves here undated.
+    # leaves here dated with a basis and a non-settled row always leaves here
+    # with neither, which is what
+    # ``ck_transactions_settle_day_basis_pairing`` refuses to store otherwise.
     if isinstance(row, Transaction):
         # **Any MOVE of the settle day releases the clearing fact** (plan step
         # X-f3a-1, ruling **R-FL**), and the three arms below are exactly the
@@ -443,21 +517,42 @@ def apply_status_change(
         #
         # Re-settling afterwards is a fresh act, which the reconcile panel
         # records against whatever statement is current then.
-        released = settled_on is not None and settled_on != row.settled_on
-        if settled_on is not None:
-            row.settled_on = settled_on
+        # **The release is about the DAY, never about the BASIS** (plan step
+        # X-az).  ``reconciled_by_id`` records that a named statement was seen
+        # to show this money ON a named day; re-stating the same day on a
+        # better-known basis does not contradict that -- it agrees with it.
+        # That is exactly what the statement matcher does when a bank line
+        # CONFIRMS a day the reconcile panel had recorded as an upper bound:
+        # the day is unchanged, the basis rises from ``asserted`` to
+        # ``observed``, and the observation the link records still stands.
+        released = settle_day is not None and settle_day.day != row.settled_on
+        if settle_day is not None:
+            record_settle_day(row, settle_day)
         elif new_status_id not in settled_status_ids():
-            row.settled_on = None
+            record_settle_day(row, None)
             released = True
         elif row.settled_on is None:
-            row.settled_on = display_today()
+            # The band's first entry with no day stated.  ``entered`` is the
+            # basis because nothing outside the app said anything: the owner
+            # marked the row paid and the door supplied their today.  It is the
+            # honest answer rather than a weaker fourth member -- what separates
+            # it from ``observed`` is provenance, and a day the owner stands
+            # behind is a point exactly as a day the bank states is.
+            record_settle_day(
+                row,
+                SettleDay(
+                    day=display_today(),
+                    basis=SettledDayBasisEnum.ENTERED,
+                ),
+            )
         if released:
             row.reconciled_by_id = None
         # **WHAT MOVED IS RETAINED WHEN THE ASSERTION IS RELEASED**, and that
         # asymmetry with the two lines above is the whole point (plan step
-        # X-au-c3).  ``settled_on`` and ``reconciled_by_id`` are the ASSERTION
-        # -- "this money moved, on this day, and that statement showed it" --
-        # so a revert withdraws them.  ``settled_amount`` and
+        # X-au-c3).  ``settled_on``, ``settled_day_basis_id`` and
+        # ``reconciled_by_id`` are the ASSERTION -- "this money moved, on this
+        # day, that is what kind of day it is, and that statement showed it" --
+        # so a revert withdraws all three.  ``settled_amount`` and
         # ``settled_basis_id`` are WHAT MOVED, which is a fact about the row and
         # not about the assertion, so nothing here destroys them.
         #

@@ -16,6 +16,7 @@ from app.extensions import db
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator, savings_goal_service
+from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCalendar, PeriodWindow
 from app.services.savings_goal_service import GoalTargetSpec, GoalTrajectory
 from app.utils.money import percent_complete
@@ -34,39 +35,57 @@ class _GoalInputs:
     the per-owner facts resolved once for the whole build that no individual
     goal changes.
 
-    Scalars and loaded rows rather than the whole
-    :class:`~.._types._DashboardCoreData`, so a helper here stays constructible
-    in a test without a ``BalanceContext`` and an account list it never reads.
+    Loaded rows and the read pass rather than the whole
+    :class:`~.._types._DashboardCoreData`, so a helper here never reads an
+    account list it was not built for.
+
+    **It carries the READ PASS since plan step R7d-e, where it carried three
+    of the pass's derivations as scalars.**  The committed-contribution filter
+    now asks what stops a definition through the composed door -- the rule's
+    own bound AND its destination's derived stop -- and the door needs the
+    pass to fold a loan.  Keeping the scalars beside the pass would have made
+    ``inputs.as_of`` and ``inputs.balance_ctx.as_of`` two spellings of one day
+    (``CLAUDE.md`` rule 14), and the same for the calendar and the reported
+    window, so all three are DERIVED from the pass below instead -- each off a
+    memo the pass already holds, so a property costs nothing -- and every
+    reader keeps the name it had.
 
     Attributes:
-        all_periods: The owner's saved schedule as a
-            :class:`~app.services.pay_calendar.PeriodWindow`, for the
-            periods-until-target count.  Off the read pass since pay-calendar
-            plan step C2-f2d-3, so it is the same window the account balances
-            beside it were reported over.
         net_biweekly_pay: Current projected net pay for one paycheck, from the
             canonical paycheck engine.  ``Decimal("0.00")`` when the owner has
             no salary configured, which is what
             :attr:`GoalProgress.has_salary_data` reports.
-        calendar: The owner's whole pay-period schedule.  ``calendar.cadence``
-            turns ``net_biweekly_pay`` into a monthly figure for a "months of
-            salary" goal; the WHOLE schedule is what
-            ``obligations_aggregator`` needs to tell whether a contribution
-            template bounded "after N occurrences" has spent its count (plan
-            step R7b-3).  It was the bare
-            :class:`~app.services.pay_calendar.PayCadence` until then, which
-            could answer the first and not the second.
-        as_of: The read pass's day -- ``balance_ctx.as_of``.  The build's ONE
-            clock (pay-calendar plan step C2-f2d-3, ledger row **P55**): the
+        balance_ctx: The render's read pass.  Its calendar turns
+            ``net_biweekly_pay`` into a monthly figure for a "months of
+            salary" goal and is the WHOLE schedule ``obligations_aggregator``
+            needs to tell whether a contribution template bounded "after N
+            occurrences" has spent its count (plan step R7b-3); its reported
+            window is what the periods-until-target count walks, the same
+            window the account balances beside it were reported over
+            (pay-calendar plan step C2-f2d-3); and its ``as_of`` is the
+            build's ONE clock (that step, ledger row **P55**): the
             committed-contribution filter and the periods-until-target count
-            both resolve against a day, and reading it twice let one goal card
-            answer from two.
+            both resolve against a day, and reading it twice let one goal
+            card answer from two.
     """
 
-    all_periods: PeriodWindow
     net_biweekly_pay: Decimal
-    calendar: PayCalendar
-    as_of: date
+    balance_ctx: BalanceContext
+
+    @property
+    def all_periods(self) -> PeriodWindow:
+        """The owner's saved schedule, off the pass's reported window."""
+        return self.balance_ctx.reported_periods()
+
+    @property
+    def calendar(self) -> PayCalendar:
+        """The owner's whole pay-period schedule, off the pass's memo."""
+        return self.balance_ctx.calendar()
+
+    @property
+    def as_of(self) -> date:
+        """The read pass's day, the build's one clock."""
+        return self.balance_ctx.as_of
 
 
 @dataclass(frozen=True)
@@ -366,15 +385,17 @@ def _compute_goal_progress(
         # /obligations page applies; pre-Commit-23 this loop omitted the
         # expired-rule guard and inflated per-goal floors indefinitely.
         acct_templates = templates_by_account.get(goal.account_id, [])
-        # The PASS's day, not a bare clock read (pay-calendar plan step
-        # C2-f2d-3, ledger row **P55**).  ``committed_monthly`` decides whether
-        # a bounded template still commits anything AS OF the day it is given,
-        # so reading ``date.today()`` here put this figure on a different day
-        # from the balances beside it on the same card across a midnight
-        # render -- and from the emergency-fund floor, which asks the same
-        # producer the same question.
+        # The PASS, whole (plan step R7d-e), where it was the pass's day and
+        # calendar as two scalars.  ``committed_monthly`` decides whether a
+        # bounded template still commits anything AS OF the pass's day and
+        # through the composed door, which needs the pass to fold a loan;
+        # reading ``date.today()`` here instead put this figure on a
+        # different day from the balances beside it on the same card across a
+        # midnight render -- and from the emergency-fund floor, which asks the
+        # same producer the same question (pay-calendar plan step C2-f2d-3,
+        # ledger row **P55**).
         monthly_contribution = obligations_aggregator.committed_monthly(
-            acct_templates, inputs.as_of, inputs.calendar,
+            acct_templates, inputs.balance_ctx,
         )
 
         goal_data.append(_build_goal_datum(

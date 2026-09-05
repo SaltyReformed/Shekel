@@ -79,6 +79,7 @@ from app.schemas.validation.accounts import (
     AccountTypeUpdateSchema,
     AccountUpdateSchema,
     AnchorUpdateSchema,
+    OpeningRestatementSchema,
     AppreciationParamsUpdateSchema,
     InterestParamsCreateSchema,
     InterestParamsUpdateSchema,
@@ -123,6 +124,7 @@ from app.schemas.validation.loans import (
     RefinanceSchema,
 )
 from app.schemas.validation.pay_periods import (
+    PayHistorySchema,
     PayPeriodExtendSchema,
     PayPeriodGenerateSchema,
     PayPeriodRegenerateSchema,
@@ -186,6 +188,7 @@ __all__ = [
     "AccountTypeUpdateSchema",
     "AccountUpdateSchema",
     "AnchorUpdateSchema",
+    "OpeningRestatementSchema",
     "AppreciationParamsUpdateSchema",
     "CalibrationConfirmSchema",
     "CalibrationSchema",
@@ -220,6 +223,7 @@ __all__ = [
     "MfaConfirmSchema",
     "MfaDisableSchema",
     "MfaVerifySchema",
+    "PayHistorySchema",
     "PayPeriodExtendSchema",
     "PayPeriodGenerateSchema",
     "PayPeriodRegenerateSchema",

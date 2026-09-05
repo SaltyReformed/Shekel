@@ -9,7 +9,7 @@ only, so they import cleanly into any service or test without the app
 stack.
 """
 import calendar
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -44,9 +44,13 @@ DISPLAY_TIMEZONE = ZoneInfo("America/New_York")
 # re-exports, so nothing that imported them from there had to move.
 #
 # The values are the ones ``routes/salary/tax_config.py`` uses for a tax YEAR.
-# Two tables mirror them for writers that never see a schema:
-# ``ck_template_amount_versions_effective_date_range`` and
-# ``ck_recurrence_rules_starts_on_range``.
+# THREE tables mirror them for writers that never see a schema:
+# ``ck_template_amount_versions_effective_date_range``,
+# ``ck_recurrence_rules_starts_on_range`` and, since plan step
+# balance:X-bh-2, ``ck_pay_schedule_history_opens_range``.  The count is
+# restated rather than left at "two", which is what it read until that step
+# added the third: a number in prose about a set that grows is the copy
+# nobody re-reads.
 #
 # An HTML date input accepts a four- or five-digit-year typo, and both columns
 # STORE what they are given: a stray ``0202`` becomes a template's earliest
@@ -314,6 +318,32 @@ def utc_instant(instant: datetime) -> datetime:
     return instant.astimezone(timezone.utc)
 
 
+def days_in_range(first_day: date, last_day: date) -> "list[date]":
+    """Return every civil day in an inclusive range, ascending.
+
+    Args:
+        first_day: The first day.
+        last_day: The last day.
+
+    Returns:
+        The days, or ``[]`` when *last_day* precedes *first_day* -- an inverted
+        range is an empty range rather than an error, because callers that
+        clamp one end (a report bounded at the reader's NOW) reach it
+        legitimately.
+
+    **One statement of a five-line loop three callers had written separately**
+    -- twice in ``balance_at._cash_flow`` sixty lines apart, where cross-module
+    ``duplicate-code`` cannot see them, and once in ``services.bank_agreement``.
+    Found by adversarial review 2026-08-24.
+    """
+    days: "list[date]" = []
+    day = first_day
+    while day <= last_day:
+        days.append(day)
+        day += timedelta(days=1)
+    return days
+
+
 def add_months(start: date, months: int) -> date:
     """Add ``months`` calendar months to ``start``, day-clamped.
 
@@ -465,28 +495,31 @@ def month_name(value: int | None, abbr: bool = False) -> str:
 def pay_period_label(start_date: date, end_date: date) -> str:
     """Return a pay period's human label (``"02/21 - 03/06"``).
 
-    **One rule, two accessors**, and that is why it is here rather than on
-    either of them.  A pay period is answered by TWO types in this
-    application: the ORM row (:class:`app.models.pay_period.PayPeriod`) and
-    the derived value
-    (:class:`app.services.pay_calendar.DerivedPeriod`), which plan step
-    **C2-f** moved every "which paycheck" reader onto -- a period-move
-    ``<select>`` renders one and the conflict chooser the other.  **What this
-    buys is that the FORMAT is stated once; it does not yet make the two
-    labels equal**, and saying so is the honest form: the row feeds it the
-    STORED ``end_date`` and the derived value the DERIVED one, so on the last
-    period under the P12 / P28 shape the two screens still render one paycheck
-    two ways.  Plan step C4 closes that by deleting the stored column.
-    Neither type can import the other's
-    module (the model would close a cycle through
-    ``pay_calendar._loader``, and the calendar package is deliberately
-    model-free), so the shared rule lives in this one, which both already
-    depend on.
+    **ONE accessor reaches it, since plan step ``pay_calendar:C4-a-5``**, and
+    the argument that used to stand here was "one rule, TWO accessors" -- so
+    it is restated rather than trimmed, because the reason a function lives
+    where it lives is exactly the kind of premise nobody re-checks.  A pay
+    period was answered by two types: the ORM row
+    (``app.models.pay_period.PayPeriod``) and the derived value
+    (:class:`app.services.pay_calendar.DerivedPeriod`).  Neither could import
+    the other -- the model closes a cycle through ``pay_calendar._loader``,
+    and the calendar package is deliberately model-free -- so the shared rule
+    lived here, which both already depended on.  **Stating the format once did
+    NOT make the two labels equal**: the row fed it the STORED ``end_date``
+    and the derived value the DERIVED one, so under the P12 / P28 shape two
+    screens still rendered one paycheck two ways.  C4-a-5 closed that by
+    deleting the ROW's accessor, and :attr:`DerivedPeriod.label
+    <app.services.pay_calendar.DerivedPeriod.label>` is now the only caller.
 
-    **Plan step C4 deletes the model accessor with the column it reads**
-    (``budget.pay_periods.end_date``); this function and the derived value's
-    property are what survive it, which is the other reason the rule is not
-    written inside the model.
+    **Why it stays here with one caller, rather than moving into that
+    property.**  Its sibling one function down,
+    :func:`pay_period_range_label`, is the WIDE register of the same value,
+    has two callers of its own, and states its year rule as "this one's".  The
+    two registers are ONE decision -- ledger row **P47** counts what happens
+    when spellings of a period's date range are written apart, and the answer
+    it reached is that the registers live together.  Moving the narrow one
+    onto a class would split the pair across modules and leave the wide one
+    citing a rule it cannot see, which is how a fourth spelling appears.
 
     The year is shown only when the period STRADDLES one, because that is
     the only time it disambiguates: ``"12/26/26 - 01/08/27"`` says which
@@ -509,60 +542,82 @@ def pay_period_label(start_date: date, end_date: date) -> str:
     return f"{start_date.strftime('%m/%d')} - {end_date.strftime('%m/%d')}"
 
 
-def attribution_date(
-    preferred: date | None, period_start: date, period_end: date,
-) -> date:
-    """Return the calendar day a pay-period item is attributed to, clamped.
+def pay_period_range_label(start_date: date, end_date: date) -> str:
+    """Return a pay period's WIDE label (``"Feb 21 - Mar 06, 2026"``).
 
-    The single BUDGET-attribution rule, shared by the calendar's day-cell
-    grouping (``calendar_service._get_display_day``) and the balance-at seam's
-    PLANNED tier (``balance_at._cash_fold._cash_plan``), so the two cannot come
-    to disagree about which day a planned item is BUDGETED to.
+    The second register, for the surfaces with room for month names: the
+    Income Statement's window selector and heading, and the Spending report's
+    window heading.  :func:`pay_period_label` above is the narrow one
+    (``"02/21 - 03/06"``), for a grid column head and a ``<select>`` that has
+    to fit beside other controls.  **Two registers is the deliberate part;
+    three COPIES of one register was not**, and collapsing that is what this
+    function is (plan step C2-f3a, ledger row **P47**'s duplicate half).
 
-    **Both halves of this paragraph were false and ledger row N-97 is the
-    correction.**  The seam's caller was named as
-    ``balance_resolver.daily_cash_balance_series`` -- a producer plan step
-    X-c2b3 had DELETED a month earlier, so the citation resolved to nothing.
-    And the guarantee stated here was that a flow's cell and the balance line's
-    step for it land on the SAME day: that stopped holding at plan step X-c2b2,
-    when the balance line became the cash fold, which steps a SETTLED row on the
-    day its money moved and a projected one on ``max(attribution, as_of + 1)``
-    (rulings R-DH (b) and R-G).  Neither is this date, so a chip and its own
-    step can sit days apart -- median 2, p75 6, max 25 on the real Checking
-    account.  That divergence is finding **N-58**, it is an open fork rather
-    than a settled rule, and ``calendar_service._get_display_day`` states it at
-    the site.  What this function still guarantees is the budget attribution
-    itself, which is what both readers ask it for.  An item lands on
-    ``preferred`` -- its ``due_date`` -- falling back to the pay period's
-    ``start_date`` when it has none; the result is then clamped into the
-    item's own pay period ``[period_start, period_end]`` span.
+    It was written three times -- character for character the same output from
+    three separate expressions of it:
+    ``ledger_report_service._income_statement._window_label``,
+    ``spending_report_service._window._window_label``, and inline Jinja in
+    ``analytics/_income_statement.html``.  Two of the three render this label
+    beside each other on ONE screen -- the statement's heading and the
+    ``<option>`` the reader picked it from -- so editing either alone would put
+    one paycheck on one page under two spellings.
 
-    Clamping is load-bearing for the daily balance: every one of a period's
-    contributing items must fall on or before the period ``end_date`` so the
-    running balance summed through that day equals the period-end balance
-    the grid shows (the calendar/grid reconciliation invariant).  A
-    ``due_date`` outside the item's own period is possible -- the recurrence
-    engine can date an item just outside its period's range, which is why
-    the calendar query carries a due-date-in-range OR no-due-date path -- so
-    such a stray date is pulled to the nearest period boundary rather than
-    escaping onto a neighboring period's day and breaking that period's sum.
+    **What is left is FOUR more spellings, and P47's census of six did not have
+    two of them** (re-censused 2026-08-18 by C2-f3a's adversarial reviews, over
+    every `` - `` / `` -- `` join of two ``strftime`` calls in ``app/``).  The
+    row's own status says its count is a floor and this is the measurement that
+    proves it: ``companion/index.html`` (``%b %-d`` -- ``%b %-d, %Y``),
+    ``grid/_mobile_plan.html`` (``%b %-d`` -- ``%b %-d``),
+    ``_recurrence_preview`` (``%b %d, %Y`` - ``%b %d, %Y``), and a pair the
+    census never named -- ``accounts/_reconcile_panel.html`` and
+    ``dashboard/_pulse.html``, which render the IDENTICAL ``%b %-d`` -
+    ``%b %-d`` and are therefore a second duplicate, not a second register.
+    Untouched here: which registers a screen should speak is P47's open half
+    and a display decision rather than a calendar one.
+
+    **It takes the two dates rather than a period**, and the reason changed
+    shape at plan step ``pay_calendar:C4-a-5`` rather than going away.  It was
+    that a pay period is answered by two types whose modules may not import
+    each other; C4-a-5 deleted the ORM row's label accessor, so the two
+    callers are now :attr:`DerivedPeriod.range_label
+    <app.services.pay_calendar.DerivedPeriod.range_label>` and
+    ``spending_analysis.window_label``.  Those are still in two packages that
+    cannot both be depended on from one place -- ``app.services.pay_calendar``
+    is deliberately model-free and imports no other service -- and taking two
+    dates is what lets a caller holding neither type ask.
+
+    **The year is carried on BOTH halves when the period straddles one**, and
+    on the END alone when it does not -- ledger row **P67**, developer ruling
+    2026-08-25.  It printed ``"Dec 26 - Jan 08, 2027"`` until then, which reads
+    as a December in 2027 and is a December in 2026; the three copies C2-f3a
+    collapsed all did that, and the collapse reproduced it byte for byte on
+    purpose so a rendering change was not smuggled in behind a DRY fix.  This
+    is that change, made on its own.
+
+    **The rule is :func:`pay_period_label`'s, one function up**, so the two
+    registers differ in WIDTH and not in when a year disambiguates: the narrow
+    one answers ``"12/26/26 - 01/08/27"`` for this period and ``"02/21 -
+    03/06"`` for one inside a single year.  Two registers was always the
+    deliberate part; two RULES would be the drift.
+
+    The month name comes from ``strftime`` and is therefore LC_TIME-dependent,
+    which is finding **F-15**'s subject rather than this function's.
 
     Args:
-        preferred: The item's preferred landing date (its ``due_date``), or
-            ``None`` to fall back to ``period_start``.
-        period_start: The item's pay period inclusive start date (both the
-            None fallback and the lower clamp bound).
-        period_end: The item's pay period inclusive end date (the upper
-            clamp bound).  Assumed ``>= period_start`` (a model CHECK
-            constraint enforces ``start_date < end_date``).
+        start_date: The payday that opens the period.
+        end_date: The last day the period covers.
 
     Returns:
-        The attributed calendar date, guaranteed within
-        ``[period_start, period_end]``.
+        The label -- abbreviated month name and zero-padded day on both halves,
+        with a four-digit year on each half when the period crosses a year
+        boundary and on the end alone when it does not.
     """
-    landing = preferred if preferred is not None else period_start
-    if landing < period_start:
-        return period_start
-    if landing > period_end:
-        return period_end
-    return landing
+    if start_date.year != end_date.year:
+        return (
+            f"{start_date.strftime('%b %d')}, {start_date.year} - "
+            f"{end_date.strftime('%b %d')}, {end_date.year}"
+        )
+    return (
+        f"{start_date.strftime('%b %d')} - "
+        f"{end_date.strftime('%b %d')}, {end_date.year}"
+    )

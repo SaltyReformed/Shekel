@@ -124,8 +124,8 @@ class CarryForwardPreview:
     are the only ones that can block the batch).
     """
 
-    source_period: object  # PayPeriod -- forward-declared to avoid an import cycle.
-    target_period: object  # PayPeriod
+    source_period: object  # DerivedPeriod -- forward-declared, no import cycle.
+    target_period: object  # DerivedPeriod
     plans: List[CarryForwardPlan]
 
     @property
@@ -172,8 +172,9 @@ class CarryForwardPreview:
 def preview_carry_forward(
     source_period_id: int,
     target_period_id: int,
-    user_id: int,
     scenario_id: int,
+    *,
+    balance_ctx,
 ) -> CarryForwardPreview:
     """Return a read-only preview of a planned carry-forward batch.
 
@@ -201,17 +202,22 @@ def preview_carry_forward(
         target_period_id: pay_period.id to carry forward TO.
             Typically the user's current period; the route resolves
             it the same way the mutating route does.
-        user_id: defense-in-depth ownership check (route already
-            enforced via ``@require_owner``).
         scenario_id: scenario filter; mirrors the mutating path so
             preview and execution see the same set of rows.
+        balance_ctx: The request's
+            :class:`~app.services.balance_at.BalanceContext`, opened once by
+            the route (pay-calendar plan step C2-f3c; plan step R7d-c-1 moved
+            it from the calendar to the pass that derives one).  It names the
+            owner and its calendar answers both period lookups, so a period
+            that is not this owner's is simply not found.
 
     Returns:
         CarryForwardPreview.  Empty plans list when source == target
         or there are no projected rows in the source period.
 
     Raises:
-        NotFoundError: if either period is missing or not owned.
+        NotFoundError: if either period is not in *balance_ctx*'s calendar
+            -- it is missing, or it is not this owner's.
 
     Side effects:
         None.  All database access is read-only and no session
@@ -220,7 +226,7 @@ def preview_carry_forward(
         any persisted side effects.
     """
     ctx = _build_carry_forward_context(
-        source_period_id, target_period_id, user_id, scenario_id,
+        source_period_id, target_period_id, scenario_id, balance_ctx,
     )
 
     plans: List[CarryForwardPlan] = []
@@ -280,6 +286,18 @@ def _build_envelope_plan(source_txn, target_period, basis, schedule):
     # would be exactly the drift ``_classify_leftover_target`` exists to
     # prevent, one term further out.
     budget = resolve_transaction_amount(source_txn, basis)
+    # **The floor is against an OVERSPENT envelope and never against a
+    # refunded one** (developer ruling **bank_import:R-IK**, 2026-09-01, plan step
+    # ``bank_import:X-gj-2b-3``).  Ruling **bank_import:R-II** made a merchant
+    # credit a NEGATIVE purchase, so ``entries_sum`` can be negative and this
+    # leftover can EXCEED the budget: an envelope budgeting `$100.00` holding
+    # one `-$50.00` refund rolls `$150.00` forward and settles at `-$50.00`,
+    # which the two together conserve -- `$100.00` of plan across the two
+    # periods.  That is the ruled NET basis and it is what
+    # ``entry_service.compute_remaining`` answers for the same row on screen;
+    # capping it at the budget was put to the developer with those numbers and
+    # refused, because it would make the rollover disagree with the figure the
+    # owner reads beside it.
     leftover = max(Decimal("0"), budget - entries_sum)
     target_fields = _resolve_envelope_target_fields(
         source_txn, target_period, basis, leftover, schedule,

@@ -16,6 +16,18 @@ in which the schema is inconsistent and nothing to defer.
 
 Bounded for safety: it refuses if the user has ANY settled transaction.
 
+**It does NOT repopulate the rebuilt schedule; the ROUTE does, and that is
+ruling R-R38** (plan step R7d-c-1).  The door wipes, rebuilds and re-syncs
+both posting families, then returns EMPTY periods; the caller opens the
+generate pass and fills them, which is why the populate now runs AFTER both
+re-syncs rather than between the rebuild and them.  That order is safe because
+every read either re-sync makes of ``budget.transactions`` or
+``budget.transfers`` is keyed on a set of ids taken from the POSTED ledger, and
+a freshly generated row is ``Projected`` and posts nothing.  A case here that
+asserts recurring ROWS runs ``_reset_and_populate``; ``POST
+/pay-periods/reset`` is graded in
+``tests/test_routes/test_pay_period_admin.py``.
+
 All four disciplines apply, and carry extra weight here because the
 failure mode is silent balance corruption: structural invariants after
 every mutation (Discipline 1), hand-computed as-of balances with the
@@ -29,6 +41,7 @@ the anchor resolution is deterministic.  See
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -45,15 +58,16 @@ from app.models.account import Account, AccountAnchorHistory
 from app.models.journal_entry import JournalEntry
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
+from app.routes._period_population import populate_new_periods
 from app.services.pay_calendar import calendar_for
-from app.services.recurrence import recurrence_spec, resolve
+from app.services.recurrence import reauthor_rule, recurrence_spec, resolve
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.services import (
+    account_posting_service,
     loan_posting_service,
     pay_period_admin,
-    pay_period_service,
     pay_period_write,
     pay_schedule_service,
     posting_service,
@@ -63,13 +77,17 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    rhythm_of,
     add_txn,
+    all_periods,
     assert_pay_period_invariants,
     create_loan_with_trueup,
     create_savings_account,
+    derived_span,
     freeze_today,
-    make_expense_template,
+    last_covered_day,
     make_cadence_rule,
+    make_expense_template,
     make_transfer_template,
     seam_cash_balance_at,
 )
@@ -136,14 +154,14 @@ def _seed_old_schedule(db_session, seed_user, count=5):
         user_id=seed_user["user"].id,
         first_payday=date(2026, 1, 2),
         num_periods=count,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db_session.commit()
 
 
 def _all_indices(user_id):
     """The set of period_index values the user currently has."""
-    return {p.period_index for p in pay_period_service.get_all_periods(user_id)}
+    return {derived_span(p).period_index for p in all_periods(user_id)}
 
 
 def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
@@ -163,24 +181,45 @@ def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
 
     Returns the created template (flushed; the caller commits).
     """
-    rule = make_cadence_rule(
-        seed_user["user"].id,
-        EVERY_N_PERIODS,
-        starts_on=start_period.start_date,
-        interval_n=interval_n,
-    )
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name="Every-other Bill",
         default_amount=Decimal("300.00"),
     )
     db_session.add(template)
     db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template,
+        EVERY_N_PERIODS,
+        starts_on=start_period.start_date,
+        interval_n=interval_n,
+    )
     return template
+
+
+def _reset_and_populate(user_id, **kwargs):
+    """Run BOTH halves of a reset, exactly as the route does.
+
+    ``reset_pay_periods`` wipes, rebuilds and re-syncs both posting families;
+    ``populate_new_periods`` opens the generate pass afterwards and fills the
+    rebuilt schedule.  Ruling **R-R38**: the pass may only be opened above the
+    service layer, and only after the write.
+
+    Args:
+        user_id: The owning user's id.
+        **kwargs: Forwarded to
+            :func:`~app.services.pay_period_admin.reset_pay_periods`.
+
+    Returns:
+        The rebuilt periods, now populated.
+    """
+    new_periods = pay_period_admin.reset_pay_periods(user_id, **kwargs)
+    populate_new_periods(user_id, new_periods)
+    return new_periods
 
 
 class TestResetHappyPath:
@@ -203,19 +242,19 @@ class TestResetHappyPath:
             _seed_old_schedule(db.session, seed_user)
             account = seed_user["account"]
             old_period_ids = {
-                p.id for p in pay_period_service.get_all_periods(user_id)
+                p.id for p in all_periods(user_id)
             }
             balance_before = cash_ledger.resolve_anchor(account).balance
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
             # Whole schedule rebuilt from index 0; every old period gone.
             assert _all_indices(user_id) == {0, 1, 2, 3, 4, 5}
-            assert [p.period_index for p in new_periods] == [0, 1, 2, 3, 4, 5]
+            assert [derived_span(p).period_index for p in new_periods] == [0, 1, 2, 3, 4, 5]
             for old_id in old_period_ids:
                 assert db.session.get(PayPeriod, old_id) is None
 
@@ -268,7 +307,7 @@ class TestResetHappyPath:
 
             pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -295,6 +334,54 @@ class TestResetHappyPath:
                 f"rebuild.\nbefore={before}\nafter ={after}"
             )
 
+    def test_the_door_leaves_the_rebuilt_schedule_EMPTY(
+        self, app, db, seed_user,
+    ):
+        """The door wipes, rebuilds, re-syncs -- and generates nothing.
+
+        The door's half of ruling **R-R38**, over BOTH engines: the fixture
+        seeds a transaction template AND a transfer template, because a door
+        that regressed to running only one of the two would otherwise pass.
+        ``test_repopulates_transactions_and_transfers`` runs both halves over
+        this same fixture and finds a row and a transfer in every period, so
+        this case cannot pass by the templates being unable to generate.
+
+        *The transaction assertion carried a ``transfer_id=None`` filter until
+        an adversarial review of this step: copied from the positive sibling,
+        where the fixture makes it load-bearing, and inert here in a way that
+        narrowed what the negative case could see.*
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _seed_old_schedule(db.session, seed_user)
+            make_expense_template(db.session, seed_user, amount="1200.00")
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
+            )
+            make_transfer_template(db.session, seed_user, savings)
+            db.session.commit()
+
+            new_periods = pay_period_admin.reset_pay_periods(
+                user_id, new_start_date=_NEW_START, num_periods=4,
+                rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+
+            for period in new_periods:
+                assert db.session.query(Transaction).filter_by(
+                    pay_period_id=period.id,
+                ).count() == 0, (
+                    "reset_pay_periods generated a recurring row; since R-R38 "
+                    "it rebuilds the schedule and the caller populates it"
+                )
+                assert db.session.query(Transfer).filter_by(
+                    pay_period_id=period.id,
+                ).count() == 0, (
+                    "reset_pay_periods generated a recurring TRANSFER; the "
+                    "transfer engine is the other half of the repopulation "
+                    "and the door must run neither"
+                )
+
     def test_balance_preserved_and_correct_after_reset(self, app, db, seed_user):
         """Disciplines 2 + 3: anchor balance preserved, balances recompute.
 
@@ -312,19 +399,19 @@ class TestResetHappyPath:
             make_expense_template(db.session, seed_user, amount="1200.00")
             db.session.commit()
 
-            new_periods = pay_period_admin.reset_pay_periods(
+            new_periods = _reset_and_populate(
                 user_id, new_start_date=_NEW_START, num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
             # End of the anchor period (index 0): 1000 - 1*1200.
             assert seam_cash_balance_at(
-                account, scen, new_periods[0].end_date,
+                account, scen, last_covered_day(new_periods[0]),
             ) == Decimal("-200.00")
             # End of index 5: 1000 - 6*1200.
             assert seam_cash_balance_at(
-                account, scen, new_periods[5].end_date,
+                account, scen, last_covered_day(new_periods[5]),
             ) == Decimal("-6200.00")
 
             assert_pay_period_invariants(db.session, user_id)
@@ -348,9 +435,9 @@ class TestResetHappyPath:
             make_transfer_template(db.session, seed_user, savings)
             db.session.commit()
 
-            new_periods = pay_period_admin.reset_pay_periods(
+            new_periods = _reset_and_populate(
                 user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -396,20 +483,27 @@ class TestResetHappyPath:
             # A date inside the OLD schedule and a year before the rebuilt
             # one, so a reset that re-pointed anything could not leave it here.
             stated_start = date(2026, 1, 30)
-            rule = make_cadence_rule(
-                seed_user["user"].id,
-                EVERY_PERIOD,
-                starts_on=stated_start,
-            )
             template = make_expense_template(db.session, seed_user)
-            template.recurrence_rule_id = rule.id
+            # The shared factory gives the template an every-paycheck rule
+            # opening at the schedule's own start; this case needs one opening
+            # INSIDE the old schedule, so the rule it carries is re-pointed
+            # rather than a second one authored beside it -- which
+            # ``uq_recurrence_rules_transaction_template_id`` refuses since
+            # plan step R-F6, and refuses for the reason this line relies on:
+            # a definition has ONE cadence.
+            rule = template.recurrence_rule
+            reauthor_rule(
+                rule,
+                replace(recurrence_spec(rule), starts_on=stated_start),
+                calendar_for(user_id),
+            )
             db.session.commit()
             assert rule.starts_on == stated_start
             assert stated_start < _NEW_START
 
             pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -434,7 +528,7 @@ class TestResetHappyPath:
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
-            old_periods = pay_period_service.get_all_periods(user_id)
+            old_periods = all_periods(user_id)
             # Phase the rule to an OLD odd index (3) -> offset 1 under n=2.
             template = _make_every_n_template(
                 db.session, seed_user, old_periods[3], interval_n=2,
@@ -445,16 +539,16 @@ class TestResetHappyPath:
             ).offset_periods == 1
             db.session.commit()
 
-            new_periods = pay_period_admin.reset_pay_periods(
+            new_periods = _reset_and_populate(
                 user_id, new_start_date=_NEW_START, num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
             # Generated rows land on indices 0, 2, 4 -- phased to the new
             # first period, not the stale 1, 3, 5.
             counts = {
-                p.period_index: db.session.query(Transaction).filter_by(
+                derived_span(p).period_index: db.session.query(Transaction).filter_by(
                     pay_period_id=p.id, template_id=template.id,
                 ).count()
                 for p in new_periods
@@ -480,7 +574,7 @@ class TestResetHappyPath:
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -502,17 +596,17 @@ class TestResetHappyPath:
         with app.app_context():
             user_id = bare_user["user"].id
             pay_period_write.record_paydays(
-                user_id, date(2026, 1, 2), num_periods=4, cadence_days=14,
+                user_id, date(2026, 1, 2), num_periods=4, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
-            assert [p.period_index for p in new_periods] == [0, 1, 2]
+            assert [derived_span(p).period_index for p in new_periods] == [0, 1, 2]
             assert _all_indices(user_id) == {0, 1, 2}
             assert_pay_period_invariants(db.session, user_id)
 
@@ -524,14 +618,14 @@ class TestResetHappyPath:
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=3,
-                cadence_days=7,
+                rhythm=rhythm_of(7),
             )
             db.session.commit()
 
             schedule = pay_schedule_service.get_schedule(user_id)
             assert schedule.cadence_days == 7
             assert (
-                new_periods[0].end_date - new_periods[0].start_date
+                last_covered_day(new_periods[0]) - new_periods[0].start_date
             ).days + 1 == 7
 
 
@@ -550,7 +644,7 @@ class TestResetRefusals:
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             settled = add_txn(
                 db.session, seed_user, periods[2], "Paycheck", "2000.00",
                 status_enum=StatusEnum.RECEIVED, is_income=True,
@@ -563,12 +657,12 @@ class TestResetRefusals:
             with pytest.raises(PayPeriodResetBlocked) as exc_info:
                 pay_period_admin.reset_pay_periods(
                     user_id, new_start_date=_NEW_START, num_periods=4,
-                    cadence_days=14,
+                    rhythm=rhythm_of(14),
                 )
             db.session.rollback()
 
             assert exc_info.value.settled_count == 1
-            after_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
+            after_ids = {p.id for p in all_periods(user_id)}
             assert after_ids == before_ids  # nothing deleted
             assert db.session.get(Transaction, settled.id) is not None
             account = db.session.get(Account, account.id)
@@ -584,7 +678,7 @@ class TestResetRefusals:
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             add_txn(
                 db.session, seed_user, periods[2], "Paycheck", "2000.00",
                 status_enum=StatusEnum.RECEIVED, is_income=True,
@@ -594,10 +688,10 @@ class TestResetRefusals:
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
-            assert [p.period_index for p in new_periods] == [0, 1, 2]
+            assert [derived_span(p).period_index for p in new_periods] == [0, 1, 2]
             assert_pay_period_invariants(db.session, user_id)
 
     def test_invalid_cadence_rolls_back_partial_wipe(self, app, db, seed_user):
@@ -611,17 +705,17 @@ class TestResetRefusals:
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
-            before_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
+            before_ids = {p.id for p in all_periods(user_id)}
             account = seed_user["account"]
 
             with pytest.raises(ValidationError):
                 pay_period_admin.reset_pay_periods(
                     user_id, new_start_date=_NEW_START, num_periods=4,
-                    cadence_days=0,  # generate_pay_periods rejects < 1
+                    rhythm=rhythm_of(0),  # generate_pay_periods rejects < 1
                 )
             db.session.rollback()
 
-            after_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
+            after_ids = {p.id for p in all_periods(user_id)}
             assert after_ids == before_ids
             account = db.session.get(Account, account.id)
             assert_pay_period_invariants(db.session, user_id)
@@ -668,7 +762,7 @@ class TestResetResyncsLoanGenesis:
             loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
             db.session.commit()
 
-            old_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
+            old_ids = {p.id for p in all_periods(user_id)}
             before = _loan_genesis_entries(db.session, user_id)
             assert len(before) == 2
             assert {e.pay_period_id for e in before} <= old_ids
@@ -678,7 +772,7 @@ class TestResetResyncsLoanGenesis:
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -692,6 +786,110 @@ class TestResetResyncsLoanGenesis:
                 loan.id, scenario_id,
             ) == _LOAN_GENESIS_NET
             assert_pay_period_invariants(db.session, user_id)
+            assert all(r.passed for r in check_referential_integrity(db.session))
+
+    def test_the_repopulation_cannot_invalidate_either_resync(
+        self, app, db, seed_user,
+    ):
+        """The re-syncs are still at their FIXPOINT after the repopulation.
+
+        **This is what makes ruling R-R38's reordering safe, graded rather
+        than argued.**  The repopulation used to run BETWEEN the rebuild and
+        the two posting re-syncs; the door now returns before it, so it runs
+        AFTER both.  If a freshly generated row could move what either re-sync
+        derives, re-running them at this point would rewrite something.
+
+        The argument the code makes is that neither can see such a row: every
+        read either side makes of ``budget.transactions`` or
+        ``budget.transfers`` is keyed on ids taken from the POSTED ledger --
+        the linked ledger's nonzero per-row nets on the account side, the stale
+        lineage transfers and stale payment shadows on the loan side, and the
+        loan walk's own ``settled_income_shadows`` -- and a ``Projected`` row
+        posts nothing, so it is in none of them.  **A first draft of this
+        docstring said the account side reads no transaction or transfer at
+        all, and an adversarial review MEASURED that false**; the conclusion
+        survived and the roll-call is what was wrong, which is why the property
+        is stated instead.  This case is the measurement of it: an owner
+        holding a loan AND both kinds of active template, reset and
+        repopulated, whose re-syncs then write nothing.
+
+        The reconcile is self-healing, so a re-run that DID change something
+        would change it here -- which is exactly what the assertions read.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            _seed_old_schedule(db.session, seed_user)
+            loan = create_loan_with_trueup(
+                seed_user, db.session,
+                origination_principal=_LOAN_ORIGINATION,
+                anchor_balance=_LOAN_ANCHOR_BALANCE,
+                anchor_date=_LOAN_ANCHOR_DATE,
+                rate=_LOAN_RATE,
+                origination_date=_LOAN_ORIGINATION_DATE,
+            )
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            make_expense_template(db.session, seed_user, amount="1200.00")
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
+            )
+            make_transfer_template(db.session, seed_user, savings)
+            db.session.commit()
+
+            new_periods = _reset_and_populate(
+                user_id, new_start_date=_NEW_START, num_periods=4,
+                rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+
+            # The repopulation really ran: without rows in the new periods
+            # there is nothing that could have disturbed a re-sync, and this
+            # case would pass for the wrong reason.
+            generated = db.session.query(Transaction).filter(
+                Transaction.pay_period_id.in_([p.id for p in new_periods]),
+                Transaction.template_id.isnot(None),
+            ).count()
+            assert generated == len(new_periods), (
+                f"the repopulation wrote {generated} template rows into "
+                f"{len(new_periods)} periods; with none there is nothing for "
+                f"a re-sync to have been disturbed by"
+            )
+
+            def _fingerprint():
+                """Every genesis entry as (source, period, its posting pairs)."""
+                return sorted(
+                    (
+                        entry.source_kind_id, entry.pay_period_id,
+                        tuple(sorted(
+                            (posting.ledger_account_id, posting.amount)
+                            for posting in entry.postings
+                        )),
+                    )
+                    for entry in _loan_genesis_entries(db.session, user_id)
+                )
+
+            before = _fingerprint()
+            net_before = posting_service.account_posting_total(
+                loan.id, scenario_id,
+            )
+            assert before, "no genesis entry was posted, so nothing is graded"
+            assert net_before == _LOAN_GENESIS_NET
+
+            # Re-run BOTH re-syncs at the post-repopulation state.  Each is
+            # reconcile-to-target and self-healing, so anything the
+            # repopulation had invalidated is rewritten here.
+            loan_posting_service.resync_user_loan_postings(user_id)
+            account_posting_service.resync_user_account_anchor_postings(user_id)
+            db.session.flush()
+
+            assert _fingerprint() == before, (
+                "re-running the re-syncs after the repopulation rewrote a "
+                "genesis entry, so the order R-R38 puts them in is NOT "
+                "order-independent"
+            )
+            assert posting_service.account_posting_total(
+                loan.id, scenario_id,
+            ) == net_before
             assert all(r.passed for r in check_referential_integrity(db.session))
 
 
@@ -738,7 +936,7 @@ class TestResetResyncsAccountOpenings:
 
             pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -765,7 +963,7 @@ class TestResetResyncsAccountOpenings:
             # A first version of this assertion only checked membership in the
             # set of all live periods -- true of any of the six, so it would
             # have passed against a correction filed in the wrong one.
-            rebuilt = pay_period_service.get_all_periods(user_id)
+            rebuilt = all_periods(user_id)
             opening_assertion = (
                 db.session.query(AccountAnchorHistory)
                 .filter_by(account_id=checking_id)
@@ -785,8 +983,8 @@ class TestResetResyncsAccountOpenings:
                 f"branch; the assertion ({opening_assertion.observed_on}) must "
                 f"precede every rebuilt period"
             )
-            earliest = min(rebuilt, key=lambda p: p.period_index)
-            assert earliest.period_index == 0
+            earliest = min(rebuilt, key=lambda p: derived_span(p).period_index)
+            assert derived_span(earliest).period_index == 0
             assert openings[0].pay_period_id == earliest.id
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,

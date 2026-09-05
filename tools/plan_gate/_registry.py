@@ -88,6 +88,7 @@ ARC_DOCS = {
     "pay_calendar": PLANS / "implementation_plan_pay_calendar.md",
     "credit_card": PLANS / "implementation_plan_credit_card.md",
     "bank_import": PLANS / "implementation_plan_bank_import.md",
+    "salary": PLANS / "implementation_plan_salary.md",
 }
 
 
@@ -524,8 +525,9 @@ def decomposition_violations() -> list[str]:
 
     **The parent set is DECLARED** (:attr:`StepRow.is_decomposed_parent`) and
     the leaf set is derived by :func:`decomposition_leaf_keys` FROM that set.
-    Deriving both would claim ``R-F1`` as the parent of ``R-F10`` / ``R-F12`` /
-    ``R-F13``; deriving neither would need a name list, which is N-147's defect.
+    Deriving both would claim ``pay_calendar:C1`` as the parent of ``C10`` /
+    ``C11`` / ``C12`` (the live specimen :func:`_staging.a_prefix_trap`
+    derives); deriving neither would need a name list, N-147's defect.
     Declaring the small set and deriving the large one costs one phrase per
     parent and has no list to rot.  **This arm re-spelled that derivation
     inline until 2026-08-11**, per-arc, so it could not see a class whose leaves
@@ -755,13 +757,86 @@ def blocked_by_violations() -> list[str]:
 #: :data:`LEDGER_ROW_CAP`, cap per arc, or split the balance arc out) and ruled
 #: for a condensed header plus this raise, keeping the forcing function while
 #: the arcs that own 35 of these rows (``X-ai``, ``X-ak``, ``X-f3c``) land.
+#: **``ledger.md``'s LINE cap was DROPPED on 2026-08-25, by developer ruling,
+#: and this is the FOURTH entry in the history above rather than a fourth
+#: raise.**  The paragraph above had already measured why: rule 5 can never
+#: answer for this file, one finding is one line, and a line cap on it is a cap
+#: on how many defects the project is allowed to have MEASURED.  Two more
+#: findings hit it on 2026-08-25 at ``bank_import:X-gb``, three days after
+#: ``X-ga`` hit it, and the assistant routed around it by writing them into
+#: code docstrings -- which is the failure this records: the cap did not force
+#: the ledger to shrink, it forced a measured defect out of the registry that
+#: exists to hold it.
+#:
+#: **What replaces it, and why each piece.**  :data:`LEDGER_ROW_CAP` stays and
+#: is now the whole of rule 4 for this file -- it is the arm that actually
+#: prevents the failure the line cap was reached for, a row swelling into the
+#: arc document's argument.  :data:`LEDGER_RUNAWAY_ROWS` is a backstop set far
+#: above any real backlog, so an accident that duplicates the table still
+#: fails.  And :func:`open_findings_by_arc` puts the backlog in the FILE, where
+#: :func:`stated_arc_counts_violation` grades that the number is true -- because
+#: the thing worth forcing was never the file's length: it is that the pile is
+#: looked at.  *This said the function "PRINTS the backlog every run" until
+#: 2026-09-01, and it does not: the plan gate contains no ``print`` call at all,
+#: and a number on gate stdout would be read by nobody anyway.  The report lives
+#: where every reader of the registry meets it, which is the stronger form.*
+#: On the day of the ruling that pile was 227 rows, 156 of
+#: them ``balance``, with 21 blocked on nothing but a decision -- the same 21
+#: whose clearance the 250 -> 260 raise had been granted against.
+#: **``steps.md``'s LINE cap was DROPPED on 2026-08-25, by developer ruling, on
+#: the argument the entry above had already made for ``ledger.md`` -- the same
+#: day, one registry over.**  One STEP is one line there, so a line cap on the
+#: file is a cap on how finely the plan is allowed to DECOMPOSE, and
+#: decomposition is the discipline every arc here runs on (rule 2 makes it the
+#: id's job, and ``feedback``'s multi-leaf rule makes it how work spans
+#: sessions).  It bound on ``recurrence:R7d``, whose reader census turned one
+#: step into seven leaves: the file reached 246 against the 240 headroom floor,
+#: and **not one SHIPPED row was free to archive** -- every one is cited by a
+#: live sentence or is another step's rule 13 blocker, which a 2026-08-19
+#: session had already recorded for the four obvious recurrence candidates
+#: (``historical/recurrence_completed_findings_span_as_built_2026-08-19.md``).
+#: So rule 5 could not answer, exactly as it could not for ``ledger.md``, and
+#: the file is 178 table rows against 44 lines of prose -- there is nothing
+#: else in it to trim.
+#:
+#: **What replaces it.**  :data:`~_order.DESCRIPTION_CAP` is the per-ROW cap and
+#: is now the whole of rule 4 for this file -- it prevents the failure a line
+#: cap was reached for, a row swelling into the arc document's specification.
+#: :data:`STEPS_RUNAWAY_ROWS` is the runaway backstop a dropped cap owes.  And
+#: what the length was ever a proxy for is graded directly and always was: rule
+#: 3's four counts in the header, and rule 14's dense ranks, which keep "the
+#: first row that is not done" the answer however long the table grows.  Nobody
+#: reads this file end to end; they read row one.
 REGISTRY_CAPS = {
-    "ledger.md": 260,
-    "steps.md": 260,
     "conventions.md": 280,
     "verification.md": 120,
-    "lessons.md": 200,
+    # **RAISED 200 -> 280 by the developer, 2026-09-05**, on rule 4's terms
+    # and on a measurement: the file sat at 179-180 from 2026-08-16 to
+    # 2026-09-05, EXACTLY its old headroom floor, having grown 143 -> 180 in
+    # the five days before.  A file pinned at its floor and one that has
+    # stopped growing look identical to every arm here, so each edit in that
+    # window DISPLACED a lesson rather than adding one, invisibly.  Rule 5
+    # cannot apply: a lesson has no span to complete.
+    "lessons.md": 280,
 }
+
+#: The number of ``steps.md`` rows that can only be an accident.
+#:
+#: Not a forcing function -- :data:`REGISTRY_CAPS` no longer holds this file,
+#: for the reasons above.  This is the runaway backstop a dropped cap owes: a
+#: duplicated table or a generator loop fails loudly instead of committing.
+#: Set far above the 157 steps the index held when the cap was dropped, so it
+#: can never bind on a real decomposition.
+STEPS_RUNAWAY_ROWS = 400
+
+#: The number of ``ledger.md`` rows that can only be an accident.
+#:
+#: Not a forcing function -- :data:`REGISTRY_CAPS` no longer holds this file,
+#: for the reasons above.  This is the runaway backstop a dropped cap owes:
+#: a duplicated table or a generator loop fails loudly instead of committing.
+#: Set far above the 227 rows the ledger held when the cap was dropped, so it
+#: can never bind on a real finding.
+LEDGER_RUNAWAY_ROWS = 400
 
 #: The widest a single ``ledger.md`` row may be, in characters.
 #:
@@ -773,11 +848,20 @@ REGISTRY_CAPS = {
 #: ledger, and the ledger went without it for as long as it did because rule 14
 #: was written about the index and graded only there.
 #:
-#: **2,000 is a FIRST FLOOR, deliberately above the p90 of 1,674.**  It is set
-#: where it catches rows that have become specifications without demanding a
-#: rewrite of the 51 rows over 1,200, which would be an unreviewed edit to half
-#: the registry.  It comes DOWN as rule 5 archives closed findings, the way the
-#: arc-document caps came down when the registries left.
+#: **2,000 is a FIRST FLOOR, deliberately above the p90 when it was set.**  It
+#: catches rows that have become specifications without demanding a rewrite of
+#: the rows just under it, which would be an unreviewed edit to half the
+#: registry.
+#:
+#: **It does NOT come down as rule 5 archives closed findings, and that sentence
+#: stood here until plan step ``balance:X-au-g-2b`` MEASURED it false**
+#: (2026-09-01).  Why archiving moves a corpus statistic the wrong way, and what
+#: replaced the arm that assumed otherwise, is on
+#: :func:`_row_width.crowded_ledger_rows` -- once, where the decision lives.  The two
+#: figures this paragraph quoted beside it (a p90 of 1,674, and "the 51 rows
+#: over 1,200") were stale by then as well, at 1,686 and 90, and are dropped
+#: rather than re-pinned: a measurement quoted as a REASON decays invisibly,
+#: because nobody re-checks a premise.
 LEDGER_ROW_CAP = 2000
 
 
@@ -800,6 +884,97 @@ def registry_line_cap_violations() -> list[str]:
             "Do not raise the cap and do not trim a live row."
         )
     return problems
+
+
+def ledger_runaway_violation() -> "str | None":
+    """The backstop a dropped line cap owes.
+
+    Returns:
+        The message when ``ledger.md`` holds more rows than any real backlog
+        could, or ``None``.
+    """
+    rows = len(ledger_rows())
+    if rows <= LEDGER_RUNAWAY_ROWS:
+        return None
+    return (
+        f"ledger.md holds {rows} rows against the {LEDGER_RUNAWAY_ROWS}-row "
+        "runaway backstop. This is not rule 4's forcing function -- that cap "
+        "was dropped 2026-08-25 -- it is the arm that says a table this size "
+        "is an accident. Check for a duplicated block before doing anything "
+        "else."
+    )
+
+
+def steps_runaway_violation() -> "str | None":
+    """The backstop ``steps.md``'s dropped line cap owes.
+
+    Returns:
+        The message when ``steps.md`` holds more step rows than any real plan
+        could, or ``None``.
+    """
+    rows = len(step_rows())
+    if rows <= STEPS_RUNAWAY_ROWS:
+        return None
+    return (
+        f"steps.md holds {rows} steps against the {STEPS_RUNAWAY_ROWS}-row "
+        "runaway backstop. This is not rule 4's forcing function -- that cap "
+        "was dropped 2026-08-25 -- it is the arm that says a table this size "
+        "is an accident. Check for a duplicated block before doing anything "
+        "else."
+    )
+
+
+def open_findings_by_arc() -> "list[tuple[str, int]]":
+    """Return each arc's open-finding count, largest first.
+
+    **The signal the line cap was standing in for**, published so the backlog
+    is looked at rather than bumped into.  A count is REPORTED and never
+    fails: what a gate must not do is refuse to record a defect somebody has
+    just measured, which is what the dropped cap did twice in three days.
+
+    Returns:
+        ``(arc, open rows)`` pairs, largest first, then alphabetical.
+    """
+    counts: dict[str, int] = {}
+    for row in ledger_rows():
+        counts[row.arc] = counts.get(row.arc, 0) + 1
+    return sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+
+
+def stated_arc_counts_violation() -> "str | None":
+    """Rule 3, applied to the BACKLOG the dropped line cap was standing in for.
+
+    **A registry that states its own size has that number CHECKED**, and since
+    2026-08-25 ``ledger.md`` states its per-arc split as well as its total.
+    That sentence is where the developer's ruling put the forcing function: a
+    gate may not refuse to record a measured defect, but the pile it records
+    into has to be READ, and a number in the file every reader opens is read
+    where a line printed at commit time is not.
+
+    Returns:
+        The message when the stated split disagrees with the table, or
+        ``None``.
+    """
+    text = LEDGER.read_text(encoding="utf-8")
+    # WHITESPACE-COLLAPSED before matching, because the sentence is ordinary
+    # prose that the markdown formatter re-wraps at 100 characters -- and it
+    # once wrapped BETWEEN an arc's name and its count, which made a true
+    # sentence read as a missing arc.  The parser follows the prose rather than
+    # the prose being written to suit the parser.
+    sentence = " ".join(text.split("By arc:", 1)[-1].split(".", 1)[0].split())
+    stated = {
+        arc: int(count)
+        for arc, count in re.findall(r"([a-z_]+) (\d+)", sentence)
+    } if "By arc:" in text else {}
+    actual = dict(open_findings_by_arc())
+    if stated == actual:
+        return None
+    return (
+        f"ledger.md's by-arc line says {stated or 'nothing'} and the table "
+        f"holds {actual}. The split is the backlog this file states instead of "
+        "a line cap (developer ruling 2026-08-25); a stale one hides the pile "
+        "it exists to keep in front of a reader (conventions.md rule 3)"
+    )
 
 
 def ledger_row_cap_violations() -> list[str]:

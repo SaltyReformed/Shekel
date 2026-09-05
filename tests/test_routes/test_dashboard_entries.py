@@ -41,7 +41,9 @@ from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services import pay_period_service
+
+from tests._test_helpers import current_pay_period
+from app.models.amount_ownership import AmountOwnership
 
 
 # -- Helpers ---------------------------------------------------------
@@ -50,11 +52,11 @@ from app.services import pay_period_service
 def _current_period_for(user_id, seed_periods_today):
     """Return the current period for the user.
 
-    seed_periods_today guarantees that today falls in period 4, so
-    ``get_current_period`` always returns a real period.
+    seed_periods_today guarantees that today falls in period 4, so the
+    containment lookup always answers a real period.
     """
     # pylint: disable=unused-argument
-    return pay_period_service.get_current_period(user_id)
+    return current_pay_period(user_id)
 
 
 def _create_tracked_txn_in_period(
@@ -83,6 +85,7 @@ def _create_tracked_txn_in_period(
     db.session.flush()
 
     txn = Transaction(
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -91,7 +94,7 @@ def _create_tracked_txn_in_period(
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
         template_id=template.id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
         due_date=period.start_date,
     )
     db.session.add(txn)
@@ -113,6 +116,7 @@ def _create_plain_txn_in_period(
     category_key = name if name in seed_user["categories"] else "Rent"
 
     txn = Transaction(
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -120,7 +124,7 @@ def _create_plain_txn_in_period(
         name=name,
         category_id=seed_user["categories"][category_key].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
         due_date=period.start_date,
     )
     db.session.add(txn)

@@ -1,4 +1,4 @@
-"""The gate over the four ARC documents -- what stays after the registries left.
+"""The gate over the ARC documents -- what stays after the registries left.
 
 An arc document now holds argument only: root cause, evidence, target model,
 rulings, alternatives rejected, and its own step SPECIFICATIONS.  Its findings
@@ -40,22 +40,99 @@ from _plan_gate import (
 #: left: balance 1,200 -> 1,000, recurrence 900 -> 850, pay-calendar 560 -> 500,
 #: and credit-card was capped at 400 for the first time.  Lowering them is the
 #: point -- the space the duplication occupied must not silently become room to
-#: duplicate again.  conventions.md rule 4: raising a cap is never the answer
-#: when it binds.  No line count is quoted here: the three that were went stale
-#: within two commits, and `test_the_cap_still_has_headroom` measures the live
-#: files anyway.
+#: duplicate again.  No line count is quoted here: the three that were went
+#: stale within two commits, and `test_the_cap_still_has_headroom` measures the
+#: live files anyway.
+#:
+#: **What rule 4 actually says, corrected 2026-09-01.**  This comment read
+#: "conventions.md rule 4: raising a cap is never the answer when it binds",
+#: and rule 4 says no such thing.  It says a binding cap is **a QUESTION FOR
+#: THE DEVELOPER** -- "rule 5 answers it while a completed span is left to
+#: archive; where none is, say so and ask" -- and that "a cap is never raised
+#: without being asked for".  Those are different rules: one forbids raising,
+#: the other requires asking first.  The file already held the counterexample
+#: (bank_import, raised by the developer 2026-08-30) while the comment above it
+#: said raising is never the answer, so the misquote survived its own refutation
+#: sitting eight lines below it.
 CAPS = {
-    "balance": 1000,
-    "recurrence": 850,
-    "pay_calendar": 500,
+    # **RAISED 1000 -> 1180 by the developer, 2026-09-01**, on rule 4's terms
+    # and by bank_import's OWN calibration below.  The cap BOUND: the README
+    # sat at 971 of an effective 980, NINE lines, against 55 open steps still
+    # owing specifications -- 0.2 lines per open step.  Rule 5's escape was
+    # spent first: `balance:X-f3c-2b-2c`'s registry pass was reworked to net
+    # ZERO lines to fit, after a first draft at 986 was refused by this arm.
+    # The number is not invented.  bank_import's 260 gave that arc 3.4 lines
+    # per open step when the developer set it, so 55 x 3.4 = 187 of room, and
+    # 971 + 187 + 20 headroom = 1178, rounded to 1180.  It stays under the
+    # 1,200 this document carried before the registries left.
+    # **RAISED 1180 -> 1200 by the developer, 2026-09-03**, on rule 4's terms:
+    # the decision sweep minted EIGHT balance steps (X-bl..X-bp, X-bj-1/2,
+    # X-f3c-2b-2d) whose specifications landed the README at exactly 1180,
+    # rule 5's escape was spent first (every shipped entry already a pointer
+    # of six lines or fewer, no completed span left), and the file's own
+    # calibration would allow 8 x 3.4 = 27 more; 1200 is the minimum that
+    # clears the 20-line headroom and does not exceed what the document
+    # carried before the registries left.
+    "balance": 1200,
+    # **RAISED 850 -> 900 by the developer, 2026-09-03**, on rule 4's terms and
+    # by the same calibration that raised the balance README.  The cap BOUND
+    # while minting `recurrence:R7d-h`: the document sat at 843 with 23 open
+    # steps still owing specifications -- 0.3 lines per open step, the same
+    # bind balance hit at 0.2.  **Rule 5's escape was spent FIRST and found
+    # EXHAUSTED**: every shipped step in that document is already condensed to
+    # one line, done on 2026-09-02, so there is no completed span left to
+    # archive.  The number is not invented: bank_import's 260 gave that arc 3.4
+    # lines per open step, and 23 x 3.4 = 78 of room; 843 + 78 = 921, trimmed
+    # to 900 because R7d-h's own specification was already compressed four
+    # times to chase the old cap and 900 still leaves 2.5 lines per open step.
+    "recurrence": 900,
+    # **RAISED 500 -> 520 by the developer, 2026-09-01**, same terms and the
+    # same arithmetic: 466 of an effective 480 is FOURTEEN lines against 10
+    # open steps (1.4 each), and rule 5's escape was spent twice in one day --
+    # `pay_calendar:C4-b-1` condensed the COMPLETE `C4-a` span and then the
+    # COMPLETE reader census, keeping each one's PREDICATE, which is the half
+    # that cannot go stale.  10 x 3.4 = 34 of room: 466 + 34 + 20 = 520.
+    # Deliberately NOT back to the 560 this document carried before the
+    # registries left; that space was removed on purpose and 520 does not
+    # return it.
+    "pay_calendar": 520,
     "credit_card": 400,
-    "bank_import": 200,
+    # **RAISED 200 -> 260 by the developer, 2026-08-30**, on rule 4's own
+    # terms: the cap BOUND, and rule 5's escape was spent first.  The shipped
+    # X-gb..X-gf-3b-2 span had already been condensed to one line per step,
+    # every other shipped entry in the file was already one line, and the
+    # document sat at exactly 180 -- the headroom floor -- with `X-gj-1b`,
+    # `X-gj-1c`, `X-gj-3` and `X-gj-4` all still owing specifications.
+    # This arc carries the largest open leaf set of the five against the
+    # second-lowest cap; 260 restores about the room that family needs and
+    # leaves the forcing function well below the balance README's.
+    "bank_import": 260,
+    # **SET at 260 by the developer, 2026-09-03**, when the arc was minted: the
+    # bank_import number, eight open steps owing a few lines each plus the
+    # argument, and the forcing function biting well before the balance
+    # README's scale.  Raised only when it binds and he is asked (rule 4).
+    #
+    # **RAISED 260 -> 280 by the developer, 2026-09-04**, the first time it
+    # bound, and the reason generalises to every NEWLY MINTED arc: rule 5's
+    # escape is *archive a completed span*, and a new document HAS no completed
+    # span -- this one had shipped exactly one leaf, worth four lines as a
+    # pointer.  So the cap's only available remedy here was the one rule 4
+    # forbids, trimming a live step's specification to fit.  It bound on
+    # `R14`'s decomposition into `R14-a` (shipped) and `R14-b`, which is the
+    # cheapest possible growth: a preamble duplicating `R-SAL6` had already
+    # been deleted, the shipped entry condensed to a pointer, and a paragraph
+    # `D45`'s own ledger row carries removed.  What was left was the deletion
+    # census and a developer ruling, both instruction.  Section 2's evidence
+    # table was the only archivable-looking span and is not one -- every row is
+    # a dated measurement an OPEN finding still cites.
+    "salary": 280,
 }
 
 #: The signpost's cap, per document.  The balance README's reached 1,019 lines
 #: as an append-only log before it was capped at all.
 SIGNPOST_CAPS = {
     "balance": 30, "recurrence": 20, "pay_calendar": 20, "bank_import": 30,
+    "salary": 20,
 }
 
 #: A SHIPPED step's entry cap (rule 7).
@@ -83,6 +160,7 @@ TICKED_CAPS = {
     "recurrence": 6,
     "pay_calendar": 6,
     "credit_card": 6,
+    "salary": 6,
 }
 
 SPECS = {
@@ -130,12 +208,20 @@ SPECS = {
         arc_state_cap=40,
         ticked_entry_cap=TICKED_CAPS["credit_card"],
     ),
+    "salary": PlanSpec(
+        path=registry.ARC_DOCS["salary"],
+        steps_heading="## 4.", steps_label="section 4",
+        line_cap=CAPS["salary"],
+        arc_state_heading="## Where this stands",
+        arc_state_cap=SIGNPOST_CAPS["salary"],
+        ticked_entry_cap=TICKED_CAPS["salary"],
+    ),
 }
 
-#: Every arc document, for the rules that apply to all four.
+#: Every arc document, for the rules that apply to all of them.
 ARCS = sorted(SPECS)
 
-#: Only the three that carry an orientation section (rule 6).
+#: Only those that carry an orientation section (rule 6).
 SIGNPOST_ARCS = sorted(SIGNPOST_CAPS)
 
 

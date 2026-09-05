@@ -3,7 +3,7 @@ Shekel Budget App -- C-21 Follow-up: Broad State Machine Rollout
 
 Verifies that ``verify_transition`` is wired into every state-changing
 endpoint that previously bypassed it: mark_done, cancel_transaction,
-and unmark_credit.  Settled and Cancelled rows can no longer slip
+and unmark_credit.  Cancelled and Credit rows can no longer slip
 into Paid/Received via these endpoints; identity transitions still
 succeed so HTMX double-clicks remain idempotent.
 
@@ -18,8 +18,14 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.services import account_service
-from tests._test_helpers import settlement_if_settling
+from tests._test_helpers import (
+    open_books_before_the_first_assertion,
+    settlement_if_settling,
+    shadow_amount,
+)
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -32,6 +38,7 @@ def _create_projected_expense(seed_user, seed_periods_today, period_index=0):
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     txn = Transaction(
+        user_id=seed_periods_today[period_index].user_id,
         pay_period_id=seed_periods_today[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -39,7 +46,7 @@ def _create_projected_expense(seed_user, seed_periods_today, period_index=0):
         name="Test Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
         due_date=seed_periods_today[period_index].start_date,
     )
     db.session.add(txn)
@@ -76,12 +83,6 @@ def _walk_to(txn, status_name):
     db.session.commit()
 
 
-def _walk_to_settled(txn):
-    """Drive a freshly-projected row through Projected -> Paid -> Settled."""
-    _walk_to(txn, "Paid")
-    _walk_to(txn, "Settled")
-
-
 # ══════════════════════════════════════════════════════════════════════
 # /transactions/<id>/mark-done -- direct (non-envelope, non-transfer)
 # ══════════════════════════════════════════════════════════════════════
@@ -90,28 +91,9 @@ def _walk_to_settled(txn):
 class TestMarkDoneDirectStateMachine:
     """The grid's mark_done endpoint now refuses transitions that the
     state machine forbids.  Previously the direct branch wrote
-    ``status_id`` unconditionally, so a Settled or Cancelled row
-    could be silently re-marked Paid."""
-
-    def test_settled_to_paid_rejected(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A Settled row cannot be re-marked Paid via mark_done."""
-        with app.app_context():
-            txn = _create_projected_expense(seed_user, seed_periods_today)
-            _walk_to_settled(txn)
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
-            done_id = ref_cache.status_id(StatusEnum.DONE)
-
-            resp = auth_client.post(f"/transactions/{txn.id}/mark-done")
-            assert resp.status_code == 400
-            body = resp.data.decode()
-            assert "transaction" in body
-            assert str(settled_id) in body
-            assert str(done_id) in body
-
-            db.session.refresh(txn)
-            assert txn.status.name == "Settled"
+    ``status_id`` unconditionally, so a Cancelled row could be silently
+    re-marked Paid.  (It said "a Settled or Cancelled row" until plan step
+    **balance:X-am** deleted the archive.)"""
 
     def test_cancelled_to_paid_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -173,7 +155,7 @@ class TestMarkDoneDirectStateMachine:
 
 class TestCancelTransactionStateMachine:
     """Cancel is reachable only from Projected (or the Cancelled
-    identity edge).  Done / Received / Settled rows must be reverted
+    identity edge).  Done / Received rows must be reverted
     to Projected first so the audit log records both legs."""
 
     def test_paid_to_cancelled_rejected(
@@ -188,19 +170,6 @@ class TestCancelTransactionStateMachine:
             assert resp.status_code == 400
             db.session.refresh(txn)
             assert txn.status.name == "Paid"
-
-    def test_settled_to_cancelled_rejected(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """Settled is terminal; cancel cannot resurrect it."""
-        with app.app_context():
-            txn = _create_projected_expense(seed_user, seed_periods_today)
-            _walk_to_settled(txn)
-
-            resp = auth_client.post(f"/transactions/{txn.id}/cancel")
-            assert resp.status_code == 400
-            db.session.refresh(txn)
-            assert txn.status.name == "Settled"
 
     def test_credit_to_cancelled_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -355,6 +324,10 @@ class TestTransferShadowMarkDoneStateMachine:
         )
         db_session.add(savings)
         db_session.flush()
+        # Its BOOKS open before anything this fixture dates (plan step
+        # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day it
+        # asserts -- the owner's today -- and this suite settles on or before it.
+        open_books_before_the_first_assertion(db_session, savings)
 
         for group, item in (("Transfers", "Outgoing"), ("Transfers", "Incoming")):
             db_session.add(
@@ -382,25 +355,31 @@ class TestTransferShadowMarkDoneStateMachine:
         db_session.commit()
         return xfer
 
-    def test_mark_done_on_settled_transfer_shadow_returns_400(
+    def test_mark_done_on_cancelled_transfer_shadow_returns_400(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """mark_done on a settled transfer shadow returns 400."""
+        """mark_done on a CANCELLED transfer shadow returns 400.
+
+        The only cover for ``_shadow_mutations._mark_done_shadow``'s
+        ``except ValidationError -> _error_transaction_response`` branch.  It
+        was written over a SETTLED shadow until plan step **balance:X-am**
+        deleted that status, and a first pass deleted it outright -- leaving
+        the branch with no test at all, which an adversarial review caught.
+
+        **Cancelled is the better specimen anyway, because the button is
+        RENDERED there.**  The card partials suppress Mark Paid on
+        ``Status.is_settled``, and Cancelled is not settled -- so this refusal
+        is reached by an ordinary click rather than by a crafted request.
+        """
         with app.app_context():
             xfer = self._create_transfer_with_shadows(
                 app, db.session, seed_user, seed_periods_today,
             )
-            # Walk parent + shadows through Projected -> Paid -> Settled.
             from app.services import transfer_service
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-            )
-            db.session.commit()
-            transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id,
-                status_id=ref_cache.status_id(StatusEnum.SETTLED),
+                status_id=ref_cache.status_id(StatusEnum.CANCELLED),
             )
             db.session.commit()
 
@@ -411,6 +390,12 @@ class TestTransferShadowMarkDoneStateMachine:
             )
             resp = auth_client.post(f"/transactions/{shadow.id}/mark-done")
             assert resp.status_code == 400
+            assert "Invalid transfer status transition" in resp.data.decode()
+
+            db.session.expire_all()
+            assert db.session.get(Transaction, shadow.id).status_id == (
+                ref_cache.status_id(StatusEnum.CANCELLED)
+            )
 
     def test_cancel_on_paid_transfer_shadow_returns_400(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -464,18 +449,25 @@ class TestTransferShadowMarkDoneStateMachine:
             xfer = self._create_transfer_with_shadows(
                 app, db.session, seed_user, seed_periods_today,
             )
-            # Walk parent + shadows to Settled (a terminal, non-mutable
-            # state) so a status change back to Projected is illegal.
-            transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-            )
-            db.session.commit()
-            transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id,
-                status_id=ref_cache.status_id(StatusEnum.SETTLED),
-            )
-            db.session.commit()
+            # The transfer STAYS Projected, and that is deliberate: the row
+            # must be MUTABLE so the finalised-edit lock does not refuse the
+            # amount before anything is staged.  A test whose 400 comes from
+            # the wrong guard has stopped grading the rollback.
+            #
+            # It walked to ``Settled`` -- the terminal archive -- until plan
+            # step **balance:X-am**, which is also why the illegal transition
+            # had to move: every state in both maps can now reach Projected, so
+            # ``-> Projected`` is legal from everywhere.
+            #
+            # **The replacement must also be a move that does NOT SETTLE**, and
+            # that is the part a first attempt got wrong.  ``projected ->
+            # received`` is illegal for a transfer, but it ENTERS the settled
+            # band, so ``update_transfer`` dispatches to the settle verb, which
+            # refuses before ``_apply_remaining_fields`` has staged anything --
+            # and this case then passed with the rollback DELETED, measured.
+            # ``projected -> credit`` is illegal AND settles nothing, so the
+            # amount is staged first and the seam raises after it: the rollback
+            # is the only thing that unstages it.
             assert not db.session.dirty  # clean baseline before the PATCH
 
             shadow = (
@@ -484,21 +476,52 @@ class TestTransferShadowMarkDoneStateMachine:
                 .first()
             )
             # PATCH carries an amount change AND an illegal transition
-            # (Settled -> Projected): update_transfer stages the amount
-            # mutation, then verify_transition raises ValidationError.
+            # (transfer projected -> credit): update_transfer stages the
+            # amount mutation, then verify_transition raises ValidationError.
             result = _apply_shadow_update(
                 shadow, shadow.id,
                 {
                     "estimated_amount": Decimal("999.00"),
-                    "status_id": ref_cache.status_id(StatusEnum.PROJECTED),
+                    "status_id": ref_cache.status_id(StatusEnum.CREDIT),
                 },
             )
             assert result[1] == 400
             # The except branch must have rolled back the staged xfer +
-            # shadow mutations; without it db.session.dirty holds them.
+            # shadow mutations.
             assert not db.session.dirty, (
                 f"rejected shadow update left mutations staged: "
                 f"{db.session.dirty}"
+            )
+            # **AND A LATER COMMIT WRITES NOTHING**, which is the assertion
+            # that actually grades the rollback -- ``not db.session.dirty``
+            # cannot.
+            #
+            # Measured 2026-08-27, by deleting the ``db.session.rollback()`` in
+            # ``_error_transaction_response`` and then its ``expire_all()``
+            # too: this case passed BOTH times on the dirty check alone.  The
+            # error path re-fetches the row to render the fragment, and the
+            # autoflush that comes with it FLUSHES the staged mutation -- so
+            # ``session.dirty`` empties by WRITING the change, not by
+            # discarding it.  An "is anything staged" assertion cannot tell a
+            # rollback from a flush.
+            #
+            # What the rollback really protects is the next commit in the same
+            # session, so the control has to be a commit.  Re-reading without
+            # one proves nothing either: nothing here has committed, so a
+            # ``rollback()`` in the TEST would restore the row whatever the
+            # route did.
+            db.session.commit()
+            db.session.expire_all()
+            reread_shadow = db.session.get(Transaction, shadow.id)
+            reread_xfer = db.session.get(Transfer, xfer.id)
+            assert shadow_amount(reread_shadow) == Decimal("100.00"), (
+                "a commit after the refused PATCH wrote the shadow's amount"
+            )
+            assert reread_xfer.amount == Decimal("100.00"), (
+                "a commit after the refused PATCH wrote the transfer's amount"
+            )
+            assert reread_xfer.status_id == ref_cache.status_id(
+                StatusEnum.PROJECTED,
             )
 
 
@@ -534,11 +557,16 @@ class TestUnmarkCreditServiceGuard:
             assert "Paid" in msg
             assert "Only Credit" in msg
 
-    def test_raises_on_settled_status(
+    def test_raises_on_cancelled_status(
         self, app, seed_user, seed_periods_today,
     ):
-        """unmark_credit on a Settled txn raises ValidationError too --
-        the bespoke guard fires before the state machine layer."""
+        """unmark_credit on a Cancelled txn raises ValidationError too --
+        the bespoke guard fires before the state machine layer.
+
+        The second specimen exists so the guard is shown refusing more than one
+        non-Credit status; it was ``Settled`` -- the terminal archive -- until
+        plan step **balance:X-am** deleted it, and the guard reads
+        ``status.name`` rather than a status set, so any other status does."""
         import pytest
 
         from app.exceptions import ValidationError
@@ -546,8 +574,8 @@ class TestUnmarkCreditServiceGuard:
 
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            _walk_to_settled(txn)
+            _walk_to(txn, "Cancelled")
 
             with pytest.raises(ValidationError) as excinfo:
                 credit_workflow.unmark_credit(txn.id, seed_user["user"].id)
-            assert "Settled" in str(excinfo.value)
+            assert "Cancelled" in str(excinfo.value)

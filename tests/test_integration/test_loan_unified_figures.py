@@ -39,8 +39,10 @@ from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
+    amount_basis_for_scenario,
     create_loan_account,
     freeze_today,
+    last_covered_day,
     loan_params_for,
     make_cadence_rule,
     seam_confirmed_view,
@@ -621,14 +623,10 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     # Authored through the write door (plan step R7c-b): the day a rule fires
     # on is its first occurrence's own day, so "the 1st" is a DATE the fixture
     # schedule reaches rather than a separate column.
-    rule = make_cadence_rule(
-        user.id, MONTHLY, fires_on_day=1,
-    )
     template = TransferTemplate(
         user_id=user.id,
         from_account_id=seed_user["account"].id,
         to_account_id=loan_account.id,
-        recurrence_rule_id=rule.id,
         name="Mortgage Payment",
         default_amount=Decimal("1.00"),
     )
@@ -637,6 +635,10 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     )
     db.session.add(template)
     db.session.commit()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template, MONTHLY, fires_on_day=1,
+    )
 
 
 def test_standing_extra_payoff_consistent_across_surfaces(
@@ -676,7 +678,7 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         today = date.today()
 
         ctx = loan_payment_service.load_loan_context(
-            account.id, scenario_id, loan_params,
+            account.id, amount_basis_for_scenario(scenario_id), loan_params,
         )
         anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
         # The committed (plan-aware) reference: the loan detail page's producer,
@@ -776,7 +778,7 @@ def test_standing_extra_folds_past_the_shadow_horizon(
     with app.app_context():
         current_period = next(
             period for period in seed_periods_today
-            if period.start_date <= date.today() <= period.end_date
+            if period.start_date <= date.today() <= last_covered_day(period)
         )
         # **The whole test reads at the loan's ORIGINATION day, not at the wall
         # clock, and the payment day is derived so the first installment can
@@ -817,7 +819,7 @@ def test_standing_extra_folds_past_the_shadow_horizon(
         scenario_id = seed_user["scenario"].id
 
         ctx_loan = loan_payment_service.load_loan_context(
-            account.id, scenario_id, loan_params,
+            account.id, amount_basis_for_scenario(scenario_id), loan_params,
         )
         anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
         # One composer call yields BOTH references: the committed forward (extra

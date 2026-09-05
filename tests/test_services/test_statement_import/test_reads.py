@@ -22,8 +22,12 @@ from decimal import Decimal
 
 import pytest
 
-from app.enums import StatementSourceEnum
-from app.models.ref import AccountType
+from app.enums import (
+    StatementBalanceEvidenceEnum,
+    StatementSourceEnum,
+)
+from app.models.ref import AccountType, StatementSource
+from app.ref_seeds import _REF_TABLE_SEEDS
 from app.services import account_service
 from app.services.statement_import import (
     available_sources,
@@ -145,9 +149,56 @@ class TestEveryReaderIsScopedToItsOwnAccount:
             file_name="theirs.csv",
         )
 
-        assert [row.file_name for row in import_history(mine.id)] == [
+        assert [row.file_name for row in import_history(seed_user["user"].id, mine.id)] == [
             "mine.csv",
         ]
+
+
+class TestTheImportRowCarriesWhatTheBankSaid:
+    """The RECORD, where the receipt is transient.
+
+    ``ImportedBalance``'s own docstring argues this matters because an anchor
+    the import only assumed has to stay readable after the flash is gone -- and
+    the field had no test at all, so forcing ``_imported_balance`` to return
+    ``None`` left 233 tests passing.  Found by adversarial review 2026-08-23.
+    """
+
+    def test_it_carries_the_claim_the_day_and_the_evidence(
+        self, app, db, seed_user, two_accounts,
+    ):
+        """All four facts, because the schema holds them as one.
+
+        The fixture chains from `$100.00`, so its header states the closing its
+        own lines imply and the file proves itself.
+        """
+        mine, _ = two_accounts
+        _record(seed_user, mine, _ENTRIES)
+
+        balance = import_history(seed_user["user"].id, mine.id)[0].balance
+
+        assert balance is not None
+        assert balance.stated == Decimal("1534.19")
+        assert balance.effective_on == date(2026, 3, 4)
+        assert balance.evidence is StatementBalanceEvidenceEnum.FILE_CHAIN
+        assert balance.is_anchored
+
+    def test_a_file_stating_NO_balance_carries_none(
+        self, app, db, seed_user, two_accounts,
+    ):
+        """The absence is a value the page branches on, so it is asserted."""
+        mine, _ = two_accounts
+        payload = build.build(build.chained("100.00", _ENTRIES))
+        without = b"\n".join(
+            line for line in payload.split(b"\n")
+            if not line.startswith(b"Balance as of")
+        )
+        record_statement(
+            account_id=mine.id, user_id=seed_user["user"].id,
+            source=StatementSourceEnum.SECU_CHECKING_CSV,
+            file_name="nobalance.csv", payload=without,
+        )
+
+        assert import_history(seed_user["user"].id, mine.id)[0].balance is None
 
 
 class TestTheSpanIsArithmeticallyTrue:
@@ -215,7 +266,7 @@ class TestTheLineListIsOrderedAndBounded:
         _record(seed_user, seed_user["account"], _ENTRIES, file_name="two.csv")
 
         assert [row.file_name for row in
-                import_history(seed_user["account"].id)][0] == "two.csv"
+                import_history(seed_user["user"].id, seed_user["account"].id)][0] == "two.csv"
 
 
 class TestTheOfferedSourcesAreTheUSABLEOnes:
@@ -236,7 +287,50 @@ class TestTheOfferedSourcesAreTheUSABLEOnes:
         }
 
     def test_the_label_comes_from_the_ref_table(self, app, db):
-        """IDs for logic, strings for display -- and the string lives in ref."""
-        assert available_sources()[0].label == (
-            "SECU checking -- CSV with running balance"
-        )
+        """IDs for logic, strings for display -- and the string lives in ref.
+
+        **The expected string changed at plan step ``bank_import:X-gc``.**  It
+        read "SECU checking -- CSV with running balance", which named the
+        format by a column SECU no longer exports: all four of the developer's
+        exports on disk 2026-08-25 carry no balance column at all, and the help
+        text rendered directly beneath this control has said the column is
+        optional since plan step ``bank_import:X-f6e-1``.  Migration
+        ``a1f4c7e0b839`` re-labels the row; ``app.ref_seeds`` carries the same
+        value for a fresh bootstrap.  This test still grades what it always
+        graded -- that the label is READ FROM ``ref`` rather than written into
+        the reader -- and the value it pins is now the true one.
+        """
+        assert available_sources()[0].label == "SECU checking -- CSV export"
+
+    def test_the_SEEDER_and_the_DATABASE_agree_about_that_label(
+        self, app, db,
+    ):
+        """Leg 3 of the dual seed, for the one ref row that carries a LABEL.
+
+        A ref value lives in three places -- the enum, the introducing
+        migration's inline seed, and ``app.ref_seeds`` -- and
+        ``tests/test_models/test_posting_ref_seed_parity.py`` grades all three
+        for NAMES.  It cannot grade this one: ``display_name`` is not a name,
+        and ``_seed_other_ref_tables`` INSERTS missing rows while leaving
+        present ones alone, so a label changed in ``ref_seeds.py`` and nowhere
+        else changes what a FRESH bootstrap says and nothing about the
+        databases that already exist.  The two would then disagree silently and
+        for ever.
+
+        Plan step ``bank_import:X-gc`` created exactly that opportunity by
+        re-labelling the row in a migration and in the seed file together; this
+        is what makes the pair verifiable rather than a convention.  The test
+        database is migration-built and then reseeded, so the stored value is
+        the MIGRATION's -- which is precisely why comparing it against the
+        SEED file catches the half that would otherwise be graded nowhere.
+        """
+        seeded = {
+            entry["name"]: entry["display_name"]
+            for entry in dict(_REF_TABLE_SEEDS)["StatementSource"]
+        }
+        stored = {
+            row.name: row.display_name
+            for row in db.session.query(StatementSource).all()
+        }
+
+        assert seeded == stored

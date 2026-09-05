@@ -12,15 +12,15 @@ from decimal import Decimal
 from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.ref import AccountType
 from app.services.balance_at import BalanceContext
-from app.services import account_service, growth_engine, pay_period_service, savings_dashboard_service
+from app.services import account_service, growth_engine, savings_dashboard_service
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at._asset_contributions import (
     ContributionInputs,
 )
 from tests._test_helpers import (
+    current_pay_period,
+    derived_span,
     period_window,
-    restamp_opening_assertion,
-    settle_instant_on,
 )
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -31,18 +31,20 @@ from app.services.account_projection import (
 def _make_property(db, seed_user, periods, anchor_period, balance, rate=None):
     """Create a Property account, optionally with an appreciation rate.
 
-    **The opening assertion is stamped at the anchor period's first day**, the
+    **The opening assertion is DATED at the anchor period's first day**, the
     N-77 / N-65 pin the shared ``make_appreciating_account`` helper already
-    carries.  ``account_service.create_account`` stamps
-    ``AccountAnchorHistory.created_at`` with ``db.func.now()`` -- the DATABASE
-    clock, which the suite's frozen today does not reach -- while these fixtures
-    seed their pay periods relative to that frozen today.  The opening therefore
-    lands MONTHS after the whole seeded horizon, and since plan step X-g2b a
-    modelled asset accrues only forward of its LATEST assertion (ruling R-Y),
-    an unpinned Property would earn nothing at any period and this file's
-    appreciation assertions would all read the flat market value.  That is a
-    state production cannot reach: a real opening is stamped when the account is
-    created, inside its own anchor period.
+    carries.  ``account_service.create_account`` defaults ``observed_on`` to
+    today, and these fixtures seed their pay periods around that frozen today
+    -- so an account left on the default asserts its value in the middle of the
+    horizon, and since plan step X-g2b a modelled asset accrues only forward of
+    its LATEST assertion (ruling R-Y), the periods before it would earn nothing
+    and this file's appreciation figures would read the flat market value.
+
+    **The day is supplied to the FACTORY, not re-stamped afterwards** (plan
+    step X-f3c-2c).  ``budget.account_anchor_history`` is append-only, so
+    appending a second assertion on an EARLIER day would leave the origination
+    governing and change nothing; the day an assertion is true for is decided
+    when it is written, which is exactly what the production door takes.
     """
     property_type = (
         db.session.query(AccountType).filter_by(name="Property").one()
@@ -53,6 +55,7 @@ def _make_property(db, seed_user, periods, anchor_period, balance, rate=None):
             account_type_id=property_type.id,
             name="House",
             anchor_balance=balance,
+            observed_on=anchor_period.start_date,
         ),
     )
     db.session.add(acct)
@@ -61,9 +64,6 @@ def _make_property(db, seed_user, periods, anchor_period, balance, rate=None):
         db.session.add(AssetAppreciationParams(
             account_id=acct.id, annual_appreciation_rate=rate,
         ))
-    restamp_opening_assertion(
-        db.session, acct, settle_instant_on(anchor_period.start_date),
-    )
     db.session.commit()
     return acct
 
@@ -107,7 +107,7 @@ class TestAppreciationBalanceMap:
         """
         with app.app_context():
             all_periods = sorted(
-                seed_periods_today, key=lambda p: p.period_index,
+                seed_periods_today, key=lambda p: derived_span(p).period_index,
             )
             anchor = all_periods[4]  # mid-list: real pre- and post-anchor periods
             acct = _make_property(
@@ -122,14 +122,14 @@ class TestAppreciationBalanceMap:
             # Pre-anchor periods hold flat at the user-set value: a
             # manually-set valuation is not back-cast (ruling R-S).
             for period in all_periods:
-                if period.period_index < anchor.period_index:
+                if derived_span(period).period_index < derived_span(anchor).period_index:
                     assert balances[period.id] == Decimal("400000.00")
 
             # The ANCHOR period earns its own 14 days, hand-computed above.
             assert balances[anchor.id] == Decimal("400453.76")
 
             # Post-anchor periods compound forward -- strictly increasing.
-            post = [p for p in all_periods if p.period_index > anchor.period_index]
+            post = [p for p in all_periods if derived_span(p).period_index > derived_span(anchor).period_index]
             assert post  # the anchor is mid-list, so post-anchor periods exist
             prev = balances[anchor.id]
             for period in post:
@@ -154,13 +154,13 @@ class TestAppreciationBalanceMap:
             for period in post:
                 assert abs(
                     balances[period.id] - expected[period.id],
-                ) <= Decimal("0.01"), f"period {period.period_index} diverged"
+                ) <= Decimal("0.01"), f"period {derived_span(period).period_index} diverged"
 
     def test_zero_rate_is_flat(self, app, db, seed_user, seed_periods_today):
         """A Property with a 0% rate carries its value flat at every period."""
         with app.app_context():
             all_periods = sorted(
-                seed_periods_today, key=lambda p: p.period_index,
+                seed_periods_today, key=lambda p: derived_span(p).period_index,
             )
             acct = _make_property(
                 db, seed_user, all_periods, all_periods[0],
@@ -182,7 +182,7 @@ class TestAppreciationBalanceMap:
         """
         with app.app_context():
             all_periods = sorted(
-                seed_periods_today, key=lambda p: p.period_index,
+                seed_periods_today, key=lambda p: derived_span(p).period_index,
             )
             acct = _make_property(
                 db, seed_user, all_periods, all_periods[0],
@@ -226,13 +226,13 @@ class TestSavingsDashboardProjection:
             )
             # The tile adopts the model-from-anchor value: the canonical
             # net-worth kernel's appreciation map at the current period (read
-            # the SAME way the dashboard does, via get_current_period, rather
-            # than a fixture-index guess).  Cross-checked against the kernel
+            # the SAME way the dashboard does -- the period CONTAINING the
+            # owner's day -- rather than a fixture-index guess).  Cross-checked against the kernel
             # producer (not a pinned magic number) and asserted strictly above
             # the flat $400,000 the pre-seam tile showed, so the appreciation
             # is provably applied.  gross/deductions are irrelevant on the
             # appreciation path, so a 0 gross reproduces the tile's map exactly.
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id,
             )
             modeled_map = net_worth_kernel.build_account_balance_map(

@@ -14,6 +14,7 @@ from app.models.transaction import Transaction
 from app.services import spending_analysis
 from app.utils.money import ZERO, round_money
 
+from ._breakdown import _share_base
 from ._types import HeroFigures, Comparison, SeriesPoint
 from ._window import _spent_total
 
@@ -28,6 +29,7 @@ _TRAILING_WINDOW_COUNT = 6
 def _build_hero(
     txns: list[Transaction],
     series: list[SeriesPoint],
+    current_by_cat: dict,
 ) -> HeroFigures:
     """Build the hero band: spent total, vs-prior, vs-average, timing.
 
@@ -44,6 +46,12 @@ def _build_hero(
             payment-timing source, reused so the hero and the breakdown
             agree by construction).
         series: The trailing window series (chosen window last).
+        current_by_cat: The window's per-category totals, for
+            :attr:`~._types.HeroFigures.moved_total`.  **The SAME map the
+            breakdown reduces**, so the figure the hero states and the
+            denominator every row's share divides by are one derivation rather
+            than two that agree -- which is the whole reason the hero takes it
+            instead of re-summing *txns*.
 
     Returns:
         The :class:`HeroFigures`.
@@ -63,6 +71,7 @@ def _build_hero(
 
     return HeroFigures(
         spent_total=spent_total,
+        moved_total=_share_base(current_by_cat),
         vs_prior=Comparison.of(spent_total, prior_total),
         vs_average=Comparison.of(spent_total, avg_spent),
         payment_timing=spending_analysis.payment_timeliness_from_txns(txns),

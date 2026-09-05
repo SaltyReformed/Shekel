@@ -33,10 +33,13 @@ from app.models.pay_period import PayPeriod
 from app.services import ledger_report_service
 from app.services.ledger_report_service import StatementWindow
 from app.services.ledger_report_service._attribution import dated_account_nets
+from app.services.pay_calendar import calendar_for
+from app.utils.dates import pay_period_range_label
 from tests._test_helpers import (
     create_account_of_type,
     create_settled_cash_transaction,
     create_settled_transfer,
+    last_covered_day,
     linked_ledger_account,
     make_balanced_entry,
 )
@@ -135,7 +138,7 @@ class TestIncomeStatementCalendarWindow:
             db.session.commit()
 
             report = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("month", month=3, year=2026),
+                user_id, calendar_for(user_id), StatementWindow("month", month=3, year=2026),
             )
 
             assert report.window_label == "March 2026"
@@ -184,13 +187,13 @@ class TestIncomeStatementCalendarWindow:
             db.session.commit()
 
             march = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("month", month=3, year=2026),
+                user_id, calendar_for(user_id), StatementWindow("month", month=3, year=2026),
             )
             assert _labels(march.expense.lines) == ["Family: Groceries"]
             assert march.expense.total == Decimal("300.00")
 
             year = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=2026),
+                user_id, calendar_for(user_id), StatementWindow("year", year=2026),
             )
             assert year.window_label == "2026"
             assert _labels(year.expense.lines) == [
@@ -218,10 +221,7 @@ class TestIncomeStatementPayPeriodWindow:
             user_id = seed_user["user"].id
             checking = seed_user["account"]
             period1 = seed_user["bootstrap_period"]
-            period2 = PayPeriod(
-                user_id=user_id, start_date=date(2026, 2, 6),
-                end_date=date(2026, 2, 19), period_index=1,
-            )
+            period2 = PayPeriod(user_id=user_id, start_date=date(2026, 2, 6))
             db.session.add(period2)
             db.session.flush()
 
@@ -237,13 +237,13 @@ class TestIncomeStatementPayPeriodWindow:
             db.session.commit()
 
             first = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("pay_period", period_id=period1.id),
+                user_id, calendar_for(user_id), StatementWindow("pay_period", period_id=period1.id),
             )
             assert _labels(first.expense.lines) == ["Family: Groceries"]
             assert first.expense.total == Decimal("100.00")
 
             second = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("pay_period", period_id=period2.id),
+                user_id, calendar_for(user_id), StatementWindow("pay_period", period_id=period2.id),
             )
             assert _labels(second.expense.lines) == ["Home: Rent"]
             assert second.expense.total == Decimal("200.00")
@@ -279,13 +279,13 @@ class TestDisplayTimezoneAttribution:
             db.session.commit()
 
             in_2026 = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=2026),
+                user_id, calendar_for(user_id), StatementWindow("year", year=2026),
             )
             assert in_2026.expense.total == Decimal("500.00")
             assert _labels(in_2026.expense.lines) == ["Family: Groceries"]
 
             in_2027 = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=2027),
+                user_id, calendar_for(user_id), StatementWindow("year", year=2027),
             )
             assert not in_2027.expense.lines
             assert in_2027.expense.total == Decimal("0.00")
@@ -297,6 +297,77 @@ class TestDisplayTimezoneAttribution:
 # ---------------------------------------------------------------------------
 
 
+class TestThePeriodLabelCannotNameAnotherOwnersPeriod:
+    """A foreign ``period_id`` resolves nothing, by construction.
+
+    **This producer read the period UNSCOPED until plan step C2-f3a**:
+    ``db.session.get(PayPeriod, window.period_id)``, which resolves any
+    owner's row, and its dates went straight into the window LABEL.  Nothing
+    here refused it.  What stood in the way was
+    ``analytics._validate_owned_or_abort`` at the route boundary, and that
+    route's own comment said so -- "the service reads the period for its
+    window LABEL un-scoped, so a foreign ``period_id`` would otherwise leak
+    the victim's period dates".  A guard one layer up is a guard the next
+    caller has to remember.
+
+    The producer takes the OWNER's calendar now, and a calendar carries one
+    owner's periods, so the identity lookup cannot reach across.  **The route
+    guard STAYS and is not replaced by this** -- it is what emits the
+    ``access_denied_cross_user`` audit event the SOC dashboards read, and an
+    empty label is not a refusal.  What changed is that the leak no longer
+    depends on the guard being there.
+    """
+
+    def test_another_owners_period_id_yields_an_empty_label(
+        self, app, db, seed_user, seed_periods, seed_second_user,
+        seed_second_periods,
+    ):
+        """The victim's dates do not reach the attacker's window label."""
+        with app.app_context():
+            victim_period = seed_second_periods[0]
+            attacker = seed_user["user"].id
+
+            # The premise: the id really is another owner's, and really does
+            # resolve a row when asked without a scope.
+            assert victim_period.user_id != attacker
+            assert db.session.get(PayPeriod, victim_period.id) is not None
+
+            report = ledger_report_service.compute_income_statement(
+                attacker,
+                calendar_for(attacker),
+                StatementWindow("pay_period", period_id=victim_period.id),
+            )
+
+            assert report.window_label == "", (
+                "the foreign period's dates reached the window label"
+            )
+            for rendered in (
+                victim_period.start_date.strftime("%b %d"),
+                str(last_covered_day(victim_period).year),
+            ):
+                assert rendered not in report.window_label
+
+    def test_the_owners_OWN_period_id_still_labels_the_window(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """FIRING CONTROL: the empty label above is the scoping, not a break.
+
+        Without this, a producer that answered ``""`` for every pay-period
+        window would pass the case above and grade nothing.
+        """
+        with app.app_context():
+            own = seed_periods[0]
+            report = ledger_report_service.compute_income_statement(
+                seed_user["user"].id,
+                calendar_for(seed_user["user"].id),
+                StatementWindow("pay_period", period_id=own.id),
+            )
+            assert report.window_label == pay_period_range_label(
+                own.start_date, last_covered_day(own),
+            )
+            assert report.window_label != ""
+
+
 class TestIncomeStatementValidationAndEmpty:
     """Bad windows raise; a baseline-less user yields an empty statement."""
 
@@ -305,7 +376,7 @@ class TestIncomeStatementValidationAndEmpty:
         with app.app_context():
             with pytest.raises(ValueError, match="Invalid window_type"):
                 ledger_report_service.compute_income_statement(
-                    seed_user["user"].id, StatementWindow("weekly"),
+                    seed_user["user"].id, calendar_for(seed_user["user"].id), StatementWindow("weekly"),
                 )
 
     def test_pay_period_without_period_id_raises(self, app, seed_user):
@@ -313,7 +384,7 @@ class TestIncomeStatementValidationAndEmpty:
         with app.app_context():
             with pytest.raises(ValueError, match="period_id is required"):
                 ledger_report_service.compute_income_statement(
-                    seed_user["user"].id, StatementWindow("pay_period"),
+                    seed_user["user"].id, calendar_for(seed_user["user"].id), StatementWindow("pay_period"),
                 )
 
     def test_month_without_month_raises(self, app, seed_user):
@@ -321,11 +392,11 @@ class TestIncomeStatementValidationAndEmpty:
         with app.app_context():
             with pytest.raises(ValueError, match="month and year"):
                 ledger_report_service.compute_income_statement(
-                    seed_user["user"].id, StatementWindow("month", year=2026),
+                    seed_user["user"].id, calendar_for(seed_user["user"].id), StatementWindow("month", year=2026),
                 )
 
     def test_no_baseline_scenario_refuses_rather_than_zeroing(
-        self, app, bare_user,
+        self, app, bare_user_with_cadence,
     ):
         """A baseline-less user gets no statement -- NOT one reporting zeros.
 
@@ -334,11 +405,24 @@ class TestIncomeStatementValidationAndEmpty:
         which is a claim about the user's money; the truth is that this ledger
         cannot be read at all.  See the balance sheet's own test for the full
         argument and for how the review found both.
+
+        **``bare_user_with_cadence`` rather than ``bare_user`` since plan step
+        ``pay_calendar:C4-d``** (ruling R-PC45), and the swap keeps this case
+        pointed at its own subject.  ``calendar_for`` refuses an owner with no
+        ``budget.pay_schedule`` row, and that argument is evaluated BEFORE the
+        call -- so a bare owner would raise ``PayCalendarError`` here and this
+        case would report a pass for a refusal that is not the one it is
+        about.  The fixture gives the owner a schedule row and no paydays,
+        which builds an empty calendar and leaves the missing BASELINE as the
+        only thing wrong with them.
         """
         with app.app_context():
+            user_id = bare_user_with_cadence["user"].id
             with pytest.raises(BaselineMissingError):
                 ledger_report_service.compute_income_statement(
-                    bare_user["user"].id, StatementWindow("year", year=2026),
+                    user_id,
+                    calendar_for(user_id),
+                    StatementWindow("year", year=2026),
                 )
 
 
@@ -379,7 +463,7 @@ class TestTransfersNeverInIncomeStatement:
             db.session.commit()
 
             income = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=_RIDES_ON_TOP.year),
+                user_id, calendar_for(user_id), StatementWindow("year", year=_RIDES_ON_TOP.year),
             )
             assert not income.income.lines
             assert not income.expense.lines
@@ -611,7 +695,7 @@ class TestDisplayLabels:
             db.session.commit()
 
             report = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("month", month=3, year=2026),
+                user_id, calendar_for(user_id), StatementWindow("month", month=3, year=2026),
             )
             assert _labels(report.expense.lines) == ["Family: Snacks"]
             assert report.expense.total == Decimal("100.00")
@@ -641,7 +725,7 @@ class TestDisplayLabels:
             db.session.commit()
 
             report = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("month", month=3, year=2026),
+                user_id, calendar_for(user_id), StatementWindow("month", month=3, year=2026),
             )
             assert _labels(report.expense.lines) == ["Family: Groceries"]
             assert report.expense.total == Decimal("100.00")

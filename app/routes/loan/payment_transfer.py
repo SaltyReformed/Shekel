@@ -182,22 +182,11 @@ def create_payment_transfer(account_id):
     cadence_start = loan_recurrence_sync.loan_cadence_start(
         RecurrenceUnitEnum.MONTH, params,
     )
-    rule = author_rule(
-        RecurrenceSpec(
-            user_id=current_user.id,
-            unit=RecurrenceUnitEnum.MONTH,
-            starts_on=cadence_start.starts_on,
-            nominal_day=cadence_start.nominal_day,
-        ),
-        calendar_for(current_user.id),
-    )
-
     # Create transfer template via the shared builder.
     template_name = f"{source_account.name} -> {account.name} Payment"
     template = build_recurring_transfer_template(
         source_account=source_account,
         dest_account=account,
-        rule=rule,
         name=template_name,
         default_amount=transfer_amount,
     )
@@ -227,6 +216,22 @@ def create_payment_transfer(account_id):
     )
     if namedup_redirect is not None:
         return namedup_redirect
+
+    # **The cadence is authored ONTO the template** (plan step R-F6): the rule
+    # carries its owner's FK, so the definition has to exist first.  After the
+    # name-collision flush rather than before it, because ``author_rule``
+    # flushes and an earlier one would surface a duplicate name as an unhandled
+    # ``IntegrityError`` instead of that helper's redirect.
+    rule = author_rule(
+        RecurrenceSpec(
+            user_id=current_user.id,
+            unit=RecurrenceUnitEnum.MONTH,
+            starts_on=cadence_start.starts_on,
+            nominal_day=cadence_start.nominal_day,
+        ),
+        calendar_for(current_user.id),
+        template,
+    )
 
     # Bound the new recurrence at BOTH ends BEFORE generating, so no shadow
     # transaction is ever generated outside the loan's life: past the projected
@@ -363,12 +368,17 @@ def track_payment(account_id):
     payment (P&I + today's escrow) after an escrow or rate change, this flips it to
     ``derive_from_loan`` so its projected cash always equals the contract, and
     resets the stored base (``default_amount``) to today's contract so every
-    surface that reads it shows the current figure.  No shadow regeneration is
-    needed -- a derive payment's projected cash is recomputed LIVE at read time
-    (:meth:`~app.services.loan_payment_service.LoanPricing.live_cash`), the
-    same mechanism a freshly-created derive transfer relies on -- and the
-    recurrence end date is re-synced since a higher tracked payment can move the
-    projected payoff.
+    surface that reads it shows the current figure.
+
+    **No shadow is rewritten, and since plan step X-au-g-2c-2 that is
+    STRUCTURAL rather than a property of a read-time override.**  It used to
+    rest on ``LoanPricing.live_cash`` superseding each shadow's stored figure on
+    every read; a transfer shadow stores no figure now -- it declares
+    ``PARENT_TRANSFER`` from birth and is priced by amount rule 4, which reads
+    the mode off THIS settings row (ruling **R-FK**).  So the flip changes which
+    RULE prices rows that already exist, and the declaration it would otherwise
+    have had to write is already there.  The recurrence end date is re-synced
+    because a higher tracked payment can move the projected payoff.
 
     404s a cross-owner / non-loan account (``_require_configured_loan``); redirects
     with a warning when the loan has no recurring payment to switch.
@@ -405,7 +415,7 @@ def track_payment(account_id):
     # Re-sync the recurrence end date.  **Load-bearing since plan C8d, where it
     # used to be defensive:** the payoff is now a fold over the forward PLAN, and
     # the PLANNED tier folds each projected shadow's cash as
-    # ``live_cash.get(shadow.id, <the shadow's own contribution>)``.  Flipping
+    # each projected shadow's RESOLVED cash (amount rule 4).  Flipping
     # manual->derive is exactly what moves that value -- a manual payment folds
     # its typed figure, a derive one the live contractual cash --
     # so this switch MOVES the projected payoff whenever the two differ, which is

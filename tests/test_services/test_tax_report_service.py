@@ -47,6 +47,7 @@ from app.services.tax_report_service import (
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     SPLIT_LOAN,
+    payroll_basis,
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
@@ -85,7 +86,6 @@ def _make_profile(
         scenario_id=seed_user["scenario"].id,
         name=name,
         annual_salary=Decimal(annual_salary),
-        pay_periods_per_year=26,
         filing_status_id=filing_status.id,
         state_code=state_code,
         is_active=True,
@@ -118,12 +118,7 @@ def _make_full_year_periods(user, count=26, start=date(2026, 1, 2)):
     periods = []
     for i in range(count):
         start_date = start + timedelta(days=14 * i)
-        period = PayPeriod(
-            user_id=user.id,
-            start_date=start_date,
-            end_date=start_date + timedelta(days=13),
-            period_index=i + 1,
-        )
+        period = PayPeriod(user_id=user.id, start_date=start_date)
         _db.session.add(period)
         periods.append(period)
     _db.session.flush()
@@ -170,10 +165,17 @@ def _project_sum(user_id, profile, year, periods):
     subset-restart projections coincide (all figures below the 184,500 SS
     wage base and 200,000 Medicare surtax threshold), so this stays a
     genuinely independent check of the producer's dollar values.
+
+    **Since plan step balance:X-bh-1 there is no "subset restart" to
+    coincide with**: the engine reads the year's paydays off the owner's
+    CALENDAR, which this oracle is now handed too, so both sides carry the
+    same year-to-date context and what stays independent is the period
+    SUBSET each is asked to sum.
     """
     configs = load_tax_configs_for_year(user_id, profile, year)
     breakdowns = paycheck_calculator.project_salary(
-        profile, periods, configs, calibration=profile.calibration,
+        payroll_basis(profile, periods), periods, configs,
+        calibration=profile.calibration,
     )
     return {
         "gross": sum((b.earnings.gross_biweekly for b in breakdowns), ZERO),
@@ -541,17 +543,30 @@ class TestMultiProfileSum:
     def test_sum_wages_primary_filing_inputs(self, app, db, seed_user):
         """Primary (single, 2 kids, 130k) + secondary (MFJ, 100k), summed.
 
-        Wages sum: 130,000 + 100,000 = 230,000 (each reconciles exact).
+        **The report's wages are what the 26 MODELLED PAYCHECKS pay, not the
+        contract salaries**, and since plan step balance:X-aw those differ:
+          $130,000 / 26 = $5,000.00 exactly  -> 26 x 5,000.00 = 130,000.00
+          $100,000 / 26 = $3,846.1538... -> $3,846.15
+                                          -> 26 x 3,846.15 =  99,999.90
+          wages sum = 229,999.90, ten cents under the $230,000 of salary.
+        That ten cents is the cost ruling **balance:R-HW** accepts; MED-05 /
+        PA-07 had bought the round figure by giving the year's earliest
+        paychecks an extra cent, which is finding N-239.  **Nothing here is
+        inconsistent**: ``compute_annual_liability`` is handed
+        ``withholding.total.gross``, so the liability is computed on the same
+        wages the paychecks pay rather than on a salary nobody is paid.
+
         The liability uses the SUMMED wages with the PRIMARY's filing status
         (single) and 2 qualifying children:
-          taxable = 230,000 - 0 - 16,100 = 213,900.00
+          taxable = 229,999.90 - 0 - 16,100 = 213,899.90
           10%: 1,240.00 + 12%: 4,560.00 + 22%: 12,166.00
              + 24%: (201,775-105,700)*0.24 = 23,058.00
-             + 32%: (213,900-201,775)*0.32 =  3,880.00
-          before credits = 44,904.00; credits = 2 * 2,200 = 4,400
-          liability = 40,504.00  (CTC $2,200 per OBBBA)
-        Credit fully absorbed (44,904 > 4,400) so no ACTC.
-        Marginal = 32% (213,900 in (201,775, 256,225]).
+             + 32%: (213,899.90-201,775)*0.32 = 12,124.90*0.32 = 3,879.968
+          before credits = 44,903.968 -> 44,903.97
+          credits = 2 * 2,200 = 4,400
+          liability = 40,503.97  (CTC $2,200 per OBBBA)
+        Credit fully absorbed (44,903.97 > 4,400) so no ACTC.
+        Marginal = 32% (213,899.90 in (201,775, 256,225]).
         Filing inputs disclosed as coming from the primary profile.
         """
         _seed_tax_data_for_user(seed_user["user"].id)
@@ -571,11 +586,11 @@ class TestMultiProfileSum:
             seed_user["user"].id, 2026, date(2026, 3, 1),
         )
 
-        assert report.withholding.total.gross == Decimal("230000.00")
-        assert report.liability.annual_wage_income == Decimal("230000.00")
-        assert report.liability.federal.taxable == Decimal("213900.00")
+        assert report.withholding.total.gross == Decimal("229999.90")
+        assert report.liability.annual_wage_income == Decimal("229999.90")
+        assert report.liability.federal.taxable == Decimal("213899.90")
         assert report.liability.federal.qualifying_children == 2
-        assert report.liability.federal.liability == Decimal("40504.00")
+        assert report.liability.federal.liability == Decimal("40503.97")
         assert report.liability.federal.refundable_actc == Decimal("0.00")
         assert report.chips.marginal_rate == Decimal("0.3200")
         # Filing inputs disclosed from the primary.

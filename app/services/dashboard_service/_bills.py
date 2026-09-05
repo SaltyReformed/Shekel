@@ -193,9 +193,12 @@ def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
     Per E-21 / MED-03 / F-028 / F-056 the remaining and over-budget
     figures are computed against the row's RESOLVED amount -- the
     declared E-21 budget base -- so the row's three numbers (amount,
-    remaining, over-budget) all share one base.  ``txn_to_bill_dict``
-    anchors the amount cell on the same base and passes it in; the template
-    surfaces ``bill.amount_base`` to disclose it.
+    remaining, over-budget) all share one base.  ``entry_remaining`` is the
+    NET-basis figure :func:`~app.services.entry_service.compute_remaining`
+    states, so it can EXCEED the base for a row whose refunds exceeded its
+    purchases (developer ruling **bank_import:R-IK**, 2026-09-01); the reason is written once,
+    there.  ``txn_to_bill_dict`` anchors the amount cell on the same base and
+    passes it in; the template surfaces ``bill.amount_base`` to disclose it.
 
     Expects txn.template and txn.entries to already be loaded on the
     transaction object (eager-loaded by the caller).
@@ -224,7 +227,14 @@ def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
     debit, credit = compute_entry_sums(txn.entries)
     total = debit + credit
     remaining = compute_remaining(budget, txn.entries)
-    over_budget = total > budget
+    # **ONE spelling of over-budget** (plan step ``bank_import:X-gj-2b-3``).
+    # It read ``total > budget`` while ``entry_service._sums`` asks
+    # ``remaining < 0`` for the same row on the grid -- two statements of one
+    # rule that agree only because ``remaining`` IS ``budget - total``.  Asking
+    # the figure this function already computed makes them one rule rather than
+    # two that reconcile by hand, which is what kept the grid cell and the
+    # dashboard bill row in step by luck.
+    over_budget = remaining < Decimal("0")
     # Templates display, never compute (coding-standards): the
     # over-budget overage is the positive dollar amount by which the
     # entries exceed the declared budget base.  Computing it here keeps

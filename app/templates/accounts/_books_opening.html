@@ -1,0 +1,154 @@
+{% from "_money_macros.html" import money %}
+{# When the books opened: the account's opening equity, and the door to restate it.
+
+   Plan step X-f3c-2b-2a, ruling R-HG.  An account's opening equity is the
+   capital its books opened with -- the level every balance the app has ever
+   rendered for it is stacked on top of.  Until this card it was written once,
+   at account creation, and could never be corrected: the X-f3c-2a migration
+   DERIVED seven of the nine production figures, and findings N-275 and N-379
+   each measure one of them wrong against the owner's own bank.
+
+   IT IS ON THE SHARED EDIT PAGE, and that is the developer's ruling of
+   2026-08-31 rather than a convenience.  The opening is DISPLAYED in one place
+   -- the tfoot of ``_balance_history.html``, on the cash detail page -- which
+   serves three of the nine accounts.  Four of the other six (the two IRAs, the
+   401(k) and the Property) carry a derived opening the balance fold READS, so
+   a door reachable only from that card would leave the accounts most likely to
+   hold a wrong figure with no way to correct one.  This page is the surface
+   every kind reaches, so the form lives here and the history card links to it:
+   one door, two entrances.
+
+   IT IS A FORM AND NOT AN INLINE EDITOR, deliberately.  Asserting a balance is
+   the one-click habit five surfaces open an editor for; restating the books is
+   rare, consequential, and moves the level everything else rests on.
+   ``app.opening_infrastructure`` calls a restatement rare in as many words.
+
+   THE HELP TEXT SAYS WHAT A RESTATEMENT DOES NOT DO, and that sentence is
+   measured: the account's later assertions still say what they said, so the
+   gap this opens is booked as a correction against them rather than absorbed.
+   On the developer's own archived Fidelity account, taking a $4,863.56 opening
+   to $0.00 leaves the 2026-04-06 assertion booking a $5,363.56 true-up and the
+   asset returns in full.  An owner not told that reads the unchanged balance
+   as the door having failed.
+
+   Expected context, all under ``books_opening``
+   (``accounts.opening.books_opening_context``), and ABSENT for an amortizing
+   account -- a loan's opening is its original principal, so the card is not
+   rendered at all rather than rendered disabled:
+     opened_on         -- date: the day the books currently open.
+     equity            -- Decimal: what they currently open holding.
+     declared          -- bool: True when a human stated that figure, False
+                          when the X-f3c-2a migration derived it.
+     ceiling           -- OpeningCeiling: the latest day the service will
+                          accept (``.day``) and the sentence naming the bound
+                          that sets it (``.said``).  FOUR bounds feed it -- the
+                          owner's today, the account's earliest recorded
+                          movement, its earliest MATCHED bank line and its
+                          earliest asserted balance -- and which one binds is
+                          decided where the ``min`` is taken, never here.  This
+                          card picked between two of them itself until plan
+                          step balance:X-f3c-2b-2b, in an order that was not
+                          the ``min``'s: an account asserted in January and
+                          first settled in June was told the June movement was
+                          stopping it while the box's own max came from
+                          January.
+#}
+<div class="card mt-4" id="books-opening">
+  <div class="card-header d-flex justify-content-between align-items-center gap-2">
+    <h6 class="mb-0">
+      <i class="bi bi-flag" aria-hidden="true"></i> When the books opened
+    </h6>
+    {% if not books_opening.declared %}
+    {# A DERIVED figure is the pre-X-f3c-2a inference frozen and may be wrong.
+       Saying so is what stops the card presenting a guess and an observation
+       identically -- and this card is the door for exactly that case. #}
+    <span class="badge text-bg-light">derived, not stated</span>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    <p class="text-body-secondary small">
+      This account's books open on
+      <strong>{{ books_opening.opened_on.strftime('%b %-d, %Y') }}</strong>
+      holding <strong>{{ money(books_opening.equity) }}</strong>. That figure is
+      the closing balance for that day, so anything that moved by then is
+      already inside it -- which is why nothing this account records may be
+      dated on or before it.
+      {% if not books_opening.declared %}
+      Nobody stated this figure: it was worked out from the balances you
+      recorded later, so it can be wrong. If your bank shows a different one,
+      correct it here.
+      {% endif %}
+    </p>
+
+    <form method="POST"
+          action="{{ url_for('accounts.restate_opening', account_id=account.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="row g-3">
+        <div class="col-sm-6">
+          <label for="opened_on" class="form-label">Books opened on</label>
+          <input type="date" id="opened_on" name="opened_on"
+                 class="form-control" required
+                 value="{{ books_opening.opened_on.isoformat() }}"
+                 max="{{ books_opening.ceiling.day.isoformat() }}"
+                 aria-describedby="opened-on-help">
+          {# The BINDING bound in words, composed in the route where the
+             ``min`` is taken.  An owner refused by a ceiling they cannot see
+             reads it as the form being broken -- and a card that chose which
+             bound to name would be choosing in a different order from the
+             one that set the box's own max, which is what this replaced. #}
+          <div id="opened-on-help" class="form-text">
+            {{ books_opening.ceiling.said }}
+          </div>
+        </div>
+
+        <div class="col-sm-6">
+          <label for="opening_equity" class="form-label">Opening equity</label>
+          <div class="input-group">
+            <span class="input-group-text">$</span>
+            <input type="number" step="0.01" id="opening_equity"
+                   name="opening_equity" class="form-control" required
+                   value="{{ books_opening.equity }}"
+                   aria-describedby="opening-equity-help">
+          </div>
+          <div id="opening-equity-help" class="form-text">
+            What the account really held at the end of that day. Negative for
+            something you owe.
+          </div>
+        </div>
+      </div>
+
+      {# WHAT THE CORRECTION IS BOOKED AS, not just that there is one
+         (adversarial review, 2026-08-31).  The gap a restatement opens lands
+         on the next assertion's true-up, and ruling R-FO sends that true-up's
+         counter leg to `unrealized_change` on an investment or property
+         account and to `interest_income` on an interest-bearing one -- only an
+         OPENING books to `anchor_equity`.  So on exactly the four accounts
+         this door was placed for, the first visible effect of a CORRECT
+         restatement is a jump in reported return that never happened.  Traced
+         on the developer's own archived Fidelity account: taking a $4,863.56
+         opening to $0.00 moves $4,863.56 out of contributed capital and into
+         unrealized gain on the income statement. The balance is right
+         throughout; the income statement is not, until the assertions are
+         restated too. Saying "a correction" and stopping was the copy that
+         let an owner meet that without warning. #}
+      <div class="alert alert-secondary small mt-3 mb-3" role="note">
+        Balances you recorded after this day are left exactly as they are, so
+        the difference shows up as a correction against the first of them.
+        <strong>On a savings, investment or property account that correction is
+        reported as a gain or as interest</strong> -- so a large restatement can
+        briefly show a return that never happened. The balance stays right.
+        Restating those later balances too is what clears it.
+      </div>
+
+      <button type="submit" class="btn btn-outline-primary">
+        <i class="bi bi-flag"></i> Restate opening
+      </button>
+    </form>
+  </div>
+  <div class="card-footer text-muted small">
+    Every restatement is kept. Correcting this figure records a new statement
+    of it rather than replacing the old one, so what the books used to say
+    survives the correction.
+  </div>
+</div>

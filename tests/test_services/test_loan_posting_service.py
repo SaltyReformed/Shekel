@@ -60,7 +60,9 @@ from app.services import (
     transfer_service,
 )
 from tests._test_helpers import (
+    SPLIT_LOAN,
     add_escrow_line,
+    an_entered_day,
     clear_loan_ledger,
     correction_net_in_period,
     create_loan_account,
@@ -70,6 +72,7 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     insert_trueup_event,
+    last_covered_day,
     ledger_accounts_for_account,
     ledger_net,
     linked_net_by_date,
@@ -77,7 +80,6 @@ from tests._test_helpers import (
     loan_income_shadow,
     posted_loan_balance_at,
     posted_loan_balance_map,
-    SPLIT_LOAN,
 )
 
 # The shared synthetic split-loan fixture ($250,000 @ 6%, trued up to $100,000 --
@@ -671,9 +673,11 @@ class TestWalkReadsNoClock:
         Schedule-A deductible interest erased.  Measured on the real Mortgage, the
         same line cost $7,643.80.
 
-        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter in
-        ``loan_ledger.merge_anchor_and_payment_events`` and this reports
-        ``excess=1073.64`` with interest, escrow and principal all $0.00.
+        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter --
+        it would now go in ``loan_ledger.loan_event_stream``, where the reset
+        events are built (it was ``merge_anchor_and_payment_events`` until plan
+        step X-au-g-2c-3b-2) -- and this reports ``excess=1073.64`` with
+        interest, escrow and principal all $0.00.
         """
         with app.app_context():
             loan = self._upcoming_mortgage(seed_user)
@@ -1844,7 +1848,7 @@ class TestLoanAnchorPeriodAttribution:
             stale_period = seed_periods[-1]
             # The precondition: no seeded period contains the anchor date, so
             # the true-up landed on the last one by fallback.
-            assert stale_period.end_date < self._LATE_ANCHOR_DATE
+            assert last_covered_day(stale_period) < self._LATE_ANCHOR_DATE
             assert _anchor_net_in_period(
                 loan.id, scenario_id,
                 PostingSourceEnum.LOAN_TRUEUP, stale_period.id,
@@ -1856,7 +1860,7 @@ class TestLoanAnchorPeriodAttribution:
                 period for period in new_periods
                 if period.start_date
                 <= self._LATE_ANCHOR_DATE
-                <= period.end_date
+                <= last_covered_day(period)
             )
 
             loan_posting_service.sync_loan_anchor_corrections(
@@ -1905,7 +1909,7 @@ class TestLoanAnchorPeriodAttribution:
                 period for period in new_periods
                 if period.start_date
                 <= self._LATE_ANCHOR_DATE
-                <= period.end_date
+                <= last_covered_day(period)
             )
             loan_posting_service.sync_loan_anchor_corrections(
                 loan.id, scenario_id,
@@ -2250,10 +2254,10 @@ class TestPostedLoanBalanceSums:
                 )
 
             # P1 settled on period 1's start; period 0 ends the day before.
-            assert read(seed_periods[0].end_date) == Decimal("100000.00")
+            assert read(last_covered_day(seed_periods[0])) == Decimal("100000.00")
             assert read(seed_periods[_P1].start_date) == Decimal("99500.00")
             # Through P1's period its settle (the period start) is past -> 99500.
-            assert read(seed_periods[_P1].end_date) == Decimal("99500.00")
+            assert read(last_covered_day(seed_periods[_P1])) == Decimal("99500.00")
             assert read(seed_periods[_P2].start_date) == Decimal("98997.50")
             assert read(seed_periods[_P3].start_date) == Decimal("98492.49")
             assert read(_AS_OF) == Decimal("98492.49")
@@ -2753,7 +2757,7 @@ class TestCheckedProjection:
             # checked-projection assert; a raise here IS the N-13 regression.
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                settled_on=date(2026, 2, 5),
+                settle_day=an_entered_day(date(2026, 2, 5)),
             )
             db.session.commit()
 
@@ -2794,7 +2798,7 @@ class TestCheckedProjection:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                settled_on=date(2026, 1, 20),
+                settle_day=an_entered_day(date(2026, 1, 20)),
             )
             db.session.commit()
 

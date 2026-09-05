@@ -142,19 +142,45 @@ def balance_history_context(
 
     Returns:
         The card's context: ``recent`` / ``earlier`` rows,
+        ``opening`` (the :class:`app.services.balance_at.CashOpeningRow` the
+        card pins as its oldest row -- see below),
         ``total`` (every assertion the account carries, so the header can name
         what is NOT shown), ``reconcilable`` (whether the ledger / correction
         columns mean anything for this account -- see
-        :class:`app.services.balance_at.CashAnchorHistory`), and ``panel_id``.
+        :class:`app.services.balance_at.CashAnchorHistory`), ``panel_id``, and
+        ``account_id`` for the opening row's restatement link.
+
+        **``total`` counts assertions and the opening is NOT one of them**
+        (plan step X-f3c-2b).  The header reads "N recorded", which is a count
+        of balances the OWNER told the account it held; the books opening is
+        not one of those, and on all nine production accounts nobody typed it
+        at all -- the X-f3c-2a migration derived every one.  Counting it would
+        also make the header disagree with the "Show all N" button beside it,
+        which expands only the assertions.
     """
     history = balance_at.cash_anchor_history(account, ctx)
     recent, earlier = _split_by_recording(history.rows, RECENT_ASSERTIONS)
     return {
         "recent": recent,
         "earlier": earlier,
+        # Outside the recent/earlier split ON PURPOSE: the opening is the
+        # foundation every row above rests on, so it is pinned visible rather
+        # than filed behind a disclosure whose whole content is assertions.
+        # The template renders it in the table's ``<tfoot>``, which is where
+        # "always shown, below everything" is expressible without duplicating
+        # the row for the collapsed and the expanded state.
+        "opening": history.opening,
         "total": len(history.rows),
         "reconcilable": history.reconcilable,
         "panel_id": _panel_id(account.id),
+        # The opening row's "Restate" link needs the account to build its
+        # href, and the card is passed to the template under ONE name (see
+        # above), so the id travels in the context rather than the template
+        # reaching for an ``account`` this builder deliberately does not
+        # publish.  The LINK and not an inline editor: the restatement form
+        # lives on the shared account edit page, which is the one surface every
+        # account kind reaches (plan step X-f3c-2b-2a).
+        "account_id": account.id,
     }
 
 

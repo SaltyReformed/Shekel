@@ -12,8 +12,12 @@ replayed it outside the window entirely.  Nothing noticed while the shipping
 producers read the LATEST anchor row and ignored its date; the fold made the
 instant load-bearing.
 
-The per-fixture mitigations (``override_anchor``'s period-start default,
-``conftest._pin_opening_to``, an explicit settle day) stay and are unaffected
+The per-fixture mitigations (``override_anchor``'s period-start default, an
+explicit settle day) stay and are unaffected.  *A third was listed here --
+``conftest._drop_seed_user_bootstrap``'s books restatement -- and plan step
+``pay_calendar:C4-b-1`` deleted that function for the production door it was
+re-implementing; the restatement went with it, measured to move no day in any
+world this suite builds*
 -- this pins the STRUCTURAL half that stops a fourth instance:
 ``_test_helpers._freeze_db_clock``.  Read its docstring for the design and its
 one stated boundary.
@@ -36,6 +40,7 @@ from tests._test_helpers import (
     _db_clock_insert_attrs,
     _rewrite_db_clock_calls,
     create_settled_cash_transaction,
+    last_covered_day,
     override_anchor,
     same_instant_writes,
 )
@@ -95,8 +100,8 @@ class TestTheDatabaseClockIsTheTestClock:
         ``AccountAnchorHistory.created_at`` is a ``NOW()`` server default, so
         before this fix the row carried the real wall clock: months past the
         end of ``seed_periods`` (2026-01-02 to 2026-05-21), which is a state
-        production cannot reach -- a true-up files against
-        ``get_current_period``.
+        production cannot reach -- a true-up files against the period
+        containing its own observation day.
         """
         with app.app_context():
             account = seed_user["account"]
@@ -118,7 +123,7 @@ class TestTheDatabaseClockIsTheTestClock:
             assert (
                 seed_periods[0].start_date
                 <= row.created_at.date()
-                <= seed_periods[-1].end_date
+                <= last_covered_day(seed_periods[-1])
             )
 
     def test_a_settled_transactions_day_lands_on_the_frozen_day(

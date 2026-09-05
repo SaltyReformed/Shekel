@@ -1,31 +1,35 @@
-"""The cash walk: ONE running-balance replay over ONE event stream -- FACTS.
+"""The cash walk: ONE ordered traversal of an account's cash FACTS.
 
-The single chronological walk a cash account's balance derives from, and the
-exact counterpart of :mod:`app.services.loan_ledger._walk`.  It seeds the balance
-at zero and, in event order (:mod:`._events`), applies each ASSERTION as a RESET
-and each settled source as a signed step -- so an account's opening, every
-true-up, and every settle come from ONE running balance and can never disagree
-about which settles a given assertion already covered.
+The single chronological event stream a cash account's balance derives from, and
+the exact counterpart of :mod:`app.services.loan_ledger._walk`.  It yields two
+lists -- one :class:`~._events.CashSourceFact` per settled row and one
+:class:`~._events.CashAnchorFact` per balance assertion, each in its own walk
+order -- and NOTHING else.
 
-**The walk yields FACTS, not a balance-at-T.**  Its output is a
-:class:`CashLedgerWalk`: one :class:`~._events.CashSourceFact` per settled row and
-one :class:`CashAnchorCorrection` per assertion, in DAY order -- every source
-dated a day, then the assertions that close it (ruling R-DH).  Turning those
-facts into "what is the balance on date D" is the FOLD -- collect each event's
-dated delta (:func:`dated_deltas`), prefix-sum, sample -- and the prefix-sum
-lives in the balance seam, not here.  A consumer holding a walk therefore cannot
-reach a balance from a public leaf name, which is why the walk needs no call
-fence (plan step D-fold's ruling, restated for cash).
+**The walk yields FACTS, and since plan step X-f3c-1 that is literally rather
+than nearly true.**  Its output is a :class:`CashLedgerWalk`: the account's
+data, re-keyed onto the civil day each event counts from and valued in
+ledger-native sign.  Turning those facts into "what is the balance on date D" is
+the FOLD -- collect each event's dated delta (:func:`dated_deltas`), prefix-sum,
+sample -- and the prefix-sum lives in the balance seam, not here.  A consumer
+holding a walk therefore cannot reach a balance from a public leaf name, which
+is why the walk needs no call fence (plan step D-fold's ruling, restated for
+cash).
 
-**Two consumers, one walk** (ruling R-H).  The seam's read pass folds it into a
-balance at a date; at plan step X-d the posting writer projects it into the
-balanced corrections it reconciles onto the general ledger, replacing the
-postings-sourced :func:`app.services.account_posting_service.walk_account_ledger`.
-Today those are two independent statements of what happened to an account -- one
-period-granular over transaction rows, one instant-granular over the postings it
-is correcting -- and their disagreement IS the defect Phase X exists to close
-(findings cash D1-D4).  One walk closes it by construction rather than by a test
-holding two implementations in step.
+**What an ASSERTION does to a running balance is not stated here, and that is
+the step's point.**  This module replayed the assertions itself until plan step
+X-f3c-1: it seeded at zero and, per assertion in business-date order, advanced
+by everything that assertion cleared, recorded the correction, then RESET the
+running balance to the asserted value.  That reset is a POLICY, and the policy
+is not the same for every account -- ruling **R-FO** keeps it for the modelled
+kinds (an IRA has no record of a price movement to discard, so the assertion is
+the only fact and the reset IS mark-to-market) and plan step X-f3c deletes it
+for the PLAIN ones (where the records are the fact and an assertion is a CHECK).
+A walk that consulted the account's kind would break ruling **R-J**, and a walk
+that hardcoded one kind's answer -- which is what it did -- silently imposed it
+on the other.  So the replay moved to
+:mod:`app.services.balance_at._assertions`, beside the running total it is a
+policy ABOUT, and each fold applies the policy its own kind needs.
 
 **Takes no as-of, and reads no clock.**  Its output is a function of the
 account's data ALONE, which is what makes it re-derivable; deciding which facts
@@ -34,29 +38,45 @@ are not in it at all: their effective date depends on the reader's as-of (ruling
 R-G), so they are the seam fold's tier, exactly as the loan plan's PLANNED tier
 lives in ``balance_at._plan`` and not in ``loan_ledger``.
 
+**Two consumers, one walk** (ruling R-H).  The seam's read pass folds it into a
+balance at a date; at plan step X-d the posting writer projects the same facts
+into the balanced corrections it reconciles onto the general ledger, replacing
+the postings-sourced
+:func:`app.services.account_posting_service.walk_account_ledger`.
+Today those are two independent statements of what happened to an account -- one
+period-granular over transaction rows, one instant-granular over the postings it
+is correcting -- and their disagreement IS the defect Phase X exists to close
+(findings cash D1-D4).  One walk closes it by construction rather than by a test
+holding two implementations in step.
+
+**How that writer reaches the CORRECTIONS is a decision plan step X-f3c-1 left
+it**, and it is named in :mod:`app.services.balance_at._assertions` rather than
+left to be discovered: W9910 forbids ``account_posting_service`` importing that
+private module in every spelling.  It is the same treatment the RESIDUE
+question two paragraphs down gets, for the same reason.
+
 **Three differences from the account POSTING walk, all deliberate, all settled at
 X-d.**  (1) This walk reads SOURCE rows where that one reads back the postings;
 that is the direction the whole arc turns on -- the posted ledger is a projection
 of the facts, not a second opinion about them (plan Section 1, root cause 2).
 (2) It does not refuse an amortizing account.  That refusal is a WRITE concern
-(which correction family a loan's anchors book into), not a property of a
-running-balance replay, and the cash-flow seam view deliberately consults no kind
--- its balance must reconcile with the transaction rows rendered beside it,
-whatever the account.  What keeps a LOAN out of that view is a gate at the
-SOURCE, on every resolver that feeds it: ``resolve_grid_account`` since ruling
-D4 / plan step A1, and ``resolve_analytics_account`` since plan step X-a1, which
-closed the calendar door finding N-38 measured open (the Van Loan rendered at
-``$531.94`` against ``$15,663.59`` owed).  So this walk stays total and
-kind-blind, the writer keeps the guard it needs, and no screen reaches a
-cash-basis loan balance through either.  (3) It sees no RESIDUE.  The
-posting walk reads a third source bucket -- entries whose ``transaction_id`` /
-``transfer_id`` were SET-NULLed by a hard delete -- precisely so its running total
-"stays equal to the live linked total even if the reverse-before-delete
-discipline is ever violated".  A source-row walk cannot see a posting whose
-source row is gone, by construction, so X-d must decide whether that defence
-moves to the checked-projection assert (where a residue row becomes a LOUD
-mismatch instead of a silently absorbed one) or is ceded; it is named here so
-that decision is made rather than discovered.
+(which correction family a loan's anchors book into), not a property of a fact
+stream, and the cash-flow seam view deliberately consults no kind -- its balance
+must reconcile with the transaction rows rendered beside it, whatever the
+account.  What keeps a LOAN out of that view is a gate at the SOURCE, on every
+resolver that feeds it: ``resolve_grid_account`` since ruling D4 / plan step A1,
+and ``resolve_analytics_account`` since plan step X-a1, which closed the calendar
+door finding N-38 measured open (the Van Loan rendered at ``$531.94`` against
+``$15,663.59`` owed).  So this walk stays total and kind-blind, the writer keeps
+the guard it needs, and no screen reaches a cash-basis loan balance through
+either.  (3) It sees no RESIDUE.  The posting walk reads a third source bucket --
+entries whose ``transaction_id`` / ``transfer_id`` were SET-NULLed by a hard
+delete -- precisely so its running total "stays equal to the live linked total
+even if the reverse-before-delete discipline is ever violated".  A source-row
+walk cannot see a posting whose source row is gone, by construction, so X-d must
+decide whether that defence moves to the checked-projection assert (where a
+residue row becomes a LOUD mismatch instead of a silently absorbed one) or is
+ceded; it is named here so that decision is made rather than discovered.
 
 Reads the account's rows; no writes, no commit.
 
@@ -73,111 +93,57 @@ from ._amounts import ReconciledThrough
 from ._clearing import StatementCoverage, statement_coverage
 from ._events import (
     CashAnchorFact,
+    CashOpeningFact,
     CashSourceFact,
+    account_opening_fact,
     cash_anchor_facts,
     settled_cash_facts,
 )
 
-_ZERO_MONEY = Decimal("0.00")
-
-
-@dataclass(frozen=True)
-class CashAnchorCorrection:
-    """One assertion's balance correction: an opening or a true-up.
-
-    The per-anchor result of :func:`walk_cash_ledger`.  The correction's delta is
-    ``anchor_balance - balance_before``: the jump the user's assertion booked
-    over what the recorded facts alone would have produced.  A correction whose
-    ``balance_before`` already equals the asserted balance books nothing, which
-    is the healthy steady state -- an account whose every movement is recorded
-    needs no correction at all.
-
-    On the write side (plan step X-d) each of these becomes a balanced journal
-    entry, the opening tagged ``account_opening`` and every later one
-    ``account_trueup``, exactly as
-    :class:`app.services.account_posting_service.AccountAnchorCorrection` is
-    today.
-
-    Attributes:
-        anchor: The :class:`~._events.CashAnchorFact` this correction books for.
-        balance_before: The walk's running balance JUST BEFORE this assertion
-            resets it -- ``Decimal("0.00")`` for an opening with no pre-assertion
-            settled history, and otherwise the sum of every source attributed at
-            or before the assertion instant, on top of the prior assertions.
-    """
-
-    anchor: CashAnchorFact
-    balance_before: Decimal
-
-    @property
-    def observed_on(self) -> date:
-        """Return the civil day this correction is the closing balance FOR.
-
-        The assertion twin of :attr:`~._events.CashSourceFact.settled_on`, and
-        the same rule: the day is resolved ONCE on the fact this correction wraps
-        (ruling R-DH) and every consumer reads that one field rather than
-        re-deriving one from a timestamp.
-
-        It reads THROUGH to the fact rather than re-deriving, which is the point:
-        the property existed to convert ``asserted_at`` to a UTC civil day, and
-        that conversion was a second statement of a rule the fact now owns.
-
-        Returns:
-            The civil day of the assertion this correction books.
-        """
-        return self.anchor.observed_on
-
-    @property
-    def delta(self) -> Decimal:
-        """Return the jump this assertion's RESET booked over the records.
-
-        ``anchor_balance - balance_before``: what the user's declaration moved
-        the running balance by, on top of what the recorded facts alone had
-        produced.  ``0.00`` for the healthy steady state (an account whose every
-        movement is recorded needs no correction).
-
-        **Stated here so it is stated ONCE.**  Three readers need this pair --
-        :func:`dated_deltas` below, the fold's R-I seed
-        (``balance_at._cash_fold._actual_steps``), and the period view's
-        assertion component (``balance_at._cash_periods.cash_period_view``, plan
-        step X-c1) -- and until X-c1 the fold RE-DERIVED it, which its own
-        docstring had to pin with a test.  A property on the record retires that
-        re-derivation, exactly as :class:`~._events.CashSourceFact` already
-        carries its own ``settled_on`` / ``delta``.
-
-        Returns:
-            The signed correction as a ``Decimal``, in the same LEDGER-NATIVE
-            sign as the asserted balance.
-        """
-        return self.anchor.anchor_balance - self.balance_before
-
 
 @dataclass(frozen=True)
 class CashLedgerWalk:
-    """An account's full walk output for one scenario: sources and corrections.
+    """An account's full fact stream for one scenario: sources and assertions.
 
-    The complete output of the single chronological replay
-    (:func:`walk_cash_ledger`): every settled source fact AND every assertion
-    correction, sharing ONE running balance so they are guaranteed mutually
-    consistent.
+    The complete output of :func:`walk_cash_ledger`: every settled source fact
+    AND every balance assertion the account carries, loaded in one pass so a
+    consumer holding a walk holds one account's movements beside that same
+    account's statements.
 
-    Carries no as-of, because the walk takes none: it is the account's FACTS
-    replayed, whole, and a reader bounds them to a date.
+    Carries no as-of, because the walk takes none: it is the account's FACTS,
+    whole, and a reader bounds them to a date.  It carries no running balance
+    either -- what an assertion DOES to one is a policy of the fold
+    (:mod:`app.services.balance_at._assertions`), not a property of the facts.
 
     Attributes:
         source_facts: One :class:`~._events.CashSourceFact` per settled
             balance-contributing row AND per posted purchase recorded against
             one (ruling **R-FM**, plan step X-f3b), ascending by
-            ``(settled_on, transaction_id, entry_id)`` -- including facts dated
-            BEFORE the account's opening assertion, which the opening's
-            correction absorbs (the same treatment the loan walk gives a
-            pre-origination payment).
-        anchor_corrections: One :class:`CashAnchorCorrection` per assertion the
-            account carries, chronological.
+            ``(settled_on, transaction_id, entry_id)``.  **None is dated at or
+            before :attr:`opening`'s day** -- an opening equity is that day's
+            CLOSING balance (ruling **R-HG**, plan step X-f3c-2b), so such a
+            row is already inside the level this walk's fold seeds at, and a
+            deferrable constraint trigger makes it unstorable rather than
+            leaving the fold to screen for it.
+        anchor_facts: One :class:`~._events.CashAnchorFact` per assertion the
+            account carries, ascending by ``(observed_on, created_at, id)`` --
+            BUSINESS date first, so the FIRST is the account's OPENING and the
+            LAST is the balance in force.  Both properties below rest on that
+            order and neither re-derives it (finding N-133 / R1).
+        opening: The account's governing
+            :class:`~._events.CashOpeningFact` -- what its books opened with,
+            and the level the fold's running total starts from (plan step
+            **X-f3c-2a**, ruling **R-GX**).  A FACT like the other two, loaded
+            in the same pass, which is what stops a consumer resolving it
+            separately from the movements it is the level for.  It is not
+            optional: :func:`~._events.account_opening_fact` raises for an
+            account carrying no record, because a balance folded from a
+            fabricated level is worse than no balance at all.
     """
 
     source_facts: list[CashSourceFact]
-    anchor_corrections: list[CashAnchorCorrection]
+    anchor_facts: list[CashAnchorFact]
+    opening: CashOpeningFact
 
     @property
     def reconciled_through(self) -> ReconciledThrough:
@@ -200,13 +166,13 @@ class CashLedgerWalk:
         **It reads the LAST element and that is only correct because of where
         the ordering lives.**  ``cash_anchor_facts`` loads its rows
         ``(observed_on, created_at, id)`` ascending -- BUSINESS date first --
-        so the last correction is the one the walk replayed last and the one
-        ``resolve_anchor`` calls current.  Re-deriving "the latest" with a
-        ``max()`` here would be a second statement of that order, and the two
-        agreed for free only while ``observed_on`` was derived from
-        ``created_at``; plan step 2 made the column user-supplied and broke
-        that, which is exactly how a ``$1,307.66`` true-up once posted to the
-        ledger tagged as the account's OPENING.
+        so the last fact is the one ``resolve_anchor`` calls current.
+        Re-deriving "the latest" with a ``max()`` here would be a second
+        statement of that order, and the two agreed for free only while
+        ``observed_on`` was derived from ``created_at``; plan step 2 made the
+        column user-supplied and broke that, which is exactly how a
+        ``$1,307.66`` true-up once posted to the ledger tagged as the account's
+        OPENING.
 
         Returns:
             The account's :class:`~app.services.cash_ledger.ReconciledThrough`.
@@ -217,13 +183,13 @@ class CashLedgerWalk:
             walk of no facts is honestly empty.  A consumer that cannot proceed
             without an assertion refuses on its own ground.
         """
-        if not self.anchor_corrections:
+        if not self.anchor_facts:
             return ReconciledThrough(None)
-        return self.anchor_corrections[-1].anchor.reconciled_through
+        return self.anchor_facts[-1].reconciled_through
 
     @property
     def coverage(self) -> StatementCoverage:
-        """Return the clearing rule for the account this walk replayed.
+        """Return the clearing rule for the account this walk loaded.
 
         The CASH question -- *which statement showed this line* (ruling
         **R-FL**) -- read off the walk a caller is already holding, so the entry
@@ -239,205 +205,148 @@ class CashLedgerWalk:
             NOTHING for an account with no assertion history -- the same honest
             emptiness :attr:`reconciled_through` answers with a ``None`` day.
         """
-        return statement_coverage(
-            [correction.anchor for correction in self.anchor_corrections]
-        )
+        return statement_coverage(self.anchor_facts)
 
 
 def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:
-    """Replay an account's assertions and settled rows into one running balance.
+    """Return an account's settled movements and balance assertions, in order.
 
-    Seeds the running balance at zero and, per assertion in business-date
-    order, advances the balance by every settled source that assertion CLEARED
-    (:meth:`app.services.cash_ledger.StatementCoverage.clearing_anchor_id`),
-    records the correction, then RESETS the balance to the asserted value.
+    ONE load of the two fact sets a cash balance is folded from, bound together
+    so that a consumer holding a walk holds one account's movements beside that
+    same account's statements.
 
-    **Resetting at EVERY assertion -- not seeding from the latest one -- is the
-    step's point.**  The shipping projection reads only the newest anchor
-    (:func:`app.services.cash_ledger.resolve_anchor`) and carries it BACKWARD over
-    the past, which is why a pre-anchor date reads today's balance rather than
-    the balance the user actually asserted then (finding B-18 / cash D3: measured
-    on production 2026-07-25, the scalar answers ``$2,932.41`` for 2026-06-03
-    while the period map omits those 8 periods entirely).  Replaying all of them
-    -- 52 on the real Checking account over 119 days -- means the past is the
-    assertion history rather than a back-projection of the present.
+    **It stopped computing a running balance at plan step X-f3c-1.**  It seeded
+    at zero and, per assertion, advanced by everything that assertion cleared,
+    recorded the correction, then reset the running total to the asserted value.
+    Every word of that is the RESET policy, which ruling **R-FO** keeps for the
+    modelled account kinds and plan step X-f3c deletes for the PLAIN ones -- so
+    stating it in a kind-blind walk (ruling **R-J**) imposed one kind's answer
+    on the other.  The replay lives in
+    :func:`app.services.balance_at._assertions.assertion_corrections` now, next
+    to the running total it is a policy about, and this function returns the
+    facts that replay reads.
 
-    **A settled source attributed AFTER the latest assertion rides on top of it,
-    and that is the money the app currently loses.**  Today the projection
-    excludes every settled row (the anchor is assumed to reflect them) and the
-    anchor predates them, so they are counted by NO producer until the user
-    re-asserts the balance: measured on production 2026-07-25, ``$2,108.15``
-    invisible at that instant, and ``$53,880.81`` gross across 130 rows over 45
-    assertion gaps historically (finding cash D1).
-
-    **Which assertion clears a source is ASSIGNED, not scanned, and that is
-    ruling R-FL** (plan step X-f3a-1).  This advanced a monotonic ``absorbed``
-    pointer through the day-sorted sources while the current assertion
-    ``covers`` them, which was correct only while "cleared by this assertion"
-    was monotone in the day.  A RECORDED clearing fact is not: statement B
-    legitimately clears a line dated before one of statement A's, and a pointer
-    meeting that line halts and silently shorts every later assertion.  So
-    :class:`~app.services.cash_ledger.StatementCoverage` answers per source, this
-    loop groups by the answer, and the loaders' ordering stops being a
-    precondition of the money being right.  Two assertions about ONE day are
-    still not a conflict: an unlinked source lands on the first of them, the
-    second absorbs nothing, and the LAST is that day's closing balance -- which
-    is what a user re-reading their bank later the same day means.
-
-    **The loaders' ordering is still a contract, for a smaller reason.**
-    ``cash_anchor_facts`` returns assertions ascending by
-    ``(observed_on, created_at, id)`` -- BUSINESS date first, which is what the
-    coverage rule bisects and what makes "the FIRST is the opening" true -- and
-    ``settled_cash_facts`` returns sources ascending by
-    ``(settled_on, transaction_id, entry_id)``, which keeps the replay
-    reproducible.  Neither is now load-bearing for WHICH assertion absorbs what.
+    **Every assertion is loaded, not just the latest**, and that half of the
+    cutover this walk still carries.  The shipping projection read only the
+    newest anchor (:func:`app.services.cash_ledger.resolve_anchor`) and carried
+    it BACKWARD over the past, so a pre-anchor date read today's balance
+    (finding B-18 / cash D3: measured on production 2026-07-25, the scalar
+    answers ``$2,932.41`` for 2026-06-03 while the period map omits those 8
+    periods entirely).  A fold over every assertion has no such state to invent.
 
     Reads only (no writes, no commit).
 
     Args:
-        account_id: The account whose ledger to walk.
-        scenario_id: The budget scenario whose settled rows to walk against.
+        account_id: The account whose facts to load.
+        scenario_id: The budget scenario whose settled rows to load.
             Assertions are per-ACCOUNT (``AccountAnchorHistory`` carries no
-            scenario), so the same assertions walk in every scenario against that
-            scenario's own rows -- the same split
+            scenario), so the same assertions accompany every scenario's own
+            rows -- the same split
             :func:`app.services.account_posting_service.walk_account_ledger`
             documents.
 
     Returns:
-        A :class:`CashLedgerWalk` (source facts + assertion corrections, both
+        A :class:`CashLedgerWalk` (source facts + assertion facts, both
         chronological).  Both lists are EMPTY when the account carries no
         assertion history -- production-unreachable (migration ``cfb15e782f86``
         plus the account factory guarantee an opening row), and returned rather
         than raised because a walk of no facts is honestly empty; the caller that
         must distinguish "no account" asks the account row, never this emptiness.
     """
+    # The OPENING is loaded first and unconditionally (plan step X-f3c-2a).
+    # It is the level the fold starts from, so an account missing it has no
+    # balance to report -- and unlike the assertion list, an empty answer is
+    # not honest here: it would silently re-level every figure on the account
+    # to zero.  :func:`~._events.account_opening_fact` raises instead.
+    opening = account_opening_fact(account_id)
     anchors = cash_anchor_facts(account_id)
     if not anchors:
-        return CashLedgerWalk([], [])
-
-    sources = settled_cash_facts(account_id, scenario_id)
-    # Which assertion CLEARS each source -- one implementation of that rule
-    # (``StatementCoverage``, ruling R-FL) rather than a placement convention.
-    # This grouping is deliberately the same shape as the posted ledger's in
-    # :func:`app.services.account_posting_service.walk_account_ledger`, which
-    # walks the SAME assertions against the SAME rule over the POSTED copy of
-    # these events; plan step X-d deletes that copy and this becomes the only
-    # walk.  A source no assertion cleared is in no bucket at all: it rides on
-    # top of the ledger, which is what the app already does for a movement
-    # dated after every assertion.
-    coverage = statement_coverage(anchors)
-    cleared: dict[int, Decimal] = {}
-    for source in sources:
-        anchor_id = coverage.clearing_anchor_id(source)
-        if anchor_id is not None:
-            cleared[anchor_id] = cleared.get(anchor_id, _ZERO_MONEY) + source.delta
-
-    corrections: list[CashAnchorCorrection] = []
-    running = _ZERO_MONEY
-    for anchor in anchors:
-        running += cleared.get(anchor.anchor_id, _ZERO_MONEY)
-        corrections.append(
-            CashAnchorCorrection(anchor=anchor, balance_before=running)
-        )
-        # The assertion resets the walked total to the asserted balance --
-        # the user's declaration outranks the recorded facts before it.
-        running = anchor.anchor_balance
-    # Sources dated after the LAST assertion ride on top of it and move no
-    # correction, so the walk stops here: ``running`` is not returned, and the
-    # fold re-derives the balance from ``dated_deltas`` rather than from it.
-    return CashLedgerWalk(sources, corrections)
+        return CashLedgerWalk([], [], opening)
+    return CashLedgerWalk(
+        settled_cash_facts(account_id, scenario_id), anchors, opening,
+    )
 
 
 def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
     """Return the walk's ``(day, delta)`` steps, ascending by date.
 
-    The bridge from the walk (events in the order the running balance applied
-    them) to the civil day each event COUNTS FROM -- the cash twin of
-    :func:`app.services.loan_ledger.dated_deltas`.  It MERGES the two per-event
-    statements of that clock rather than restating either: each fact and each
-    correction carries its own day (``settled_on`` / ``observed_on``) and its own
-    ``delta``, so a reader that needs the two kinds apart (the fold's R-I seed,
-    the period view's assertion component) reads the same pair this list is built
-    from.  Each event contributes the amount it moved the running balance by:
+    The bridge from the walk (the account's facts) to the civil day each fact
+    COUNTS FROM -- the cash twin of
+    :func:`app.services.loan_ledger.dated_deltas`.  It RE-KEYS rather than
+    re-values: each :class:`~._events.CashSourceFact` already carries its own
+    day (:attr:`~._events.CashSourceFact.settled_on`) and its own signed
+    :attr:`~._events.CashSourceFact.delta`, so this list is those two fields
+    read off the record rather than a second statement of either.
 
-    * an assertion: :attr:`CashAnchorCorrection.delta`
-      (``anchor_balance - balance_before``) -- the jump its reset booked;
-    * a settled source: its signed :attr:`~._events.CashSourceFact.delta` -- the
-      cash that moved.
+    **It carries the SOURCE facts alone since plan step X-f3c-1.**  It also
+    emitted one step per assertion -- the jump that assertion's RESET booked
+    over the records -- which made every caller's step list depend on a policy
+    this package no longer states (see :func:`walk_cash_ledger`).  A fold whose
+    account kind treats an assertion as a reset asks
+    :func:`app.services.balance_at._assertions.assertion_corrections` for those
+    steps and merges them onto these; a fold whose kind treats an assertion as a
+    CHECK (plan step X-f3c) merges nothing, and this list is the whole recorded
+    tier.
 
     **These are the amounts the posting writer books onto the account's LINKED
     ledger, in the same sign -- NOT their negatives.**  The loan twin says
     "negated" and is right to, because a loan walk tracks OWED against a
-    credit-normal liability ledger; cash does not.  An assertion's
-    ``anchor_balance`` is ledger-native (an owed-as-negative liability anchor
-    stays negative) and
-    :func:`app.services.cash_ledger.settled_cash_leg` is debit-positive, so this
-    walk's running balance IS the linked ledger's balance in one convention, for
-    assets and liabilities alike.  Verified against both writers:
+    credit-normal liability ledger; cash does not.
+    :func:`app.services.cash_ledger.settled_cash_leg` is debit-positive, so
+    these steps ARE the linked ledger's movements in one convention, for assets
+    and liabilities alike.  Verified against the writer:
     ``posting_service._settled_target`` books ``settled_cash_leg(txn)`` -- this
-    module's :attr:`~._events.CashSourceFact.delta` -- onto the linked ledger,
-    and ``account_posting_service._anchors`` books
-    ``anchor_balance - ledger_before`` onto it.  The NEGATIVES are the counter
-    legs (the category ledger, the anchor-equity account).  Getting this backwards
-    is not a cosmetic error: plan step X-d wires the writer onto this walk, and a
-    sign flip there still balances every entry -- so the trial balance closes and
-    only the balance sheet is upside down.
+    module's :attr:`~._events.CashSourceFact.delta` -- onto the linked ledger.
+    The NEGATIVES are the counter legs (the category ledger, the anchor-equity
+    account).  Getting this backwards is not a cosmetic error: plan step X-d
+    wires the writer onto this walk, and a sign flip there still balances every
+    entry -- so the trial balance closes and only the balance sheet is upside
+    down.
 
     That equality is why the re-key lives on the LEAF: two consumers, one
     derivation.  A third statement of "which day does this event count from, and
     for how much" is precisely how the fold and the posted ledger drift apart
     (plan step E1a's finding, on the loan side).
 
-    **Sources attributed BEFORE the account's opening assertion are emitted at
-    their OWN dates, and that is deliberate but not yet ruled.**  The walk
-    absorbs them into the opening's correction (they are inside the asserted
-    balance), so the running total lands exactly on the assertion at its date and
-    every date after -- but the prefix at a date BEFORE the opening is those
-    sources summed from a zero seed, which is not a balance the account ever had.
-    It is faithful to the POSTED ledger, which holds the same partial sum there,
-    so keying them onto the opening instead would break the equality above.  On
-    production data 2026-07-25 two accounts carry the shape (Fidelity Savings 1
-    row, the Money Market 4), and the prefix reads ``$500.00`` on both.  What a
-    READER should answer before an account's first assertion is the fold's
-    ruling, recorded as finding **N-37** for plan step X-b; this leaf states the
-    facts and does not decide it.
+    **This list carries no source dated at or before the account's opening, and
+    since plan step X-f3c-2b that is a property of the DATA rather than a claim
+    about it** (ruling **R-HG**).  An opening equity is the CLOSING balance for
+    ``opened_on``, so such a source is already inside the level this fold seeds
+    at and emitting it here would count the money twice -- finding **N-378**,
+    twelve production rows over five accounts.  The state is now unstorable:
+    :func:`app.services.cash_ledger.reject_movement_before_books_open` refuses
+    it at the one settle-day writer, and a deferrable constraint trigger over
+    both movement tables AND ``budget.account_openings`` refuses it from any
+    client, in both directions.  **So there is no filter here, and its absence
+    is the point**: a fold that screened its own inputs would be a second
+    statement of a rule the database already holds, and the two would drift.
+    The fold seeds at the stored opening (plan step **X-f3c-2a**), so a date
+    before it reads that level flat rather than a partial sum from zero;
+    finding **N-37** asked what a reader should answer there and was RULED
+    (**R-I**, 2026-07-25) and archived.
 
-    **The walk and this re-key are now on ONE granularity, and that is ruling
-    R-DH.**  They were not: the walk partitioned on the INSTANT while this list
-    keyed the resulting deltas by civil DAY, so a day's total depended on
-    sub-day click ordering even though the fold above reads only day boundaries.
-    This function's own prior text stated the split as a design -- "which settles
-    an assertion already covers turns on order within a day" -- and that sentence
-    is what cost production ``$4,001.42`` on 2026-07-31 (see
+    **The clearing question and this re-key are on ONE granularity, and that is
+    ruling R-DH.**  They were not: the replay partitioned on the INSTANT while
+    this list keyed the resulting deltas by civil DAY, so a day's total depended
+    on sub-day click ordering even though the fold above reads only day
+    boundaries.  This function's own prior text stated the split as a design --
+    "which settles an assertion already covers turns on order within a day" --
+    and that sentence is what cost production ``$4,001.42`` on 2026-07-31 (see
     :class:`app.services.cash_ledger.ReconciledThrough`).  Both halves key on
     the day now, so the collapse below is not merely safe, it is the same rule
-    the walk applied.
+    the clearing question applies.
 
     **Dated FACTS, not a balance-at-T** (the W9909 ruling): each pair says what
     ONE event contributed and when it counts, both readable off the public source
-    facts and corrections.  Turning them into a balance is the prefix-sum, which
-    is seam-private.
+    facts.  Turning them into a balance is the prefix-sum, which is seam-private.
 
     Args:
         walk: The account's :class:`CashLedgerWalk` (:func:`walk_cash_ledger`).
 
     Returns:
-        ``[(day, delta), ...]`` ascending by ``(day, tag)``, where a SOURCE tags
-        before an ASSERTION on a shared date -- mirroring the walk's own
-        tie-break, so reading the list shows the same chronology the walk
-        applied.  Empty for a walk with no facts.
+        ``[(day, delta), ...]`` ascending by day.  Empty for a walk carrying no
+        source facts.
     """
-    # Tag 0 = source, 1 = assertion: the same tie-break the walk applies, so a
-    # source sharing an assertion's day reads before it here too.  It holds for
-    # BOTH anchor kinds because the walk has one placement for both -- while the
-    # OPENING was excepted there and not here (finding N-133 / F5) these two
-    # orders were opposite for an opening, and the Returns docstring below
-    # asserted a chronology this list did not have.
-    tagged: list[tuple[date, int, Decimal]] = [
-        (fact.settled_on, 0, fact.delta) for fact in walk.source_facts
-    ] + [
-        (correction.observed_on, 1, correction.delta)
-        for correction in walk.anchor_corrections
-    ]
-    tagged.sort(key=lambda step: (step[0], step[1]))
-    return [(day, delta) for day, _tag, delta in tagged]
+    steps = [(fact.settled_on, fact.delta) for fact in walk.source_facts]
+    steps.sort(key=lambda step: step[0])
+    return steps

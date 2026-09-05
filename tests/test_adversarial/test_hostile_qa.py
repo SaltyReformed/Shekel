@@ -14,8 +14,10 @@ import pytest
 
 from app.enums import SettlementBasisEnum
 from tests._test_helpers import (
+    rhythm_of,
     default_settle_day,
     freeze_today,
+    settle_day_columns,
     settlement_basis_id,
     settlement_columns,
     settlement_if_settling,
@@ -27,7 +29,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
 
     Adversarial tests use seed_periods (calendar-anchored Jan-May 2026)
-    and exercise route handlers that call ``get_current_period``.
+    and exercise route handlers that ask which paycheck contains today.
     Freezing today inside the seed range keeps those routes returning
     populated grid HTML regardless of wall-clock date, so input-
     validation assertions ("/grid?periods=10000 still renders") stay
@@ -43,6 +45,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
+from app.services.balance_at import BalanceContext
 from app.services import (
     carry_forward_service,
     credit_workflow,
@@ -51,6 +54,7 @@ from app.services import (
 )
 from app.services import account_service
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -72,6 +76,7 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
     planned = Decimal(amount)
     settled_on = default_settle_day(seed_periods[period_index], status.id)
     txn = Transaction(
+        user_id=seed_periods[period_index].user_id,
         pay_period_id=seed_periods[period_index].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -79,8 +84,8 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
         name=name,
         category_id=seed_user["categories"][category_key].id,
         transaction_type_id=txn_type.id,
-        estimated_amount=planned,
-        settled_on=settled_on,
+        amount_ownership=AmountOwnership.own(planned),
+        **settle_day_columns(settled_on),
         **settlement_columns(settled_on, planned, submitted=settled_amount),
     )
     db.session.add(txn)
@@ -772,8 +777,8 @@ class TestCarryForwardEdgeCases:
             # Carry forward from period 0 to period 0.
             period_id = seed_periods[0].id
             count = carry_forward_service.carry_forward_unpaid(
-                period_id, period_id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                period_id, period_id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -806,8 +811,8 @@ class TestCarryForwardEdgeCases:
 
             # Carry forward from period 0 to period 2.
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[2].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[2].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -926,6 +931,7 @@ class TestNumericEdgeCases:
             status = db.session.query(Status).filter_by(name="Projected").one()
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -933,7 +939,7 @@ class TestNumericEdgeCases:
                 name="Overflow Test",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=txn_type.id,
-                estimated_amount=Decimal("99999999999.99"),
+                amount_ownership=AmountOwnership.own(Decimal("99999999999.99")),
             )
             db.session.add(txn)
 
@@ -985,12 +991,11 @@ class TestAuthEdgeCases:
         """
         with app.app_context():
             # Create a pay period for user 2.
-            from app.services import pay_period_service
             periods2 = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -999,6 +1004,7 @@ class TestAuthEdgeCases:
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             txn2 = Transaction(
+                user_id=periods2[0].user_id,
                 pay_period_id=periods2[0].id,
                 scenario_id=second_user["scenario"].id,
                 account_id=second_user["account"].id,
@@ -1006,7 +1012,7 @@ class TestAuthEdgeCases:
                 name="Other's Expense",
                 category_id=second_user["categories"]["Rent"].id,
                 transaction_type_id=txn_type.id,
-                estimated_amount=Decimal("99.99"),
+                amount_ownership=AmountOwnership.own(Decimal("99.99")),
             )
             db.session.add(txn2)
             db.session.commit()

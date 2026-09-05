@@ -17,7 +17,7 @@ end balance, the income and expense subtotals, the two remainders ("Period
 timing" and "Book vs bank"), the modelled contribution and the modelled
 accrual -- is one
 :class:`GridColumn`, and all but the last two come from a single
-:func:`~app.services.balance_at._cash_periods.cash_period_view`: one walk, one
+:func:`~app.services.balance_at._cash_periods.period_view_of`: one walk, one
 plan load, one valuation, grouped on the two clocks the identity binds.
 
     balance[p] - balance[p-1]
@@ -149,8 +149,11 @@ class GridColumn:  # pylint: disable=too-many-instance-attributes
         income: The period's income subtotal, cent-quantized -- every row
             ATTRIBUTED to the period, settled at its confirmed cash leg and
             still-projected at its live or entries-aware amount (ruling R-K).
-        expense: The same, for expense rows (a magnitude), so the column reads
-            ``income`` minus ``expense``.
+        expense: The same, for expense rows, so the column reads ``income``
+            minus ``expense``.  A magnitude in the ordinary case and not a
+            bound -- see
+            :attr:`~app.services.balance_at._cash_periods.CashPeriodFigures.expense`,
+            which this reads unchanged, for the two shapes that invert one.
         net: ``round_money(income - expense)`` -- rounded ONCE at the boundary
             rather than as the difference of two separately-rounded legs,
             because it is the figure the balance roll-forward has to reconcile
@@ -293,15 +296,16 @@ class GridBalanceView:
             a real balance beside its real subtotals -- which is why this is one
             map rather than a balance map that omitted periods and a subtotal
             map that did not.
-        amount_overrides: The live ``{transaction_id: Decimal}`` map this
-            projection was computed with (recomputed salary income and derived
-            loan debits).  Carried so the grid's CELLS render from the same map
-            its balance row folded (ruling R-Q) instead of the route building a
-            second one, which made them identical only by argument.
+    **The ``amount_overrides`` field is GONE (plan step X-au-d)**, with the
+    producer behind it: see :class:`._cash_periods.CashPeriodView` for the
+    census that found nothing had read it since plan step X-au-c2b routed the
+    grid through the amount model's own map.  Ruling **R-Q** -- a cell and the
+    balance row beside it price one row one way -- is unchanged and is now
+    structural: both read ``cash_ledger.amounts_by_id`` over the pass's basis,
+    and a derived row has no second figure to disagree with.
     """
 
     columns: "OrderedDict[int, GridColumn]"
-    amount_overrides: "dict[int, Decimal]"
 
     def row_flags(self, periods: "Iterable[DerivedPeriod]") -> GridRowFlags:
         """Return which conditional rows *periods* renders (ruling R-O).
@@ -407,7 +411,7 @@ def grid_balance_view(
     """Return the kind-aware cash-flow-surface view for *account*.
 
     The single entry the budget grid reads to project one account's column set.
-    ONE :func:`~app.services.balance_at._cash_fold.assemble` supplies every
+    ONE :func:`~app.services.balance_at._cash_fold.assembled_fold` supplies every
     figure the surface renders: :func:`._cash_periods.period_view_of` regroups it
     into the income and expense subtotals and ruling R-K's remainder, and
     :func:`._asset_fold.resolve` resolves the modelled tiers over the SAME
@@ -502,28 +506,25 @@ def grid_balance_view(
         # window -- the same guard :func:`._asset_fold.asset_period_view` and
         # :func:`._asset_fold.period_columns` already carry.
         return empty_grid_view()
-    folded = _cash_fold.assemble(account, ctx.amounts(), ctx.as_of)
+    folded = _cash_fold.assembled_fold(account, ctx)
     view = _cash_periods.period_view_of(folded, window)
     modelled = _asset_fold.period_columns(
+        # No calendar is passed: the contribution tier reads the one ``folded``
+        # was CLAMPED by (pay-calendar plan step C4-a-1).  It was ``ctx.calendar()``
+        # here, which was the pass's own and therefore right -- but only because
+        # this call site named one ``ctx`` twice, which is the pairing plan step
+        # X-i4 removed for the account and X-au-c2b for the scenario.  Plan step
+        # C2-f2a's ruling that the tier takes a CALENDAR and never a WINDOW is
+        # unchanged; ``window`` above is that same calendar's ``saved()`` view.
         _asset_fold.resolve(
             account, folded,
             max(period.end_date for period in window),
             _contribution_inputs_for_account(account, ctx),
-            # The pass's OWN calendar, and ``window`` above is its
-            # ``saved()`` view -- one memoized derivation read twice, not two
-            # readings of one schedule.  Plan step C2-f2a made this an
-            # argument rather than a query the contribution tier issued for
-            # itself (ledger row **P37**), and it is the CALENDAR rather than
-            # the window so that no caller here can hand that tier a slice:
-            # the annual limit is a calendar-year accumulation and a slice
-            # restarts it mid-year.
-            ctx.calendar(),
         ),
         window,
     )
     return GridBalanceView(
         columns=_assemble_columns(window, view.columns, modelled),
-        amount_overrides=view.amount_overrides,
     )
 
 
@@ -539,6 +540,6 @@ def empty_grid_view() -> GridBalanceView:
     endpoints each had one.
 
     Returns:
-        A :class:`GridBalanceView` with no columns and no overrides.
+        A :class:`GridBalanceView` with no columns.
     """
-    return GridBalanceView(columns=OrderedDict(), amount_overrides={})
+    return GridBalanceView(columns=OrderedDict())

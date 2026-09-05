@@ -46,7 +46,7 @@ class ShekelRefNameChecker(BaseChecker):
             'string name columns"). A literal comparison such as '
             "status.name == \"Projected\" silently breaks if the display label is "
             "renamed and bypasses the cached-enum model in app/enums.py / "
-            "app/ref_cache.py. Compare the *_id column or the enum constant. "
+            "app/ref_cache/. Compare the *_id column or the enum constant. "
             "Comparing .name against a variable or column is not flagged.",
         ),
     }

@@ -12,6 +12,7 @@ from flask_login import current_user, login_required
 
 from app import ref_cache
 from app.enums import RoleEnum
+from app.exceptions import RequiredRecordMissing
 from app.utils.auth_helpers import fresh_login_required, require_owner
 from app.utils.digit_strings import parse_row_id
 
@@ -31,10 +32,11 @@ from app.services import (
     account_service,
     pay_period_admin,
     pay_period_locks,
-    pay_period_service,
     pay_schedule_service,
 )
 from app.services.auth_service import hash_password
+from app.services.pay_calendar import calendar_at_schedule
+from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,7 @@ _VALID_SECTIONS = [
     "general", "categories", "pay-periods", "tax", "account-types",
     "companions", "security",
 ]
+
 
 # The scalar UserSettings fields the POST handler copies straight from the
 # validated form.  All are storage-domain values: UserSettingsSchema's
@@ -155,6 +158,22 @@ def render_settings_dashboard(section, extra=None, status=200):
     context; ``status`` lets a route re-render with a 422 (e.g. the
     discard-confirm panel) instead of redirecting.
 
+    **It used to AUTO-CREATE the owner's settings row, and plan step
+    balance:X-i3 deleted that branch** -- the third instance of one shape, after
+    the two on the account detail pages.  This is a render, shared by a GET and
+    by POST re-renders, and a render that repairs data is a write inside a read:
+    it cost ``/settings`` the one snapshot the figures on it are computed
+    against, and no ``write_transaction`` block could declare it here, because
+    the same function serves commands where such a block is meaningless.
+
+    Every door that creates a user writes the row -- registration
+    (``auth_service.register_user``), the companion invite below, and
+    ``scripts/seed_companion.py`` -- so a missing one means the data was
+    changed outside the application.  The two POST handlers that also
+    create-if-missing keep doing so: a write door may author what it writes,
+    which is the standing this render does not have.  Measured before the
+    branch was deleted: **0 of 2 production users** without a settings row.
+
     Args:
         section: The active settings section.
         extra: Optional dict overlaid on the context after the section
@@ -163,12 +182,22 @@ def render_settings_dashboard(section, extra=None, status=200):
 
     Returns:
         A Flask ``(body, status)`` response tuple.
+
+    Raises:
+        RequiredRecordMissing: The owner carries no ``auth.user_settings`` row.
     """
     settings = current_user.settings
     if settings is None:
-        settings = UserSettings(user_id=current_user.id)
-        db.session.add(settings)
-        db.session.commit()
+        raise RequiredRecordMissing(
+            f"user {current_user.id} carries no auth.user_settings row, so "
+            f"there are no preferences to render a settings page from. Every "
+            f"door that creates a user writes one -- registration, and the "
+            f"companion invite -- so reaching this means the row was removed "
+            f"outside the application. POST /settings rebuilds it, but the "
+            f"form that posts there is on the page this refusal replaces, so "
+            f"there is no path to it through the browser: repair the row "
+            f"directly."
+        )
 
     context = _empty_section_context()
     context.update(_section_context(section))
@@ -186,32 +215,81 @@ def render_settings_dashboard(section, extra=None, status=200):
 def _load_pay_periods_context(user_id):
     """Load the pay-periods section: the period list with lock badges.
 
-    Each row carries a :class:`~app.models.pay_period.PayPeriod`, whether
-    it is ``locked`` (immutable), and the display badge text/CSS the
+    Each row carries a :class:`~app.services.pay_calendar.DerivedPeriod`,
+    whether it is ``locked`` (immutable), and the display badge text/CSS the
     manage UI renders -- the lock-reason-to-badge mapping is resolved here
     so the template only displays, never computes.  ``pp_schedule`` is the
     persisted schedule (cadence) when one exists.  ``pp_can_reset`` gates
     the full-reset control to users with no settled transactions (the same
     bound the service enforces), so the destructive action is only offered
     when it would be accepted.
+
+    **The list is the DERIVATION since plan step C2-f3b**, where it was
+    ``pay_period_service.get_all_periods`` -- ORM rows ordered by the stored
+    ``period_index`` and labelled from the stored ``end_date``, both of which
+    plan step **C4-c** dropped.  It matters beyond that step: this page renders the
+    ordinal and the date range that the four destructive doors beside it then
+    decide against, so a row shown here and the row truncate deletes have to be
+    described by one derivation or the confirmation the user gives is about a
+    different schedule from the one that changes.
+
+    ``display_today`` rather than ``date.today``: the HISTORICAL badge says
+    whether a paycheck is behind the OWNER, and the process clock is the
+    container's (finding **balance:N-191**, ruled 2026-08-19).
+
+    **THIS SECTION IS THE REPAIR, so it may not REQUIRE what it repairs**
+    (plan step ``pay_calendar:C4-d``, ruling **R-PC45**).  It read
+    ``calendar_for(user_id)`` unconditionally, which was harmless while that
+    door answered an EMPTY calendar for an owner with no
+    ``budget.pay_schedule`` row.  That door refuses them now -- and
+    ``pay_periods.generate_form`` redirects HERE, and
+    ``errors/no_pay_calendar.html`` offers exactly that link -- so the
+    recovery page's own repair looped straight back to the recovery page.  An
+    adversarial review of this step drove it and measured the loop; the
+    template's promise that "it carries the REPAIR" was false for the one
+    owner it is written for.
+
+    So this is a SOFT-door caller by definition: it resolves the schedule ROW
+    and derives a calendar only when there is one to derive from.  Every door
+    that PUBLISHES a per-paycheck figure still refuses that owner, which is the
+    ruling; the door that CREATES their schedule cannot.
+
+    **It also collapses a redundant read.**  The row is fetched ONCE and both
+    answers come off it -- the calendar through
+    :func:`~app.services.pay_calendar.calendar_at_schedule`, and ``pp_schedule``
+    itself.  Before, ``calendar_for`` read the schedule and ``get_schedule``
+    read it again for the same render, which is the per-render duplicate ledger
+    rows **P68** and **P69** record.
+
+    Returns:
+        The section's context.  ``pp_periods`` is empty and ``pp_schedule`` is
+        ``None`` for an owner with no schedule row -- the state the generate
+        form exists to leave, and one the template already renders (it guards
+        every ``pp_schedule`` read).
     """
-    periods = pay_period_service.get_all_periods(user_id)
-    locks = pay_period_locks.classify_periods_bulk(periods)
+    schedule = pay_schedule_service.get_schedule(user_id)
     period_rows = []
-    for period in periods:
-        reason = locks.get(period.id)
-        badge_label, badge_class = _PP_LOCK_BADGES.get(
-            reason, _PP_MUTABLE_BADGE,
+    if schedule is not None:
+        calendar = calendar_at_schedule(
+            user_id, pay_schedule_service.ScheduleFacts.of(schedule),
         )
-        period_rows.append({
-            "period": period,
-            "locked": reason is not None,
-            "badge_label": badge_label,
-            "badge_class": badge_class,
-        })
+        locks = pay_period_locks.classify_schedule_locks(
+            calendar, as_of=display_today(),
+        )
+        for period in calendar.saved():
+            reason = locks[period.period_id]
+            badge_label, badge_class = _PP_LOCK_BADGES.get(
+                reason, _PP_MUTABLE_BADGE,
+            )
+            period_rows.append({
+                "period": period,
+                "locked": reason is not None,
+                "badge_label": badge_label,
+                "badge_class": badge_class,
+            })
     return {
         "pp_periods": period_rows,
-        "pp_schedule": pay_schedule_service.get_schedule(user_id),
+        "pp_schedule": schedule,
         "pp_can_reset": pay_period_admin.can_reset_pay_periods(user_id),
     }
 

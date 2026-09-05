@@ -732,10 +732,10 @@ the working order; the plan doc is `21974f0b`.
   the projected-payment routing. Full suite **7293 passed**; `pylint app/` **10.00**; no migration
   (a read-path fix, no schema change). Adversarial review CONFIRMED the core logic (balance
   unchanged, no double-count) and surfaced C1 (fixed) + coverage/docstring notes (addressed).
-- **Remaining (manual acceptance):** a dev prod-clone spot-check on account 3 with a standing extra
-  -- confirm net worth, `/savings`, schedule page, detail band chart, and year-end agree to the cent
-  in the running app, and that the recurring payment's `end_date` equals the committed payoff
-  (payments stop there).
+- **Remaining (manual acceptance):** a dev prod-clone spot-check on account 3 with a standing
+  extra -- confirm net worth, `/savings`, schedule page, detail band chart, and year-end agree to
+  the cent in the running app, and that the recurring payment's `end_date` equals the committed
+  payoff (payments stop there).
 
 ### 16.9 Carve-outs and out-of-scope
 

@@ -24,8 +24,15 @@ from app.models.ref import AccountType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
+from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.utils.dates import month_name
-from tests._test_helpers import make_cadence_rule
+from tests._test_helpers import (
+    create_loan_account,
+    insert_trueup_event,
+    loan_params_for,
+    make_cadence_rule,
+    make_loan_payment_template,
+)
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     MONTHLY,
@@ -40,30 +47,34 @@ MONTHS_IN_YEAR = 12
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _rule(user, cadence, *, day_of_month=None, starts_on=None):
-    """Author one rule of *cadence* for *user*, through the write door.
+def _rule(tmpl, cadence, *, day_of_month=None, starts_on=None, end_date=None):
+    """Author one rule of *cadence* ONTO *tmpl*, through the write door.
 
     Plan step R7c-b made the two-axis columns NOT NULL, so a rule naming only a
-    pattern no longer produces a row.
+    pattern no longer produces a row; plan step R-F6 put the owning FK on the
+    rule, so it cannot be written before the definition it belongs to.
     """
     return make_cadence_rule(
-        user.id, cadence,
-        fires_on_day=day_of_month, starts_on=starts_on,
+        tmpl, cadence,
+        fires_on_day=day_of_month, starts_on=starts_on, end_date=end_date,
     )
 
 
-def _txn(user, account, category, rule, amount, *, type_enum, name):
+def _txn(user, account, category, cadence, amount, *, type_enum, name,
+         **rule_kwargs):
+    """Create a transaction template, and its cadence when it has one."""
     tmpl = TransactionTemplate(
         user_id=user.id,
         account_id=account.id,
         category_id=category.id,
-        recurrence_rule_id=rule.id if rule else None,
         transaction_type_id=ref_cache.txn_type_id(type_enum),
         name=name,
         default_amount=Decimal(amount),
     )
     db.session.add(tmpl)
     db.session.flush()
+    if cadence is not None:
+        _rule(tmpl, cadence, **rule_kwargs)
     return tmpl
 
 
@@ -82,17 +93,19 @@ def _savings(user, name="Test Savings"):
     return account
 
 
-def _transfer(user, from_account, to_account, rule, amount, *, name):
+def _transfer(user, from_account, to_account, cadence, amount, *, name,
+              **rule_kwargs):
+    """Create a transfer template and its cadence."""
     tmpl = TransferTemplate(
         user_id=user.id,
         from_account_id=from_account.id,
         to_account_id=to_account.id,
-        recurrence_rule_id=rule.id,
         name=name,
         default_amount=Decimal(amount),
     )
     db.session.add(tmpl)
     db.session.flush()
+    _rule(tmpl, cadence, **rule_kwargs)
     return tmpl
 
 
@@ -111,14 +124,12 @@ class TestUnifiedRender:
         category = seed_user["categories"]["Rent"]
         savings = _savings(user)
 
-        rule_bw = _rule(user, EVERY_PERIOD)
-        rule_mo = _rule(user, MONTHLY, day_of_month=15)
-        _txn(user, checking, category, rule_bw, "100.00",
+        _txn(user, checking, category, EVERY_PERIOD, "100.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Electricity")
-        _txn(user, checking, category, rule_bw, "1500.00",
+        _txn(user, checking, category, EVERY_PERIOD, "1500.00",
              type_enum=TxnTypeEnum.INCOME, name="Paycheck")
-        _transfer(user, checking, savings, rule_mo, "500.00",
-                  name="Savings Transfer")
+        _transfer(user, checking, savings, MONTHLY, "500.00",
+                  name="Savings Transfer", day_of_month=15)
         db.session.commit()
 
         resp = auth_client.get("/templates")
@@ -139,8 +150,7 @@ class TestUnifiedRender:
         user = seed_user["user"]
         checking = seed_user["account"]
         category = seed_user["categories"]["Rent"]
-        rule = _rule(user, EVERY_PERIOD)
-        _txn(user, checking, category, rule, "100.00",
+        _txn(user, checking, category, EVERY_PERIOD, "100.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Electric")
         db.session.commit()
 
@@ -193,8 +203,7 @@ class TestUnifiedRender:
         user = seed_user["user"]
         checking = seed_user["account"]
         category = seed_user["categories"]["Rent"]
-        rule = _rule(user, EVERY_PERIOD)
-        _txn(user, checking, category, rule, "100.00",
+        _txn(user, checking, category, EVERY_PERIOD, "100.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Electric")
         db.session.commit()
 
@@ -226,9 +235,8 @@ class TestUnitToggle:
         user = seed_user["user"]
         checking = seed_user["account"]
         category = seed_user["categories"]["Rent"]
-        rule = _rule(user, MONTHLY, day_of_month=1)
-        _txn(user, checking, category, rule, "1300.00",
-             type_enum=TxnTypeEnum.EXPENSE, name="Rent Bill")
+        _txn(user, checking, category, MONTHLY, "1300.00",
+             type_enum=TxnTypeEnum.EXPENSE, name="Rent Bill", day_of_month=1)
         db.session.commit()
 
         # Default: monthly.  The per-paycheck-only figure is absent.
@@ -275,9 +283,8 @@ class TestUnitToggle:
         user = seed_user["user"]
         checking = seed_user["account"]
         category = seed_user["categories"]["Rent"]
-        rule = _rule(user, MONTHLY, day_of_month=1)
-        _txn(user, checking, category, rule, "1300.00",
-             type_enum=TxnTypeEnum.EXPENSE, name="Rent Bill")
+        _txn(user, checking, category, MONTHLY, "1300.00",
+             type_enum=TxnTypeEnum.EXPENSE, name="Rent Bill", day_of_month=1)
         db.session.commit()
 
         resp = auth_client.post(
@@ -330,12 +337,10 @@ class TestUnifiedIDOR:
         category1 = seed_user["categories"]["Rent"]
         category2 = list(second_user["categories"].values())[0]
 
-        rule1 = _rule(user1, MONTHLY, day_of_month=1)
-        rule2 = _rule(user2, MONTHLY, day_of_month=1)
-        _txn(user1, checking1, category1, rule1, "1200.00",
-             type_enum=TxnTypeEnum.EXPENSE, name="My Rent")
-        _txn(user2, checking2, category2, rule2, "900.00",
-             type_enum=TxnTypeEnum.EXPENSE, name="Their Rent")
+        _txn(user1, checking1, category1, MONTHLY, "1200.00",
+             type_enum=TxnTypeEnum.EXPENSE, name="My Rent", day_of_month=1)
+        _txn(user2, checking2, category2, MONTHLY, "900.00",
+             type_enum=TxnTypeEnum.EXPENSE, name="Their Rent", day_of_month=1)
         db.session.commit()
 
         html = auth_client.get("/templates").data.decode()
@@ -370,7 +375,7 @@ class TestTheRenderedRecurrenceCell:
         """The paycheck-space cadence names no calendar day."""
         user = seed_user["user"]
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
-             _rule(user, EVERY_PERIOD), "100.00",
+             EVERY_PERIOD, "100.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Electric")
         db.session.commit()
 
@@ -384,8 +389,9 @@ class TestTheRenderedRecurrenceCell:
         """A rule that fires every month is distinguished only by its day."""
         user = seed_user["user"]
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
-             _rule(user, MONTHLY, day_of_month=22),
-             "100.00", type_enum=TxnTypeEnum.EXPENSE, name="Van Payment")
+             MONTHLY,
+             "100.00", type_enum=TxnTypeEnum.EXPENSE, name="Van Payment",
+             day_of_month=22)
         db.session.commit()
 
         html = auth_client.get("/templates").data.decode()
@@ -398,7 +404,7 @@ class TestTheRenderedRecurrenceCell:
         """A deferring placement is named, and its implied day 1 is not."""
         user = seed_user["user"]
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
-             _rule(user, MONTHLY_FIRST), "100.00",
+             MONTHLY_FIRST, "100.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Phone Allowance")
         db.session.commit()
 
@@ -418,11 +424,13 @@ class TestTheRenderedRecurrenceCell:
         One function has no room for that difference.
         """
         user = seed_user["user"]
-        rule = _rule(user, QUARTERLY, day_of_month=21)
-        rule.month_of_year = seed_periods_today[0].start_date.month
-        db.session.flush()
+        # The month the cell names is the FIRST OCCURRENCE'S (ruling R-R16),
+        # so it is stated by the authored date rather than assigned after the
+        # fact -- ``month_of_year`` was dropped at plan step R7c-c and setting
+        # it here wrote a Python attribute no column and no reader saw.
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
-             rule, "60.00", type_enum=TxnTypeEnum.EXPENSE, name="Mint Mobile")
+             QUARTERLY, "60.00", type_enum=TxnTypeEnum.EXPENSE,
+             name="Mint Mobile", day_of_month=21)
         db.session.commit()
 
         html = auth_client.get("/templates").data.decode()
@@ -462,10 +470,9 @@ class TestTheRenderedRecurrenceCell:
         authored = seed_periods_today[0].start_date.replace(
             year=seed_periods_today[0].start_date.year - 1,
         ).replace(month=3, day=2)
-        rule = _rule(user, QUARTERLY, starts_on=authored)
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
-             rule, "45.00", type_enum=TxnTypeEnum.EXPENSE,
-             name="Anchor Disposal")
+             QUARTERLY, "45.00", type_enum=TxnTypeEnum.EXPENSE,
+             name="Anchor Disposal", starts_on=authored)
         db.session.commit()
 
         html = auth_client.get("/templates").data.decode()
@@ -487,12 +494,14 @@ class TestTheRenderedRecurrenceCell:
         from datetime import timedelta  # pylint: disable=import-outside-toplevel
 
         user = seed_user["user"]
-        rule = _rule(user, MONTHLY, day_of_month=1)
         end = seed_periods_today[0].start_date + timedelta(days=800)
-        rule.end_date = end
-        db.session.flush()
+        # Authored WITH the cadence rather than assigned to the rule
+        # afterwards: the rule cannot exist before the definition that owns it
+        # (plan step R-F6), so the closing bound rides in with the rest of what
+        # the fixture states.
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
-             rule, "1500.00", type_enum=TxnTypeEnum.EXPENSE, name="Mortgage")
+             MONTHLY, "1500.00", type_enum=TxnTypeEnum.EXPENSE,
+             name="Mortgage", day_of_month=1, end_date=end)
         db.session.commit()
 
         html = auth_client.get("/templates").data.decode()
@@ -513,8 +522,9 @@ class TestTheRenderedRecurrenceCell:
         user = seed_user["user"]
         tmpl = _txn(
             user, seed_user["account"], seed_user["categories"]["Rent"],
-            _rule(user, MONTHLY, day_of_month=9),
+            MONTHLY,
             "25.00", type_enum=TxnTypeEnum.EXPENSE, name="Retired Streaming",
+            day_of_month=9,
         )
         tmpl.is_active = False
         db.session.commit()
@@ -541,3 +551,45 @@ class TestTheRenderedRecurrenceCell:
         html = auth_client.get("/templates").data.decode()
 
         assert "One-time" in self._row_markup(html, "Retired One Off")
+
+    def test_a_retired_loan_payments_stop_line_is_the_loans_closing_date(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The cell names when the LOAN closed, with nothing stored to name it.
+
+        Plan step R7d-d.  Before it the second line came from the cached
+        ``end_date`` column; here that column is NULL (asserted), the loan was
+        trued to ``$0.00`` on 2026-02-15, and the page still says so.  The date
+        is DERIVED through the composed door -- read backward over the loan's
+        own events (plan step ``recurrence:R7d-h``) -- so it does not move
+        with the day the page is rendered, which is what lets this route test
+        run on the ambient clock: on any day from 2026-02-15 on, that loan
+        closed on that day.
+        """
+        loan = create_loan_account(
+            seed_user, db.session, name="Retired Van",
+            principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
+            origination_date=date(2026, 1, 1), payment_day=1,
+        )
+        insert_trueup_event(
+            loan_params_for(db.session, loan.id), Decimal("0.00"),
+            anchor_date=date(2026, 2, 15),
+        )
+        tpl = make_loan_payment_template(
+            db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
+        )
+        # The production door for the opening bound: the first contractual
+        # installment (2026-02-01) precedes the closing, so the stop is a date
+        # and not "never runs".
+        bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+        tpl.name = "Retired Van Payment"
+        db.session.commit()
+        assert tpl.recurrence_rule.end_date is None, (
+            "precondition: nothing stored could have supplied the stop line"
+        )
+
+        html = auth_client.get("/templates").data.decode()
+        row = self._row_markup(html, "Retired Van Payment")
+
+        assert "Monthly (day 1)" in row
+        assert "until Feb 15, 2026" in row

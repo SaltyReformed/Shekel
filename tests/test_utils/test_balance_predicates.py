@@ -48,12 +48,12 @@ from app.utils.balance_predicates import (
     is_balance_contributing,
     is_cancelled,
     is_credit,
-    is_archived,
     is_done,
     is_projected,
     is_projected_clause,
     settled_status_ids,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_txn(db, seed_user, seed_periods, status_member, *, is_deleted=False):
@@ -67,6 +67,7 @@ def _make_txn(db, seed_user, seed_periods, status_member, *, is_deleted=False):
     rule the module under test enforces.
     """
     txn = Transaction(
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -74,7 +75,7 @@ def _make_txn(db, seed_user, seed_periods, status_member, *, is_deleted=False):
         name=f"Test-{status_member.name}",
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
         is_deleted=is_deleted,
     )
     db.session.add(txn)
@@ -127,17 +128,23 @@ class TestIsBalanceContributing:
             txn = _make_txn(db, seed_user, seed_periods, StatusEnum.CANCELLED)
             assert is_balance_contributing(txn) is False
 
-    def test_settled_contributes(self, app, db, seed_user, seed_periods):
-        """C2-4: a Settled txn contributes to the balance.
+    def test_received_contributes(self, app, db, seed_user, seed_periods):
+        """C2-4: a Received txn contributes to the balance.
 
-        ``Settled`` has ``is_settled=True`` but
-        ``excludes_from_balance=False`` -- the row is reconciled, not
+        ``Received`` has ``is_settled=True`` but
+        ``excludes_from_balance=False`` -- the row is settled, not
         excluded -- so it must contribute. Pins the audit's observation
         that ``is_settled`` and ``excludes_from_balance`` are
         orthogonal flags; the predicate consults the latter.
+
+        Written over ``Settled`` -- the terminal archive -- until plan step
+        **balance:X-am** deleted that status.  The orthogonality it
+        demonstrated is a property of the two COLUMNS, so it is restated over
+        the settled status that remains rather than lost with the one that
+        went.
         """
         with app.app_context():
-            txn = _make_txn(db, seed_user, seed_periods, StatusEnum.SETTLED)
+            txn = _make_txn(db, seed_user, seed_periods, StatusEnum.RECEIVED)
             assert is_balance_contributing(txn) is True
 
     def test_soft_deleted_excluded(self, app, db, seed_user, seed_periods):
@@ -222,7 +229,6 @@ class TestPredicateClauseParity:
                 txns_by_status[StatusEnum.PROJECTED].id,
                 txns_by_status[StatusEnum.DONE].id,
                 txns_by_status[StatusEnum.RECEIVED].id,
-                txns_by_status[StatusEnum.SETTLED].id,
             }
 
             assert python_contributing == expected, (
@@ -340,12 +346,12 @@ class TestSettledDay:
 class TestSettledStatusIds:
     """Pins the cached settled-status ID set against the ``is_settled`` column."""
 
-    def test_settled_ids_are_paid_received_settled(self, app, db):
+    def test_settled_ids_are_paid_and_received(self, app, db):
         """The set is exactly the rows whose ``is_settled`` column is True.
 
         Derives the expected IDs by querying the seeded ``Status`` rows
         whose ``is_settled=True`` (independent of any hardcoded enum
-        list) and asserts both that they are the three expected statuses
+        list) and asserts both that they are the two expected statuses
         and that ``settled_status_ids()`` returns the same set. The
         ``is_settled`` column is the canonical "this transaction has
         completed" definition consulted directly by the calendar,
@@ -367,10 +373,9 @@ class TestSettledStatusIds:
             assert seeded_settled_ids == {
                 ref_cache.status_id(StatusEnum.DONE),
                 ref_cache.status_id(StatusEnum.RECEIVED),
-                ref_cache.status_id(StatusEnum.SETTLED),
             }, (
                 "Seed matrix in app/ref_seeds.py has changed -- only "
-                "Paid, Received and Settled should carry is_settled=True"
+                "Paid and Received should carry is_settled=True"
             )
             assert settled_status_ids() == frozenset(seeded_settled_ids)
 
@@ -640,59 +645,6 @@ class TestIsDone:
                 txn = _make_txn(db, seed_user, seed_periods, member)
                 assert is_done(txn) is False, (
                     f"is_done returned True for {member.name}"
-                )
-
-
-class TestIsArchived:
-    """Pins ``is_archived`` -- the TERMINAL ``Settled`` status, not the band.
-
-    Added at plan step X-ap for ``entry_service``, which refuses a purchase
-    recorded against an archived row (finding **N-229**). The distinction it
-    exists to make is one word wide and the whole point: ``Status.is_settled``
-    is True for Paid, Received AND Settled, so a guard written against the band
-    would refuse a Paid envelope's late-posting purchases -- the case the
-    re-derive hook exists for.
-    """
-
-    def test_is_archived_true_only_for_settled(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """``Settled`` is the one status that answers True."""
-        with app.app_context():
-            txn = _make_txn(db, seed_user, seed_periods, StatusEnum.SETTLED)
-            assert is_archived(txn) is True
-
-    def test_is_archived_false_for_the_other_settled_band_members(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Paid and Received are settled but NOT archived.
-
-        The control for the failure mode: a guard that collapsed the archive
-        into the band would refuse every late-posting purchase on a Paid
-        envelope, which is the documented reason the re-derive hook exists.
-        """
-        with app.app_context():
-            for member in (StatusEnum.DONE, StatusEnum.RECEIVED):
-                txn = _make_txn(db, seed_user, seed_periods, member)
-                assert txn.status.is_settled is True, (
-                    f"{member.name} must be in the settled band for this "
-                    "test to mean anything"
-                )
-                assert is_archived(txn) is False, (
-                    f"is_archived returned True for {member.name}"
-                )
-
-    def test_is_archived_false_for_every_other_status(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Projected, Credit and Cancelled all answer False."""
-        with app.app_context():
-            for member in StatusEnum:
-                if member is StatusEnum.SETTLED:
-                    continue
-                txn = _make_txn(db, seed_user, seed_periods, member)
-                assert is_archived(txn) is False, (
-                    f"is_archived returned True for {member.name}"
                 )
 
 

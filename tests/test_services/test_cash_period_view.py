@@ -1,7 +1,7 @@
 """X-c1: the cash PERIOD VIEW -- one row set, two clocks, one named remainder.
 
 Plan step X-c1 (``docs/audits/balance_architecture/README.md``, ruling R-K).
-Grades ``app.services.balance_at._cash_periods.cash_period_view`` -- the producer
+Grades ``app.services.balance_at._cash_periods.period_view_of`` -- the producer
 plan step X-c2 points the grid's balance row, its subtotal rows and its two
 remainder rows at.  The view is ADDITIVE here: no production surface reads
 it yet, so nothing in this file can move a shipped balance.
@@ -22,7 +22,7 @@ pins the other at ``$0.00`` -- which is strictly sharper, because the old form
 could not tell a timing error from a true-up and each of these fixtures produces
 exactly one of the two.
 
-The left side is sampled from ``fold_cash_balances`` -- the X-b producer, graded
+The left side is sampled from ``balances_at`` -- the X-b producer, graded
 on its own hand-computed oracle -- and the right side is the view's grouping of
 the same rows.  Neither is derived from the other: the view computes its
 remainder from the row set (what MOVED in the column minus what was BUDGETED to
@@ -48,14 +48,12 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger
 from app.services.balance_at import BalanceContext
-from app.services.balance_at._cash_fold import assemble
-from app.services.balance_at._cash_periods import period_view_of
-from app.services.pay_calendar import PayCalendarError, PeriodWindow
-from app.services.balance_at._cash_fold import fold_cash_balances
+from app.services.balance_at._cash_fold import assembled_fold, balances_at
 from app.services.balance_at._cash_periods import (
     CashPeriodFigures,
-    cash_period_view,
+    period_view_of,
 )
+from app.services.pay_calendar import PayCalendarError, PeriodWindow
 from tests._test_helpers import (
     add_entry,
     add_txn,
@@ -63,13 +61,27 @@ from tests._test_helpers import (
     basis_for,
     create_envelope_txn,
     create_settled_cash_transaction,
+    derived_span,
+    last_covered_day,
     mark_purchase_settled,
     period_window,
-    restamp_opening_assertion,
+    read_pass,
+    reassert_balance_on,
+    restate_account_opening,
 )
 from tests.test_services.test_cash_fold import _instant
 
 _ONE_DAY = timedelta(days=1)
+
+#: The day the books open for the two shapes below that carry a record dated
+#: before their opening ASSERTION.  Ruling **R-HG** (plan step X-f3c-2b) makes
+#: a movement on or before the books unstorable, so the record has to sit
+#: BETWEEN the books and the first assertion -- which is the production shape
+#: after that step's migration, and is what leaves the assertion's correction
+#: non-zero.  Every other shape in this file inherits the seeded account's own
+#: origination assertion, whose books
+#: already precede its records.
+_BOOKS_OPEN_ON = date(2025, 12, 31)
 # An as-of before every fixture date below, so ruling R-G's clamp is a no-op
 # except in the tests that exist for it.  The tiers are graded separately on
 # purpose: a test that mixed them could pass with either one wrong.
@@ -85,8 +97,9 @@ def _view(account, scenario, periods, as_of=_EARLY_AS_OF):
     two different maps).  These tests grade the columns, so the helper unwraps
     them; ``TestTheViewCarriesTheBasisItWasValuedOn`` grades the map.
     """
-    return cash_period_view(
-        account, basis_for(account, scenario), as_of, period_window(periods),
+    return period_view_of(
+        assembled_fold(account, read_pass(account, scenario, as_of)),
+        period_window(periods),
     ).columns
 
 
@@ -118,7 +131,9 @@ def _identity_holds(account, scenario, periods, as_of=_EARLY_AS_OF):
     figures = _view(account, scenario, periods, as_of=as_of)
     boundaries = [period.start_date - _ONE_DAY for period in window]
     boundaries += [period.end_date for period in window]
-    folded = fold_cash_balances(account, basis_for(account, scenario), as_of, boundaries)
+    folded = balances_at(
+        assembled_fold(account, read_pass(account, scenario, as_of)), boundaries,
+    )
     return [
         (
             period,
@@ -148,7 +163,10 @@ class TestTheSubtotalsCountEveryAttributedRow:
 
         Period 2 (2026-01-30..02-12) carries a ``$500.00`` income settled 02-03,
         a ``$200.00`` expense settled 02-05 and a ``$75.00`` still-projected
-        expense.  Opening assertion ``$1,000.00`` on 2026-01-01.
+        expense.  The account's opening assertion is the seeded owner's own
+        origination, ``$1,000.00`` on the bootstrap day before the calendar
+        (plan step X-f3c-2c), so every figure below is measured from that level
+        and nothing here re-dates it.
 
         Hand-computed, new basis: income ``$500.00``; expenses
         ``200.00 + 75.00 = $275.00``; net ``$225.00``.  Every row settled inside
@@ -165,7 +183,6 @@ class TestTheSubtotalsCountEveryAttributedRow:
         came AFTER the cutover proved the successor (the C3b3 / E1e precedent).
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("500.00"),
             is_income=True, settled_on=date(2026, 2, 3), name="paycheck",
@@ -232,7 +249,6 @@ class TestTheSubtotalsCountEveryAttributedRow:
         and the balance priced the row through ONE rule.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         txn = create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("200.00"),
             settled_on=date(2026, 2, 5), name="Groceries",
@@ -278,7 +294,6 @@ class TestTheSubtotalsCountEveryAttributedRow:
         ``is_income`` would be carrying an untested claim.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         txn = create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("80.00"),
             settled_amount=Decimal("50.00"),
@@ -323,19 +338,32 @@ class TestTheSubtotalsCountEveryAttributedRow:
         So the expense row reads ``$200.00`` -- what this period actually costs
         -- rather than the ``$80.00`` it read before X-f3b, when a purchase was
         no fact at all and its spend was inside the owner's asserted balance and
-        nowhere in these subtotals.  **The BALANCE does not move**: the opening
-        is restamped to 01-31 (finding N-132 / R8: a purchase gets inside a
+        nowhere in these subtotals.  **The BALANCE does not move**: the balance is
+        asserted for 01-31 (finding N-132 / R8: a purchase gets inside a
         declared balance by the user declaring the balance after it posted), so
         that assertion absorbs the ``$120.00`` and the balance stays
-        ``1000 - 80 = $920.00``.  Both remainders stay ``$0.00``: 01-31 is
+        ``1000 - 80 = $920.00``.  ``period_timing`` stays ``$0.00``: 01-31 is
         inside period 2's own span so the cash clock and the budget clock agree,
-        the due date is past ``as_of + 1`` so ruling R-G's clamp is a no-op, and
-        the OPENING assertion is excluded from ``book_vs_bank`` by ruling R-I.
+        and the due date is past ``as_of + 1`` so ruling R-G's clamp is a no-op.
+
+        ``book_vs_bank`` reads ``$120.00``, and that is plan step X-f3c-2a
+        rather than a defect here.  The books opened at ``$1,000.00``; the
+        posted purchase took them to ``$880.00``; the owner then declared
+        ``$1,000.00``, which is a ``+$120.00`` correction and belongs on the row
+        that holds what the app did not know.  *It read ``$0.00`` until
+        X-f3c-2a, because the opening assertion was excluded from this row
+        outright -- the fold had swallowed its whole delta into the seed
+        (ruling R-I), so what remained was not a correction anyone could
+        report.*
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        # The opening is the account's ONLY assertion, so it is what absorbs
-        # the purchase's own movement; it is dated 01-31 so it can.
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 31))
+        # The balance is asserted on 01-31, which is what absorbs the
+        # purchase's own movement -- and it is WRITTEN here rather than the
+        # origination re-stamped onto that day (plan step X-f3c-2c).  The
+        # seeded account asserts only its origination, dated on the bootstrap
+        # day before the calendar, so a case turning on which day was last
+        # asserted names it.
+        reassert_balance_on(db.session, account, _instant(2026, 1, 31))
         txn = create_envelope_txn(
             seed_user, db.session, seed_periods[2], "Groceries",
             Decimal("200.00"),
@@ -352,7 +380,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
         )[seed_periods[2].id]
         assert figures.expense == Decimal("200.00")
         assert figures.period_timing == Decimal("0.00")
-        assert figures.book_vs_bank == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("120.00")
         assert figures.balance == Decimal("920.00")
 
 
@@ -390,7 +418,6 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         difference as a true-up would have passed the old assertion.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[3], Decimal("300.00"),
             settled_on=date(2026, 3, 20), name="late rent",
@@ -421,7 +448,8 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
     ):  # pylint: disable=unused-argument
         """The user asserts a new balance mid-period; no transaction moved.
 
-        Opening ``$1,000.00`` on 2026-01-01, then a true-up on 2026-03-01
+        Opening ``$1,000.00`` on the seeded bootstrap day, then a true-up on
+        2026-03-01
         (inside period 4, 2026-02-27..03-12) asserting ``$1,500.00`` with no rows
         in between.
 
@@ -438,9 +466,8 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         periods for a problem that is really untracked spend.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         append_balance_assertion(
-            db.session, account, seed_periods[4], Decimal("1500.00"),
+            db.session, account, Decimal("1500.00"),
             _instant(2026, 3, 1),
         )
         db.session.commit()
@@ -453,31 +480,51 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         assert figures.book_vs_bank == Decimal("500.00")
         assert figures.balance == Decimal("1500.00")
 
-    def test_the_opening_assertion_books_nothing_in_its_own_period(
+    def test_the_OPENING_EQUITY_books_nothing_but_a_correction_to_it_does(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Ruling R-I puts the OPENING in the fold's seed, not in a column.
+        """Plan step X-f3c-2a: the SEED is level; the assertion is movement.
 
-        Opening asserted 2026-01-05 at ``$1,000.00``, inside period 0
-        (2026-01-02..01-15), with a ``$400.00`` expense already settled 01-03 --
-        two days before it, in the same column.
+        Books opened at ``$1,000.00`` on 2025-12-31, asserted 2026-01-05 inside
+        period 0 (2026-01-02..01-15), with a ``$400.00`` expense settled 01-03
+        -- after the books and two days BEFORE the assertion, in the same
+        column.
 
-        Hand-computed.  The fold back-projects: the records at or before the
-        opening sum to ``-$400.00``, so the seed is
-        ``1000.00 - (-400.00) = $1,400.00`` and the account read ``$1,400.00``
-        before the spend.  Period 0 therefore changes by
-        ``1000.00 - 1400.00 = -$400.00``, which its own expense row explains in
-        full -- BOTH remainders ``$0.00``.  Counting the opening's ``+$1,400.00``
-        correction here would claim a jump the balance never took, and it is
-        ``book_vs_bank`` specifically that it would land on (an assertion is
-        what that row holds), so pinning that half at ``$0.00`` is what makes
-        this test name the rule it is about.
+        Hand-computed.  The account reads its stored ``$1,000.00`` before the
+        spend, ``$600.00`` after it, and the assertion resets it to
+        ``$1,000.00`` -- a ``+$400.00`` correction, which is what
+        ``book_vs_bank`` holds.  Period 0's balance therefore changes by
+        ``$0.00`` overall: the expense row's ``-$400.00`` and the assertion's
+        ``+$400.00`` cancel, and BOTH are reported rather than netted away.
+
+        **The ``$400.00`` sits between the books and the first assertion**, and
+        that is what changed at plan step X-f3c-2b.  It used to be dated before
+        the books OPENED, which made it a genuine double count -- money already
+        inside the declared figure, counted a second time from its own day.
+        Ruling **R-HG** deletes that state rather than the reading: the books
+        now open 2025-12-31 and hold the 01-03 expense honestly, so the
+        assertion's ``+$400.00`` is a real correction rather than the healing
+        of an error.  **Every figure below is unchanged by that move**, which
+        is the evidence the state was repaired and the fold was not.  The
+        remainder naming it is still the correct reporting: the app cannot
+        explain that period's arithmetic from its rows alone, and says so.
+
+        *This asserted ``book_vs_bank == 0.00`` and a ``$1,400.00`` pre-period
+        balance until X-f3c-2a.  Ruling R-I back-computed a ``$1,400.00`` seed
+        so the expense would be explained in full and the remainder would read
+        clean -- a figure nothing recorded, chosen to make a disagreement
+        disappear.*
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
+        restate_account_opening(db.session, account, _BOOKS_OPEN_ON)
+        # **The 2026-01-05 assertion is WRITTEN here** (plan step X-f3c-2c).
+        # It used to be the seeded account's origination re-stamped onto that
+        # day; the table is append-only, so the case states the balance it
+        # needs on the day it names, which is what an owner does.
+        reassert_balance_on(db.session, account, _instant(2026, 1, 5))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("400.00"),
-            settled_on=date(2026, 1, 3), name="pre-opening spend",
+            settled_on=date(2026, 1, 3), name="pre-assertion spend",
         )
         db.session.commit()
 
@@ -485,14 +532,16 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         assert figures.expense == Decimal("400.00")
         assert figures.net == Decimal("-400.00")
         assert figures.period_timing == Decimal("0.00")
-        assert figures.book_vs_bank == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("400.00")
         assert figures.balance == Decimal("1000.00")
 
-        folded = fold_cash_balances(
-            account, basis_for(account, scenario), _EARLY_AS_OF,
+        # The day before the window: the stored opening equity, flat, with no
+        # record yet against it.
+        folded = balances_at(
+            assembled_fold(account, read_pass(account, scenario, _EARLY_AS_OF)),
             [seed_periods[0].start_date - _ONE_DAY],
         )
-        assert folded[seed_periods[0].start_date - _ONE_DAY] == Decimal("1400.00")
+        assert folded[seed_periods[0].start_date - _ONE_DAY] == Decimal("1000.00")
 
     def test_the_clamp_moves_an_overdue_plan_out_of_its_own_column(
         self, db, seed_user, seed_periods,
@@ -519,7 +568,6 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = date(2026, 4, 2)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         add_txn(
             db.session, seed_user, seed_periods[5], "overdue bill", "50.00",
             due_date=date(2026, 3, 20),
@@ -551,19 +599,27 @@ class TestTheIdentityHoldsOnEveryPeriod:
     def _rich_shape(self, seed_user, seed_periods):
         """Build a shape triggering every component the remainder can hold.
 
-        A pre-opening record, an in-column settle, an out-of-column settle, a
-        mid-history true-up, an entries-carrying envelope, an overdue plan the
-        clamp moves forward, and ordinary future rows.
+        A record dated between the books and the first ASSERTION (which is
+        what a "pre-opening record" became at plan step X-f3c-2b -- ruling
+        R-HG makes anything on or before the books unstorable), an in-column
+        settle, an out-of-column settle, a mid-history true-up, an
+        entries-carrying envelope, an overdue plan the clamp moves forward,
+        and ordinary future rows.
 
         Returns:
             The ``as_of`` the caller reads at.
         """
         account = seed_user["account"]
         as_of = date(2026, 4, 2)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
+        restate_account_opening(db.session, account, _BOOKS_OPEN_ON)
+        # The FIRST assertion of the shape, on 2026-01-05 -- written rather
+        # than re-stamped onto the origination (plan step X-f3c-2c).  Its own
+        # correction is what makes period 0's ``book_vs_bank`` non-zero, which
+        # is half of what this shape exists to exercise.
+        reassert_balance_on(db.session, account, _instant(2026, 1, 5))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("400.00"),
-            settled_on=date(2026, 1, 3), name="pre-opening spend",
+            settled_on=date(2026, 1, 3), name="pre-assertion spend",
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("1800.00"),
@@ -574,7 +630,7 @@ class TestTheIdentityHoldsOnEveryPeriod:
             settled_on=date(2026, 3, 20), name="late rent",
         )
         append_balance_assertion(
-            db.session, account, seed_periods[4], Decimal("1500.00"),
+            db.session, account, Decimal("1500.00"),
             _instant(2026, 3, 1),
         )
         envelope = create_envelope_txn(
@@ -601,9 +657,10 @@ class TestTheIdentityHoldsOnEveryPeriod:
     ):  # pylint: disable=unused-argument
         """All ten periods, not a sample of them.
 
-        The shape carries a pre-opening record, a settle inside its own column,
-        a settle two columns late, a true-up, an entries-aware envelope and a
-        clamped overdue bill, so no single component can carry the whole run.
+        The shape carries a record between the books and the first assertion, a
+        settle inside its own column, a settle two columns late, a true-up, an
+        entries-aware envelope and a clamped overdue bill, so no single
+        component can carry the whole run.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = self._rich_shape(seed_user, seed_periods)
@@ -635,7 +692,7 @@ class TestTheIdentityHoldsOnEveryPeriod:
           elsewhere.  No assertion touches it, so ``book_vs_bank`` is ``$0.00``.
         * period 4 -- book-vs-bank ``-$1,300.00``: the true-up, which no
           transaction row can explain.  The records had walked the account to
-          ``1400.00 - 400.00 + 1800.00 = $2,800.00`` by 2026-03-01, and the user
+          ``1000.00 + 1800.00 = $2,800.00`` by 2026-03-01, and the user
           asserted ``$1,500.00``, so the correction is ``1500 - 2800``.  Note it
           is NOT ``1500 - 1000``: an assertion's correction is measured against
           the RECORDS, which is the whole reason this row exists.  Nothing
@@ -657,20 +714,33 @@ class TestTheIdentityHoldsOnEveryPeriod:
 
         figures = _view(account, scenario, seed_periods, as_of=as_of)
         timing = {
-            period.period_index: figures[period.id].period_timing
+            derived_span(period).period_index: figures[period.id].period_timing
             for period in seed_periods
         }
         book = {
-            period.period_index: figures[period.id].book_vs_bank
+            derived_span(period).period_index: figures[period.id].book_vs_bank
             for period in seed_periods
         }
         assert timing[3] == Decimal("300.00")
         assert timing[4] == Decimal("0.00")
         assert timing[5] == Decimal("-250.00")
         assert timing[6] == Decimal("-50.00")
-        # The ONLY non-zero book-vs-bank in the run is period 4's true-up.
+        # TWO non-zero book-vs-bank columns, and the pair is the point since
+        # plan step X-f3c-2a: period 4 holds the true-up, and period 0 holds the
+        # FIRST assertion's own correction -- which this shape makes non-zero
+        # because ``_rich_shape`` settles rows before the books opened.  The
+        # opening used to be excluded from this row outright (ruling R-I moved
+        # its whole delta into the fold's seed), so the run read a single
+        # non-zero column.
         assert book[4] == Decimal("-1300.00")
-        assert {index for index, value in book.items() if value} == {4}
+        # Hand-computed, on the row its CAUSE belongs to like every other
+        # figure here: the books open at $1,000.00 on 2025-12-31, the $400.00
+        # spend of 2026-01-03 walks the records to $600.00, and the opening
+        # assertion on 01-05 declares $1,000.00 -- a +$400.00 correction, which
+        # is what ``book_vs_bank`` holds.  It nets against period 0's own
+        # -$400.00 expense, which is why the identity still closes at $0.00.
+        assert book[0] == Decimal("400.00")
+        assert {index for index, value in book.items() if value} == {0, 4}
         assert len({figures[p.id].balance for p in seed_periods}) > 1
 
     def test_a_gapped_window_is_REFUSED_rather_than_reported_over(
@@ -728,7 +798,6 @@ class TestTheIdentityHoldsOnEveryPeriod:
         deleting the sort left the test passing.  It fails now.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("250.00"),
             settled_on=date(2026, 1, 6), name="settled in its own period",
@@ -737,7 +806,9 @@ class TestTheIdentityHoldsOnEveryPeriod:
 
         forwards = period_window(seed_periods)
         backwards = PeriodWindow(periods=tuple(reversed(forwards.periods)))
-        folded = assemble(account, basis_for(account, scenario), _EARLY_AS_OF)
+        folded = assembled_fold(
+            account, read_pass(account, scenario, _EARLY_AS_OF),
+        )
 
         assert period_view_of(folded, forwards).columns == period_view_of(
             folded, backwards,
@@ -793,7 +864,6 @@ class TestTheIdentityHoldsOnEveryPeriod:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = date(2026, 4, 2)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("250.00"),
             settled_on=date(2026, 3, 20), name="cleared after the tail was cut",
@@ -828,7 +898,7 @@ class TestTheIdentityHoldsOnEveryPeriod:
         # column whose span actually contains 2026-03-20.
         full = _view(account, scenario, seed_periods, as_of=as_of)
         assert seed_periods[5].start_date <= date(2026, 3, 20)
-        assert date(2026, 3, 20) <= seed_periods[5].end_date
+        assert date(2026, 3, 20) <= last_covered_day(seed_periods[5])
         assert full[seed_periods[5].id].period_timing == Decimal("-250.00")
         assert full[seed_periods[5].id].balance == Decimal("750.00")
 
@@ -843,7 +913,6 @@ class TestTheIdentityHoldsOnEveryPeriod:
         arc deletes.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         db.session.commit()
 
         figures = _view(account, scenario, seed_periods)
@@ -881,7 +950,6 @@ class TestTheIdentityHoldsOnEveryPeriod:
         the bank disagreed with the app, which is false.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("180.00"),
             settled_on=date(2026, 2, 5), name="budgeted two columns back",
@@ -902,162 +970,25 @@ class TestTheIdentityHoldsOnEveryPeriod:
         assert rows[0][1] == rows[0][2] == Decimal("-180.00")
 
 
-class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
-    """Plan step **C2-c**'s whole claim, proved by corrupting the column.
-
-    ``budget.pay_periods`` stores three values per row and only ``start_date``
-    is a fact; ``end_date`` is ``lead(start_date) - 1`` stored beside the
-    paydays it derives from, with nothing reconciling the two
-    (``docs/plans/implementation_plan_pay_calendar.md`` section 1).  Until
-    this step the cash view bisected that stored column
-    (``_cash_periods._PeriodSpans``) and sampled the fold at it, so a row whose
-    stored end had drifted valued its column on a day the owner's own paydays
-    do not agree is that column's last.
-
-    **Measured 0 of 62 and 0 of 61 disagreements** on the two
-    production-shaped databases the day this shipped, so the class is latent
-    rather than live -- which is exactly why it needs a constructed shape to be
-    graded at all.  The corruption below is applied with a direct UPDATE,
-    because ``pay_period_write`` rematerialises the derivation on every write
-    and so cannot produce it.
-    """
-
-    def test_a_corrupted_stored_end_moves_no_figure(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """The stored end says 01-20; the paydays say 01-15; the column obeys 01-15.
-
-        Period 0 runs 2026-01-02..2026-01-15 by derivation (the next payday is
-        01-16).  Its stored ``end_date`` is pushed five days out to 01-20, and a
-        ``$250.00`` expense budgeted to period 0 settles 2026-01-18 -- inside the
-        corrupted span and outside the real one.
-
-        Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01.
-        Reading the DERIVED span, period 0 closes 01-15 before the money moved:
-        its balance is ``$1,000.00``, it budgets the ``$250.00`` (net
-        ``-$250.00``) and nothing moves inside its span, so ``period_timing`` is
-        ``+$250.00`` and the two cancel.  The money lands in period 1, whose
-        span contains 01-18: that column moves ``-$250.00`` on the cash clock
-        while budgeting nothing, and its balance closes at ``$750.00``.
-
-        Reading the STORED column instead would sample period 0 at 01-20, after
-        the settle, giving it a ``$750.00`` balance and a ``$0.00``
-        ``period_timing`` -- and period 1 would then double-count the same
-        ``$250.00``.  Every figure below distinguishes the two.
-        """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
-        create_settled_cash_transaction(
-            seed_user, db.session, seed_periods[0], Decimal("250.00"),
-            settled_on=date(2026, 1, 18), name="settled after the real end",
-        )
-        # The corruption, applied UNDER the writer: production cannot reach
-        # this state through ``pay_period_write``, which rewrites every end
-        # from the paydays on every write.
-        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
-            {"end_date": date(2026, 1, 20)},
-        )
-        db.session.commit()
-
-        figures = _view(account, scenario, seed_periods)
-
-        assert figures[seed_periods[0].id].balance == Decimal("1000.00")
-        assert figures[seed_periods[0].id].net == Decimal("-250.00")
-        assert figures[seed_periods[0].id].period_timing == Decimal("250.00")
-        assert figures[seed_periods[1].id].balance == Decimal("750.00")
-        assert figures[seed_periods[1].id].net == Decimal("0.00")
-        assert figures[seed_periods[1].id].period_timing == Decimal("-250.00")
-
-    def test_a_PROJECTED_row_clamped_against_the_stored_span_still_reconciles(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """The two-source coupling C2-c creates, MEASURED rather than argued.
-
-        An adversarial design review of this step claimed R-K's identity
-        breaks here, and the claim is REFUTED by this test.  The coupling is
-        real: :func:`~app.services.balance_at._cash_fold._period_balances`
-        samples each column at its DERIVED end while
-        :func:`~app.services.balance_at._cash_fold._cash_plan` still clamps a
-        projected row's landing day against the STORED span it reads off
-        ``txn.pay_period`` (the reader plan step C4 owns).  What does NOT
-        follow is a broken identity, and the reason is structural: the fold's
-        steps and this view's cash-clock grouping read the SAME
-        ``day_nets``, so wherever the clamp puts a row, both sides put it
-        there.  A disagreement surfaces as ``period_timing`` -- the figure
-        that exists to say "budgeted here, moved there" -- and never as an
-        unexplained balance step.
-
-        Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01.
-        Period 0's stored end is pushed to 2026-01-20 while its derived end
-        stays 2026-01-15, and a still-projected ``$250.00`` expense budgeted
-        to period 0 carries ``due_date`` 2026-01-18 -- inside the corrupted
-        span, so ``attribution_date`` does NOT clamp it, and outside the real
-        one.  Period 0 budgets it (net ``-$250.00``) while nothing lands
-        inside 01-02..01-15, so its timing is ``+$250.00`` and its balance
-        holds at ``$1,000.00``.  Period 1 budgets nothing and the money lands
-        in its span, so its timing is ``-$250.00`` against a ``$750.00``
-        close.  Both columns satisfy the identity, and the assertion below is
-        the identity itself over every column.
-        """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        as_of = date(2026, 1, 5)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
-        add_txn(
-            db.session, seed_user, seed_periods[0], "projected bill", "250.00",
-            due_date=date(2026, 1, 18),
-        )
-        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
-            {"end_date": date(2026, 1, 20)},
-        )
-        db.session.commit()
-
-        figures = _view(account, scenario, seed_periods, as_of=as_of)
-
-        assert figures[seed_periods[0].id].net == Decimal("-250.00")
-        assert figures[seed_periods[0].id].period_timing == Decimal("250.00")
-        assert figures[seed_periods[0].id].balance == Decimal("1000.00")
-        assert figures[seed_periods[1].id].period_timing == Decimal("-250.00")
-        assert figures[seed_periods[1].id].balance == Decimal("750.00")
-
-        rows = _identity_holds(account, scenario, seed_periods, as_of=as_of)
-        assert len(rows) == 10  # the loop is not vacuous
-        for period, balance_delta, explained in rows:
-            assert balance_delta == explained, (
-                f"period {period.period_id}"
-            )
-
-    def test_the_control_shows_the_stored_column_would_answer_differently(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """The firing control: the corruption is real, not a no-op.
-
-        Same fixture, read the way the retired ``_PeriodSpans`` read it -- the
-        stored ``end_date``, bisected -- so the numbers the test above rejects
-        are shown to be the ones the corrupted column actually produces.  A
-        pin without this control could pass on a schedule where the two spans
-        happen to coincide, which is every schedule production has.
-        """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
-        create_settled_cash_transaction(
-            seed_user, db.session, seed_periods[0], Decimal("250.00"),
-            settled_on=date(2026, 1, 18), name="settled after the real end",
-        )
-        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
-            {"end_date": date(2026, 1, 20)},
-        )
-        db.session.commit()
-
-        stored = db.session.get(PayPeriod, seed_periods[0].id)
-        assert stored.end_date == date(2026, 1, 20)
-        folded = fold_cash_balances(
-            account, basis_for(account, scenario), _EARLY_AS_OF,
-            [date(2026, 1, 15), date(2026, 1, 20)],
-        )
-        # Sampled at the stored end the column reads $750.00; at the derived
-        # end it reads $1,000.00.  The test above asserts the second.
-        assert folded[date(2026, 1, 20)] == Decimal("750.00")
-        assert folded[date(2026, 1, 15)] == Decimal("1000.00")
+# **``TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn`` was deleted at
+# plan step ``pay_calendar:C4-c``, and it is worth saying what it did
+# rather than leaving a gap.**  It was plan step C2-c's whole claim proved
+# by CORRUPTING the column: a ``budget.pay_periods.end_date`` pushed five
+# days past what the owner's paydays imply, applied with a direct UPDATE
+# because ``pay_period_write`` rematerialised the derivation on every
+# write and so could not produce one.  Three cases then asserted that
+# neither the settled columns, nor the projected ones, nor the block
+# headings moved -- with a control showing the stored column really would
+# have answered differently, so the agreement was evidence rather than a
+# tautology.
+#
+# The column is dropped, so there is no second end to corrupt and no
+# reader that could prefer it.  The premise is unconstructible rather than
+# merely unreached.  What the class was protecting -- that every column
+# here is valued at the span the paydays give -- is now a property of
+# there being one span: ``TestTheIdentityHoldsOnEveryPeriod`` above
+# drives it on ordinary schedules, and the class below drives it across a
+# 28-day gap in the saved rows.
 
 
 class TestAStoredScheduleHoleNoLongerBreaksTheIdentity:
@@ -1098,7 +1029,6 @@ class TestAStoredScheduleHoleNoLongerBreaksTheIdentity:
         ``$250.00``.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("250.00"),
             settled_on=date(2026, 1, 20), name="settled inside the hole",
@@ -1150,22 +1080,30 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
     The grid renders each row's amount beside the balance those same rows fold
     into.  Before plan step X-c2b2 the route built its own live map and the
     seam built another, and the two were "provably identical" only by an
-    argument about their candidate sets (finding N-51) -- so the view returns
-    the map it actually valued the plan through and the route reads it back.
+    argument about their candidate sets (finding N-51) -- so the view returned
+    the map it actually valued the plan through and the route read it back.
+
+    **The map is DELETED as of plan step X-au-d and the property is stronger
+    for it.**  A derived row stores no figure, so there is nothing for a live
+    recompute to be laid over: both sides ask ``cash_ledger.amounts_by_id``
+    over the pass's own basis and cannot come to hold two answers.  The field
+    went with the producer -- and an AST and grep census found NOTHING had read
+    ``CashPeriodView.amount_overrides`` since X-c2b2 anyway, while the case
+    below asserted, in its own docstring, that "the grid reads
+    ``view.amount_overrides.get(...)`` per row".  That claim had been false for
+    two plan steps.
     """
 
-    def test_the_view_returns_the_live_map_it_valued_the_plan_through(
+    def test_a_declared_salary_row_is_priced_by_its_PROFILE_in_the_subtotal(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """A stale salary estimate is priced LIVE, and the map says so.
+        """A salary row's income subtotal is what its profile pays.
 
-        A salary-linked Projected income row carries a deliberately stale
-        ``estimated_amount`` of ``$1.00`` against a ``$104,000`` profile whose
-        live net is ``$4,000.00`` (104000 / 26, hand-computed -- the same
-        figure ``test_income_service`` pins for this setup).  The view must
-        report BOTH the live figure in its income subtotal AND the map entry
-        that produced it, so a consumer rendering the row and a consumer
-        reading the balance cannot disagree about what the row is worth.
+        A salary-linked Projected income row DECLARES its definition and stores
+        no figure at all, against a ``$104,000`` profile whose net is
+        ``$4,000.00`` (104000 / 26, hand-computed -- the same figure
+        ``test_income_service`` pins for this setup).  A fold reading the row's
+        own column would contribute ``None``; this one asks the amount model.
         """
         # pylint: disable=import-outside-toplevel
         from tests.test_services.test_income_service import (
@@ -1175,39 +1113,25 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         )
 
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         profile = _create_profile(seed_user["user"].id, scenario.id)
         template = _make_salary_template(seed_user, profile)
         db.session.commit()
         period = seed_periods[5]
-        txn = _make_txn(
-            seed_user, period, template=template, estimated_amount="1.00",
-        )
+        txn = _make_txn(seed_user, period, template=template, derived=True)
         db.session.commit()
 
-        view = cash_period_view(
-            account, basis_for(account, scenario), _EARLY_AS_OF, period_window(seed_periods),
+        view = period_view_of(
+            assembled_fold(account, read_pass(account, scenario, _EARLY_AS_OF)),
+            period_window(seed_periods),
         )
 
-        assert view.amount_overrides == {txn.id: Decimal("4000.00")}
-        # The subtotal is the LIVE figure, not the stored $1.00 -- so the map
-        # on the result is the one the column was actually computed with.
+        assert txn.estimated_amount is None
         assert view.columns[period.id].income == Decimal("4000.00")
 
-    def test_an_account_with_no_plan_carries_an_empty_map(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """No still-projected rows means no overrides -- ``{}``, never ``None``.
-
-        The grid reads ``view.amount_overrides.get(...)`` per row, so an
-        account with nothing planned must still hand back a mapping.
-        """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
-        db.session.commit()
-
-        view = cash_period_view(
-            account, basis_for(account, scenario), _EARLY_AS_OF, period_window(seed_periods),
-        )
-
-        assert view.amount_overrides == {}
+    # ``test_an_account_with_no_plan_carries_an_empty_map`` lived here until
+    # plan step X-au-d, and its SUBJECT is deleted with the field: it asserted
+    # that ``CashPeriodView.amount_overrides`` was ``{}`` rather than ``None``
+    # for an account with nothing planned, so that "the grid reads
+    # ``view.amount_overrides.get(...)`` per row" would not raise.  The grid
+    # had stopped reading it two plan steps earlier and nothing else ever did,
+    # so the field is gone and there is no mapping left to be empty.

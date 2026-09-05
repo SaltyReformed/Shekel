@@ -6,6 +6,10 @@ for the true-up workflow.
 """
 
 from app.extensions import db
+from app.models.append_only import (
+    AppendOnlyViolation,
+    install_append_only_guards,
+)
 from app.models.mixins import (
     AccountScopedMixin,
     CreatedAtMixin,
@@ -15,6 +19,7 @@ from app.models.mixins import (
     TimestampMixin,
     UserScopedMixin,
 )
+from app.utils.dates import display_today
 
 
 class Account(
@@ -126,10 +131,38 @@ class Account(
     # :func:`app.services.cash_ledger.resolve_anchor` (its exact reverse), both
     # ``(observed_on, created_at, id)``; ask them.  The loan twin went the same
     # way in the same step (``models/loan_anchor_event.py``).
+    #
+    # **It carries ``passive_deletes`` and NO ``delete-orphan``, and that is
+    # what lets an account be deleted at all** (plan step X-f3c-2c).  An
+    # assertion is append-only, so the ORM may not delete one -- and this
+    # collection's ``cascade="all, delete-orphan"`` made
+    # ``routes/accounts/crud.hard_delete_account`` do exactly that: it loaded
+    # every assertion and emitted a DELETE per row on the way to deleting the
+    # account, which
+    # :func:`app.models.append_only.install_append_only_guards` refuses.
+    # Measured: with the guard and this line unchanged, four cases fail,
+    # ``test_clearing_link_schema.TestWhatDeletingOneCosts`` among them.
+    #
+    # ``passive_deletes=True`` leaves the disposal to
+    # :class:`~app.models.mixins.AccountScopedMixin`'s ``ON DELETE CASCADE``,
+    # which PostgreSQL executes without loading a row into the session -- the
+    # same path ``AccountOpening`` and ``LoanAnchorEvent`` already take, and
+    # they take it by having no relationship here at all.  ``delete-orphan``
+    # goes with it because it cannot be honoured: an assertion cannot be
+    # orphaned (``account_id`` is NOT NULL) and deleting one is the act the
+    # guard exists to refuse.
+    #
+    # **``"all"`` and not ``True``, and the difference is measured.**  ``True``
+    # only stops SQLAlchemy LOADING the collection; for children already in the
+    # session it still nulls their foreign key on the parent's delete, which is
+    # an UPDATE -- and the guard refuses that as loudly as it refuses a DELETE.
+    # ``tests/test_models/test_append_only.py`` loads the collection first for
+    # exactly this reason: an unloaded one passes either way, so a case that
+    # did not load it would grade nothing.
     anchor_history = db.relationship(
         "AccountAnchorHistory",
         back_populates="account",
-        cascade="all, delete-orphan",
+        passive_deletes="all",
     )
     # Self-referential collateral link.  ``remote_side`` marks the
     # referenced (asset) side; ``foreign_keys`` disambiguates from the
@@ -274,9 +307,86 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     # ``(created_at AT TIME ZONE 'America/New_York')::date``, the derivation it
     # replaces, so no rendered figure moved on the day the column shipped.
     observed_on = db.Column(db.Date, nullable=False)
+    # The civil day this assertion was ENTERED, in the user's timezone --
+    # STORED and APPLICATION-supplied, which is finding **N-299** (developer
+    # ruling 2026-08-25).
+    #
+    # It was derived from ``created_at`` until this column shipped, and the
+    # backfill is that derivation verbatim
+    # (``(created_at AT TIME ZONE 'America/New_York')::date``), so no rendered
+    # caption moved on the day it landed.  What the derivation could not do is
+    # be RIGHT: ``created_at`` is ``server_default=db.func.now()``, stamped by
+    # PostgreSQL, while ``observed_on`` defaults to the APPLICATION's
+    # ``display_today()``.  The balance-history card captions a row as
+    # back-dated when the two differ, so the caption compared two clocks --
+    # which made the weekly calendar sweep red on every matrix date from
+    # 2026-08-10 (``time_machine`` fakes the Python clock and cannot fake
+    # Postgres), and which in production mis-captions any true-up submitted
+    # in the last second of a civil day as back-dated.
+    #
+    # **The split is a responsibility split, not a duplicate.**  ``created_at``
+    # keeps the job this table's own docstring gives it -- ordering two
+    # assertions that share an ``observed_on`` -- because a DAY has no
+    # resolution to rank a bookkeeping session with.  This column is what a
+    # reader SHOWS.  That is the distinction
+    # :class:`~app.services.balance_at.CashAnchorRow` already stated between
+    # ranking and showing; it stopped one step short of giving the shown value
+    # its own clock.
+    #
+    # The default is a plain callable on the APPLICATION's clock, and every
+    # caller that means something else states its own value.
+    #
+    # **A first version made this default CONTEXT-SENSITIVE**: it inspected the
+    # INSERT's parameters and, where a caller had pinned ``created_at``,
+    # derived the day from that instant instead.  Two independent adversarial
+    # reviews killed it on 2026-08-25, on measurement rather than taste.
+    # **1,807 tests passed with its pinned branch deleted**, so the branch was
+    # ungraded.  ``Insert.from_select`` renders a Python-side default with no
+    # row context, so a future backfill of this table would have stamped every
+    # row with the deploy date and raised nothing.  And its only beneficiaries
+    # were three test fixtures -- test-shaped logic living in a production
+    # model, which is rule 13.
+    #
+    # The fixtures state the value themselves now
+    # (``_test_helpers.add_anchor_history`` / ``override_anchor`` /
+    # ``reassert_balance_on``), so the rule sits where the fixture author reads
+    # it.  It used to add "a bulk ``UPDATE`` reaches no column default at all,
+    # which is why ``tests/conftest.py``'s re-anchoring step writes both
+    # columns"; plan step X-f3c-2c deleted that step and the bulk UPDATE with
+    # it, because this table refuses one.
+    recorded_on = db.Column(
+        db.Date, nullable=False, default=display_today,
+    )
 
     # Relationships
     account = db.relationship("Account", back_populates="anchor_history")
 
     def __repr__(self):
         return f"<AnchorHistory account={self.account_id} balance={self.anchor_balance}>"
+
+
+class AccountAnchorHistoryImmutableError(AppendOnlyViolation):
+    """Raised when ORM code tries to UPDATE or DELETE a balance assertion.
+
+    **The table was append-only by CONVENTION until plan step X-f3c-2c**, where
+    its two siblings were append-only structurally -- finding **N-287**.  An
+    assertion is the record of what a bank showed on a day, and that day is
+    what every clearing link was recorded against (ruling **R-FL**), so a door
+    that edited one would silently re-point cleared purchases at a statement
+    that did not show them.
+
+    **This is the NAMED half of the refusal, not the whole of it** (ruling
+    **R-HY**).  The listener sees only ORM-mediated writes;
+    ``budget.refuse_append_only_change`` -- the trigger
+    :mod:`app.append_only_infrastructure` installs -- refuses every actor and
+    every spelling, including the bulk ``query.update()`` the finding's own harm
+    sentence names.  The ``ON DELETE CASCADE`` from ``budget.accounts`` is
+    deliberately outside both: history goes with its account, and
+    :attr:`Account.anchor_history` declares ``passive_deletes`` so the ORM
+    leaves that disposal to the database.
+    """
+
+
+install_append_only_guards(
+    AccountAnchorHistory, AccountAnchorHistoryImmutableError,
+)

@@ -101,10 +101,15 @@ from app import create_app
 from app.extensions import db
 from app.models.account import Account
 from app.models.user import User
-from app.services import balance_at, pay_period_service
+from app.services import balance_at
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
+)
+
+from tests._test_helpers import (
+    current_pay_period,
+    derived_span,
 )
 
 
@@ -181,10 +186,6 @@ def _grid_columns(account, ctx):
             }
             for period_id, col in view.columns.items()
         },
-        "amount_overrides": {
-            str(txn_id): _money(amount)
-            for txn_id, amount in sorted(view.amount_overrides.items())
-        },
     }
 
 
@@ -227,8 +228,10 @@ def _modelled_figures(account, ctx):
         AccountProjectionKind.APPRECIATING,
     ):
         return {}
+    # The DERIVED period, because that is the parameter's type since plan step
+    # ``pay_calendar:C4-c``: the ORM row carries no span any more.
     growth = balance_at.investment_growth_since_anchor(
-        account, ctx, pay_period_service.get_current_period(ctx.user_id),
+        account, ctx, derived_span(current_pay_period(ctx.user_id)),
     )
     return {
         # A ``(growth, contributed)`` pair, or None when the account models
@@ -284,7 +287,11 @@ def main(out_path):
             ctx = balance_at.BalanceContext.build(user.id)
             if ctx.scenario is None:
                 continue
-            periods = pay_period_service.get_all_periods(user.id)
+            # The pass's own calendar rather than a second read of the
+            # table: ``_cash_figures`` wants a span, and a period's end
+            # is derived from the paydays since plan step
+            # ``pay_calendar:C4-c`` dropped the column.
+            periods = ctx.calendar().saved()
             accounts = (
                 db.session.query(Account)
                 .filter(Account.user_id == user.id)

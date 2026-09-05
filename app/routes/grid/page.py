@@ -16,8 +16,8 @@ from typing import NamedTuple
 
 from flask import redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from sqlalchemy.orm import selectinload
 
+from app.db_transaction import write_transaction
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -26,21 +26,33 @@ from app.models.transaction import Transaction
 from app.services import (
     baseline_service,
     grid_view_service,
-    pay_period_admin,
+    pay_period_rolling,
 )
-from app.services.account_resolver import resolve_grid_account
+from app.services.account_resolver import (
+    resolve_grid_account,
+    serves_cash_detail,
+)
 from app.services.balance_at import BalanceContext
+from app.utils.amount_relationships import valuation_load_options
 from app.services.cash_ledger import (
-    display_amounts_by_id,
+    amounts_by_id,
     settled_amounts_by_id,
 )
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
+from app.services.statement_match import awaiting_review_count
 from app.services.transaction_service import retained_settle_amounts_by_id
-from app.services.pay_calendar import DerivedPeriod, PeriodWindow
+from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
+from app.utils.period_projections import (
+    ONE_YEAR_MONTHS,
+    SIX_MONTHS,
+    TWO_YEARS_MONTHS,
+    offered_spans,
+)
 
+from app.routes._period_population import populate_new_periods
 from app.routes.grid._bp import grid_bp
 from app.routes.grid._shared import (
     _accrual_row_label,
@@ -52,13 +64,83 @@ from app.routes.grid._shared import (
 logger = logging.getLogger(__name__)
 
 
-# Forward-looking window for the mobile "Plan" tab.  13 biweekly pay
-# periods ~= 6 months, matching the desktop selector's `6M` option
-# (`grid/grid.html:34`).  Fixed for phase 1; configurability is a
-# follow-up.  Decoupled from the URL's `periods` / `offset` so Plan
-# always answers "what does the next half-year look like from today?"
-# regardless of how the user is navigating in This Period.
-PLAN_WINDOW_PERIODS = 13
+# The span the mobile "Plan" tab looks forward over, in MONTHS.
+#
+# Plan answers "what does the next half-year look like from today?", decoupled
+# from the URL's `periods` / `offset` so the This Period arrow nav cannot
+# starve it of forward visibility.  It is `period_projections.SIX_MONTHS`
+# rather than a literal 6, and that is the point: it is deliberately the same
+# span as the desktop selector's `6M` button, and naming the number once is
+# what makes the two agree STRUCTURALLY.  A first draft wrote two literal
+# sixes and asserted in a comment that they "cannot come to disagree", which
+# is the agreement-by-sentence ledger row **F-17** is about.
+#
+# **It was `PLAN_WINDOW_PERIODS = 13` -- a pay-period COUNT -- until plan step
+# R-F17.** 13 periods is six months only at a biweekly cadence; at a weekly one
+# the tab covered three months and at a monthly one it covered thirteen.
+PLAN_WINDOW_MONTHS = SIX_MONTHS
+
+# The grid's date-range quick-select buttons that name a SPAN OF TIME, as
+# `(span in months, button label, tooltip)`.
+#
+# **Resolved into a count of the owner's paychecks** by
+# `period_projections.offered_spans` (ruling **R-R31**).  The template held
+# these as a literal pairing each label with a hardcoded biweekly period count
+# until plan step R-F17 -- 6M with thirteen periods, 1Y with twenty-six -- so a
+# weekly-paid owner pressing `1Y` got six months of columns and a monthly-paid
+# one got two years, each under a button naming a year.  Ledger row **F-17**.
+_RANGE_MONTHS: tuple[tuple[int, str, str], ...] = (
+    (SIX_MONTHS, "6M", "6 months"),
+    (ONE_YEAR_MONTHS, "1Y", "1 year"),
+    (TWO_YEARS_MONTHS, "2Y", "2 years"),
+)
+
+# The same selector's buttons that name a COUNT OF PAYCHECKS, which is a
+# different question and needs no derivation: "3 pay periods" means three
+# columns for every owner.  They are listed separately rather than folded in
+# with a sentinel, so nothing has to test which kind a row is.
+_RANGE_PAYCHECKS: tuple[tuple[str, int, str], ...] = (
+    ("3P", 3, "3 pay periods"),
+    ("6P", 6, "6 pay periods"),
+)
+
+
+def _range_options(cadence: PayCadence) -> list[tuple[str, int, str]]:
+    """Build the date-range quick-select buttons for one owner's cadence.
+
+    The paycheck-count buttons first (they are absolute), then each time-span
+    button resolved into however many of THIS owner's paychecks fall inside it.
+
+    **Each distinct window is offered ONCE**, and that is a defect this step
+    created and its adversarial review caught.  The deleted literal was
+    `3 / 6 / 13 / 26 / 52`, which can never collide; deriving the span buttons
+    makes one land on the fixed 3 or 6 of a paycheck button at **64 of the 365
+    legal cadences, the shortest being 28 days** -- so a monthly-paid owner got
+    `6P` and `6M` both linking to `?periods=6`, and since the template marks a
+    button active with `num_periods == count`, BOTH lit up.  The paycheck
+    labels are exact and cadence-independent, so the DERIVED label is the one
+    that yields.
+
+    **A span no paycheck reaches is not offered at all** (ruling **R-R31**),
+    which here is also what keeps the control working rather than merely
+    honest: an owner paid every 300 days has no paycheck inside six months, and
+    a `6M` button linking to `?periods=0` renders the empty-schedule page for a
+    user whose schedule is not empty.
+
+    Args:
+        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`.
+
+    Returns:
+        The `(label, column count, tooltip)` rows, in display order, one per
+        distinct window.
+    """
+    options = list(_RANGE_PAYCHECKS)
+    offered = {count for _, count, _ in options}
+    for count, label, tooltip in offered_spans(cadence, _RANGE_MONTHS):
+        if count not in offered:
+            options.append((label, count, tooltip))
+            offered.add(count)
+    return options
 
 
 class _GridContext(NamedTuple):
@@ -76,7 +158,7 @@ class _GridContext(NamedTuple):
     it are now three views of the ONE calendar the read pass memoizes, and
     :attr:`balance_ctx` already carries the owner.  Nothing here reads
     ``end_date`` or ``period_index`` out of the table, which is what plan step
-    **C4** needs before it can drop both columns.
+    **C4-c** needed before it could drop both columns.
 
     Attributes:
         balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of +
@@ -229,10 +311,13 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
         txn_filters.append(Transaction.account_id == account.id)
     return (
         db.session.query(Transaction)
-        .options(
-            selectinload(Transaction.entries),
-            selectinload(Transaction.template),
-        )
+        # What a CONTRIBUTION pass reads, stated by the valuation rather than
+        # copied here (plan step X-au-g-2c-2).  It subsumes the bare
+        # ``selectinload(Transaction.template)`` this replaces and adds the
+        # ``transfer -> template -> settings`` chain every SHADOW in the window
+        # now walks: a shadow is DERIVED, so ``budgets`` below prices it
+        # through its parent rather than off its own column.
+        .options(*valuation_load_options())
         .filter(*txn_filters)
         .all()
     )
@@ -241,13 +326,17 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
 class _GridRowData(NamedTuple):
     """Row-render values produced by :func:`_build_grid_row_data`.
 
-    The six fields are the grid's per-render "row contract": they are
+    The four fields are the grid's per-render "row contract": they are
     produced together and spliced together into the ``grid/grid.html``
     render context, so carrying them as a :class:`typing.NamedTuple`
-    (rather than a six-tuple unpacked into six parallel locals) keeps
+    (rather than a four-tuple unpacked into four parallel locals) keeps
     both :func:`index` and :func:`_build_plan_view` under pylint's
     ``R0914`` local-count threshold and names each value at the call
     site.
+
+    **The two ENTRY maps left at pay-calendar plan step C4-a-3** for
+    :func:`_build_entry_maps`, which :func:`index` alone calls; the whole
+    argument for the move is stated there rather than four times over.
 
     Attributes:
         income_row_keys: Ordered income-section row keys for the row
@@ -257,24 +346,22 @@ class _GridRowData(NamedTuple):
         matched_by_row_period: ``(category_id, template_id, txn_name,
             period_id) -> matched transactions`` index read by the cell
             template.
-        entry_sums: Pre-computed tracked-progress map (``{txn_id ->
-            sums}``) for the cell template's "spent / budget" display.
-        entry_lists: Pre-rendered inline mobile entries list per
-            envelope card (``{txn_id -> list data}``), computed
-            server-side to avoid per-card HTMX fan-out.
+        due_captions: ``{txn_id -> the due date to caption, or None}``
+            for the cell template's "Due:" line
+            (:func:`~app.services.grid_view_service.due_captions_by_id`,
+            pay-calendar plan step C4-a-1).  The template decided it
+            itself off ``t.pay_period.start_date`` until then, which is
+            a lazy relationship load issued from inside the render.
     """
 
     income_row_keys: list[RowKey]
     expense_row_keys: list[RowKey]
     matched_by_row_period: dict[tuple[int, int | None, str, int], list[Transaction]]
-    entry_sums: dict[int, dict]
-    entry_lists: dict[int, dict]
+    due_captions: dict[int, "date | None"]
 
 
-def _build_grid_row_data(
-    transactions, periods, show_all, all_categories, budgets,
-):
-    """Build row keys, the (row_key, period) match index, and entry sums.
+def _build_grid_row_data(transactions, periods, show_all, all_categories):
+    """Build row keys, the (row_key, period) match index, and the due captions.
 
     Row keys + the (row_key, period) -> matched-transactions dict are
     produced by the pure :mod:`app.services.grid_view_service`.  The
@@ -292,10 +379,12 @@ def _build_grid_row_data(
     it contributes $0 to every visible-period subtotal and its cells
     were never going to render.
 
+    **It builds no ENTRY maps** since pay-calendar plan step C4-a-3, and
+    :class:`_GridRowData` carries why: this runs twice per render and only one
+    of the two runs draws a purchase list.
+
     Returns a :class:`_GridRowData` carrying ``income_row_keys``,
-    ``expense_row_keys``, ``matched_by_row_period``, ``entry_sums``, and
-    ``entry_lists``.  ``entry_sums`` is the pre-computed tracked-progress
-    map for the cell template's "spent / budget" display.
+    ``expense_row_keys``, ``matched_by_row_period`` and ``due_captions``.
     """
     if show_all:
         row_source_txns = transactions
@@ -316,40 +405,120 @@ def _build_grid_row_data(
         income_row_keys, expense_row_keys, periods, transactions,
     )
 
-    entry_sums = build_entry_sums_dict(transactions, budgets)
-    # Pre-render context for the inline mobile entries list on envelope
-    # cards.  Computed here (server-side) rather than via per-card HTMX
-    # ``hx-trigger="load"`` fan-out to keep one grid page load from
-    # blowing past the ``RATELIMIT_DEFAULT`` ceiling of "30 per minute"
-    # on the entries endpoint -- with 6 visible periods and ~10 envelope
-    # templates each, the lazy-load shape generated ~60 parallel GETs
-    # and the over-limit cards stuck on the loading spinner forever.
-    entry_lists = build_entry_lists_dict(transactions, budgets)
+    # The caption map is built over exactly the rows that get a CELL -- the
+    # values of the match index -- rather than over ``transactions``, which
+    # carries rows outside the visible window.  That is what makes the payday
+    # lookup total: every key it needs is a period being drawn, and a row it
+    # cannot cover would raise rather than caption silently.
+    due_captions = grid_view_service.due_captions_by_id(
+        [txn for cell in matched_by_row_period.values() for txn in cell],
+        {period.period_id: period.start_date for period in periods},
+    )
 
     return _GridRowData(
         income_row_keys=income_row_keys,
         expense_row_keys=expense_row_keys,
         matched_by_row_period=matched_by_row_period,
-        entry_sums=entry_sums,
-        entry_lists=entry_lists,
+        due_captions=due_captions,
     )
 
 
-def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
+class _GridEntryMaps(NamedTuple):
+    """What the grid's ENVELOPE cards render their purchase lists from.
+
+    Attributes:
+        entry_sums: ``{txn_id -> sums}``, the cell template's
+            "spent / budget" progress aggregate.
+        entry_lists: ``{txn_id -> entry_list_view}``, the inline mobile
+            entries list per envelope card, rendered server-side to avoid
+            per-card HTMX fan-out.
+    """
+
+    entry_sums: dict[int, dict]
+    entry_lists: dict[int, dict]
+
+
+def _build_entry_maps(transactions, budgets, all_periods) -> _GridEntryMaps:
+    """Build the two ENVELOPE maps, and the paycheck spans one of them needs.
+
+    **They were built inside :func:`_build_grid_row_data` until pay-calendar
+    plan step C4-a-3**, which is the whole of that step's five-argument fork.
+    That helper runs TWICE per render and :func:`_build_plan_view` DISCARDS
+    both maps it returns -- it publishes six ``plan_*`` keys and neither is
+    one of them, while its own docstring had claimed since the tab was built
+    that no entry data was computed for it.  So the fork's answer was a
+    DELETION rather than a move (ruling **R-PC35**): nothing gained an
+    argument, ``_GridRowData`` lost two fields, and that helper and
+    ``_build_plan_view`` each lost ``budgets``.
+
+    **It is a FUNCTION rather than two calls written into**
+    :func:`index`'s ``render_template`` **arguments**, and an adversarial
+    review of this step measured why (2026-08-31): naming those two results
+    as locals there takes :func:`index` to ``R0914`` at 16/15, so leaving
+    them inline would have been load-bearing rather than stylistic -- a
+    quieter way past a ceiling than the scoped disable this step refused,
+    because a disable is greppable and an inlined producer call is not.  One
+    named value costs one local, which is what ``period_spans`` cost before
+    it moved in here beside its only consumer.
+
+    Args:
+        transactions: Every row the page loaded -- NOT the visible-window
+            slice.  The mobile card macro indexes these maps by ``txn.id``
+            for any row it draws, and narrowing them to the rendered window
+            is a behaviour question this leaf does not open (R-PC35's own
+            rejected list).
+        budgets: The page's ONE ``{transaction_id: amount}`` map.
+        all_periods: The window *transactions* was LOADED by --
+            ``ctx.all_periods``, the same value :func:`_load_grid_transactions`
+            scopes its ``pay_period_id IN (...)`` with, read one field by both
+            so the span map below cannot cover fewer paychecks than the rows
+            it is handed.  Passing the visible slice instead would be a
+            ``KeyError`` on a live render, which is why the two reads sit in
+            one function rather than being resolved apart.
+
+    Returns:
+        The :class:`_GridEntryMaps` for this render.
+    """
+    return _GridEntryMaps(
+        entry_sums=build_entry_sums_dict(transactions, budgets),
+        # Pre-render context for the inline mobile entries list on envelope
+        # cards.  Computed server-side rather than via per-card HTMX
+        # ``hx-trigger="load"`` fan-out to keep one grid page load from
+        # blowing past the ``RATELIMIT_DEFAULT`` ceiling of "30 per minute"
+        # on the entries endpoint -- with 6 visible periods and ~10 envelope
+        # templates each, the lazy-load shape generated ~60 parallel GETs
+        # and the over-limit cards stuck on the loading spinner forever.
+        #
+        # The SPANS the out-of-period purchase warning is judged against
+        # (plan step C4-a-3), keyed the way a row names its paycheck.  They
+        # are DERIVED, where the warning read the stored ``end_date`` plan
+        # step C4-c dropped.
+        entry_lists=build_entry_lists_dict(
+            transactions, budgets,
+            {period.period_id: period for period in all_periods},
+        ),
+    )
+
+
+def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
     """Build the read-only "Plan" tab context window.
 
     The Plan tab on the mobile grid answers "what does the next half-
     year look like from today?" regardless of how the user is
     navigating in This Period (which can leave the URL at
     ``?periods=1&offset=N``).  This helper computes a parallel data
-    slice anchored at ``current_period`` and walking forward
-    :data:`PLAN_WINDOW_PERIODS` periods.
+    slice anchored at ``current_period`` and walking forward far enough to
+    cover :data:`PLAN_WINDOW_MONTHS` months of the OWNER's paychecks.
 
-    No entry sums or entry lists are computed -- Plan renders future
-    periods read-only and envelope entries are by design a current /
-    past concept.  The interactive helper :func:`_build_grid_row_data`
-    still produces those values for the rest of the page; we discard
-    them here.
+    **No entry sums or entry lists are computed, and that sentence became
+    TRUE at pay-calendar plan step C4-a-3** -- Plan renders future periods
+    read-only and envelope entries are by design a current / past concept.
+    It stood here while :func:`_build_grid_row_data` built both maps over
+    every loaded row on this call as well, and returned them into a
+    ``row_data`` this function drops on the floor: the claim described the
+    OUTPUT and the work was done anyway.  Both builds now live at
+    :func:`index`, the one caller that renders them, which is also why this
+    function no longer takes the ``budgets`` map it only ever forwarded.
 
     Args:
         ctx: The :class:`_GridContext` for this request.  Supplies
@@ -370,21 +539,16 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
         all_categories: User's full category set (active + archived).
             Forwarded to the row-key builder so archived-category
             transactions still render.
-        budgets: The page's ONE ``{transaction_id: amount}`` map, threaded in
-            rather than rebuilt: this helper runs a second time for the Plan
-            window over the SAME rows, and a second map would be a second
-            pricing pass over rows the first already priced (the shape of
-            findings **N-268** / **N-269**).
 
     Returns:
         Dict with six ``plan_*`` keys ready to splice into the
         ``render_template`` kwargs of :func:`index`:
 
           - ``plan_periods``: a
-            :class:`~app.services.pay_calendar.PeriodWindow`, up to
-            :data:`PLAN_WINDOW_PERIODS` long starting at
-            ``current_period``.  May be shorter when the user has
-            fewer remaining generated periods.
+            :class:`~app.services.pay_calendar.PeriodWindow` starting at
+            ``current_period`` and holding as many of the owner's paychecks as
+            fall inside :data:`PLAN_WINDOW_MONTHS` months.  May be shorter when
+            the user has fewer remaining generated periods.
           - ``plan_income_row_keys`` / ``plan_expense_row_keys``:
             row-key lists scoped to the plan window.
           - ``plan_matched_by_row_period``: same shape as the
@@ -399,12 +563,29 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
             visible one -- the Plan tab reaches periods the grid may not
             show).
     """
-    plan_periods = ctx.balance_ctx.calendar().window(
-        ctx.current_period.period_index, PLAN_WINDOW_PERIODS,
+    calendar = ctx.balance_ctx.calendar()
+    # How many of THIS owner's paychecks land inside the plan span (plan step
+    # R-F17), where a hardcoded 13 stood for "six months, biweekly".
+    #
+    # **The floor of one is a POLICY, and saying so is the correction an
+    # adversarial review of this step forced.** The comment here argued it was
+    # an invariant -- "the paycheck the owner is currently IN already spans the
+    # whole of it" -- and that is false for every phase but the period's first
+    # day: at a 244-day cadence with today on day 240, the current period ends
+    # in four days and this renders four forward days under a tab meaning the
+    # next half-year.  The honest statement is the policy: a TAB must render
+    # something, so it renders the paycheck the owner is in.  The desktop
+    # selector OMITS such a button instead (ruling R-R31), because a button is
+    # optional where a tab is not.
+    plan_window = max(
+        calendar.cadence.paychecks_within(PLAN_WINDOW_MONTHS), 1,
+    )
+    plan_periods = calendar.window(
+        ctx.current_period.period_index, plan_window,
     )
 
     row_data = _build_grid_row_data(
-        all_transactions, plan_periods, False, all_categories, budgets,
+        all_transactions, plan_periods, False, all_categories,
     )
 
     return {
@@ -420,6 +601,77 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
     }
 
 
+class _BankControl(NamedTuple):
+    """The grid's door into what the BANK said, and whether it is waiting.
+
+    Attributes:
+        account_id: The grid account, for the statements page URL.
+        awaiting: How many bank lines the review is still asking about
+            (:func:`~app.services.statement_match.awaiting_review_count`).
+            ``0`` is rendered as a plain door rather than hiding it: the
+            control is how the feature is FOUND, and a badge that appears
+            only once lines exist cannot be found by someone who has never
+            imported one.
+    """
+
+    account_id: int
+    awaiting: int
+
+
+def _bank_control(account, calendar) -> "_BankControl | None":
+    """Return the grid's bank statement control, or ``None`` for no control.
+
+    **Gated on the target page's own kind rule**
+    (:func:`~app.services.account_resolver.serves_cash_detail`), not on the
+    grid's.  The two differ: :func:`~app.services.account_resolver
+    .is_cash_flow_account` refuses only amortizing loans, so an owner with no
+    checking account can have a Property or a Roth IRA resolved as their grid
+    account -- and the statements page 404s exactly those.  Rendering the
+    control off the grid's own gate would put a door onto an error page.
+
+    Args:
+        account: The resolved grid account, or ``None`` when the owner has no
+            account rows at all.
+        calendar: The read pass's memoized
+            :class:`~app.services.pay_calendar.PayCalendar`.  Threaded from
+            the route rather than re-derived, so this count and the screen it
+            links to split at the same first payday.
+
+    Returns:
+        The :class:`_BankControl`, or ``None`` when no control belongs here.
+
+    Note:
+        **There is deliberately NO guard here for an account carrying no
+        ``budget.account_openings`` row**, and it was MEASURED rather than
+        reasoned about.  A draft of plan step balance:X-f3c-2b-2b added one --
+        ``awaiting_review_count`` reaches the RAISING loader
+        (``cash_ledger.account_opening_fact``), so the concern was that a
+        broken invariant would take the app's hottest page down rather than one
+        control on it.  Deleting every opening row for the seeded account and
+        rendering ``/grid`` showed why that guard could never help: the request
+        raises inside ``_build_grid_view`` (through
+        ``balance_at.grid_balance_view`` -> ``cash_ledger.walk_cash_ledger`` ->
+        ``cash_ledger.account_opening_fact``, which is the RAISING loader), and
+        ``index`` does not reach this function until many statements later.
+        Line numbers are deliberately not quoted: the first draft of this note
+        cited two, measured with the deleted guard still in place, and both
+        were three lines stale before it was committed.  The guard was
+        UNREACHABLE for the state it named, while costing a second
+        ``budget.account_openings`` read per cash account on every grid render
+        -- the DRY violation ``awaiting_review_count``'s own docstring names
+        four lines from where the read was added.  ``CLAUDE.md`` rule 13: no
+        error handling for a state that cannot arrive here.
+    """
+    if account is None or not serves_cash_detail(account):
+        return None
+    return _BankControl(
+        account_id=account.id,
+        awaiting=awaiting_review_count(
+            account.user_id, account.id, calendar.opening_bound(),
+        ),
+    )
+
+
 @grid_bp.route("/grid")
 @login_required
 @require_owner
@@ -431,17 +683,36 @@ def index():
     controlled by query params or user settings.  Orchestrates
     :func:`_resolve_grid_context` (period range + early returns),
     :func:`_load_grid_transactions`, :func:`_build_grid_balances`,
-    :func:`_build_grid_subtotals`, and :func:`_build_grid_row_data`,
-    then dispatches to ``grid/grid.html``.
+    :func:`_build_grid_subtotals`, :func:`_build_grid_row_data` and
+    :func:`_build_entry_maps`, then dispatches to ``grid/grid.html``.
+
+    *Two of those names resolve to nothing and have since before this
+    function was decomposed*: ``_build_grid_balances`` and
+    ``_build_grid_subtotals`` exist nowhere in ``app/``.  Recorded rather
+    than repaired here (``CLAUDE.md`` rule 6) by the adversarial review of
+    plan step ``pay_calendar:C4-a-3``, 2026-08-31, which is the step that
+    added the last name in the list.
     """
     user_id = current_user.id
 
     # Continuous rolling window: top up before resolving the grid so any
-    # newly generated periods are visible this request.  A no-op (one
-    # count, no lock) when rolling is disabled; commits only when periods
-    # were actually created.
-    if pay_period_admin.top_up_rolling_window(user_id):
-        db.session.commit()
+    # newly generated periods are visible this request.  A no-op (one count,
+    # no lock) when rolling is disabled.
+    #
+    # **In its own COMMAND transaction** (plan step X-i3): this render is a
+    # query, so its transaction is one read-only snapshot and cannot hold the
+    # append.  The block writes, commits, and the read pass below then takes
+    # its snapshot of a database that already holds the new periods -- which is
+    # the ordering this route always needed and stated in prose.
+    #
+    # The top-up APPENDS and this fills what it appended (ruling **R-R38**):
+    # the door leaves the new paydays empty, and the pass their recurring rows
+    # are resolved in is opened here, after they exist.  It opens NOTHING when
+    # nothing was appended, which is every render but the rare short-window
+    # one -- so this page still holds ONE read pass on the render path.
+    with write_transaction():
+        appended = pay_period_rolling.top_up_rolling_window(user_id)
+        populate_new_periods(user_id, appended)
 
     ctx = _resolve_grid_context(
         user_id, request.args, current_user.settings,
@@ -454,16 +725,19 @@ def index():
     )
     grid_view, anchor = _build_grid_view(ctx.account, ctx.balance_ctx)
     # The ONE map every cell on this page reads its amount from, built by the
-    # ONE rule every OTHER surface reads it by (``display_amounts_by_id``):
-    # what the row's amount resolves to, superseded by a live recompute where
-    # one exists (ruling R-Q).  It composed those two terms inline here until
-    # an adversarial review found the composition written twice and differently
-    # -- the fragments and the companion published the resolved map ALONE under
-    # the same context key, so the grid showed a drifted salary row its live
-    # net and the quick-edit box the same click opened showed the stale column.
-    # It reads the pass's own basis, which is the object the seam's own
-    # override map was built from, so the cell and the balance row beside it
-    # still cannot price one row two ways.
+    # ONE rule every OTHER surface reads it by (``amounts_by_id``): what the
+    # row's amount RESOLVES to (ruling R-Q).  It reads the pass's own basis, so
+    # the cell and the balance row beside it cannot price one row two ways.
+    #
+    # **It was ``display_amounts_by_id`` -- that resolve with a live recompute
+    # laid over it -- until plan step X-au-d.**  The composition had been
+    # written twice and differently before X-au-c2b extracted it (the fragments
+    # and the companion published the resolved map ALONE under the same context
+    # key, so the grid showed a drifted salary row its live net while the
+    # quick-edit box the same click opened showed the stale column).  What the
+    # cutovers then did was delete the second term rather than the second
+    # spelling: a derived row stores no figure, so there is nothing for a
+    # recompute to supersede and the composition collapsed onto the resolve.
     #
     # **That fall-through was ``txn.estimated_amount`` until plan step
     # X-au-c2b**, annotated onto each row as a transient
@@ -474,7 +748,7 @@ def index():
     # silently, so a render path that forgot to set the attribute showed the
     # stale column with nothing to say it had.  A published MAP is what a
     # template cannot read half of.
-    budgets = display_amounts_by_id(
+    budgets = amounts_by_id(
         all_transactions, ctx.balance_ctx.amounts(),
     )
     # What each row's money DID, beside what its amount IS (plan step X-au-c3).
@@ -504,15 +778,29 @@ def index():
     show_all = request.args.get("show_all", type=int) == 1
 
     row_data = _build_grid_row_data(
-        all_transactions, ctx.periods, show_all, all_categories, budgets,
+        all_transactions, ctx.periods, show_all, all_categories,
     )
 
     # Build the parallel context for the mobile "Plan" tab.  Decoupled
     # from ctx.periods so a `?periods=1&offset=N` URL (driven by the
     # This Period arrow nav) does not starve Plan of forward visibility.
     plan_view = _build_plan_view(
-        ctx, all_transactions, grid_view, all_categories, budgets,
+        ctx, all_transactions, grid_view, all_categories,
     )
+
+    # The envelope cards' two maps (pay-calendar plan step C4-a-3).  It takes
+    # ``ctx.all_periods`` -- the SAME field ``_load_grid_transactions`` scoped
+    # its ``pay_period_id IN (...)`` with, eleven lines up -- so the paycheck
+    # spans it derives cannot cover fewer rows than it is handed.
+    #
+    # **That is also what keeps balance finding N-358 out of THIS lookup**, and
+    # it says nothing about the rest of the page: the spans and the rows are
+    # cut from one window, so there is no second read for a concurrent payday
+    # write to land between, which is the argument ``require_period``'s own
+    # docstring makes for a precondition carried by the QUERY.  The rolling
+    # top-up above commits BEFORE ``_resolve_grid_context`` opens the pass that
+    # window comes from, which is what makes it hold the paydays just appended.
+    entry_maps = _build_entry_maps(all_transactions, budgets, ctx.all_periods)
 
     return render_template(
         "grid/grid.html",
@@ -533,6 +821,10 @@ def index():
         # nullable this step exists to stop handing out.
         scenario_id=ctx.balance_ctx.scenario_id,
         account=ctx.account,
+        # The door into what the BANK said, beside the anchor it agrees
+        # with: both answer "what did this account really do", and the
+        # import is how the anchor stops being typed from memory.
+        bank_control=_bank_control(ctx.account, ctx.balance_ctx.calendar()),
         periods=ctx.periods,
         current_period=ctx.current_period,
         columns=grid_view.columns,
@@ -555,6 +847,12 @@ def index():
         statuses=db.session.query(Status).all(),
         transaction_types=db.session.query(TransactionType).all(),
         num_periods=ctx.num_periods,
+        # The date-range quick-select buttons, resolved from the OWNER's
+        # cadence (plan step R-F17, ruling R-R31).  They were a Jinja literal
+        # pairing each month label with a hardcoded biweekly period count, so
+        # the labels told the truth for one cadence; a template cannot ask a
+        # value object a question, so the resolution belongs here.
+        range_options=_range_options(ctx.balance_ctx.calendar().cadence),
         start_offset=ctx.start_offset,
         show_all=show_all,
         col_size=(
@@ -574,9 +872,10 @@ def index():
         today=display_today(),
         all_periods=ctx.all_periods,
         low_balance_threshold=_resolve_low_balance_threshold(),
-        entry_sums=row_data.entry_sums,
-        entry_lists=row_data.entry_lists,
+        entry_sums=entry_maps.entry_sums,
+        entry_lists=entry_maps.entry_lists,
         matched_by_row_period=row_data.matched_by_row_period,
+        due_captions=row_data.due_captions,
         **plan_view,
     )
 

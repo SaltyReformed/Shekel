@@ -214,10 +214,10 @@ per-instance keep/replace decisions) was built and tested but no UI ever calls i
   framing sentence (what changed, new value, effective date); one row per conflicted instance = date
   - owning pay period, your value, new template value, and a two-state Keep/Use toggle DEFAULTING TO
   KEEP with the actual amounts in the button labels ("Keep 220.00" / "Use 190.00") so each decision
-  reads without cross-referencing columns; bulk shortcuts (Keep all / Use new value for all); an info
-  line making the blast radius explicit ("all N other upcoming instances regenerate at the new value;
-  paid history is never touched"); Cancel edit abandons the whole template edit; Apply commits
-  decisions through `resolve_conflicts()`.
+  reads without cross-referencing columns; bulk shortcuts (Keep all / Use new value for all); an
+  info line making the blast radius explicit ("all N other upcoming instances regenerate at the new
+  value; paid history is never touched"); Cancel edit abandons the whole template edit; Apply
+  commits decisions through `resolve_conflicts()`.
 
 ## Loop B build plan
 

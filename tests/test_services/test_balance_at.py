@@ -29,29 +29,33 @@ patterns: a Checking (PLAIN), an HYSA + InterestParams (INTEREST), a
 Mortgage + LoanParams + origination event/rate (AMORTIZING), a 401(k) +
 InvestmentParams (INVESTMENT), and a Property + AssetAppreciationParams
 (APPRECIATING).  ``seed_periods_today`` places today in period index 4 so
-``get_current_period`` is deterministic and an account can be anchored in
-the past (period 2) or at the current period (period 4).
+"which paycheck contains today" is deterministic and an account can be
+anchored in the past (period 2) or at the current period (period 4).
 """
 
 from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from types import SimpleNamespace
 
 import pytest
 
 from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
+    AmountSourceEnum,
+    CalcMethodEnum,
+    DeductionTimingEnum,
     StatusEnum,
     TxnTypeEnum,
 )
-from app.models.account import Account, AccountAnchorHistory
+from app.exceptions import ValidationError
+from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, CalcMethod, DeductionTiming
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
 from app.services import (
     growth_engine,
     account_service,
@@ -59,18 +63,20 @@ from app.services import (
     balance_at,
     cash_ledger,
     income_service,
-    pay_period_service,
+    template_amount_service,
 )
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
-from app.services.pay_calendar import DerivedPeriod, PayCalendarError, calendar_for
+from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.services.balance_at._asset_contributions import ContributionInputs
+from app.services.balance_at._assertions import assertion_corrections
+from app.services.investment_projection import AccountPayrollFeed
 from app.services.projection_inputs import (
-    load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
+    load_payroll_feeds,
 )
 from app.services.savings_dashboard_service._data import _load_account_params
 from app.services.scenario_resolver import get_baseline_scenario
@@ -84,24 +90,32 @@ from app.services.balance_at._resolution import (
     configured_loan,
     resolved_loan,
 )
+from tests.conftest import SEED_USER_BOOTSTRAP_START
 from tests._test_helpers import (
+    account_never_asserted,
     add_txn,
+    all_periods,
+    amount_basis_for_scenario,
     append_balance_assertion,
     create_account_of_type,
+    create_account_via_service,
     create_hysa_account,
     create_loan_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    current_pay_period,
+    derived_span,
     insert_trueup_event,
+    last_covered_day,
     loan_params_for,
     make_appreciating_account,
     make_investment_account,
     make_salary_profile,
     posted_loan_balance_at,
-    restamp_latest_assertion,
-    restamp_opening_assertion,
+    reassert_balance_on,
     settle_instant_on,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _no_baseline(user_id):
@@ -115,6 +129,82 @@ def _no_baseline(user_id):
     carrying ``scenario=None`` -- not by passing ``None`` where a context goes.
     """
     return BalanceContext(user_id=user_id, scenario=None, as_of=date.today())
+
+
+#: What a template's ``default_amount`` says when the graded figure is its
+#: price SERIES.  Distinct from every amount the cases below state, so a
+#: producer reading the scalar instead of the series answers a number no
+#: assertion expects (see :func:`_derived_income_row`).
+_NOT_THE_SERIES = Decimal("7.77")
+
+
+def _derived_income_row(db, seed_user, account, period, scenario, amount):
+    """A projected income row DECLARED derived, priced by a definition's series.
+
+    **What replaced a monkeypatched read-time repair at plan step X-au-d.**  A
+    fold that reads a row's own column contributes ``None`` for this row, and
+    one that asks the amount model contributes *amount* -- so "the balance is
+    built on the derivation" is a property of the DATA here rather than of a
+    patched producer.
+
+    The definition is priced through ``template_amount_service.set_amount``,
+    the ONE write door for a price series, and the row's due date is the
+    period's own start so ``amount_as_of`` resolves on it.
+
+    **``default_amount`` is deliberately NOT the graded figure.**  An
+    adversarial review of plan step X-au-d found a first version setting both
+    to *amount*, which makes the series and the scalar the same number -- and
+    ``_stated_amount``'s empty-series refusal is then invisible: replacing that
+    refusal with ``return template.default_amount``, the exact fallback its own
+    message forbids, survives every case built on this helper.  A distinct
+    scalar is what makes the series load-bearing.
+
+    Args:
+        db: The test session fixture.
+        seed_user: The seeded owner bundle.
+        account: The account the row's money moves through.
+        period: The pay period the row is funded in.
+        scenario: The scenario the row belongs to.
+        amount: What the definition states, and therefore what the row is
+            worth.
+
+    Returns:
+        The staged :class:`~app.models.transaction.Transaction`.
+    """
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=account.id,
+        category_id=next(iter(seed_user["categories"].values())).id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+        name="Priced income",
+        default_amount=_NOT_THE_SERIES,
+    )
+    db.session.add(template)
+    db.session.flush()
+    template_amount_service.set_amount(
+        template, amount, effective_on=period.start_date,
+    )
+    txn = Transaction(
+        account_id=account.id,
+        template_id=template.id,
+        # The owner, off the period this row is funded in (plan step
+        # ``pay_calendar:C13-a``).  This helper arrived from
+        # ``balance:X-au-d``, which was written against a schema with no
+        # ``user_id``; without this the constructor meets a NOT NULL.
+        user_id=period.user_id,
+        pay_period_id=period.id,
+        scenario_id=scenario.id,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        name="Priced income",
+        due_date=period.start_date,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+        amount_ownership=AmountOwnership.derived(
+            ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+        ),
+    )
+    db.session.add(txn)
+    db.session.flush()
+    return txn
 
 
 def _make_hysa(db, seed_user, anchor_period, balance):
@@ -216,8 +306,16 @@ def _add_flat_deduction(db, profile, account, amount):
 
     The growth engine's contribution feed: a flat per-period employee
     contribution into an investment account, picked up by
-    :func:`load_active_deductions_for_accounts` (active profile + active
-    deduction + ``target_account_id``).  Flushed; the caller commits.
+    :func:`~app.services.projection_inputs.load_payroll_feeds` (active
+    profile + active deduction + ``target_account_id``) and PRICED by the
+    paycheck engine.  Flushed; the caller commits.
+
+    **It also records which job FUNDS the account** (plan step
+    **salary:R14-b**, ruling **R-SAL5**) -- what ``salary:R14-a``'s backfill
+    wrote for this exact shape, an account with a deduction naming it being
+    funded by that deduction's own profile.  Without the link no employer
+    money is modelled at all (developer, 2026-09-04), so an employer-match
+    case would assert against ``$0.00`` and pass for the wrong reason.
     """
     flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
     pre_tax_timing = (
@@ -233,6 +331,9 @@ def _add_flat_deduction(db, profile, account, amount):
         is_active=True,
     )
     db.session.add(ded)
+    params = load_investment_params_for_accounts([account]).get(account.id)
+    if params is not None:
+        params.salary_profile_id = profile.id
     db.session.flush()
     return ded
 
@@ -245,8 +346,8 @@ class TestBalanceMapCash:
     ):
         """A PLAIN checking map equals the kernel called with the same inputs.
 
-        The seam assembles no debt schedule, no investment params, and no
-        deductions for a checking account, and supplies the engine gross;
+        The seam assembles no debt schedule, no investment params and no
+        payroll feed for a checking account;
         the result must equal calling
         :func:`net_worth_kernel.build_account_balance_map` directly with
         exactly those inputs.  This proves the seam's internal assembly
@@ -256,16 +357,17 @@ class TestBalanceMapCash:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-
             seam = balance_at.balance_map(account, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 account, bctx,
-                ContributionInputs(salary_gross_biweekly=gross),
+                # The EMPTY bundle since plan step salary:R14-b: an account
+                # with no investment params gets no payroll feed at all.  It
+                # carried a ``salary_gross_biweekly`` of the owner's current
+                # paycheck until then -- one set-wide figure handed to an
+                # account that could not consume one.
+                ContributionInputs(),
             )
 
             assert seam is not None
@@ -290,16 +392,12 @@ class TestBalanceMapCash:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-
             seam = balance_at.balance_map(hysa, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 hysa, bctx,
-                ContributionInputs(salary_gross_biweekly=gross),
+                ContributionInputs(),
             )
 
             assert seam is not None
@@ -332,7 +430,7 @@ class TestInterestBeginsAtTheLatestAssertion:
         account = create_hysa_account(
             seed_user, db.session, anchor_period, balance,
         )
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, account, settle_instant_on(day),
         )
         db.session.commit()
@@ -356,7 +454,7 @@ class TestInterestBeginsAtTheLatestAssertion:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             anchor = periods[0]
             hysa = self._hysa_asserted_on(
                 db, seed_user, anchor, Decimal("10000.00"),
@@ -385,23 +483,25 @@ class TestInterestBeginsAtTheLatestAssertion:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = create_hysa_account(
                 seed_user, db.session, periods[0], Decimal("6000.00"),
             )
+            # **The true-up names its own day at the DOOR** (plan step
+            # X-f3c-2c).  It used to be staged for today and then re-stamped
+            # onto the day this case turns on; the table is append-only, so
+            # the day an assertion is true for is decided when it is written --
+            # and ``stage_anchor_true_up`` already takes it.
+            #
+            # The stager takes a BOUNDED day (plan step X-f1e2): only
+            # ``resolve_observation_day`` mints one, so the fixture asks for it
+            # the same way both production doors do.
             anchor_service.stage_anchor_true_up(
                 account=hysa,
                 new_balance=Decimal("10000.00"),
-                # The stager takes a BOUNDED day (plan step X-f1e2): only
-                # ``resolve_observation_day`` mints one, so the fixture asks
-                # for it the same way both production doors do.
                 observed_on=anchor_service.resolve_observation_day(
-                    user_id, None,
+                    user_id, periods[2].start_date + timedelta(days=7),
                 ),
-            )
-            restamp_latest_assertion(
-                db.session, hysa,
-                settle_instant_on(periods[2].start_date + timedelta(days=7)),
             )
             db.session.commit()
 
@@ -429,7 +529,7 @@ class TestInterestBeginsAtTheLatestAssertion:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             anchor = periods[0]
             hysa = self._hysa_asserted_on(
                 db, seed_user, anchor, Decimal("10000.00"),
@@ -495,7 +595,7 @@ class TestBalanceMapLoan:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             mortgage, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -526,7 +626,7 @@ class TestBalanceMapLoan:
             # first scheduled payment: the trued-up balance, held flat.
             post_anchor = [
                 p for p in periods
-                if anchor_date <= p.end_date < first_payment
+                if anchor_date <= last_covered_day(p) < first_payment
             ]
             assert post_anchor, "expected a post-anchor pre-first-payment period"
             assert seam[post_anchor[0].id] == schedule.projection_seed
@@ -539,7 +639,7 @@ class TestBalanceMapLoan:
             # loan opened at $240,000 and no payment was ever recorded, so that is
             # what it owed then.  The $200,000 assertion is dated today and is NOT
             # back-projected over the past.
-            pre_anchor = [p for p in periods if p.end_date < anchor_date]
+            pre_anchor = [p for p in periods if last_covered_day(p) < anchor_date]
             assert pre_anchor, "expected a pre-anchor period"
             assert seam[pre_anchor[-1].id] == Decimal("240000.00")
 
@@ -566,7 +666,7 @@ class TestBalanceMapLoan:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             loan, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -606,7 +706,7 @@ class TestBalanceMapLoan:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             loan, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -629,7 +729,7 @@ class TestBalanceMapLoan:
             )
             future = [
                 p for p in periods
-                if p.start_date > bctx.as_of and p.end_date > first_payment
+                if p.start_date > bctx.as_of and last_covered_day(p) > first_payment
             ]
             assert future, "expected a future period past the first payment"
             fp = future[0]
@@ -637,7 +737,7 @@ class TestBalanceMapLoan:
             # forward walk reduces the balance to -- recomputed independently.
             due_by_end = [
                 row for row in schedule.schedule
-                if not row.is_confirmed and row.payment_date <= fp.end_date
+                if not row.is_confirmed and row.payment_date <= last_covered_day(fp)
             ]
             assert due_by_end, "expected an installment due by the future period"
             expected = max(
@@ -701,7 +801,7 @@ class TestTheLoanGateIsOneQuestion:
         """The ordinary case: a Mortgage with LoanParams takes the loan arm."""
         with app.app_context():
             bctx = BalanceContext.build(seed_user["user"].id)
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             loan, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -727,7 +827,7 @@ class TestTheLoanGateIsOneQuestion:
         """
         with app.app_context():
             bctx = BalanceContext.build(seed_user["user"].id)
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             loan, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -804,7 +904,7 @@ class TestTheLoanGateIsOneQuestion:
         """
         with app.app_context():
             bctx = BalanceContext.build(seed_user["user"].id)
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             loan, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -843,7 +943,7 @@ class TestTheLoanGateIsOneQuestion:
         """
         with app.app_context():
             bctx = BalanceContext.build(seed_user["user"].id)
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             loan, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -899,37 +999,53 @@ class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
     ):
         """The contract, asserted as the identity it is.
 
-        The 401(k) beside it is what makes the case non-vacuous: it forces the
-        gross fetch to happen, so the checking account's ``0`` is the
-        per-account arm's doing and not the set gate's.
+        The 401(k) beside it is what makes the case non-vacuous: it is the
+        account that HAS a feed, so the checking account's empty one is the
+        per-account arm's doing and not the whole set answering nothing.
+
+        **The leak this guards became unrepresentable at plan step
+        salary:R14-b**, and the case is kept as the pin on that rather than
+        deleted.  The bundle carried one ``salary_gross_biweekly`` fetched for
+        the SET, so handing it to every member would have made a checking
+        account's feed depend on which other accounts shared its read --
+        ``$0`` alone and the owner's real gross in a batch.  A feed is priced
+        per ACCOUNT now, off the deductions naming it and the profile its own
+        params name, so there is no set-wide figure left to leak.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             checking = seed_user["account"]
             roth = make_investment_account(
                 seed_user, db.session, periods[2], Decimal("10000.00"),
             )
-            # A real salary, or the gross is $0 for everyone and the case
-            # cannot tell the per-account arm from the set-level gate.  The
-            # non-vacuity assertion below is what caught its absence.
-            make_salary_profile(seed_user, db.session)
+            # A real salary AND a deduction naming the Roth, or NEITHER
+            # account has a feed and the case cannot tell the per-account arm
+            # from a set that answered nothing.  The non-vacuity assertion
+            # below is what caught its absence.
+            profile = make_salary_profile(seed_user, db.session)
+            db.session.flush()
+            db.session.add(PaycheckDeduction(
+                salary_profile_id=profile.id, target_account_id=roth.id,
+                name="Roth deferral", amount=Decimal("100.00"),
+                calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
+                deduction_timing_id=ref_cache.deduction_timing_id(
+                    DeductionTimingEnum.PRE_TAX,
+                ),
+                is_active=True,
+            ))
             db.session.commit()
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
 
             ctx = BalanceContext.build(user_id)
             alone = _contribution_inputs_for_account(checking, ctx)
             batched = _contribution_inputs_for_accounts([checking, roth], ctx)
 
-            # Non-vacuity: the batch really did fetch a gross to hand out.
-            assert gross > Decimal("0")
-            assert batched[roth.id].salary_gross_biweekly == gross
+            # Non-vacuity: the batch really did price a feed to hand out.
+            assert batched[roth.id].feed.models_employee is True
             # The arm: the account that cannot consume one carries none, in
             # BOTH shapes -- so the two reads are the same object's worth of
             # facts, which is the Returns clause stated as an assertion.
-            assert batched[checking.id].salary_gross_biweekly == Decimal("0")
+            assert batched[checking.id].feed.models_employee is False
             assert alone == batched[checking.id]
 
 
@@ -941,8 +1057,8 @@ class TestBalanceMapInvestment:
     ):
         """An investment anchored at the current period equals the kernel.
 
-        The seam assembles the InvestmentParams, the (empty) deductions
-        scoped to the params map, and the engine gross, then delegates to
+        The seam assembles the InvestmentParams and the payroll feed the
+        paycheck engine prices for it, then delegates to
         the growth path; it must equal the kernel called with those same
         manually-assembled inputs.
         """
@@ -950,25 +1066,26 @@ class TestBalanceMapInvestment:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            current = pay_period_service.get_current_period(user_id)
+            current = current_pay_period(user_id)
             inv = make_investment_account(
                 seed_user, db.session, current, Decimal("10000.00"),
             )
 
             params = load_investment_params_for_accounts([inv]).get(inv.id)
-            deductions = load_active_deductions_for_accounts(
-                user_id, [inv.id],
-            ).get(inv.id, [])
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
 
             seam = balance_at.balance_map(inv, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 inv, bctx,
                 ContributionInputs(
-                    investment_params=params, deductions=deductions,
-                    salary_gross_biweekly=gross,
+                    investment_params=params,
+                    # PRICED, as the seam's own loader does since plan step
+                    # salary:R14-b: the kernel below the seam takes the
+                    # paycheck engine's per-payday answer, not the ORM rows
+                    # and not a scalar gross.
+                    feed=load_payroll_feeds(
+                        user_id, calendar_for(user_id), [inv.id],
+                        {inv.id: params},
+                    )[inv.id],
                 ),
             )
 
@@ -989,23 +1106,24 @@ class TestBalanceMapInvestment:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             params = load_investment_params_for_accounts([inv]).get(inv.id)
-            deductions = load_active_deductions_for_accounts(
-                user_id, [inv.id],
-            ).get(inv.id, [])
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
 
             seam = balance_at.balance_map(inv, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 inv, bctx,
                 ContributionInputs(
-                    investment_params=params, deductions=deductions,
-                    salary_gross_biweekly=gross,
+                    investment_params=params,
+                    # PRICED, as the seam's own loader does since plan step
+                    # salary:R14-b: the kernel below the seam takes the
+                    # paycheck engine's per-payday answer, not the ORM rows
+                    # and not a scalar gross.
+                    feed=load_payroll_feeds(
+                        user_id, calendar_for(user_id), [inv.id],
+                        {inv.id: params},
+                    )[inv.id],
                 ),
             )
 
@@ -1058,15 +1176,15 @@ class TestInvestmentGrowthSinceAnchor:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
-            current = pay_period_service.get_current_period(user_id)
+            periods = all_periods(user_id)
+            current = current_pay_period(user_id)
             # Anchor at the first period, strictly before the current one.
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
 
             result = balance_at.investment_growth_since_anchor(
-                inv, bctx, current,
+                inv, bctx, derived_span(current),
             )
             assert result is not None
             growth, contributed = result
@@ -1103,15 +1221,15 @@ class TestInvestmentGrowthSinceAnchor:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
-            current = pay_period_service.get_current_period(user_id)
+            periods = all_periods(user_id)
+            current = current_pay_period(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
-            assert current.end_date > date.today()  # the dates differ
+            assert last_covered_day(current) > date.today()  # the dates differ
 
             growth, contributed = balance_at.investment_growth_since_anchor(
-                inv, bctx, current,
+                inv, bctx, derived_span(current),
             )
             balances = balance_at.balance_map(inv, bctx)
             assert growth + contributed == (
@@ -1141,13 +1259,13 @@ class TestInvestmentGrowthSinceAnchor:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            current = pay_period_service.get_current_period(user_id)
+            current = current_pay_period(user_id)
             inv = make_investment_account(
                 seed_user, db.session, current, Decimal("10000.00"),
             )
 
             result = balance_at.investment_growth_since_anchor(
-                inv, bctx, current,
+                inv, bctx, derived_span(current),
             )
             assert result is not None
             growth, contributed = result
@@ -1167,7 +1285,7 @@ class TestInvestmentGrowthSinceAnchor:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
@@ -1196,19 +1314,15 @@ class TestBalanceMapProperty:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             prop = make_appreciating_account(
                 seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
             )
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-
             seam = balance_at.balance_map(prop, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 prop, bctx,
-                ContributionInputs(salary_gross_biweekly=gross),
+                ContributionInputs(),
             )
 
             assert seam is not None
@@ -1257,7 +1371,7 @@ class TestBuildMaps:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
 
             _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             _make_mortgage(
@@ -1284,16 +1398,14 @@ class TestBuildMaps:
             loan_ids = {
                 a.id for a in accounts if a.id in params.loan_params_map
             }
-            # Deductions + engine gross are no longer on _AccountParams (the
-            # seam assembles them); source them from the same shared loaders
-            # the seam uses, with its investment-only deduction scoping.
+            # The payroll FEED is no longer on _AccountParams (the seam
+            # assembles it); source it from the same shared loader the seam
+            # uses, with its investment-only scoping.  It was a deduction map
+            # plus one engine gross until plan step salary:R14-b.
             inv_ids = list(params.investment_params_map.keys())
-            deductions_by_account = (
-                load_active_deductions_for_accounts(user_id, inv_ids)
-                if inv_ids else {}
-            )
-            salary_gross_biweekly = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
+            feeds = load_payroll_feeds(
+                user_id, calendar_for(user_id), inv_ids,
+                params.investment_params_map,
             )
             # Independent oracle for NON-loan accounts: the kernel dispatch the
             # savings net-worth producer ran inline pre-reroute, fed by the
@@ -1310,8 +1422,9 @@ class TestBuildMaps:
                         investment_params=params.investment_params_map.get(
                             account.id,
                         ),
-                        deductions=deductions_by_account.get(account.id, []),
-                        salary_gross_biweekly=salary_gross_biweekly,
+                        feed=feeds.get(
+                            account.id, AccountPayrollFeed.absent(),
+                        ),
                     ),
                 )
                 if balances is not None:
@@ -1354,7 +1467,7 @@ class TestBuildMaps:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             accounts = account_service.list_active_accounts(user_id)
             assert accounts, "fixture must supply at least one account"
 
@@ -1393,7 +1506,7 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date  # inside a known period
             add_txn(
@@ -1438,7 +1551,7 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[2], Decimal("5000.00"))
             as_of = periods[6].start_date  # independently known: in period 6
 
@@ -1447,7 +1560,7 @@ class TestBalanceAt:
             # Kind-correct scalar == kind-correct map at the period's END,
             # and STRICTLY BELOW it on the period's first day.
             assert balance_at.balance_at(
-                hysa, bctx, periods[6].end_date,
+                hysa, bctx, last_covered_day(periods[6]),
             ) == full_map[periods[6].id]
             assert seam < full_map[periods[6].id]
             # And it ACCRUES: strictly above the flat no-interest cash carry
@@ -1476,7 +1589,7 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             mortgage, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -1484,7 +1597,7 @@ class TestBalanceAt:
             schedule = net_worth_kernel.generate_debt_schedules(
                 [mortgage], bctx,
             )[mortgage.id]
-            as_of = periods[7].end_date  # future under seed_periods_today
+            as_of = last_covered_day(periods[7])  # future under seed_periods_today
 
             seam = balance_at.balance_at(mortgage, bctx, as_of)
 
@@ -1528,13 +1641,13 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             full_map = balance_at.balance_map(inv, bctx)
             # The map IS the scalar at each period's end date.
             assert balance_at.balance_at(
-                inv, bctx, periods[6].end_date,
+                inv, bctx, last_covered_day(periods[6]),
             ) == full_map[periods[6].id]
             # And the scalar is DATE-precise: strictly less on the period's
             # first day than on its last, where it used to be equal.
@@ -1557,7 +1670,7 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             prop = make_appreciating_account(
                 seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
@@ -1565,7 +1678,7 @@ class TestBalanceAt:
 
             full_map = balance_at.balance_map(prop, bctx)
             assert balance_at.balance_at(
-                prop, bctx, periods[6].end_date,
+                prop, bctx, last_covered_day(periods[6]),
             ) == full_map[periods[6].id]
             first_day = balance_at.balance_at(prop, bctx, periods[6].start_date)
             assert first_day < full_map[periods[6].id]
@@ -1591,12 +1704,17 @@ class TestTheSeamOwnsTheIncomeBasis:
     def test_a_stale_stored_amount_is_priced_live_without_being_asked(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A salary row's stale estimate never reaches the balance.
+        """A salary row is priced by its profile on both maps, unasked.
 
-        The stored ``estimated_amount`` is $1.00 against a $104,000 profile
-        whose live net is $4,000.00 (104000 / 26, hand-computed).  Both the
-        kind-correct map and the cash-flow map must carry the LIVE figure with
-        no argument passed: $1,000 anchor + $4,000 = $5,000.00 at period 5.
+        A $104,000 profile nets $4,000.00 a period (104000 / 26, hand-computed).
+        Both the kind-correct map and the cash-flow map must carry that figure
+        with no argument passed: $1,000 anchor + $4,000 = $5,000.00 at period 5.
+
+        **The row stores NOTHING since plan step X-au-d**, where it carried a
+        deliberately stale ``$1.00``.  The property is stronger for it: a fold
+        reading the column would contribute ``None`` rather than a wrong
+        figure, so the substitution this arc removes is unrepresentable here
+        instead of merely absent.
         """
         # pylint: disable=import-outside-toplevel
         from tests.test_services.test_income_service import (
@@ -1609,18 +1727,17 @@ class TestTheSeamOwnsTheIncomeBasis:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             profile = _create_profile(user_id, scenario.id)
             template = _make_salary_template(seed_user, profile)
             db.session.commit()
             txn = _make_txn(
-                seed_user, periods[5], template=template,
-                estimated_amount="1.00",
+                seed_user, periods[5], template=template, derived=True,
             )
             db.session.commit()
 
-            assert txn.estimated_amount == Decimal("1.00")
+            assert txn.estimated_amount is None
             assert balance_at.balance_map(
                 account, bctx,
             )[periods[5].id] == Decimal("5000.00")
@@ -1633,10 +1750,10 @@ class TestTheSeamOwnsTheIncomeBasis:
     ):
         """The kind that used to read STORED income reads LIVE income too.
 
-        This is the asymmetry ruling R-Q deleted.  An HYSA's salary row carries
-        the same stale $1.00 estimate; its balance must be built on the same
-        $4,000.00 live net a plain account gets, so the grid's premium over the
-        cash basis is pure interest rather than an income mismatch.
+        This is the asymmetry ruling R-Q deleted.  An HYSA's salary row is
+        DECLARED exactly as a plain account's is; its balance must be built on
+        the same $4,000.00 net, so the grid's premium over the cash basis is
+        pure interest rather than an income mismatch.
         """
         # pylint: disable=import-outside-toplevel
         from tests.test_services.test_income_service import (
@@ -1648,7 +1765,7 @@ class TestTheSeamOwnsTheIncomeBasis:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             profile = _create_profile(user_id, scenario.id)
             template = _make_salary_template(seed_user, profile)
@@ -1656,12 +1773,15 @@ class TestTheSeamOwnsTheIncomeBasis:
             db.session.add(Transaction(
                 account_id=hysa.id,
                 template_id=template.id,
+                user_id=periods[5].user_id,
                 pay_period_id=periods[5].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="HYSA paycheck",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1.00"),
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+                ),
             ))
             db.session.commit()
 
@@ -1720,7 +1840,7 @@ class TestMultiLoanIsolation:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             loan_a, params_a = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1), name="Mortgage A",
@@ -1742,7 +1862,7 @@ class TestMultiLoanIsolation:
             anchor_date = date.today()
             anchor_period = next(
                 p for p in periods
-                if p.start_date <= anchor_date <= p.end_date
+                if p.start_date <= anchor_date <= last_covered_day(p)
             )
             # The period the true-ups landed in -> each loan's OWN trued-up
             # balance (both are still pre-first-payment there).
@@ -1751,7 +1871,7 @@ class TestMultiLoanIsolation:
 
             # A period that ended before the true-ups -> each loan's OWN ledger
             # opening (no payment was recorded against either).
-            pre_anchor = [p for p in periods if p.end_date < anchor_date]
+            pre_anchor = [p for p in periods if last_covered_day(p) < anchor_date]
             assert pre_anchor, "expected a pre-anchor period"
             earlier = pre_anchor[-1].id
             assert seam_maps[loan_a.id][earlier] == Decimal("240000.00")
@@ -1798,7 +1918,7 @@ class TestInvestmentContributions:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             baseline = balance_at.balance_map(inv, bctx)
@@ -1808,33 +1928,46 @@ class TestInvestmentContributions:
             _add_flat_deduction(db, profile, inv, Decimal("200.0000"))
             db.session.commit()
 
-            with_ded = balance_at.balance_map(inv, bctx)
+            # A FRESH pass for the read AFTER the write.  A ``BalanceContext``
+            # is a memo whose lifetime is the one read it was built for, and
+            # since plan step X-i4 the cash fold every modelled kind rides on
+            # is one of the derivations it holds.  This case is green on one
+            # pass only by accident -- ``make_salary_profile`` writes no
+            # transaction, so the CONTRIBUTION tier (re-derived per call) moves
+            # while the memoized fold does not -- and adding one row to the
+            # fixture would turn it into two stale halves compared against each
+            # other.  Found by X-i4's adversarial review, which caught this with
+            # a session-level write probe after its three siblings were fixed.
+            after_ctx = BalanceContext.build(user_id)
+            with_ded = balance_at.balance_map(inv, after_ctx)
             # Post-anchor period reflects the consumed contribution.
             assert with_ded[periods[-1].id] > baseline[periods[-1].id]
 
-            # seam == kernel with the SAME manually-loaded deduction.
+            # seam == kernel with the SAME manually-loaded feed.
             params = load_investment_params_for_accounts([inv]).get(inv.id)
-            deductions = load_active_deductions_for_accounts(
-                user_id, [inv.id],
-            ).get(inv.id, [])
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
+            feeds_for_inv = load_payroll_feeds(
+                user_id, calendar_for(user_id), [inv.id], {inv.id: params},
+            )[inv.id]
             expected = net_worth_kernel.build_account_balance_map(
-                inv, bctx,
+                inv, after_ctx,
                 ContributionInputs(
-                    investment_params=params, deductions=deductions,
-                    salary_gross_biweekly=gross,
+                    investment_params=params,
+                    # PRICED, as the seam's own loader does since plan step
+                    # salary:R14-b: the kernel below the seam takes the
+                    # paycheck engine's per-payday answer, not the ORM rows
+                    # and not a scalar gross.
+                    feed=feeds_for_inv,
                 ),
             )
             assert with_ded == expected
-            assert len(deductions) == 1  # the deduction was actually loaded
+            # Non-vacuity: the feed really did price the deduction.
+            assert feeds_for_inv.models_employee is True
 
             # Scope: a non-investment account in the same batch is untouched.
             checking = seed_user["account"]
-            maps = balance_at.build_maps([inv, checking], bctx)
+            maps = balance_at.build_maps([inv, checking], after_ctx)
             assert maps[checking.id] == balance_at.balance_map(
-                checking, bctx,
+                checking, after_ctx,
             )
 
     def test_employer_match_driven_by_gross_exceeds_no_match(
@@ -1854,7 +1987,7 @@ class TestInvestmentContributions:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv_match = make_investment_account(
                 seed_user, db.session, periods[2], Decimal("10000.00"),
                 name="401k Match", employer_type="match",
@@ -1870,10 +2003,6 @@ class TestInvestmentContributions:
             _add_flat_deduction(db, profile, inv_none, Decimal("200.0000"))
             db.session.commit()
 
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-            assert gross > Decimal("0.00")  # the match cap basis must be real
 
             match_map = balance_at.balance_map(inv_match, bctx)
             none_map = balance_at.balance_map(inv_none, bctx)
@@ -1883,14 +2012,18 @@ class TestInvestmentContributions:
             params = load_investment_params_for_accounts(
                 [inv_match],
             ).get(inv_match.id)
-            deductions = load_active_deductions_for_accounts(
-                user_id, [inv_match.id],
-            ).get(inv_match.id, [])
             expected = net_worth_kernel.build_account_balance_map(
                 inv_match, bctx,
                 ContributionInputs(
-                    investment_params=params, deductions=deductions,
-                    salary_gross_biweekly=gross,
+                    investment_params=params,
+                    # PRICED, as the seam's own loader does since plan step
+                    # salary:R14-b: the kernel below the seam takes the
+                    # paycheck engine's per-payday answer, not the ORM rows
+                    # and not a scalar gross.
+                    feed=load_payroll_feeds(
+                        user_id, calendar_for(user_id), [inv_match.id],
+                        {inv_match.id: params},
+                    )[inv_match.id],
                 ),
             )
             assert match_map == expected
@@ -1910,7 +2043,7 @@ class TestScenarioGuard:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date
 
@@ -1945,7 +2078,7 @@ class TestBalanceAtDegrade:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             mortgage_type = (
                 db.session.query(AccountType).filter_by(name="Mortgage").one()
             )
@@ -1985,7 +2118,7 @@ class TestBalanceAtDegrade:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             seam = balance_at.balance_at(inv, bctx, date(2000, 1, 1))
@@ -2049,7 +2182,7 @@ class TestOnlyALoanIsNotATransactionSum:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             mortgage, _p = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -2065,9 +2198,14 @@ class TestOnlyALoanIsNotATransactionSum:
                 acct.id: balance_at.balance_map(acct, bctx)
                 for acct in (mortgage, inv, prop)
             }
+            # The rows below are a WRITE, so the reads after them take a fresh
+            # pass: a ``BalanceContext`` is a memo whose lifetime is the one
+            # read it was built for, and since plan step X-i4 the cash fold the
+            # modelled kinds ride on is one of the derivations it holds.
             for acct in (mortgage, inv, prop):
                 db.session.add(Transaction(
                     account_id=acct.id,
+                    user_id=periods[5].user_id,
                     pay_period_id=periods[5].id,
                     scenario_id=scenario.id,
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -2075,18 +2213,20 @@ class TestOnlyALoanIsNotATransactionSum:
                     transaction_type_id=ref_cache.txn_type_id(
                         TxnTypeEnum.INCOME,
                     ),
-                    estimated_amount=Decimal("9999.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("9999.00")),
                 ))
             db.session.commit()
 
+            after_ctx = BalanceContext.build(user_id)
+
             # The LOAN is unmoved: its balance is its schedule (ruling D4).
             assert balance_at.balance_map(
-                mortgage, bctx,
+                mortgage, after_ctx,
             ) == before[mortgage.id], "the loan moved on a typed row"
 
             # The MODELLED kinds count it, once, from the period it lands in.
             for acct in (inv, prop):
-                after = balance_at.balance_map(acct, bctx)
+                after = balance_at.balance_map(acct, after_ctx)
                 # Untouched before the row's own period ...
                 assert after[periods[4].id] == before[acct.id][periods[4].id], (
                     f"{acct.name} moved BEFORE the typed row's period"
@@ -2100,7 +2240,7 @@ class TestOnlyALoanIsNotATransactionSum:
                 one_period = Decimal("9999.00") * (
                     1 + growth_engine.span_return_rate(
                         _configured_annual_rate(acct),
-                        periods[5].start_date, periods[5].end_date,
+                        periods[5].start_date, last_covered_day(periods[5]),
                     )
                 )
                 landed = after[periods[5].id] - before[acct.id][periods[5].id]
@@ -2136,16 +2276,12 @@ class TestCashPreAnchorPeriodsAreAnswered:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[2], Decimal("5000.00"))
-            gross = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-
             seam = balance_at.balance_map(hysa, bctx)
             expected = net_worth_kernel.build_account_balance_map(
                 hysa, bctx,
-                ContributionInputs(salary_gross_biweekly=gross),
+                ContributionInputs(),
             )
             assert seam is not None
             assert seam[periods[0].id] == Decimal("5000.00")
@@ -2220,14 +2356,14 @@ class TestCashFlowView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
 
             seam = balance_at.cash_balance_map(account, bctx)
             assert len(seam) == len(periods)  # the loop is not vacuous
             for period in periods:
                 assert seam[period.id] == balance_at.cash_balance_at(
-                    account, bctx, period.end_date,
+                    account, bctx, last_covered_day(period),
                 ), f"map and scalar disagree at period {period.id}"
 
     def test_cash_map_omits_interest_unlike_kind_correct_map(
@@ -2246,7 +2382,7 @@ class TestCashFlowView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
 
             cash = balance_at.cash_balance_map(hysa, bctx)
@@ -2277,7 +2413,7 @@ class TestCashFlowView:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             add_txn(
                 db.session, seed_user, periods[3], "Deposit", "500.00",
@@ -2302,7 +2438,7 @@ class TestCashFlowView:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date
 
@@ -2327,9 +2463,9 @@ class TestCashFlowView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
-            as_of = periods[-1].end_date
+            as_of = last_covered_day(periods[-1])
 
             cash = balance_at.cash_balance_at(hysa, bctx, as_of)
             # No transactions, no interest -> flat at the anchor, strictly
@@ -2377,7 +2513,7 @@ class TestCashFlowView:
         """Both cash entries fail loud on a None scenario (C1 contract)."""
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date
 
@@ -2419,7 +2555,7 @@ class TestASettledRowMovesEveryCashAnswerTogether:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             create_settled_cash_transaction(
                 seed_user, db.session, periods[4], Decimal("250.00"),
@@ -2465,7 +2601,7 @@ class TestASettledRowMovesEveryCashAnswerTogether:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("50000.00"))
             create_settled_cash_transaction(
                 seed_user, db.session, periods[4], Decimal("2000.00"),
@@ -2477,7 +2613,7 @@ class TestASettledRowMovesEveryCashAnswerTogether:
 
             view = balance_at.grid_balance_view(hysa, bctx)
             cash = balance_at.cash_balance_map(hysa, bctx)
-            current = pay_period_service.get_current_period(user_id)
+            current = current_pay_period(user_id)
 
             # The settled row IS in the cash basis...
             assert cash[current.id] == Decimal("48000.00")
@@ -2558,16 +2694,17 @@ class TestTheInterestChipAndTheBalanceAreOneWalk:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             db.session.add(Transaction(
                 account_id=hysa.id,
+                user_id=periods[6].user_id,
                 pay_period_id=periods[6].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Deposit",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             ))
             db.session.commit()
             params = (
@@ -2718,7 +2855,7 @@ class TestTheContributionRowOnARealFeed:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = self._401k_with_feed(db, seed_user, periods)
 
             view = balance_at.grid_balance_view(account, bctx)
@@ -2740,14 +2877,15 @@ class TestTheContributionRowOnARealFeed:
           matched   = min(employee 200.00, 240.00) * 1.00 = 200.00
           column    = employee 200.00 + employer 200.00 = 400.00
 
-        **That gross is the DEDUCTION-derived one**, ``round_money(annual /
-        pay_periods_per_year)`` from
-        ``investment_projection._compute_deduction_per_period`` -- NOT the
-        raise-aware ``salary_gross_biweekly``, which
-        ``deduction_contribution_per_period`` uses only as the fallback when no
-        deduction supplies one, and this fixture has one.  The two agree here
-        ($104,000 / 26), which is why the fixture picks that salary; stating
-        which one the arithmetic actually consumes keeps the pin on the rule.
+        **That gross is the PAYCHECK ENGINE's** since plan step
+        **salary:R14-b** -- the gross it put on this payday's paycheck for the
+        profile ``budget.investment_params.salary_profile_id`` names
+        (**R-SAL5**).  There was a SECOND spelling until then:
+        ``investment_projection._compute_deduction_per_period`` divided the
+        profile's stored annual salary by the paycheck count, raise-blind,
+        which is finding **D45**.  The two agree on this fixture ($104,000 /
+        26, no raises), which is why the figure below is unchanged -- and on a
+        raise-bearing profile they did not, by the whole raise.
 
         The employer half is what makes the row more than a restatement of the
         user's own deduction -- and on the developer's real Empower 401(k) it is
@@ -2758,7 +2896,7 @@ class TestTheContributionRowOnARealFeed:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = self._401k_with_feed(
                 db, seed_user, periods,
                 employer_type="match",
@@ -2788,7 +2926,7 @@ class TestTheContributionRowOnARealFeed:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = self._401k_with_feed(db, seed_user, periods)
 
             view = balance_at.grid_balance_view(account, bctx)
@@ -2847,7 +2985,7 @@ class TestGridBalanceView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             mortgage, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -2881,16 +3019,17 @@ class TestGridBalanceView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             db.session.add(Transaction(
                 account_id=hysa.id,
+                user_id=periods[6].user_id,
                 pay_period_id=periods[6].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Deposit",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             ))
             db.session.commit()
 
@@ -2956,7 +3095,7 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[2], Decimal("10000.00"),
             )
@@ -2994,7 +3133,7 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             prop = make_appreciating_account(
                 seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
@@ -3053,7 +3192,7 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             db.session.query(InterestParams).filter_by(
                 account_id=hysa.id,
@@ -3074,9 +3213,9 @@ class TestGridBalanceView:
             )
 
     def test_the_accrual_is_pure_interest_on_one_income_basis(
-        self, app, db, seed_user, seed_periods_today, monkeypatch,
+        self, app, db, seed_user, seed_periods_today,
     ):
-        """The accrual stays pure interest when live income != stored (M1).
+        """The accrual stays pure interest when income is DERIVED (M1).
 
         Regression guard for the income-basis trap ruling R-Q closes at the
         root.  The cash walk auto-built a LIVE income map while the
@@ -3086,36 +3225,29 @@ class TestGridBalanceView:
         the divergence has no argument to arrive through -- and this pins the
         consequence.
 
-        Forces live ($1,500) != stored ($1,000) on a real income transaction
-        in a FUTURE period (so ruling R-G lands it in its own column) and
-        asserts the accrual telescopes exactly to the premium over the cash
-        basis, with the $500 income delta nowhere in it.
+        **The divergent figure is a real DATA state since plan step X-au-d**,
+        where it was a monkeypatched read-time repair: the row DECLARES a
+        definition whose price series states ``$1,500.00`` and stores nothing
+        itself, so a walk reading the column would contribute ``None`` and one
+        reading the definition contributes ``$1,500``.  The figures are
+        unchanged, and the setup no longer patches a producer out of the app it
+        is grading.
+
+        The row sits in a FUTURE period (so ruling R-G lands it in its own
+        column), and the accrual must telescope exactly to the premium over the
+        cash basis with the income nowhere in it.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
-            income_txn = Transaction(
-                account_id=hysa.id,
-                pay_period_id=periods[6].id,
-                scenario_id=scenario.id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Paycheck deposit",
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1000.00"),
+            income_txn = _derived_income_row(
+                db, seed_user, hysa, periods[6], scenario, Decimal("1500.00"),
             )
-            db.session.add(income_txn)
             db.session.commit()
-
-            # Force live != stored: the live seam revalues this income at
-            # $1,500 (vs the $1,000 stored).
-            live = {income_txn.id: Decimal("1500.00")}
-            monkeypatch.setattr(
-                income_service, "live_projected_net",
-                lambda txn, pricing: live.get(txn.id),
-            )
+            assert income_txn.estimated_amount is None
 
             view = balance_at.grid_balance_view(hysa, bctx)
             cash = balance_at.cash_balance_map(hysa, bctx)
@@ -3197,7 +3329,7 @@ class TestGridRowFlags:
     def _view(columns):
         """Wrap *columns* in a view (the flags read nothing else)."""
         return balance_at.GridBalanceView(
-            columns=OrderedDict(columns), amount_overrides={},
+            columns=OrderedDict(columns),
         )
 
     @staticmethod
@@ -3410,7 +3542,7 @@ class TestTheRemainderOracleSeesEveryTerm:
     def _view(columns):
         """Wrap *columns* in a view (the oracle reads nothing else)."""
         return balance_at.GridBalanceView(
-            columns=OrderedDict(columns), amount_overrides={},
+            columns=OrderedDict(columns),
         )
 
     # The figures are ruling R-AH's own: $181.59 is the employer's flat 5% of
@@ -3503,50 +3635,62 @@ class TestTheRemainderOracleSeesEveryTerm:
             _assert_grid_view_reconciles(self._view(columns))
 
 
-class TestTheViewOwnsTheLiveOverrideMap:
-    """Ruling R-Q: the seam builds the live map and hands it back.
+class TestTheViewIsBuiltOnOneAmountModel:
+    """Ruling R-Q: a cell and the balance row beside it price one row one way.
 
-    The map is a balance INPUT, so the producer that folds it owns it.  Before
-    this it was the caller's argument and the grid route built a second copy for
+    **This class was ``TestTheViewOwnsTheLiveOverrideMap`` until plan step
+    X-au-d, and the rename is the change.**  R-Q was answered by making the
+    seam BUILD the live override map and hand it back, because before that the
+    map was the caller's argument and the grid route built a second copy for
     its cells -- "provably identical" by an argument about which rows each side
-    filters (finding N-48), which is the agreeing-by-coincidence shape this arc
-    exists to end.  Handing the same object back makes the cells and the balance
-    row one map by construction.
+    filters (finding **N-48**), which is the agreeing-by-coincidence shape this
+    arc exists to end.
+
+    There is no map to hand back now: a derived row stores no figure, so there
+    is nothing for a recompute to be laid over and both the cells and the fold
+    ask ``cash_ledger.amounts_by_id`` over the pass's own basis.  The field the
+    old case asserted (``GridBalanceView.amount_overrides``) was carried to NO
+    consumer at all -- an AST and grep census over ``app/``, ``app/templates``
+    and ``app/static`` found zero reads, and the case's own docstring claimed
+    "the grid reads ``view.amount_overrides.get(...)`` per row", which had been
+    false since plan step X-au-c2b routed the grid through the amount model.
+    So the field is deleted and this is what replaced the case: the property
+    asserted end to end, on the two figures a reader actually sees.
     """
 
-    def test_the_view_returns_the_map_it_projected_with(
-        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    def test_the_column_and_the_published_budget_agree_on_one_row(
+        self, app, db, seed_user, seed_periods_today,
     ):
-        """``amount_overrides`` is the live map, not an empty courtesy field."""
+        """A derived row's income column and its published budget are one figure.
+
+        The row DECLARES a definition stating ``$1,500.00`` and stores nothing,
+        so neither side can answer by reading a column.
+
+        **Both sides are asserted against the FIXTURE's figure rather than
+        against each other**, and an adversarial review of plan step X-au-d is
+        why the docstring says so: they reach one resolver through one chain,
+        so "a producer that had drifted would differ here" names a shape the
+        code no longer has.  What this grades is that the grid column and the
+        published budget both reflect the DEFINITION -- a route computing its
+        own figure, or a fold reading the row, fails on ``$1,500.00``.
+        """
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
-            income_txn = Transaction(
-                account_id=account.id,
-                pay_period_id=periods[1].id,
-                scenario_id=scenario.id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Paycheck",
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("1000.00"),
+            income_txn = _derived_income_row(
+                db, seed_user, account, periods[1], scenario,
+                Decimal("1500.00"),
             )
-            db.session.add(income_txn)
             db.session.commit()
-            monkeypatch.setattr(
-                income_service, "live_projected_net",
-                lambda txn, pricing: (
-                    Decimal("1500.00") if txn.id == income_txn.id else None
-                ),
-            )
 
             view = balance_at.grid_balance_view(account, bctx)
+            budgets = cash_ledger.amounts_by_id([income_txn], bctx.amounts())
 
-            assert view.amount_overrides == {income_txn.id: Decimal("1500.00")}
-            # And the projection actually used it: the live $1,500 lands in
-            # the column, not the stored $1,000.
+            assert income_txn.estimated_amount is None
+            assert budgets[income_txn.id] == Decimal("1500.00")
             assert view.columns[periods[1].id].income == Decimal("1500.00")
 
 
@@ -3592,7 +3736,7 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             _seed_grid_activity(db, seed_user, periods)
 
@@ -3638,7 +3782,7 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             create_settled_cash_transaction(
                 seed_user, db.session, periods[1], Decimal("300.00"),
@@ -3683,21 +3827,23 @@ def _seed_grid_activity(db, seed_user, periods):
     account = seed_user["account"]
     db.session.add(Transaction(
         account_id=account.id,
+        user_id=periods[6].user_id,
         pay_period_id=periods[6].id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name="Paycheck",
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-        estimated_amount=Decimal("2400.00"),
+        amount_ownership=AmountOwnership.own(Decimal("2400.00")),
     ))
     db.session.add(Transaction(
         account_id=account.id,
+        user_id=periods[7].user_id,
         pay_period_id=periods[7].id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name="Rent",
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=Decimal("1450.00"),
+        amount_ownership=AmountOwnership.own(Decimal("1450.00")),
     ))
     db.session.commit()
 
@@ -3721,7 +3867,7 @@ class TestLiabilityOwedAtDates:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3765,7 +3911,7 @@ class TestLiabilityOwedAtDates:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3821,7 +3967,7 @@ class TestLiabilityOwedAtDates:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3869,7 +4015,7 @@ class TestLiabilityOwedAtDates:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3900,7 +4046,7 @@ class TestLiabilityOwedAtDates:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3938,7 +4084,7 @@ class TestLiabilityOwedAtDates:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3980,7 +4126,7 @@ class TestLiabilityOwedAtDates:
             bctx = BalanceContext.build(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user,
-                pay_period_service.get_all_periods(user_id)[0],
+                all_periods(user_id)[0],
                 Decimal("200000.00"), date.today() - timedelta(days=365),
             )
             today = date.today()
@@ -4035,7 +4181,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -4211,10 +4357,10 @@ class TestLoanNotYetOriginated:
             bctx = BalanceContext.build(seed_user["user"].id)
             current = next(
                 p for p in periods
-                if p.start_date <= bctx.as_of <= p.end_date
+                if p.start_date <= bctx.as_of <= last_covered_day(p)
             )
             assert current.start_date == date(2026, 3, 13)
-            assert current.end_date == date(2026, 3, 26)
+            assert last_covered_day(current) == date(2026, 3, 26)
 
             hero = balance_at.balance_at(acct, bctx, bctx.as_of)
             trend = balance_at.balance_map(acct, bctx)[current.id]
@@ -4228,8 +4374,8 @@ class TestLoanNotYetOriginated:
             # map would do WITHOUT the current-period clamp -- really does report
             # the full opening here (period end 2026-03-26 is after origination
             # 2026-03-25).  The clamp to ctx.as_of is load-bearing, not decorative.
-            unclamped = positions(acct, bctx, [current.end_date])
-            assert unclamped[current.end_date] == self.OPENING
+            unclamped = positions(acct, bctx, [last_covered_day(current)])
+            assert unclamped[last_covered_day(current)] == self.OPENING
 
     def test_liability_band_owes_nothing_before_origination(
         self, app, db, seed_user, seed_periods,
@@ -4378,9 +4524,11 @@ class TestLoanNotYetOriginated:
         opening from source, steps C3b1/C3b3, that read-outage class is retired
         entirely.)
 
-        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter in
-        ``loan_ledger.merge_anchor_and_payment_events`` and both asserts below
-        raise.
+        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter --
+        it would now go in ``loan_ledger.loan_event_stream``, where the reset
+        events are built (it was ``merge_anchor_and_payment_events`` until plan
+        step X-au-g-2c-3b-2 split the mapping from the ordering) -- and both
+        asserts below raise.
 
         $200,000.00 owed, not $199,759.69: with the clock at 2026-05-07 the loan
         has originated, so the 2026-05-01 installment is now a PAST due date -- and
@@ -4722,7 +4870,8 @@ class TestBrokenLoanFailsLoud:
             # The control's teeth: the money-blind replay genuinely diverges.
             params = loan_loaders.load_loan_params(acct.id)
             ctx = loan_payment_service.load_loan_context(
-                acct.id, seed_user["scenario"].id, params,
+                acct.id, amount_basis_for_scenario(seed_user["scenario"].id),
+                params,
             )
             inputs = loan_resolver.LoanInputs(
                 params, loan_loaders.load_loan_anchor_facts(params),
@@ -4794,7 +4943,7 @@ class TestBrokenLoanFailsLoud:
             # rather than reaching positions()'s fail-loud for a schedule-less
             # loan.  Pinned by value at the current period ($150,000.00 anchor,
             # held flat).
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             loan_map = balance_at.balance_map(acct, bctx)
             assert loan_map is not None
             assert loan_map[current.id] == Decimal("150000.00")
@@ -4852,11 +5001,12 @@ class TestScalarAndMapAgree:
             # Period-END keyed (C2), clamped to today for the current period,
             # whose end is future (the scalar would project there, not confirm).
             probe = (
-                min(period.end_date, bctx.as_of) if begun else period.end_date
+                min(last_covered_day(period), bctx.as_of) if begun else last_covered_day(period)
             )
             scalar = balance_at.balance_at(acct, bctx, probe)
             assert bmap[period.id] == scalar, (
-                f"{shape}: period {period.start_date}..{period.end_date} "
+                f"{shape}: period {period.start_date}.."
+                f"{last_covered_day(period)} "
                 f"({'begun' if begun else 'future'}) -- "
                 f"map={bmap[period.id]} scalar@{probe}={scalar}"
             )
@@ -5169,8 +5319,8 @@ class TestRecordsBalanceAt:
             user_id = seed_user["user"].id
             account = seed_user["account"]
             ctx = balance_at.BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
-            day = periods[1].end_date
+            periods = all_periods(user_id)
+            day = last_covered_day(periods[1])
 
             assert balance_at.records_balance_at(account, ctx, day) == (
                 balance_at.cash_balance_at(account, ctx, day)
@@ -5189,8 +5339,8 @@ class TestRecordsBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            periods = pay_period_service.get_all_periods(user_id)
-            day = periods[1].end_date
+            periods = all_periods(user_id)
+            day = last_covered_day(periods[1])
 
             create_settled_cash_transaction(
                 seed_user, db.session, periods[1], Decimal("125.00"),
@@ -5230,8 +5380,8 @@ class TestRecordsBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            periods = pay_period_service.get_all_periods(user_id)
-            day = periods[1].end_date
+            periods = all_periods(user_id)
+            day = last_covered_day(periods[1])
 
             records = balance_at.records_balance_at(
                 account, balance_at.BalanceContext.build(user_id), day,
@@ -5268,19 +5418,19 @@ class TestRecordsBalanceAt:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             ctx = balance_at.BalanceContext.build(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
 
             assert balance_at.records_balance_at(
-                inv, ctx, periods[-1].end_date,
+                inv, ctx, last_covered_day(periods[-1]),
             ) is None
             # Non-vacuity: the plain account beside it DOES answer, so this is a
             # property of the KIND rather than of the fixture.
             assert balance_at.records_balance_at(
-                seed_user["account"], ctx, periods[-1].end_date,
+                seed_user["account"], ctx, last_covered_day(periods[-1]),
             ) is not None
 
     def test_it_refuses_an_instant_where_a_civil_day_is_meant(
@@ -5295,7 +5445,7 @@ class TestRecordsBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             ctx = balance_at.BalanceContext.build(user_id)
-            day = pay_period_service.get_current_period(user_id).end_date
+            day = last_covered_day(current_pay_period(user_id))
 
             with pytest.raises(TypeError):
                 balance_at.records_balance_at(
@@ -5336,7 +5486,7 @@ class TestCashAnchorHistory:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
 
             create_settled_cash_transaction(
                 seed_user, db.session, periods[1], Decimal("125.00"),
@@ -5346,8 +5496,8 @@ class TestCashAnchorHistory:
             db.session.commit()
 
             for balance, day in (
-                (Decimal("500.00"), periods[1].end_date),
-                (Decimal("400.00"), periods[2].end_date),
+                (Decimal("500.00"), last_covered_day(periods[1])),
+                (Decimal("400.00"), last_covered_day(periods[2])),
             ):
                 anchor_service.apply_anchor_true_up(
                     account=account, new_balance=balance, observed_on=day,
@@ -5360,75 +5510,150 @@ class TestCashAnchorHistory:
 
             assert history.reconcilable is True
             assert [row.observed_on for row in history.rows] == [
-                periods[2].end_date,
-                periods[1].end_date,
-                # ``seed_periods_today`` drops the 2024 bootstrap period and
-                # re-homes the opening assertion onto period 0
-                # (``_drop_seed_user_bootstrap``), so the opening is dated
-                # here rather than at the fixture's bootstrap day.
-                periods[0].start_date,
+                last_covered_day(periods[2]),
+                last_covered_day(periods[1]),
+                # The ORIGINATION assertion, dated on the seeded owner's
+                # bootstrap day (plan step X-f3c-2c).  ``seed_periods_today``
+                # drops that pay PERIOD and used to re-home the assertion with
+                # it; the table is append-only, so the row stays where
+                # ``account_service.create_account`` wrote it and the card
+                # shows the account's real first declaration.
+                SEED_USER_BOOTSTRAP_START,
             ]
             assert [row.recorded for row in history.rows] == [
                 Decimal("400.00"), Decimal("500.00"), Decimal("1000.00"),
             ]
+            # The OPENING row carries its pair like every other row since plan
+            # step X-f3c-2a (it read ``None`` before, because the fold had
+            # swallowed the opening's whole delta into its seed).  The account
+            # was created asserting $1,000.00, so its books opened at
+            # $1,000.00 and the declaration corrects nothing.
             assert [row.ledger for row in history.rows] == [
-                Decimal("500.00"), Decimal("875.00"), None,
+                Decimal("500.00"), Decimal("875.00"), Decimal("1000.00"),
             ]
             assert [row.correction for row in history.rows] == [
-                Decimal("-100.00"), Decimal("-375.00"), None,
+                Decimal("-100.00"), Decimal("-375.00"), Decimal("0.00"),
             ]
-            assert [row.is_opening for row in history.rows] == [
-                False, False, True,
-            ]
+            # **The opening is a RECORD of its own, not a flag on a row**
+            # (plan step X-f3c-2b).  ``CashAnchorRow.is_opening`` is gone: it
+            # badged whichever assertion fell on the books' own day, which
+            # ruling R-HG makes a day no assertion of the records' era can
+            # share on an account whose books were moved back.  The account
+            # here was created asserting $1,000.00, so its books opened the
+            # same day at the same figure and the badge would still have
+            # landed -- which is why the flag's absence is asserted on the
+            # ROWS and its replacement on the record beside them.
+            assert not hasattr(history.rows[0], "is_opening")
+            assert history.opening.equity == Decimal("1000.00")
+            assert history.opening.declared is True
 
-    def test_the_opening_row_withholds_the_pair_it_cannot_caption(
+    def test_the_opening_is_a_RECORD_and_the_assertions_publish_the_pair(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """The opening publishes its balance and NOTHING about a difference.
+        """The books are their own record; the ASSERTIONS carry the pair.
 
-        Its ``balance_before`` is the sum of rows dated before the account's
-        first assertion, replayed from a zero seed, and what a reader should
-        answer there is open finding **N-37**.  Measured on production Checking
-        that is ``$2,057.42`` against a ``$2,746.58`` opening, whose
-        ``$689.16`` difference is the account's opening EQUITY (the figure plan
-        step X-f5 books), not a correction -- so the pair is withheld rather
-        than rendered.
+        **Two changes, one after the other, and the name of this case follows
+        the second.**  The opening's ``balance_before`` used to be the rows
+        dated before the account's first assertion replayed from a ZERO seed --
+        on production Checking ``$2,057.42`` against a ``$2,746.58`` opening --
+        so the ``$689.16`` between them was the account's opening EQUITY, not a
+        correction, and publishing it would have told the owner "your records
+        were off by $689.16 the day this account opened", which is false.  Plan
+        step X-f3c-2a made opening equity a stored
+        ``budget.account_openings`` fact and removed that reason.
 
-        Seeded with the production SHAPE: a settled row dated BEFORE the
-        opening assertion, which is what makes ``balance_before`` non-zero and
-        this test non-vacuous.
+        Ruling **R-HG** (plan step X-f3c-2b) then separated the two records
+        outright, and this case was called
+        ``test_the_opening_row_PUBLISHES_its_pair_like_every_other_row`` until
+        it did.  An opening is no longer a row of the assertion series at all:
+        it is :class:`CashOpeningRow`, and its ledger / correction cells are
+        empty BY CONSTRUCTION, because nothing precedes an opening for a
+        correction to be measured against.  What this case grades now is the
+        pair either side of that split -- the opening's own day, equity and
+        provenance, and the TRUE-UP publishing a non-zero pair.
+
+        **The refusal is asserted rather than the state seeded**, because the
+        state this case used to build is the one R-HG makes unstorable: a
+        settled row dated before the books.  Hand-computed on what replaces it:
+        the books open at ``$2,746.58`` (what ``create_account`` recorded), a
+        ``+$300.00`` income lands after them, and the true-up declares
+        ``$2,746.58`` again -- giving ``ledger = 2746.58 + 300.00 = $3,046.58``
+        and a correction of ``2746.58 - 3046.58 = -$300.00``.
+
+        That ``-$300.00`` is the pre-opening double count plan step X-f3c-2b
+        closes -- and the card naming it is the point, where the old behaviour
+        rendered ``--`` and said nothing.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
-            later = create_account_of_type(
+            periods = all_periods(user_id)
+            # Built through the PRIMITIVE, so the books stay exactly where
+            # ``create_account`` put them (plan step X-f3c-2b): this case
+            # asserts on ``history.opening.opened_on``, and the shared factory
+            # would open the books earlier -- which is right for a fixture that
+            # records movements and wrong for one whose subject is the day.
+            later = create_account_via_service(
+                seed_user, db.session, "Checking", "Statement Checking",
+                anchor_balance=Decimal("2746.58"),
+                observed_on=periods[2].start_date,
+            )
+            # **The fixture this test was built on is now UNSTORABLE** (plan
+            # step X-f3c-2b, ruling R-HG).  It recorded $300.00 of income
+            # BEFORE the books opened so the opening's pair would be non-zero
+            # and the publication visibly meant something.  That state is the
+            # double count of finding N-378, so the refusal is asserted here
+            # instead -- and the row's pair is then graded on a record the
+            # books can hold.
+            with pytest.raises(ValidationError):
+                create_settled_cash_transaction(
+                    seed_user, db.session, periods[0], Decimal("300.00"),
+                    account=later, is_income=True, name="Pre-opening income",
+                    settled_on=periods[0].start_date,
+                )
+            db.session.rollback()
+
+            later = create_account_via_service(
                 seed_user, db.session, "Checking", "Statement Checking",
                 anchor_balance=Decimal("2746.58"),
                 observed_on=periods[2].start_date,
             )
             create_settled_cash_transaction(
-                seed_user, db.session, periods[0], Decimal("300.00"),
-                account=later, is_income=True, name="Pre-opening income",
-                settled_on=periods[0].start_date,
+                seed_user, db.session, periods[3], Decimal("300.00"),
+                account=later, is_income=True, name="Income after the books",
+                settled_on=periods[3].start_date,
+            )
+            anchor_service.apply_anchor_true_up(
+                account=later, new_balance=Decimal("2746.58"),
+                observed_on=last_covered_day(periods[3]),
             )
             db.session.commit()
 
             ctx = balance_at.BalanceContext.build(user_id)
             history = balance_at.cash_anchor_history(later, ctx)
-            opening = history.rows[-1]
 
-            assert opening.is_opening is True
-            assert opening.observed_on == periods[2].start_date
-            assert opening.recorded == Decimal("2746.58")
-            assert opening.ledger is None
-            assert opening.correction is None
-            # Non-vacuity: the walk really does hold a non-zero figure there,
-            # so ``None`` is this entry WITHHOLDING one rather than the walk
-            # having nothing to report.
+            # The OPENING is its own record and its cells are empty by
+            # CONSTRUCTION: nothing precedes an opening for a correction to be
+            # measured against.
+            assert history.opening.opened_on == periods[2].start_date
+            assert history.opening.equity == Decimal("2746.58")
+            assert history.opening.declared is True
+
+            # The TRUE-UP publishes the pair, and it is non-zero because a
+            # real record sits between the books and it -- $2,746.58 opened,
+            # +$300.00 recorded, $2,746.58 declared again, so the declaration
+            # takes $300.00 back out.
+            trued_up = history.rows[0]
+            assert trued_up.observed_on == last_covered_day(periods[3])
+            assert trued_up.recorded == Decimal("2746.58")
+            assert trued_up.ledger == Decimal("3046.58")
+            assert trued_up.correction == Decimal("-300.00")
+            # Non-vacuity: the row's two cells ARE the walk's own figures,
+            # read back rather than recomputed here.
             walk = cash_ledger.walk_cash_ledger(later.id, ctx.scenario_id)
-            assert walk.anchor_corrections[0].balance_before == Decimal(
-                "300.00",
-            )
+            booked = assertion_corrections(walk)[-1]
+            assert booked.balance_before == Decimal("3046.58")
+            assert booked.delta == Decimal("-300.00")
+            assert walk.opening.opening_equity == Decimal("2746.58")
 
     def test_a_modelled_account_withholds_the_pair_on_every_row(
         self, app, db, seed_user, seed_periods_today,
@@ -5445,11 +5670,11 @@ class TestCashAnchorHistory:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             anchor_service.apply_anchor_true_up(
                 account=hysa, new_balance=Decimal("5100.00"),
-                observed_on=periods[2].end_date,
+                observed_on=last_covered_day(periods[2]),
             )
             db.session.commit()
 
@@ -5461,9 +5686,9 @@ class TestCashAnchorHistory:
             assert [row.recorded for row in history.rows] == [
                 Decimal("5100.00"), Decimal("5000.00"),
             ]
-            # EVERY row, not merely the opening: the true-up above is a
-            # non-opening row and its pair is withheld too.
-            assert history.rows[0].is_opening is False
+            # EVERY row, and the opening record beside them: the true-up
+            # above is a non-opening row and its pair is withheld too.
+            assert history.opening.equity == Decimal("5000.00")
             assert all(row.ledger is None for row in history.rows)
             assert all(row.correction is None for row in history.rows)
             # Non-vacuity: the PLAIN account beside it does publish a pair for
@@ -5471,7 +5696,7 @@ class TestCashAnchorHistory:
             # of the KIND rather than of the fixture.
             anchor_service.apply_anchor_true_up(
                 account=seed_user["account"], new_balance=Decimal("900.00"),
-                observed_on=periods[2].end_date,
+                observed_on=last_covered_day(periods[2]),
             )
             db.session.commit()
             plain = balance_at.cash_anchor_history(
@@ -5485,12 +5710,20 @@ class TestCashAnchorHistory:
     ):
         """A PLAIN account with ONE assertion still reconciles.
 
-        The trap this test exists for: ``any(row.correction is not None)``
-        looks like a serviceable definition of ``reconcilable`` and is wrong
-        exactly here.  Such an account's only row is its opening, whose pair is
-        withheld for the ruled reason -- so an inferred flag would hide the
-        columns on an account that reconciles perfectly well, and every freshly
-        created checking account would render the wrong card.
+        The trap this test exists for: an inferred definition of
+        ``reconcilable`` read off the ROWS is wrong exactly here.  A freshly
+        created account's one row corrects ``$0.00``, because its books opened
+        at the balance its owner typed -- so ``any(row.correction)`` is falsey
+        and would hide the reconciliation columns on the healthiest account
+        there is.
+
+        *The trap was sharper still until plan step X-f3c-2a: that single row
+        was the OPENING, whose pair was withheld outright, so even
+        ``any(row.correction is not None)`` -- the careful spelling -- failed
+        here.  The suppression is gone and the trap survives it, which is why
+        the flag is read from
+        :func:`~app.services.account_projection.classify_account` rather than
+        inferred at all.*
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -5504,8 +5737,16 @@ class TestCashAnchorHistory:
                 fresh, balance_at.BalanceContext.build(user_id),
             )
 
-            assert [row.is_opening for row in history.rows] == [True]
-            assert history.rows[0].correction is None
+            # One assertion, and the opening record beside it -- the account
+            # was created asserting $250.00, so its books opened there.
+            assert len(history.rows) == 1
+            assert history.opening.equity == Decimal("250.00")
+            # A freshly created account's books open at what its owner typed,
+            # so its one row corrects $0.00 -- NOT ``None``.  That is what makes
+            # the trap in the docstring above live: ``any(row.correction)`` is
+            # falsey here, and would hide the columns on the healthiest account
+            # there is.
+            assert history.rows[0].correction == Decimal("0.00")
             assert history.reconcilable is True
 
     def test_a_back_dated_row_carries_the_day_it_was_entered(
@@ -5523,18 +5764,18 @@ class TestCashAnchorHistory:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            periods = pay_period_service.get_all_periods(user_id)
-            back_day = periods[1].end_date
+            periods = all_periods(user_id)
+            back_day = last_covered_day(periods[1])
             typed_day = periods[3].start_date
 
             append_balance_assertion(
-                db.session, account, periods[1], Decimal("640.00"),
+                db.session, account, Decimal("640.00"),
                 settle_instant_on(back_day),
                 recorded_at=settle_instant_on(typed_day),
             )
             append_balance_assertion(
-                db.session, account, periods[2], Decimal("710.00"),
-                settle_instant_on(periods[2].end_date),
+                db.session, account, Decimal("710.00"),
+                settle_instant_on(last_covered_day(periods[2])),
             )
             db.session.commit()
 
@@ -5545,7 +5786,7 @@ class TestCashAnchorHistory:
 
             assert by_day[back_day].recorded_on == typed_day
             assert by_day[back_day].recorded_on != back_day
-            same_day = by_day[periods[2].end_date]
+            same_day = by_day[last_covered_day(periods[2])]
             assert same_day.recorded_on == same_day.observed_on
 
     def test_three_declarations_on_one_day_all_appear_and_chain(
@@ -5564,7 +5805,7 @@ class TestCashAnchorHistory:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            day = pay_period_service.get_all_periods(user_id)[1].end_date
+            day = last_covered_day(all_periods(user_id)[1])
 
             for balance in (Decimal("1172.44"), Decimal("1133.47"),
                             Decimal("1087.61")):
@@ -5604,10 +5845,13 @@ class TestCashAnchorHistory:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            account = seed_user["account"]
-            db.session.query(AccountAnchorHistory).filter(
-                AccountAnchorHistory.account_id == account.id,
-            ).delete()
+            # **Built rather than emptied** (plan step X-f3c-2c): an assertion
+            # is append-only at the database tier, so an account that has
+            # asserted nothing is one the assertion factory never touched.
+            account = account_never_asserted(
+                seed_user, db.session, name="Silent",
+                opening_equity=Decimal("0.00"),
+            )
             db.session.commit()
 
             history = balance_at.cash_anchor_history(
@@ -5683,7 +5927,7 @@ class TestTheReadPassOwnsTheReportingDomain:
         with app.app_context():
             ctx = balance_at.BalanceContext.build(seed_user["user"].id)
             window = ctx.reported_periods()
-            stored = pay_period_service.get_all_periods(seed_user["user"].id)
+            stored = all_periods(seed_user["user"].id)
             assert [period.period_id for period in window] == [
                 period.id for period in
                 sorted(stored, key=lambda row: row.start_date)

@@ -25,13 +25,13 @@ against anything a screen renders.
 
 from decimal import Decimal
 
-from app.services import pay_period_service
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at._asset_contributions import (
     ContributionInputs,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.balance_at import BalanceContext
+from tests._test_helpers import all_periods
 
 
 class TestBuildAccountBalanceMap:
@@ -51,22 +51,20 @@ class TestBuildAccountBalanceMap:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            all_periods = pay_period_service.get_all_periods(user_id)
+            owner_periods = all_periods(user_id)
             account = seed_user["account"]
 
             balances = net_worth_kernel.build_account_balance_map(
                 account, bctx,
                 ContributionInputs(
                     investment_params=None,
-                    deductions=[],
-                    salary_gross_biweekly=Decimal("0.00"),
                 ),
             )
 
             assert balances is not None
             # No transactions -> flat anchor at every period.
-            assert balances[all_periods[0].id] == Decimal("1000.00")
-            assert balances[all_periods[-1].id] == Decimal("1000.00")
+            assert balances[owner_periods[0].id] == Decimal("1000.00")
+            assert balances[owner_periods[-1].id] == Decimal("1000.00")
 
 class TestInterestByPeriodForAccount:
     """Tests for ``interest_by_period_for_account`` (interest-earned accessor).

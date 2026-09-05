@@ -45,9 +45,11 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import AccountType
-from app.services import pay_period_service, pay_period_write, transfer_service
+from app.services import pay_period_write, transfer_service
 from app.services import account_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
+from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import rhythm_of
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -73,13 +75,14 @@ def _add_txn(
     )
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=ref_cache.status_id(status_enum),
         name=name,
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=type_id,
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         due_date=due_date,
         transfer_id=transfer_id,
     )
@@ -151,7 +154,7 @@ def _seed_second_user_transfer_assets():
         user_id=other.id,
         first_payday=date(2026, 1, 2),
         num_periods=2,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
 

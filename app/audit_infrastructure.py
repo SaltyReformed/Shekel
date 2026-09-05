@@ -70,6 +70,7 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     # ── budget schema ────────────────────────────────────────────────
     ("budget", "account_anchor_history"),
     ("budget", "account_external_identities"),
+    ("budget", "account_openings"),
     ("budget", "account_postings"),
     ("budget", "accounts"),
     ("budget", "asset_appreciation_params"),
@@ -84,6 +85,8 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     ("budget", "loan_anchor_events"),
     ("budget", "loan_params"),
     ("budget", "loan_payment_settings"),
+    ("budget", "merchant_rules"),
+    ("budget", "merchants"),
     ("budget", "pay_periods"),
     ("budget", "pay_schedule"),
     ("budget", "rate_history"),
@@ -92,6 +95,8 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     ("budget", "savings_goals"),
     ("budget", "scenarios"),
     ("budget", "statement_imports"),
+    ("budget", "statement_line_skips"),
+    ("budget", "statement_match_creations"),
     ("budget", "statement_match_members"),
     ("budget", "statement_matches"),
     ("budget", "template_amount_versions"),
@@ -284,6 +289,44 @@ BEGIN
     END IF;
 END$$
 """
+
+
+#: The GUC the audit trigger reads to attribute a row to the acting user, and
+#: the statement that binds it.  ``set_config(..., is_local => true)`` rather
+#: than ``SET LOCAL`` so the value travels as a real bind parameter, and
+#: TRANSACTION-scoped either way: it dies with the transaction that set it.
+#:
+#: **That lifetime is why it is stated HERE rather than at the one hook that
+#: used to issue it** (plan step balance:X-i3).  A request no longer runs in a
+#: single transaction: :mod:`app.db_transaction` gives a render its own
+#: read-only snapshot and gives a render's declared write a command
+#: transaction of its own, and **every transaction that CAN WRITE has to be
+#: told who is acting**.  A hook that binds the actor once, before any of them
+#: exists, attributes the FIRST transaction and no other -- which is how every
+#: pay period the rolling top-up appends came to land in
+#: ``system.audit_log`` with a NULL user during that step's own build,
+#: silently, because the trigger's ``EXCEPTION WHEN OTHERS`` reads an unset
+#: GUC as "no authenticated user".
+#:
+#: **A render's snapshot is deliberately NOT told, and an earlier revision of
+#: this note said it was.**  That transaction is ``READ ONLY``, so PostgreSQL
+#: refuses every write to an audited table inside it and no trigger in it can
+#: read this setting -- so binding one there is a round trip with no reader.
+#: The rule and its one door are
+#: :func:`app.db_transaction.bind_request_actor`; a reader who "fixes" a
+#: missing bind by following the older sentence re-adds three round trips per
+#: authenticated GET.
+_BIND_AUDIT_ACTOR_SQL = "SELECT set_config('app.current_user_id', %(uid)s, true)"
+
+
+def bind_audit_actor(connection, user_id) -> None:
+    """Tell the audit triggers who is acting, for THIS transaction.
+
+    Args:
+        connection: A SQLAlchemy ``Connection`` on the transaction to bind.
+        user_id: The acting ``auth.users.id``.
+    """
+    connection.exec_driver_sql(_BIND_AUDIT_ACTOR_SQL, {"uid": str(user_id)})
 
 
 def _trigger_sql_for_table(schema: str, table: str) -> Iterable[str]:

@@ -20,9 +20,10 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import posting_service
+from app.services import match_withdrawal, posting_service
+from app.services.amount_ownership import state_own_amount
 from app.services.row_valuation import settled_figure
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.credit_workflow import (
     create_cc_payback_transaction,
     get_active_payback,
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 def sync_entry_payback(
-    transaction_id: int, owner_id: int,
+    transaction_id: int, owner_id: int, *, moves_credit_total: bool = True,
 ) -> Transaction | None:
     """Synchronize the aggregated CC Payback for a transaction's credit entries.
 
@@ -54,6 +55,16 @@ def sync_entry_payback(
       - total_credit > 0, payback exists: UPDATE payback amount.
       - total_credit == 0, payback exists: DELETE payback.
       - total_credit == 0, no payback:  no-op.
+      - total_credit < 0:  REFUSED (:func:`_reject_card_owing_the_owner`).
+
+    **The last arm is finding N-411 and it was MISSING rather than wrong.**  The
+    matrix was written when ``ck_transaction_entries_positive_amount`` made a
+    negative purchase unwritable, so ``> 0`` and ``== 0`` really were total over
+    the reachable states.  Ruling **bank_import:R-II** relaxed that CHECK to
+    ``amount <> 0``, at which point "everything that is not ``> 0``" silently
+    included a negative -- and the else-arm answers it by DELETING the payback.
+    What partitions the states is the LIABILITY the card is owed, and it has
+    three signs, not two.
 
     The payback is identified by credit_payback_for_id == transaction_id.
     All credit entries share the same credit_payback_id pointing to this
@@ -63,6 +74,12 @@ def sync_entry_payback(
         transaction_id: The parent transaction's ID.
         owner_id: The resolved owner user ID (companion -> owner mapping
             already applied by the caller).
+        moves_credit_total: Whether the write that triggered this sync can
+            CHANGE the envelope's credit-entry sum (finding **N-323**).  Each
+            of the three ``entry_service`` doors knows what it touched and
+            says so; the default is the safe answer for any other caller.
+            It gates the settled-payback refusal below and nothing else --
+            the link maintenance and the figure both run either way.
 
     Returns:
         The CC Payback Transaction if one exists after sync, else None.
@@ -123,6 +140,8 @@ def sync_entry_payback(
     # resurrected and mutated -- a fresh one is created instead).
     existing_payback = get_active_payback(txn.id)
 
+    _reject_card_owing_the_owner(txn, total_credit)
+
     if total_credit > 0:
         if existing_payback is None:
             return _create_payback(txn, owner_id, credit_entries, total_credit)
@@ -142,8 +161,26 @@ def sync_entry_payback(
         # row and settling it again, never by re-deriving it underneath.  The
         # comparison is against what the payback RECORDED rather than against
         # its plan, so a sync that changes nothing still passes.
+        #
+        # **The POLICY above is right and stays; the PREDICATE was wider than
+        # the policy needs, and that is finding N-323.**  It fired whenever the
+        # recorded figure ALREADY differed from ``total_credit`` at all -- so a
+        # settled payback carrying pre-existing drift refused every later edit
+        # on its envelope, including edits that cannot change that sum.
+        # Stamping a DEBIT purchase's bank posting day is the case that
+        # measured it: it touches no credit entry, so the sum is the same
+        # before and after, and it was refused by a guard about credit.  On the
+        # developer's own production clone that blocked **5 of 124 statement
+        # proposals worth `$706.35`**, plus 6 debit purchases under the two
+        # envelopes whose paybacks carry `$59.68` of drift.
+        #
+        # The question a write should be asked is whether IT moves the total,
+        # which is what ``moves_credit_total`` carries.  Drift that already
+        # exists is left alone rather than treated as a fresh offence -- it is
+        # a finding the amount model reports, not something to punish the next
+        # unrelated edit for.
         recorded = settled_figure(existing_payback)
-        if recorded is not None and recorded != total_credit:
+        if moves_credit_total and recorded is not None and recorded != total_credit:
             raise ValidationError(
                 f"Payback {existing_payback.id} has settled at {recorded}, so "
                 f"it cannot be re-derived to {total_credit}: a settled row "
@@ -153,7 +190,14 @@ def sync_entry_payback(
             )
         # UPDATE: adjust the payback amount and link any new entries.
         previous_amount = existing_payback.estimated_amount
-        existing_payback.estimated_amount = total_credit
+        # **States the payback's OWNERSHIP, not just its figure** (plan step
+        # X-au-k).  A payback carries ``credit_payback_for_id``, which
+        # ``ck_transactions_one_pricing_link`` makes exclusive with the two
+        # links any relation is declared through, so it owns its figure by
+        # construction and this cannot un-derive anything today.  Finding
+        # **N-437** is the class; plan step X-au-i, which would have given a
+        # payback a relation of its own, was WITHDRAWN.
+        state_own_amount(existing_payback, total_credit)
         for entry in credit_entries:
             if entry.credit_payback_id != existing_payback.id:
                 entry.credit_payback_id = existing_payback.id
@@ -175,7 +219,21 @@ def sync_entry_payback(
         )
         return existing_payback
 
-    # total_credit == 0
+    # ``total_credit == 0``: the card is owed NOTHING, so no payback should
+    # stand.  Reached either because no credit purchase remains or because the
+    # row's card refunds exactly cancel its card charges -- the second became
+    # possible at plan step ``bank_import:X-gj-2b`` and is the same answer, since
+    # what decides is the LIABILITY and not how many rows produced it.
+    #
+    # **This comment used to be the whole of the else-arm's guard, and it stated
+    # a condition the code did not implement** (finding **N-411**).  The branch
+    # above asks ``> 0`` and this one is everything else, so a NEGATIVE total
+    # arrived here and was answered by DELETE: measured on a production clone,
+    # an envelope carrying 4 card charges totalling ``$493.03`` lost its payback
+    # outright when a larger card refund was recorded, leaving the charges with
+    # nothing booking them.  It could not happen while the table forbade a
+    # negative purchase; ruling **R-II** is what made the shape writable, and
+    # :func:`_reject_card_owing_the_owner` is what now answers it.
     if existing_payback is not None:
         # **A SETTLED payback is not DELETED either, and this refusal is the
         # other half of the one above** (plan step X-au-c3, second pass).  That
@@ -211,6 +269,12 @@ def sync_entry_payback(
         for entry in txn.entries:
             if entry.credit_payback_id == existing_payback.id:
                 entry.credit_payback_id = None
+        # A match naming this payback stops being true when the row goes, so
+        # it is withdrawn and its bank line is unexplained again (developer
+        # ruling 2026-08-25, plan step ``bank_import:X-gb``).  BEFORE the
+        # delete: the member rows CASCADE, so afterwards nothing says which
+        # lines were freed.
+        match_withdrawal.withdraw_for_rows([existing_payback], owner_id)
         # Reverse the payback's own ledger postings before deleting it
         # (Build-Order Step 3 reverse-before-delete): an entry-level payback that
         # was settled -- and therefore posted -- before its source's credit
@@ -227,6 +291,53 @@ def sync_entry_payback(
             payback_id=deleted_payback_id,
         )
     return None
+
+
+def _reject_card_owing_the_owner(
+    txn: Transaction, total_credit: Decimal,
+) -> None:
+    """Refuse an envelope whose card REFUNDS exceed its card purchases.
+
+    Finding **N-411**, opened by ruling **bank_import:R-II**.  A CC Payback is
+    an EXPENSE row recording what the owner owes the card, and
+    ``ck_transactions_estimated_amount`` (``estimated_amount >= 0``) says so in
+    the schema -- so a negative total has nowhere to go.  It is refused HERE,
+    before any branch acts on it, rather than left to the arm below: that arm
+    reads a non-positive total as "nothing is owed" and DELETES the payback,
+    which for a negative total destroys a liability the row's card charges
+    still carry.
+
+    **Refusing rather than substituting**, which is the choice this service
+    already makes for a settled payback two arms down: the app cannot represent
+    a card that owes the OWNER, and inventing a representation for it -- a zero
+    payback, a deleted one, an income row -- would each be filing money
+    somewhere the model does not mean.  The owner is told what state they have
+    described and what to do instead.
+
+    **The credit-card arc may make this representable and this refusal
+    removable** (a card with statements of its own is an account, and a credit
+    balance on it is an ordinary fact).  Until then a non-representable state is
+    refused where it is created, not stored in a shape that reads as something
+    else.
+
+    Args:
+        txn: The parent envelope, for the message's sake.
+        total_credit: The sum of its credit purchases, which this refuses when
+            negative.
+
+    Raises:
+        ValidationError: When the card refunds exceed the card purchases.
+    """
+    if total_credit >= 0:
+        return
+    raise ValidationError(
+        f"The card refunds on '{txn.name}' now exceed its card purchases by "
+        f"{-total_credit}, which would mean the card owes YOU rather than the "
+        "other way round. Shekel records a CC Payback as money you owe, so it "
+        "cannot hold that. Record the refund against the envelope it came from "
+        "as an ordinary (non-card) purchase, or split it across the card "
+        "purchases it actually reverses."
+    )
 
 
 def _create_payback(
@@ -255,8 +366,23 @@ def _create_payback(
     Raises:
         ValidationError: If no next pay period exists.
     """
-    next_period = calendar_for(owner_id).period_starting_after(
-        txn.pay_period.start_date,
+    # **The payday this counts FROM comes out of the same calendar** since
+    # plan step ``pay_calendar:C13-b`` -- the transaction-level twin
+    # (``credit_workflow.mark_as_credit``) carries the same argument.
+    # It was ``txn.pay_period.start_date``, read off a relationship the entry
+    # doors hydrated while walking it for their ownership check; those doors
+    # read ``entry.transaction.user_id`` now, so the walk would have become a
+    # lazy load for a span this derivation already holds.
+    #
+    # **The READ ORDER, stated because ``require_period`` requires every caller
+    # to state its own**: the ROW is read first, the paydays second, so a
+    # concurrent DESTRUCTIVE pay-period door -- reset, regenerate or truncate
+    # -- committing between them raises rather than answering off a stale
+    # picture.  That is balance finding **N-358**, whose remedy is
+    # `balance:X-i5`.
+    calendar = calendar_for(owner_id)
+    next_period = calendar.period_starting_after(
+        calendar.require_period(FiledRow.for_row(txn)).start_date,
     )
     if next_period is None:
         raise ValidationError(

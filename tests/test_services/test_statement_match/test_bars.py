@@ -1,0 +1,1156 @@
+"""The CREATION BARS: the bank lines that may never become purchases.
+
+Ruling **R-GJ**, plan step ``bank_import:X-ga``.  **The subject is a door that
+does not exist**, so almost every case here is a firing control: delete the bar
+and the create arm comes back, silently, on exactly the lines whose money the
+app already holds.
+
+Measured on the developer's own dev database 2026-08-24, which is what this
+step exists for: nine Capital One ACH payments became purchases in eight
+`$0.00`-budget
+envelopes holding **`$7,412.94`** -- eight and not nine, because two of the nine fell in
+one pay period -- in one YTD pass, while the app was already
+holding 22 ``CC Payback`` rows RECORDING **`$6,286.46`** of that same card's
+spending.  The
+saved answer was *a new envelope called Capital One Credit Card*; the screen
+printed "a card payment your app records as payback rows would be counted
+twice" one card above the select that did it; and
+``create_purchase_from_line`` read no rule at all.  A tenth line
+(`-$466.47`, 2026-06-17) was group-matched to four of those payback rows
+instead, which is the arm this ruling leaves open.
+
+**Two bars, and the second is the developer's ruling about who may decide**
+(2026-08-24): the owner's own *never a purchase* answer refuses outright, and a
+source's own card-payment category refuses only until they answer.  The bank's
+label may REQUIRE an answer and may never supply one, which is measured rather
+than stylistic -- SECU files 22 of the developer's 378 recorded lines under
+``Financial Services/Credit Card Payment`` and **7 of those 22 are the Van Loan
+car payment**, four already matched to ``Transfer to Van Loan`` shadows.
+``TestTheSourcesLabelOnlyASKS`` is where that boundary is pinned.
+"""
+
+from decimal import Decimal
+
+import pytest
+
+from app.enums import StatementSourceEnum
+from app.exceptions import ValidationError
+from app.models.merchant_rule import MerchantRule
+from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
+from app.models.statement_match import StatementMatch
+from app.services import statement_match
+from app.services.statement_match import (
+    register_set,
+    CreationBar,
+    CreationBars,
+    NewEnvelope,
+    RuleAnswer,
+    RuleSubmission,
+    PurchaseCreation,
+    Consent,
+    ReviewedBatch,
+    review_set,
+    state_rules,
+)
+from app.services.statement_match import _create  # pylint: disable=protected-access
+from app.services.statement_match._vocabulary import (  # pylint: disable=protected-access
+    ACCOUNT_PAYMENT_CATEGORIES,
+)
+
+from ._builders import (
+    a_bank_line,
+    a_bars,
+    a_merchant,
+    a_rule,
+    a_scope,
+    a_submission,
+    a_transaction,
+    an_answers,
+    an_import,
+    the_merchant_id,
+)
+
+#: SECU's own category string for a payment to a credit card, verbatim.  22 of
+#: the developer's 378 recorded lines carry it.  Written out here rather than
+#: imported from the module under test, because a fixture that took the value
+#: from the code it grades would still pass if that value were changed to
+#: something no statement contains.
+CARD_PAYMENT = "Financial Services/Credit Card Payment"
+
+#: What SECU calls the developer's Capital One ACH payments -- and the second
+#: spelling it used for the same payee between 2026-01-22 and 2026-02-17, which
+#: is why a rule keyed on the merchant string is not by itself a guard.
+CARD_MERCHANT = "Capital One Credit Card"
+OLD_CARD_MERCHANT = "Capital One Mobile Pmt"
+
+
+def _a_card_payment(seed_user, statement, *, amount="-793.23", sequence=0,
+                    merchant=CARD_MERCHANT):
+    """Stage one bank line shaped like a Capital One ACH payment."""
+    return a_bank_line(
+        seed_user, statement, amount=amount, sequence_in_group=sequence,
+        description=f"ACH DEBIT CAPITAL ONE      MOBILE PMT ({merchant})",
+        merchant=merchant, source_category=CARD_PAYMENT,
+    )
+
+
+def _a_swipe(seed_user, statement, *, amount="-25.00", sequence=0,
+             merchant="Food Lion"):
+    """Stage one bank line shaped like an ordinary card swipe."""
+    return a_bank_line(
+        seed_user, statement, amount=amount, sequence_in_group=sequence,
+        description=f"POINT OF SALE DEBIT {merchant}", merchant=merchant,
+        source_category="Food & Drink/Groceries",
+    )
+
+
+class TestWhichMerchantsAreBarred:
+    """The partition, read from the database the screen and the door share."""
+
+    def test_a_NEVER_answer_bars_the_merchant(self, app, db, seed_user):
+        """The owner's own decision, which until X-ga was a caption.
+
+        A row with all three columns NULL is the *never a purchase* answer
+        (``ck_merchant_rules_one_answer``'s third shape).  Before this
+        step it withheld a sweep value and nothing else.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.flush()
+
+        bars = a_bars(seed_user)
+
+        assert bars.bar_for(
+            the_merchant_id(seed_user, CARD_MERCHANT),
+        ) is CreationBar.NEVER_A_PURCHASE
+
+    def test_a_line_that_PAYS_AN_ACCOUNT_is_barred_with_no_answer_at_all(
+        self, app, db, seed_user,
+    ):
+        """The bar that asks nothing, because there is nothing to ask.
+
+        This is the half that reaches a card the owner has never seen before --
+        the case a merchant-keyed answer cannot cover, because there is no
+        answer yet to key.  Paying an account you hold is not spending whoever
+        is asked, so the app states it rather than putting it to them.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        db.session.flush()
+
+        bars = a_bars(seed_user)
+
+        assert bars.bar_for(the_merchant_id(seed_user, CARD_MERCHANT)) is (
+            CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
+        )
+
+    def test_NO_answer_lifts_it_not_even_the_one_that_double_booked(
+        self, app, db, seed_user,
+    ):
+        """THE FIRING CONTROL for the hole two adversarial reviews measured.
+
+        A first version made this bar an *unanswered* state that any answer
+        lifted.  The answer that lifts it is ``a new envelope`` -- which is the
+        answer the developer had actually saved for ``Capital One Credit
+        Card``, and the one that booked `$7,412.94` through a single sweep
+        click.  Restore ``if merchant in self.answered: return None`` between
+        the two arms of :meth:`~._bars.CreationBars.bar_for` and this case
+        fails.
+
+        The reason it may not lift is not caution: there is no answer that
+        would make a payment to an account you hold into spending.  The money
+        was spent somewhere else and the budget already holds it there.
+        """
+        envelope = a_transaction(seed_user, name="Groceries", is_envelope=True)
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT, template_id=envelope.template_id)
+        db.session.flush()
+
+        assert a_bars(seed_user).bar_for(the_merchant_id(seed_user, CARD_MERCHANT)) is (
+            CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
+        )
+
+    def test_a_NEVER_answer_still_bars_a_merchant_the_bank_never_flagged(
+        self, app, db, seed_user,
+    ):
+        """The two bars are independent, and the first is the owner's alone.
+
+        An insurance premium the owner records as a bill is not a card payment
+        and no source says it is; saying *never a purchase* about it must still
+        close the door, because the double count it prevents is the same one.
+        """
+        statement = an_import(seed_user)
+        _a_swipe(seed_user, statement, merchant="Geico")
+        a_rule(seed_user, "Geico")
+        db.session.flush()
+
+        assert a_bars(seed_user).bar_for(the_merchant_id(seed_user, "Geico")) is (
+            CreationBar.NEVER_A_PURCHASE
+        )
+
+    def test_an_ordinary_unanswered_merchant_is_NOT_barred(
+        self, app, db, seed_user,
+    ):
+        """The control that keeps the whole step from being a blanket refusal.
+
+        74 of the developer's 91 unexplained outflows are ordinary card swipes
+        worth `$3,383.49`, and every one of them must keep its create arm --
+        that arm is what ruling **R-FS** exists for.
+        """
+        statement = an_import(seed_user)
+        _a_swipe(seed_user, statement)
+        db.session.flush()
+
+        assert a_bars(seed_user).bar_for(the_merchant_id(seed_user, "Food Lion")) is None
+
+    def test_a_line_naming_NO_merchant_puts_NOTHING_in_the_bars(
+        self, app, db, seed_user,
+    ):
+        """THE FIRING CONTROL for the ``merchant.isnot(None)`` filter.
+
+        A source naming no merchant keys no rule, so there is nothing the
+        owner could ever have said about it -- and a bar that fired on ``None``
+        would refuse every such line on every source that truncates its
+        descriptions.  SECU's own OFX cuts 326 of 361 to the same 32
+        characters.
+
+        **The line here carries the card-payment category AND no merchant**,
+        which is what makes this a control rather than an assertion: delete the
+        ``isnot(None)`` filter at :func:`~._bars._card_payment_merchants` and
+        ``None`` enters ``account_payments``, at which point every merchant-less
+        line on the account is barred.  Two adversarial reviews 2026-08-24
+        measured the case this replaces -- it staged nothing, so every set was
+        empty and it asserted ``None is None`` while a redundant ``merchant is
+        None`` branch in :meth:`bar_for` made the filter ungradeable from the
+        other side too.  That branch is gone; this is the one guard and this is
+        its control.
+        """
+        statement = an_import(seed_user)
+        a_bank_line(
+            seed_user, statement, amount="-793.23",
+            description="ACH DEBIT CAPITAL ONE      MOBILE PMT",
+            merchant=None, source_category=CARD_PAYMENT,
+        )
+        db.session.flush()
+
+        bars = a_bars(seed_user)
+
+        assert bars.account_payments == frozenset()
+        assert bars.bar_for(None) is None
+        assert bars.pays_an_account(None) is False
+
+
+class TestTheSourcesLabelOnlyASKS:
+    """Where the bank's own words are read, and how far they reach.
+
+    **ONE SURFACE HERE HAS NO FIRING CONTROL, and it is named rather than
+    left to be discovered.**  ``_CARD_PAYMENT_CATEGORIES`` is keyed by
+    :class:`~app.enums.StatementSourceEnum`, so a category string means what it
+    means only for the adapter that wrote it -- and that keying cannot be
+    graded today, because the enum has exactly one member and
+    ``ref.statement_sources`` exactly one row, so an import from a source
+    OUTSIDE the map is unrepresentable.  Measured by mutation 2026-08-24:
+    deleting the ``source_id`` clause from the query leaves all 411 tests in
+    this package green.  The first case that can grade it is the second
+    adapter, ``bank_import:X-f6b``'s SimpleFIN feed.  What IS graded below is
+    the category comparison itself, which is the half a live statement can be
+    wrong about.
+    """
+
+    def test_EVERY_source_declares_its_own_card_payment_vocabulary(self):
+        """THE FIRING CONTROL for the registry's fail-OPEN.
+
+        A source absent from ``ACCOUNT_PAYMENT_CATEGORIES`` contributes no clause
+        to the query, so no line it recorded is ever barred -- silently, with
+        every test green.  ``statement_import._adapters``, which that map
+        mirrors, fails LOUD in the same position by design; an adversarial
+        review 2026-08-24 measured this one failing open.
+
+        This is what makes adding an adapter a DECISION about the second bar
+        rather than an omission: ``bank_import:X-f6b``'s SimpleFIN member
+        cannot land without an entry here, empty or not.  An empty set is a
+        legitimate answer -- a source that files nothing as a card payment --
+        and stating it is the point.
+        """
+        assert set(ACCOUNT_PAYMENT_CATEGORIES) == set(StatementSourceEnum)
+
+    def test_the_category_is_read_from_the_SOURCE_that_recorded_it(
+        self, app, db, seed_user,
+    ):
+        """``source_category`` is one source's private vocabulary.
+
+        The model rules it "kept as provenance and never read as logic", and
+        the reading here is the narrow exception the developer ruled: it may
+        require an answer and may never supply one.  Keyed by the ADAPTER, so a
+        second source's identical spelling of a different meaning cannot fire
+        this one's rule -- which is why the join to ``statement_imports`` is
+        part of the derivation rather than an assumption.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        db.session.flush()
+
+        assert a_bars(seed_user).account_payments == frozenset(
+            {a_merchant(seed_user, CARD_MERCHANT).id},
+        )
+
+    def test_another_category_from_the_same_source_is_not_one(
+        self, app, db, seed_user,
+    ):
+        """The firing control for the category comparison itself.
+
+        Widen it to "any Financial Services category" and this fails: the
+        developer's own statement carries `$13,376.65` of funds transfers and
+        `$2,250.00` of Fidelity investing under that prefix, none of them a
+        card payment.
+        """
+        statement = an_import(seed_user)
+        a_bank_line(
+            seed_user, statement, amount="-1910.95", merchant="Funds Transfer",
+            source_category="Financial Services/Transfers",
+        )
+        db.session.flush()
+
+        assert a_bars(seed_user).account_payments == frozenset()
+
+    def test_a_second_spelling_of_one_payee_is_a_second_merchant(
+        self, app, db, seed_user,
+    ):
+        """Measured: SECU renamed this payee mid-year, and both are flagged.
+
+        Three of the developer's 15 Capital One lines read
+        ``Capital One Mobile Pmt`` and twelve read ``Capital One Credit
+        Card``; the string changed between 2026-02-17 and 2026-02-27.  A guard
+        that keyed only on what the owner had answered would have missed the
+        three, and this is the half of the design that does not: the source
+        files BOTH under its card-payment category, so both are asked about.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        _a_card_payment(
+            seed_user, statement, amount="-1149.53", sequence=1,
+            merchant=OLD_CARD_MERCHANT,
+        )
+        db.session.flush()
+
+        bars = a_bars(seed_user)
+
+        assert bars.account_payments == frozenset({
+            a_merchant(seed_user, CARD_MERCHANT).id,
+            a_merchant(seed_user, OLD_CARD_MERCHANT).id,
+        })
+        assert bars.bar_for(the_merchant_id(seed_user, OLD_CARD_MERCHANT)) is (
+            CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
+        )
+
+    def test_ANOTHER_accounts_lines_do_not_reach_this_accounts_bars(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """The scope, which the composite join is what makes structural.
+
+        A rule is stated per account
+        (``uq_merchant_rules_account_merchant``) and so is the
+        evidence behind it: a card payment recorded on another account says
+        nothing about what this account's lines are.  The join carries the
+        account on BOTH sides (``fk_bank_statement_lines_import_account``), so
+        the narrowing is the key rather than a filter a reader could forget.
+        """
+        other = an_import(seed_second_user)
+        _a_card_payment(seed_second_user, other)
+        db.session.flush()
+
+        assert a_bars(seed_user).account_payments == frozenset()
+        assert a_bars(seed_second_user).account_payments == frozenset({
+            a_merchant(
+                seed_second_user, CARD_MERCHANT,
+                account=seed_second_user["account"],
+            ).id,
+        })
+
+
+class TestTheDoorRefusesABarredLine:
+    """The money half: what a crafted body or a stale page reaches."""
+
+    def _creation(self, seed_user, line):
+        """Return the submission a stale page would send for *line*."""
+        return PurchaseCreation(
+            line_id=line.id,
+            new_envelope=NewEnvelope(
+                name=CARD_MERCHANT,
+                category_id=seed_user["categories"]["Groceries"].id,
+            ),
+        )
+
+    def _record(self, seed_user, line):
+        """Call the create door for *line*, with this pass's real bars."""
+        return statement_match.create_purchase_from_line(
+            self._creation(seed_user, line), a_scope(seed_user),
+            _create.MintedEnvelopes.none_yet(), an_answers(seed_user),
+            applied_by_rule=False,
+        )
+
+    def test_a_NEVER_line_is_refused_and_NOTHING_is_written(
+        self, app, db, seed_user,
+    ):
+        """The refusal that would have stopped `$7,412.94`.
+
+        The screen renders no control for this line at all, so the only way
+        here is a stale page or a crafted body -- and that is precisely the
+        path the last version of this rule left open, because the last version
+        was a paragraph.
+        """
+        statement = an_import(seed_user)
+        line = _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.flush()
+        before = db.session.query(Transaction).count()
+
+        with pytest.raises(ValidationError) as refusal:
+            self._record(seed_user, line)
+
+        assert "never a purchase" in str(refusal.value)
+        assert "Nothing was changed" in str(refusal.value)
+        assert db.session.query(TransactionEntry).count() == 0
+        assert db.session.query(Transaction).count() == before
+        assert db.session.query(StatementMatch).count() == 0
+
+    def test_a_line_that_PAYS_AN_ACCOUNT_is_refused_at_the_door_too(
+        self, app, db, seed_user,
+    ):
+        """The second bar reaches the door, not only the screen.
+
+        A guard that lived only in the reader would be a rendered control
+        removed and a route left open, which is the asymmetry every refusal in
+        this package is written twice to avoid.
+        """
+        statement = an_import(seed_user)
+        line = _a_card_payment(seed_user, statement)
+        db.session.flush()
+
+        with pytest.raises(ValidationError) as refusal:
+            self._record(seed_user, line)
+
+        assert "payment to an account you hold" in str(refusal.value)
+        assert db.session.query(TransactionEntry).count() == 0
+
+    def test_an_ORDINARY_swipe_still_records_through_the_same_door(
+        self, app, db, seed_user,
+    ):
+        """THE FIRING CONTROL for both refusals above.
+
+        Same door, same submission shape, and it succeeds -- because an
+        ordinary swipe IS spending and ruling **R-FS**'s create arm is what
+        this whole package exists to offer.  Without this case the two refusals
+        above would pass just as well if the door refused everything.
+
+        It is deliberately NOT *the same line once answered*: no answer lifts
+        the second bar, which is the correction two adversarial reviews forced
+        2026-08-24.
+        """
+        statement = an_import(seed_user)
+        line = _a_swipe(seed_user, statement, amount="-25.00")
+        db.session.flush()
+
+        recorded = self._record(seed_user, line)
+
+        assert recorded.amount == Decimal("25.00")
+        assert recorded.envelope_created is True
+
+    def test_the_refusal_fires_BEFORE_the_destination_is_resolved(
+        self, app, db, seed_user,
+    ):
+        """The order of refusals, which is what the sentence depends on.
+
+        A barred line has no legal destination, so answering it with "that
+        envelope is not one this purchase can go into" would be a true sentence
+        about the wrong problem -- the ordering ``_create`` already states for
+        its new-envelope pair.  Submitted here with a destination that does not
+        exist, so a door resolving first would say so.
+        """
+        statement = an_import(seed_user)
+        line = _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.flush()
+
+        with pytest.raises(ValidationError) as refusal:
+            statement_match.create_purchase_from_line(
+                PurchaseCreation(line_id=line.id, transaction_id=999_999),
+                a_scope(seed_user),
+                _create.MintedEnvelopes.none_yet(), an_answers(seed_user),
+                applied_by_rule=False,
+            )
+
+        assert "never a purchase" in str(refusal.value)
+
+
+class TestABarredItemCostsOnlyItself:
+    """The ruled per-item isolation, applied to this refusal."""
+
+    def test_the_rest_of_the_pass_still_lands(self, app, db, seed_user):
+        """A refused item leaves nothing behind and the others still apply.
+
+        The developer's own statement offers 215 acts in one press, so a
+        refusal that took the pass down with it would cost every other decision
+        made in it -- which is the failure ruling **R-FZ**'s savepoints exist
+        for, measured here against the bar this step adds.
+        """
+        envelope = a_transaction(seed_user, name="Groceries", is_envelope=True)
+        statement = an_import(seed_user)
+        barred = _a_card_payment(seed_user, statement)
+        ordinary = _a_swipe(seed_user, statement, sequence=1)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+
+        outcome = statement_match.apply_reviewed(
+            ReviewedBatch(skips=(), consent=Consent.TICKED, matches=(), incomes=(), creations=(
+                PurchaseCreation(line_id=barred.id, new_envelope=NewEnvelope(
+                    name=CARD_MERCHANT,
+                    category_id=seed_user["categories"]["Groceries"].id,
+                )),
+                PurchaseCreation(
+                    line_id=ordinary.id, transaction_id=envelope.id,
+                ),
+            )),
+            a_scope(seed_user),
+        )
+        db.session.flush()
+
+        assert len(outcome.refused) == 1
+        assert outcome.refused[0].line_ids == (barred.id,)
+        assert "never a purchase" in outcome.refused[0].reason
+        assert outcome.recorded_count == 1
+        assert [
+            entry.description
+            for entry in db.session.query(TransactionEntry).all()
+        ] == ["Food Lion"]
+
+
+class TestTheRuleDoorRefusesTheAnswerThatContradictsTheBar:
+    """No answer opens the create arm, so no answer may claim to."""
+
+    def _state(self, seed_user, answer, **fields):
+        """Submit one rule statement for the card merchant."""
+        return state_rules(
+            (RuleSubmission(
+                merchant_id=a_merchant(seed_user, CARD_MERCHANT).id,
+                answer=answer, **fields,
+            ),),
+            owner_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+        )
+
+    def test_a_TEMPLATE_answer_is_refused(self, app, db, seed_user):
+        """The answer that would name a recurring envelope.
+
+        A merchant whose money paid an account the owner holds cannot be filed
+        in a budget line at all, so a stored answer saying it goes in one would
+        be an answer nothing could ever apply -- and it would say, in the
+        owner's own words on their own screen, that Capital One goes in
+        Groceries.
+        """
+        envelope = a_transaction(seed_user, name="Groceries", is_envelope=True)
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        db.session.flush()
+
+        outcome = self._state(
+            seed_user, RuleAnswer.TEMPLATE, template_id=envelope.template_id,
+        )
+
+        assert outcome.stated == ()
+        assert len(outcome.refused) == 1
+        assert "payment to an account you hold" in outcome.refused[0]
+        assert db.session.query(MerchantRule).count() == 0
+
+    def test_a_NEW_ENVELOPE_answer_is_refused(self, app, db, seed_user):
+        """The exact answer the developer had saved, and what it cost.
+
+        ``Capital One Credit Card -> a new envelope`` is what booked
+        `$7,412.94` into eight `$0.00`-budget envelopes.  While any answer
+        lifted the bar, re-picking it restored the create arm AND the one-click
+        sweep; two adversarial reviews measured that on 2026-08-24.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        db.session.flush()
+
+        outcome = self._state(
+            seed_user, RuleAnswer.NEW_ENVELOPE,
+            envelope_name=CARD_MERCHANT,
+            category_id=seed_user["categories"]["Groceries"].id,
+        )
+
+        assert outcome.stated == ()
+        assert len(outcome.refused) == 1
+        assert db.session.query(MerchantRule).count() == 0
+
+    def test_NEVER_is_the_ONLY_answer_such_a_merchant_takes(
+        self, app, db, seed_user,
+    ):
+        """THE FIRING CONTROL: the door refuses three answers and takes one.
+
+        Ruling **R-GJ**: *no answer lifts it*, and *never a purchase* is the
+        answer that fits.  Without this case a door that refused EVERY answer
+        would satisfy the two above -- and such a merchant would have no
+        legal answer at all, which is not what the ruling says.
+
+        **The second arm used to assert ``ALWAYS_ASK`` was taken too**, and an
+        adversarial review 2026-08-26 measured that wrong on its own terms.
+        The exemption's only stated reason was *"never a purchase and the
+        WITHDRAWAL are both still legal"*, and ruling R-GS deleted the
+        withdrawal in this same step; *ask me every time* is not the same fact.
+        A withdrawal left the merchant unanswered, while this stores a promise
+        the app cannot keep -- such a line has no create control, so nothing
+        ever asks -- and, worse, restating a stored *never* as *ask me every
+        time* takes the merchant out of ``CreationBars.never`` and leaves only
+        the bar :mod:`._bars` records as INTERIM.  On the developer's own data
+        that is `Capital One Credit Card`, 9 lines and `-$7,412.94`, traded
+        away by one select under a caption reading *an answer can always be
+        changed*.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        db.session.flush()
+
+        stated = self._state(seed_user, RuleAnswer.NEVER)
+        assert stated.refused == ()
+        assert db.session.query(MerchantRule).one().never_a_purchase is True
+
+        asked = self._state(seed_user, RuleAnswer.ALWAYS_ASK)
+
+        assert len(asked.refused) == 1
+        assert "Never a purchase" in asked.refused[0]
+        # ...and the bar it would have traded away is STILL THERE, which is the
+        # half that matters: a refusal that left the row rewritten would be no
+        # refusal at all.
+        assert db.session.query(MerchantRule).one().never_a_purchase is True
+
+    def test_an_ORDINARY_merchant_may_still_be_given_an_envelope(
+        self, app, db, seed_user,
+    ):
+        """The other firing control: the refusal is scoped to the flagged set.
+
+        74 of the developer's 91 unexplained outflows are ordinary swipes, and
+        answering for them is the whole of what the rule control is for.
+        """
+        envelope = a_transaction(seed_user, name="Groceries", is_envelope=True)
+        statement = an_import(seed_user)
+        _a_swipe(seed_user, statement)
+        db.session.flush()
+
+        outcome = state_rules(
+            (RuleSubmission(
+                merchant_id=a_merchant(seed_user, "Food Lion").id,
+                answer=RuleAnswer.TEMPLATE,
+                template_id=envelope.template_id,
+            ),),
+            owner_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+        )
+
+        assert outcome.refused == ()
+        assert db.session.query(MerchantRule).count() == 1
+
+    def test_a_STORED_answer_that_became_illegal_is_refused_not_ignored(
+        self, app, db, seed_user,
+    ):
+        """A bank may start filing a merchant as an account payment LATER.
+
+        The answer was legal when it was given.  Refusing a restatement is what
+        makes the owner correct it; treating it as unchanged -- which is what
+        ``_apply_one``'s own short-circuit would do if this fired after it --
+        would leave an answer stored forever that nothing could ever apply.
+        """
+        envelope = a_transaction(seed_user, name="Groceries", is_envelope=True)
+        statement = an_import(seed_user)
+        a_rule(seed_user, CARD_MERCHANT, template_id=envelope.template_id)
+        _a_card_payment(seed_user, statement)
+        db.session.flush()
+
+        outcome = self._state(
+            seed_user, RuleAnswer.TEMPLATE, template_id=envelope.template_id,
+        )
+
+        assert outcome.unchanged_count == 0
+        assert len(outcome.refused) == 1
+        assert "payment to an account you hold" in outcome.refused[0]
+
+
+class TestWhatTheScreenShowsInstead:
+    """The parked card, and the arm ruling R-GJ leaves open."""
+
+    def test_a_barred_line_is_PARKED_with_the_reason(
+        self, app, db, seed_user,
+    ):
+        """Not hidden, and not a create row with its control removed.
+
+        A line that vanished from the screen would read as disposed of while
+        still counting toward the work outstanding, which is the clean-sweep
+        shape ``ReviewBounds`` exists to prevent.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+
+        assert review.creatable == ()
+        assert len(review.parked) == 1
+        parked = review.parked[0]
+        assert parked.barred_by is CreationBar.NEVER_A_PURCHASE
+        assert CARD_MERCHANT in parked.reason
+        assert "never a purchase" in parked.reason
+
+    def test_the_two_bars_say_DIFFERENT_things_about_who_decided(
+        self, app, db, seed_user,
+    ):
+        """Why the sentence is derived per bar rather than written once.
+
+        One is a decision the owner made and the other is an observation about
+        what the money did.  Telling someone who answered *never* that their
+        bank decided for them, or someone whose bank filed a transfer that they
+        had once said something they never said, is the collapse the enum
+        exists to prevent.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        db.session.commit()
+
+        parked = review_set(a_scope(seed_user)).parked[0]
+
+        assert parked.barred_by is CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
+        assert "payment to an account you hold" in parked.reason
+        assert "You have said" not in parked.reason
+
+    def test_a_barred_line_is_still_offered_to_the_HAND_MATCH_form(
+        self, app, db, seed_user,
+    ):
+        """The arm ruling R-GJ leaves open, which is the whole remedy.
+
+        A card payment meets the payback rows it repays by being ticked beside
+        them and matched, with any difference NAMED (**R-FN**).  The one
+        Capital One line handled that way on the developer's own data --
+        `-$466.47` on 2026-06-17 -- is grouped with four ``CC Payback`` rows
+        whose recorded figures sum to exactly `$466.47`, so that one needed no
+        difference at all.  If the bar removed the line from ``unmatched`` as
+        well, the whole arm would be unreachable.
+        """
+        statement = an_import(seed_user)
+        line = _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+
+        assert [row.line_id for row in review.unmatched] == [line.id]
+
+    def test_the_group_match_arm_ACTUALLY_WORKS_on_a_barred_line(
+        self, app, db, seed_user,
+    ):
+        """The remedy, PERFORMED rather than advertised.
+
+        Every other case here stops at *the checkbox is rendered*.  Ruling
+        **R-GJ** leaves exactly one arm open -- match the payment to the rows
+        it repaid -- and the parked card, the refusal sentence and this
+        module's own docstring all send the owner to it, so an arm graded only
+        by its own advertisement is an arm nobody has shown works.  Named by an
+        adversarial review 2026-08-24.
+
+        The shape is the one measured on the developer's own data: one card
+        payment against several of the owner's rows whose figures sum to it
+        exactly, so no difference is left to name.
+        """
+        first = a_transaction(
+            seed_user, name="CC Payback: Groceries", amount="500.00",
+        )
+        second = a_transaction(
+            seed_user, name="CC Payback: Gas", amount="293.23",
+        )
+        statement = an_import(seed_user)
+        line = _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+        scope = a_scope(seed_user)
+
+        outcome = statement_match.apply_reviewed(
+            ReviewedBatch(
+                skips=(),
+                consent=Consent.TICKED,
+                incomes=(),
+                matches=(a_submission(
+                    scope, lines=[line], transactions=[first, second],
+                ),),
+                creations=(),
+            ),
+            scope,
+        )
+        db.session.commit()
+
+        assert not outcome.refused, [item.reason for item in outcome.refused]
+        assert outcome.applied_count == 1
+        # ...and the line is no longer anybody's question: not parked, not
+        # answered-never, not creatable, not unmatched.  **All four, because
+        # the pass has four places an unexplained line can be** since plan step
+        # ``bank_import:X-gj-4c``: an enumeration that named three of them
+        # would pass while the line sat in the fourth.
+        after = review_set(a_scope(seed_user))
+        assert after.parked == ()
+        assert after.answered_never == ()
+        assert after.creatable == ()
+        assert [row.line_id for row in after.unmatched] == []
+        # The bar refused a PURCHASE and never touched the match: both rows
+        # took the bank's day.
+        assert {first.settled_on, second.settled_on} == {line.posted_on}
+
+    def test_the_rule_control_says_WHY_it_is_asking(
+        self, app, db, seed_user,
+    ):
+        """The row where the bar is lifted has to be findable.
+
+        An unanswered card-payment merchant has no create arm, and this control
+        is the only door that gives it one back -- so a row that did not say
+        which merchant the bank had flagged would leave the parked card naming
+        an act with no target.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        _a_swipe(seed_user, statement, sequence=1)
+        db.session.commit()
+
+        rows = {
+            row.summary.merchant: row
+            for row in review_set(a_scope(seed_user)).merchants.merchants
+        }
+
+        assert rows[CARD_MERCHANT].summary.pays_an_account is True
+        assert rows[CARD_MERCHANT].line_count == 1
+        assert rows[CARD_MERCHANT].total == Decimal("-793.23")
+        assert rows["Food Lion"].summary.pays_an_account is False
+
+    def test_the_flag_is_carried_WHATEVER_the_owner_has_said(
+        self, app, db, seed_user,
+    ):
+        """THE FIRING CONTROL for *carried whatever they have already said*.
+
+        Narrow the flag to ``merchant not in answered`` and the whole suite
+        stayed green until this case: measured by two adversarial reviews
+        2026-08-24.  It matters because the flag is what the row says INSTEAD
+        of offering the two answers the door refuses -- an owner who stated
+        *never a purchase* is entitled to see why that was the only answer that
+        fit, and one whose stored answer predates the bank filing this merchant
+        as an account payment is entitled to see why their Save is now being
+        refused.
+
+        **Read off the REGISTER since plan step ``bank_import:X-gf-2``** (ruling
+        **bank_import:R-GX**), and the move is the case rather than a detour:
+        this merchant HAS been answered for, so its row is where answers are
+        changed -- and the flag has to survive the move, because the register
+        is now the only surface offering that owner the two options the door
+        refuses.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+
+        row = {
+            item.merchant: item
+            for item in register_set(
+                seed_user["user"].id, seed_user["account"].id,
+            ).merchants.merchants
+        }[CARD_MERCHANT]
+
+        assert row.rule.answer is RuleAnswer.NEVER
+        assert row.pays_an_account is True
+
+
+class TestWhereABarredLineSAnswerIsCHANGED:
+    """Plan step ``bank_import:X-gf-3a``: the door a barred line does not name.
+
+    Since ruling **bank_import:R-GX** an ANSWERED merchant leaves the review
+    screen's own control for the register, so a line parked by an answer the
+    owner has come to disagree with had nowhere on that page to say so.  The
+    fix is not a link, it is the QUESTION of whether a link would help -- and
+    on the developer's own data 2026-08-27 it would not, on any of them: all
+    nine parked lines name ``Capital One Credit Card``, which carries BOTH
+    bars, and :func:`~._stating.state_rules` refuses every answer but *never a
+    purchase* for such a merchant.  A link rendered unconditionally would have
+    been the chooser-that-cannot-succeed shape on every line it appeared
+    beside.
+    """
+
+    def test_an_answer_the_owner_could_CHANGE_names_where_to_change_it(
+        self, app, db, seed_user,
+    ):
+        """An ordinary swipe merchant answered *never a purchase*.
+
+        Nothing but the owner's own answer parks this line, so a different
+        answer would open the create door -- and the register is the only
+        surface that still offers them one.
+        """
+        statement = an_import(seed_user)
+        _a_swipe(seed_user, statement)
+        a_rule(seed_user, "Food Lion")
+        db.session.commit()
+
+        # **Off ``answered_never`` and not ``parked`` since plan step
+        # ``bank_import:X-gj-4c``** (ruling **bank_import:R-JH**): a line
+        # barred ONLY by the owner's own answer is inbox work, so the pass
+        # files it in the list the inbox draws from.  What this case grades is
+        # unchanged -- the value, its two bars and its door.
+        barred = review_set(a_scope(seed_user)).answered_never[0]
+
+        assert barred.barred_by is CreationBar.NEVER_A_PURCHASE
+        assert barred.also_pays_an_account is False
+        assert barred.answer_door == "Change what you have said about Food Lion"
+
+    def test_an_answer_that_would_change_NOTHING_names_no_door(
+        self, app, db, seed_user,
+    ):
+        """THE FIRING CONTROL, and the case that is 9 of the developer's 9.
+
+        Both bars hold.  The owner's answer is asked first and is what the
+        sentence leads with, but unsaying it opens nothing: no answer lifts a
+        source's filing, so sending them to restate it would be a chooser whose
+        submission can never succeed.
+
+        Delete the ``also_pays_an_account`` guard in
+        :attr:`~._bars.BarredLine.answer_door` and only this case falls.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+
+        parked = review_set(a_scope(seed_user)).parked[0]
+
+        assert parked.barred_by is CreationBar.NEVER_A_PURCHASE
+        assert parked.also_pays_an_account is True
+        assert parked.answer_door is None
+
+    def test_a_bar_the_owner_never_STATED_names_no_door_either(
+        self, app, db, seed_user,
+    ):
+        """There is no answer to change: they never gave one.
+
+        Distinct from the case above rather than a repeat of it -- that one has
+        a stored answer the register would show, this one has none at all, and
+        collapsing them would make the guard pass for the wrong reason.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        db.session.commit()
+
+        parked = review_set(a_scope(seed_user)).parked[0]
+
+        assert parked.barred_by is CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
+        assert parked.answer_door is None
+
+    def test_the_reason_says_the_SECOND_bar_where_it_also_holds(
+        self, app, db, seed_user,
+    ):
+        """The sentence stops implying that unsaying the answer would help.
+
+        ``bar_for`` asks the owner's own answer first, which is right and is
+        not what was wrong: what was wrong is that *you have said this is never
+        a purchase* implies unsaying it would open the door, and for 9 of the
+        developer's 9 parked lines it would not.  Both clauses, and the owner's
+        own decision still leads.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+
+        reason = review_set(a_scope(seed_user)).parked[0].reason
+
+        assert reason.index("You have said") < reason.index("Your bank also")
+        assert "which no answer lifts" in reason
+
+    def test_a_bar_the_owner_ALONE_states_says_only_that(
+        self, app, db, seed_user,
+    ):
+        """...and the clause is not printed where it would be false.
+
+        Without this the composed sentence would tell an owner who answered
+        *never* about an ordinary swipe merchant that their bank files it as an
+        account payment, which it does not.
+        """
+        statement = an_import(seed_user)
+        _a_swipe(seed_user, statement)
+        a_rule(seed_user, "Food Lion")
+        db.session.commit()
+
+        # ``answered_never`` for the reason the case three above states.
+        reason = review_set(a_scope(seed_user)).answered_never[0].reason
+
+        assert "You have said" in reason
+        assert "Your bank also" not in reason
+
+    def test_the_DOOR_says_what_the_screen_says_about_both_bars(
+        self, app, db, seed_user,
+    ):
+        """One wording, two registers -- extended to the second clause.
+
+        A screen saying *no answer would open this* over a door saying only
+        *you said never* is the drift this module's shared sentence exists to
+        prevent: the owner would restate the answer, be refused, and have no
+        way to tell which of the two surfaces was wrong.
+        """
+        statement = an_import(seed_user)
+        line = _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+
+        with pytest.raises(ValidationError) as caught:
+            statement_match._bars.reject_barred_line(  # pylint: disable=protected-access
+                line, a_bars(seed_user),
+            )
+
+        assert "which no answer lifts" in str(caught.value)
+        assert "Nothing was changed" in str(caught.value)
+
+
+class TestACARDPAYMENTMerchantsCREDITIsBarredToo:
+    """The bar reaches BOTH directions, and one arm of it had to.
+
+    Plan step ``bank_import:X-gj-2b``, found by that step's own adversarial
+    review.  That step routed a container-answered CREDIT into the purchase
+    pipeline and bounded ruling **R-GJ**'s bar to outflows beside it, arguing
+    that neither arm of the bar can be true of money arriving.  **That is true
+    of ``NEVER`` and false of the other arm**:
+    :attr:`CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD` says *your bank files this
+    MERCHANT as a payment to an account you hold*, and a merchant does not stop
+    being that one because a line runs the other way.
+
+    **The exemption reached exactly one class and it is the dangerous one.**
+    An inflow reaches the bar only where ``pipeline_for`` routed it to
+    ``PURCHASE``, which for an inflow needs a CONTAINER answer -- and a
+    merchant carrying one is by construction absent from ``CreationBars.never``.
+    So the only bar it could lift was the card-payment one, on a merchant whose
+    stored spending answer predates the bank filing it that way.
+    ``_stating._reject_spending_answer`` refuses a NEW such answer and retracts
+    no STORED one, and ``_stating`` records that the developer's own
+    ``Capital One Credit Card -> a new envelope`` WAS one.
+
+    **The rule is staged through the ORM because ``state_rules`` refuses it**,
+    which is the point: this shape is HISTORICAL, not statable today.
+
+    **All three surfaces, because the bar is stated in three places and they
+    are graded separately** -- the derivation, the screen's parking, and the
+    door's refusal.  Deleting the exemption at only one of them is what the
+    step did in reverse.
+    """
+
+    def _a_claimed_card_merchant(self, db, seed_user):
+        """Stage a card-payment merchant carrying a stored container answer."""
+        envelope = a_transaction(
+            seed_user, name="Capital One", amount="0.00", is_envelope=True,
+        )
+        statement = an_import(seed_user)
+        # The OUTFLOW is what puts the merchant in ``account_payments``: that
+        # set is keyed on the merchant over the account's whole history, with
+        # no direction filter of its own.
+        _a_card_payment(seed_user, statement)
+        credit = _a_card_payment(seed_user, statement, amount="500.00",
+                                 sequence=1)
+        a_rule(seed_user, CARD_MERCHANT, template_id=envelope.template_id)
+        db.session.flush()
+        return credit
+
+    def test_the_merchant_is_in_the_bars_whatever_the_line_does(
+        self, app, db, seed_user,
+    ):
+        """The derivation, which never had a direction in it."""
+        self._a_claimed_card_merchant(db, seed_user)
+
+        bars = CreationBars.build(
+            seed_user["user"].id, seed_user["account"].id,
+        )
+
+        assert bars.bar_for(the_merchant_id(seed_user, CARD_MERCHANT)) is (
+            CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
+        )
+
+    def test_the_SCREEN_parks_the_credit_rather_than_offering_it(
+        self, app, db, seed_user,
+    ):
+        """The half that decides whether a RULE files it with no press.
+
+        A line in ``creatable`` carrying a resolvable placement is filed by
+        ``file_new_swipes`` under ruling **R-GH** with no owner action at all,
+        so the screen's list IS the money control here.
+        """
+        credit = self._a_claimed_card_merchant(db, seed_user)
+
+        offered = review_set(a_scope(seed_user))
+
+        assert credit.id not in [
+            item.line.line_id for item in offered.creatable
+        ], (
+            "a credit from a merchant the bank files as a card payment was "
+            "offered for filing -- this is the shape ruling R-GJ measured "
+            "$7,412.94 going through"
+        )
+        assert credit.id in [item.line.line_id for item in offered.parked]
+
+    def test_the_DOOR_refuses_the_credit_and_writes_NOTHING(
+        self, app, db, seed_user,
+    ):
+        """The stale-page half, because a refusal a browser walks around is not
+        one."""
+        credit = self._a_claimed_card_merchant(db, seed_user)
+        before = db.session.query(TransactionEntry).count()
+
+        with pytest.raises(ValidationError) as refusal:
+            statement_match.create_purchase_from_line(
+                PurchaseCreation(
+                    line_id=credit.id,
+                    new_envelope=NewEnvelope(
+                        name=CARD_MERCHANT,
+                        category_id=seed_user["categories"]["Groceries"].id,
+                    ),
+                ),
+                a_scope(seed_user), _create.MintedEnvelopes.none_yet(),
+                an_answers(seed_user), applied_by_rule=False,
+            )
+
+        assert "payment to an account you hold" in str(refusal.value)
+        assert db.session.query(TransactionEntry).count() == before
+
+    def test_an_ORDINARY_merchants_credit_is_STILL_offered(
+        self, app, db, seed_user,
+    ):
+        """The control: the bar is the merchant's, not the direction's.
+
+        Without this the three cases above would pass against a door that had
+        gone back to refusing every inflow, which would silently un-build the
+        refund act plan step ``bank_import:X-gj-2b-2`` exists for.
+        """
+        envelope = a_transaction(
+            seed_user, name="Amazon", amount="0.00", is_envelope=True,
+        )
+        statement = an_import(seed_user)
+        credit = a_bank_line(
+            seed_user, statement, amount="28.29", merchant="Amazon",
+            description="POINT OF SALE CREDIT L340 (Amazon)",
+        )
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        db.session.flush()
+
+        offered = review_set(a_scope(seed_user))
+
+        assert credit.id in [item.line.line_id for item in offered.creatable]
+        # **Both barred lists, since plan step ``bank_import:X-gj-4c``.**  The
+        # positive assertion above already carries this case -- the four lists
+        # are disjoint -- but a negative naming ONE of two is a narrower claim
+        # than it reads as, which is what a reader would take from it next
+        # time.
+        assert credit.id not in [item.line.line_id for item in offered.parked]
+        assert credit.id not in [
+            item.line.line_id for item in offered.answered_never
+        ]

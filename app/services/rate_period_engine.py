@@ -49,7 +49,11 @@ from app.services.amortization_engine import (
     calculate_monthly_payment,
 )
 from app.utils.dates import has_settled_by, months_between
-from app.utils.money import accrue_monthly_interest, round_money
+from app.utils.money import (
+    accrue_monthly_interest,
+    apply_payment_cash,
+    round_money,
+)
 
 ZERO_MONEY = Decimal("0.00")
 
@@ -395,7 +399,7 @@ def is_confirmed_payment_eligible(
     reproduces this predicate's anchor half STRUCTURALLY instead: it walks
     anchors and payments in one chronological merge, so a payment due at or
     before an anchor is overwritten by that anchor's reset rather than filtered
-    out (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`).  The
+    out (:func:`app.services.loan_ledger.replay_loan_events`).  The
     two are the same ``anchor_date < due_date`` boundary in two forms -- the
     walk's applied at EVERY anchor, this one at the latest only -- which is what
     they must not drift on.
@@ -762,11 +766,29 @@ def _replay_payment_row(
 ) -> AmortizationRow:
     """Apply one scheduled payment and return its row (carrying the new balance).
 
-    Interest accrues on ``balance`` at the period rate; principal is
-    ``period_pi - interest``.  A principal that would overrun the
-    balance is capped so the loan closes exactly at zero.  The returned
-    row's ``remaining_balance`` is the post-payment balance the caller
-    carries forward.
+    Interest accrues on ``balance`` at the period rate
+    (:func:`~app.utils.money.accrue_monthly_interest`); the cash -- here the
+    period's contractual P&I -- is then divided against it by
+    :func:`~app.utils.money.apply_payment_cash`, the ONE allocation.  A
+    principal that would overrun the balance is capped so the loan closes
+    exactly at zero.  The returned row's ``remaining_balance`` is the
+    post-payment balance the caller carries forward.
+
+    **It RESTATED that allocation inline until plan step X-au-g-2c-3a**, and
+    the restatement was forced rather than chosen: the rule lived in
+    ``loan_ledger._split``, which imports this module, so reaching it from here
+    was a cycle.  Moving the rule to :mod:`app.utils.money` -- beside the
+    accrual it is always paired with, and below every walk -- is what let this
+    call it.  Byte-identical, measured over 200,000 randomised trials before
+    the swap.
+
+    No escrow is charged here: this replays the CONTRACTUAL schedule, whose
+    P&I is escrow-free by definition.  ``excess`` is not reported either -- a
+    schedule row has no refund column, and a contractual payment that overruns
+    the balance is the loan closing exactly, which ``payment`` already states.
+
+    ``replay_schedule`` breaks on ``balance <= 0`` before reaching here, so the
+    allocator's closed-loan arm is unreachable from this caller.
 
     Args:
         balance: Outstanding balance before this payment (> 0).
@@ -778,16 +800,11 @@ def _replay_payment_row(
         The :class:`AmortizationRow` for this confirmed payment.
     """
     interest = accrue_monthly_interest(balance, period.annual_rate)
-    principal = period.period_pi - interest
-    if principal >= balance:
-        principal = balance
-        payment = principal + interest
-        new_balance = ZERO_MONEY
-    else:
-        payment = period.period_pi
-        new_balance = round_money(balance - principal)
-        if new_balance < 0:
-            new_balance = ZERO_MONEY
+    # The ONE allocation, not a fourth statement of it -- see the docstring.
+    parts = apply_payment_cash(period.period_pi, balance, interest, ZERO_MONEY)
+    principal = parts.principal
+    payment = principal + interest
+    new_balance = parts.balance_after
     return AmortizationRow(
         month=months_between(origination_date, pay_date),
         payment_date=pay_date,

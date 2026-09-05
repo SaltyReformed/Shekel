@@ -25,6 +25,7 @@ from shekel_checkers import (
     _LEDGER_MODEL_MODULES,
     _KIND_CLASSIFIER_MODULES,
     _LEDGER_MODEL_NAMES,
+    _RECURRING_DEFINITION_MODULES,
     _ROW_VALUATION_MODULES,
     _LOAN_LEDGER_DEFINING_MODULES,
     _LOAN_RESOLVER_ENGINE_MODULES,
@@ -811,6 +812,10 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         * ``_LOAN_PAYMENT_SEAM_MODULES`` (``loan_payment_service``, D3's
           review -- the one reader-allowlisted module outside the defining
           package)
+        * ``_RECURRING_DEFINITION_MODULES`` (``recurring_transfer_query``,
+          R7d-a -- the loan-payment SETTINGS reads moved here off
+          ``loan_payment_service``, and the scope moved with them so a fenced
+          module's contents could not leave the fence by changing address)
         * ``_SEAM_PRIVATE_CONTEXT_MODULES`` (``balance_at._context`` -- the
           one seam-private ruling D3 keeps: ``BalanceContext`` is publicly
           re-exported, so a new public METHOD on it reaches every route with
@@ -836,6 +841,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "app.services.loan_posting_service",
             "app.services.loan_payment_service",
             "app.services.loan_resolver",
+            "app.services.recurring_transfer_query",
             "app.services.balance_at._context",
         ):
             node = self._function_def(
@@ -916,7 +922,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         itself needs a guard: if a package were added to a scope constant but
         not given a ruling (or the reverse), W9909 would silently stop covering
         it -- the fail-open hole one level up. Pins the registry's key set
-        against the five scope constants the D3 residue is built from.  (The
+        against the scope constants the D3 residue is built from.  (The
         LITERAL module-name pin lives in
         :meth:`test_flags_unclassified_export_in_every_hand_scoped_module`,
         so emptying a constant AND its entry together still fails.)
@@ -929,6 +935,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             | _CASH_LEDGER_MODULES
             | _KIND_CLASSIFIER_MODULES
             | _ROW_VALUATION_MODULES
+            | _RECURRING_DEFINITION_MODULES
         )
         assert set(_FENCED_MODULE_RULINGS) == expected
 

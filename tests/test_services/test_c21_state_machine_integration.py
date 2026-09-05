@@ -24,6 +24,7 @@ from app.models.category import Category
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.services import transfer_service
+from app.models.amount_ownership import AmountOwnership
 
 
 UNIQUE_INDEX_NAME = "uq_transactions_transfer_type_active"
@@ -111,32 +112,6 @@ class TestTransferServiceLegalTransitions:
             for s in shadows:
                 assert s.status_id == done_id
 
-    def test_done_to_settled_propagates(self, app, db, transfer_data):
-        """done -> settled is legal."""
-        td = transfer_data
-        with app.app_context():
-            xfer = _create_basic_transfer(td)
-            db.session.commit()
-            done_id = ref_cache.status_id(StatusEnum.DONE)
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
-
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id, status_id=done_id,
-            )
-            db.session.commit()
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id, status_id=settled_id,
-            )
-            db.session.commit()
-
-            db.session.refresh(xfer)
-            assert xfer.status_id == settled_id
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id,
-            ).all()
-            for s in shadows:
-                assert s.status_id == settled_id
-
     def test_done_to_projected_revert_propagates(self, app, db, transfer_data):
         """done -> projected (revert) is legal."""
         td = transfer_data
@@ -182,66 +157,50 @@ class TestTransferServiceIllegalTransitions:
     """update_transfer rejects illegal transitions by raising
     ValidationError.  No partial mutation occurs -- the parent
     transfer's status_id and both shadow rows remain at their
-    pre-call values."""
+    pre-call values.
 
-    def test_projected_to_settled_rejected(self, app, db, transfer_data):
-        """settled is unreachable from projected -- carry-forward
-        contract requires a Done/Received audit row in between."""
+    **Two cases left this class at plan step balance:X-am**, which deleted the
+    terminal ``Settled`` ARCHIVE: ``projected -> settled`` (Projected now
+    reaches every status the enum has) and ``settled -> projected`` (that
+    revert is now LEGAL from every state in both maps, which is the step's own
+    content -- see ``state_machine``'s ``TestNeitherMapHasAnAbsorbingState``).
+    The two below are the transfer map's remaining refusals and they are the
+    two that matter: one is shared with the transaction map, one is the
+    asymmetry the transfer map exists for.
+    """
+
+    def test_projected_to_credit_rejected(self, app, db, transfer_data):
+        """A transfer may never be Credit, whatever its current status.
+
+        The refusal the transfer map exists for: the credit / auto-payback
+        workflow is expense-only, so a Credit transfer would be
+        balance-excluded on BOTH accounts with no compensating payback and
+        would vanish from both projections.  Graded at the SERVICE tier here
+        because the shadows are what make it dangerous -- the parent and both
+        legs move together, so an accepted move is three rows wrong.
+        """
         td = transfer_data
         with app.app_context():
             xfer = _create_basic_transfer(td)
             db.session.commit()
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            original_status_id = xfer.status_id
-            assert original_status_id == projected_id
 
             with pytest.raises(ValidationError) as excinfo:
                 transfer_service.update_transfer(
-                    xfer.id, td["user"].id, status_id=settled_id,
+                    xfer.id, td["user"].id,
+                    status_id=ref_cache.status_id(StatusEnum.CREDIT),
                 )
-            # Service raises before any shadow mutation -- all three
-            # rows should still hold the pre-call status.
             assert "transfer" in str(excinfo.value)
 
             db.session.rollback()
             db.session.refresh(xfer)
             assert xfer.status_id == projected_id
             shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id,
+                transfer_id=xfer.id, is_deleted=False,
             ).all()
-            for s in shadows:
-                assert s.status_id == projected_id
-
-    def test_settled_to_projected_rejected(self, app, db, transfer_data):
-        """settled is terminal -- revert is forbidden."""
-        td = transfer_data
-        with app.app_context():
-            xfer = _create_basic_transfer(td)
-            db.session.commit()
-            done_id = ref_cache.status_id(StatusEnum.DONE)
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
-            # Walk to settled legally first.
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id, status_id=done_id,
-            )
-            db.session.commit()
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id, status_id=settled_id,
-            )
-            db.session.commit()
-
-            with pytest.raises(ValidationError):
-                transfer_service.update_transfer(
-                    xfer.id, td["user"].id, status_id=projected_id,
-                )
-
-            # Roll back the failed transition; the row stays settled.
-            db.session.rollback()
-            db.session.refresh(xfer)
-            assert xfer.status_id == settled_id
+            assert len(shadows) == 2
+            for shadow in shadows:
+                assert shadow.status_id == projected_id
 
     def test_done_to_cancelled_rejected(self, app, db, transfer_data):
         """done -> cancelled would erase the Paid audit trail."""
@@ -317,13 +276,14 @@ class TestPartialUniqueIndexBehaviour:
         projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
         shadow = Transaction(
             account_id=td["account"].id,
+            user_id=td['periods'][0].user_id,
             pay_period_id=td["periods"][0].id,
             scenario_id=td["scenario"].id,
             status_id=projected_id,
             name="Rogue extra shadow",
             category_id=td["categories"]["Rent"].id,
             transaction_type_id=txn_type_id,
-            estimated_amount=Decimal("250.00"),
+            amount_ownership=AmountOwnership.own(Decimal("250.00")),
             transfer_id=xfer.id,
             is_deleted=False,
         )
@@ -403,24 +363,26 @@ class TestPartialUniqueIndexBehaviour:
 
             txn_a = Transaction(
                 account_id=td["account"].id,
+                user_id=td['periods'][0].user_id,
                 pay_period_id=td["periods"][0].id,
                 scenario_id=td["scenario"].id,
                 status_id=projected_id,
                 name="Regular A",
                 category_id=td["categories"]["Rent"].id,
                 transaction_type_id=expense_type_id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 transfer_id=None,
             )
             txn_b = Transaction(
                 account_id=td["account"].id,
+                user_id=td['periods'][0].user_id,
                 pay_period_id=td["periods"][0].id,
                 scenario_id=td["scenario"].id,
                 status_id=projected_id,
                 name="Regular B",
                 category_id=td["categories"]["Rent"].id,
                 transaction_type_id=expense_type_id,
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
                 transfer_id=None,
             )
             db.session.add_all([txn_a, txn_b])

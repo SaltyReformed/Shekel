@@ -47,7 +47,7 @@ decode pair.  What this module reads is what a caller authored.
 that.**  ``Once`` used to be the exception -- it meant "does not recur", so no
 honest cadence existed for it, and it resolved to the same inert value as
 "every paycheck" while four separate guards elsewhere did the real suppressing.
-Plan step R2e-3 deleted it: "does not recur" is ``recurrence_rule_id IS NULL``
+Plan step R2e-3 deleted it: "does not recur" is NO RULE naming the definition,
 on either template kind, which never reaches this module at all.
 
 Pure: no Flask, no ORM, no clock, no database.  Its two inputs are the
@@ -97,6 +97,7 @@ from app.enums import (
 )
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence._bounds import NEVER_ENDS, EndBound
+from app.services.recurrence._closing import Closing
 from app.services.recurrence._frequency import (
     Cadence,
     RecurrenceResolutionError,
@@ -374,12 +375,31 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             in.  The axis today's Monthly and Monthly First patterns differ on.
         shift: Weekend / holiday adjustment for the occurrence date.  Always
             ``NONE`` until plan step R8.
-        end_bound: When the recurrence STOPS -- indefinitely, on a date, or
-            after a count of occurrences.  ONE value with three shapes, so
-            "at most one closing bound"
+        closing: EVERYTHING that stops this definition -- the bound the owner
+            authored, and any stop DERIVED from outside the rule, held as one
+            value that answers for both (:class:`~app.services.recurrence.
+            Closing`, plan step R7d-d).  It was the authored bound alone until
+            that step, which is why a loan payment's derived payoff had to be
+            CACHED into the authored bound's own column to reach the walk at
+            all -- one column holding two facts, ``CLAUDE.md`` rule 14's
+            stored-and-derived case.
+
+            The authored half is still ONE value with three shapes, so "at
+            most one closing bound"
             (``ck_recurrence_rules_single_end_bound``) is a state the type
             cannot express rather than one anything has to check; see
-            :mod:`app.services.recurrence._bounds`.
+            :mod:`app.services.recurrence._bounds`.  The derived half is a
+            separate closed set for the reason that module states -- nothing
+            offers, posts or stores it -- and lives in
+            :mod:`app.services.recurrence._closing`.
+
+            **:func:`resolve` fills the authored half and leaves the derived
+            one empty**, because deciding it means folding a destination's
+            balance and this module is pure.  The composed read door
+            (``recurring_definition.resolved_definition``) is what attaches it.
+            A consumer never has to know which of the two it holds: the walk
+            asks :meth:`~app.services.recurrence.Closing.admits` and the
+            describer words the whole value.
         nominal_day: The day the rule MEANS when *starts_on*'s own month was
             too short to hold it -- April has no 31st, so a day-31 rule first
             occurring there carries ``starts_on = 2026-04-30`` and
@@ -398,7 +418,7 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     starts_on: date
     placement: PeriodPlacementEnum
     shift: BusinessDayShiftEnum
-    end_bound: EndBound
+    closing: Closing
     nominal_day: int | None
 
     def __post_init__(self) -> None:
@@ -880,6 +900,12 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
         starts_on=starts_on,
         placement=spec.placement,
         shift=BusinessDayShiftEnum.NONE,
-        end_bound=spec.end_bound,
+        # The AUTHORED half only: this function is pure, and deciding whether
+        # anything outside the rule stops it means folding a destination's
+        # balance.  The composed door
+        # (:func:`app.services.recurring_definition.resolved_definition`)
+        # replaces this field with the same authored bound beside the derived
+        # stop it resolved, so every consumer reads ONE field either way.
+        closing=Closing(authored=spec.end_bound),
         nominal_day=spec.nominal_day,
     )

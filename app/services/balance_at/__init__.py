@@ -29,8 +29,9 @@ exists** (finding N-95, deleted at plan step X-g4b).
   brokerage and a Property are therefore not four dispatches; they are one
   producer given different facts, which is what ruling R-AD deleted the ladder
   to say.  Every period is answered: a past one reads the balance in force
-  THEN, and a period before the account's FIRST assertion reads that assertion
-  back-projected over the records it already contains (ruling R-I).
+  THEN, and a period before the account's FIRST assertion reads the account's
+  stored OPENING EQUITY plus whatever its records hold by then (plan step
+  X-f3c-2a, ruling R-GX).
 
 The seam does NOT reimplement the growth math.  It loads each account's
 modelled-contribution feed (its investment params, its deductions and the
@@ -83,6 +84,13 @@ kill.
   It is here rather than on the ``cash_ledger`` leaf because its ``ledger``
   column IS a balance-at-T -- the running total just before an assertion reset
   it -- and no screen reaches one except through this door.
+  :func:`cash_outstanding_difference` is the SIXTH (plan step X-f3c-3, ruling
+  **R-FN**): the owner's latest declared balance beside what the account's
+  books produce for that same day -- opening equity plus every posting through
+  it, with no assertion applied -- which is ONE figure per account rather than
+  the per-assertion plug that telescopes.  It is the post-cutover balance
+  function evaluated today, so what it measures is what plan step X-f3c-5's
+  flip will leave unexplained.  See :mod:`._outstanding`.
 * The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
   owed magnitude at a list of FORWARD calendar dates in one resolution pass --
   the shape a long-horizon liability band needs, which neither the period-keyed
@@ -162,18 +170,27 @@ FROM here, not the other way round.  Inside the package the direction is
 {_asset_contributions, _cash_fold}``, ``_kind_correct -> {_asset_fold,
 _inputs}``,
 ``_liability -> _inputs``, ``_secured_debt -> {_loan_figures, _positions,
-_inputs}``, and ``_loan_figures -> _positions -> _plan`` (the figures' payoff is
-the fold to zero, plan step C8d) -- a DAG with ``_fold`` at the producer floor,
+_inputs}``, ``_loan_figures -> _positions -> {_plan, _plan_fold}`` (the figures'
+payoff is the fold to zero, plan step C8d), and ``{_positions, _loan_interest} ->
+_plan_fold -> {_plan, _fold}`` -- the forward model's BUILD and its FOLD, split
+at plan step R16-a when ``_plan`` passed the line ceiling, with the arrow one-way
+because ``_plan`` imports neither -- a DAG with ``_fold`` at the producer floor,
 so no module imports a sibling that imports it back.  Every loan producer also
 imports ``_resolution`` for the read
 pass's ONE whole-loan read; ``_resolution`` imports only ``_context`` among its
 siblings, plus ``_confirmed_view`` for the confirmed seed it threads into every
 resolution (plan step E1d-b); ``_confirmed_view`` imports ``_context`` and
-``_fold``, so that sub-chain is a DAG too.  ``_context`` sits
-BELOW every floor: it imports NONE of its
-siblings at runtime (``_plan``'s ``PlannedPayment`` and ``_resolution``'s
-``ResolvedLoan`` are type-only edges typing the caches the seam FILLS), so the
-arrow stays one-way.
+``_fold``, so that sub-chain is a DAG too.  ``_context`` sits at the
+floor, with ``_fold`` and ``_asset_contributions`` -- the three modules that
+import no sibling at runtime.  ``_plan``'s ``LoanForwardPlan``, ``_resolution``'s
+``ResolvedLoan`` and ``_cash_fold``'s ``AssembledCashFold`` are all type-only
+edges typing the caches the seam FILLS, so the arrow from the fourteen modules
+above stays one-way and the cycle finding N-25 names stays open.
+``_memoize_once`` lives here, and since plan step **X-i4** it is where a read
+pass BINDS the account it values: it takes the ``Account`` rather than a bare
+id and refuses one the pass does not own, before the membership test, so every
+per-account cache on the pass inherits the rule from the only thing that can
+create one.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.  All money
 is :class:`~decimal.Decimal`; ``float`` only at a serialization boundary.
@@ -191,13 +208,16 @@ same ``abs`` convention.  All three classify asset-vs-liability through the one
 ``account_category.is_liability_account`` home.
 """
 
+from ._cash_fold import CashDayFacts, CashDaySeries
 from ._cash_flow import (
     CashAnchorHistory,
     CashAnchorRow,
+    CashOpeningRow,
     cash_anchor_history,
     cash_balance_at,
     cash_balance_map,
     cash_daily_balance_series,
+    cash_daily_facts_series,
     records_balance_at,
 )
 from ._confirmed_view import confirmed_view
@@ -228,6 +248,7 @@ from ._liability import liability_owed_at_dates
 from ._loan_figures import (
     LoanFigures,
     LoanTerms,
+    loan_closing_date,
     loan_figures,
     loan_terms,
 )
@@ -235,6 +256,11 @@ from ._loan_interest import (
     loan_interest_in_year,
     loan_interest_paid_in_year,
     loan_principal_paid_in_year,
+)
+from ._outstanding import (
+    BooksSpan,
+    CashOutstandingDifference,
+    cash_outstanding_difference,
 )
 from ._positions import (
     loan_payoff_date,
@@ -282,8 +308,13 @@ from ._secured_debt import (
 __all__ = [
     "ZERO",
     "BalanceContext",
+    "BooksSpan",
     "CashAnchorHistory",
     "CashAnchorRow",
+    "CashOpeningRow",
+    "CashOutstandingDifference",
+    "CashDayFacts",
+    "CashDaySeries",
     "GridBalanceView",
     "GridColumn",
     "GridRowFlags",
@@ -301,6 +332,8 @@ __all__ = [
     "cash_balance_at",
     "cash_balance_map",
     "cash_daily_balance_series",
+    "cash_daily_facts_series",
+    "cash_outstanding_difference",
     "confirmed_view",
     "debt_schedule_rows",
     "empty_grid_view",
@@ -309,6 +342,7 @@ __all__ = [
     "interest_projection_for_account",
     "investment_growth_since_anchor",
     "liability_owed_at_dates",
+    "loan_closing_date",
     "loan_figures",
     "loan_terms",
     "loan_interest_in_year",

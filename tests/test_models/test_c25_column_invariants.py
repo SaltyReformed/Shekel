@@ -27,6 +27,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
+from tests._test_helpers import bare_expense_template
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +87,6 @@ F_134_RESTORED_COLUMNS = [
     ("salary", "pension_profiles", "name", "'Pension'"),
     ("salary", "pension_profiles", "consecutive_high_years", "4"),
     ("salary", "salary_profiles", "state_code", "'NC'"),
-    ("salary", "salary_profiles", "pay_periods_per_year", "26"),
     ("salary", "salary_profiles", "qualifying_children", "0"),
     ("salary", "salary_profiles", "other_dependents", "0"),
     ("salary", "salary_profiles", "additional_income", "0"),
@@ -275,19 +275,21 @@ def test_server_default_fills_omitted_recurrence_integers(db, seed_user):
         RecurrenceUnitEnum,
     )
 
-    user_id = seed_user["user"].id
     # The cadence columns are stated because plan step R7c-b made them NOT
-    # NULL.  Omitting them would make this INSERT fail on a null before the
-    # server_default under test was ever reached -- which is the same
-    # IntegrityError, from a different cause, on a case whose whole point is
-    # that a storage-tier-only INSERT lands the documented default.
+    # NULL, and the OWNER because plan step R-F6 made a rule belong to exactly
+    # one definition (``ck_recurrence_rules_one_owner``).  Omitting either
+    # would make this INSERT fail before the server_default under test was
+    # ever reached -- the same IntegrityError from a different cause, on a
+    # case whose whole point is that a storage-tier-only INSERT lands the
+    # documented default.
+    owner_id = bare_expense_template(db.session, seed_user).id
     db.session.execute(db.text(
         "INSERT INTO budget.recurrence_rules "
-        "(user_id, unit_id, placement_id, shift_id, starts_on) "
-        "VALUES (:user_id, :unit_id, :placement_id, :shift_id, "
+        "(transaction_template_id, unit_id, placement_id, shift_id, starts_on) "
+        "VALUES (:owner_id, :unit_id, :placement_id, :shift_id, "
         "DATE '2026-01-02')"
     ), {
-        "user_id": user_id,
+        "owner_id": owner_id,
         "unit_id": ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD),
         "placement_id": ref_cache.period_placement_id(
             PeriodPlacementEnum.CONTAINING_DATE,
@@ -299,8 +301,8 @@ def test_server_default_fills_omitted_recurrence_integers(db, seed_user):
     db.session.commit()
     row = db.session.execute(db.text(
         "SELECT interval_n FROM budget.recurrence_rules "
-        "WHERE user_id = :user_id"
-    ), {"user_id": user_id}).one()
+        "WHERE transaction_template_id = :owner_id"
+    ), {"owner_id": owner_id}).one()
     assert row.interval_n == 1
 
 
@@ -319,10 +321,15 @@ def test_transactions_is_override_and_is_deleted_default_to_false(
 
     db.session.execute(db.text(
         "INSERT INTO budget.transactions "
-        "(account_id, pay_period_id, scenario_id, status_id, name, "
+        "(user_id, account_id, pay_period_id, scenario_id, status_id, name, "
         " transaction_type_id, estimated_amount) "
-        "VALUES (:acct, :pp, :sc, :st, :name, :tt, :amt)"
+        "VALUES (:uid, :acct, :pp, :sc, :st, :name, :tt, :amt)"
     ), {
+        # The OWNER, stated because this INSERT bypasses the ORM on purpose
+        # (plan step ``pay_calendar:C13-a``): ``budget.transactions.user_id`` is
+        # NOT NULL and has no server default, exactly like the four ids beside
+        # it, so a storage-tier control has to say it.
+        "uid": seed_periods[0].user_id,
         "acct": seed_user["account"].id,
         "pp": seed_periods[0].id,
         "sc": seed_user["scenario"].id,

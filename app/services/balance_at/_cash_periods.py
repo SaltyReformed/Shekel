@@ -34,22 +34,19 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.models.account import Account
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
-    AmountBasis,
     CashLedgerWalk,
-    live_amounts,
     sum_projected,
 )
 from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
+from ._assertions import CashAnchorCorrection
 from ._cash_fold import (
     AssembledCashFold,
     _CashPlan,
-    _period_balances,
-    assemble,
+    period_balances,
 )
 
 _ZERO_MONEY = Decimal("0.00")
@@ -59,7 +56,7 @@ _ZERO_MONEY = Decimal("0.00")
 class CashPeriodFigures:
     """One pay period's cash column: the balance, the subtotals, the remainders.
 
-    The per-period output of :func:`cash_period_view`, and the grid rows ruling
+    The per-period output of :func:`period_view_of`, and the grid rows ruling
     R-K makes ONE row set grouped two ways.  For every period and every account
     kind, in terms of :attr:`balance` below::
 
@@ -101,8 +98,15 @@ class CashPeriodFigures:
         income: Every row ATTRIBUTED to this period whose type is income --
             settled at its confirmed cash leg, still-projected at its live or
             entries-aware amount.  A magnitude, cent-quantized.
-        expense: The same, for expense rows.  A magnitude (positive), so the
-            column reads ``income`` minus ``expense``.
+        expense: The same, for expense rows, so the column reads ``income``
+            minus ``expense``.  **A magnitude in the ordinary case and NOT a
+            bound**: an expense whose cash leg inverts contributes NEGATIVELY
+            here, which :func:`_budget_legs` derives and
+            ``test_a_row_counts_on_its_TYPE_row_even_when_its_cash_leg_inverts``
+            pins.  A settled envelope whose refunds exceeded its purchases is a
+            second way in since ruling **bank_import:R-II**; the word
+            *(positive)* stood here until plan step ``bank_import:X-gj-2b-3``
+            and contradicted that function 250 lines below it.
         net: ``round_money(income - expense)`` -- rounded ONCE at the boundary
             rather than as the difference of two separately-rounded legs,
             because it is the figure the balance roll-forward has to reconcile
@@ -115,9 +119,19 @@ class CashPeriodFigures:
             row is conditional on screen.
         book_vs_bank: What the user's balance ASSERTIONS booked inside the
             period -- the difference between what the app had recorded and what
-            the bank actually showed, each time they looked.  Excludes the
-            OPENING assertion (see :func:`_assertion_sums`).  ``$0.00`` for a
-            period with no true-up, which is every future period.
+            the bank actually showed, each time they looked.  **EVERY
+            assertion, the account's FIRST included** (see
+            :func:`_assertion_sums`).  ``$0.00`` for a period with no true-up,
+            which is every future period.
+
+            *This said "Excludes the OPENING assertion" until plan step
+            X-f3c-3, and the exclusion had been gone since X-f3c-2a: the fold
+            stopped swallowing the first correction into its own seed when the
+            opening equity became a stored fact, and ``_assertion_sums``
+            stopped taking ``corrections[1:]`` in the same commit.  The
+            function this sentence CITED said so; the sentence citing it did
+            not, so one docstring contradicted the other about which
+            assertions a money figure counts.*
     """
 
     balance: Decimal
@@ -132,7 +146,7 @@ class CashPeriodFigures:
 class CashPeriodView:
     """A whole account's cash columns, and the income basis they were valued on.
 
-    The output of :func:`cash_period_view`.  The override map rides on the
+    The output of :func:`period_view_of`.  The override map rides on the
     result rather than being the caller's ARGUMENT (ruling R-Q): it is what the
     projection was actually computed with, so a consumer that renders the
     individual rows beside the columns -- the budget grid -- prices each row off
@@ -144,28 +158,54 @@ class CashPeriodView:
         columns: ``OrderedDict`` period id -> :class:`CashPeriodFigures`, in the
             order the reported window holds them, which is payday order.
             Every period of the window is present.
-        amount_overrides: The live ``{transaction_id: Decimal}`` map the
-            still-Projected rows were valued through -- recomputed salary income
-            and derived loan debits.  ``{}`` for an account with no plan.
+    **It carried an ``amount_overrides`` map until plan step X-au-d, and
+    NOTHING EVER READ IT.**  The field was added so a grid cell and the balance
+    row beside it would fold one map (ruling **R-Q**); the grid was routed
+    through ``cash_ledger.display_amounts_by_id`` instead at plan step
+    X-au-c2b, and this copy was carried through :class:`._grid.GridBalanceView`
+    to no consumer -- an AST and grep census over ``app/``, ``app/templates``
+    and ``app/static`` found zero reads.  A test asserting its contents said
+    "the grid reads ``view.amount_overrides.get(...)`` per row", which had been
+    false since that step.  The cutovers then emptied the map itself: a derived
+    row stores no figure, so there is nothing for an override to supersede.
+    Both the field and the producer behind it go here.
     """
 
     columns: "OrderedDict[int, CashPeriodFigures]"
-    amount_overrides: "dict[int, Decimal]"
 
 
-def cash_period_view(
-    account: Account,
-    basis: AmountBasis,
-    as_of: date,
-    window: PeriodWindow,
+def period_view_of(
+    folded: AssembledCashFold, window: PeriodWindow,
 ) -> CashPeriodView:
     """Return the account's cash column for each period of *window* -- ruling R-K.
 
     ONE valued row set, grouped on TWO clocks, plus the assertion steps.  The
-    same walk and the same plan :func:`~._cash_fold.fold_cash_balances` folds
+    same walk and the same plan :func:`~._cash_fold.balances_at` folds
     are grouped here a second way -- by the pay period each row was BUDGETED to
     -- so the grid's balance row and its subtotal rows stop being two producers
     that a test has to keep in step and become two readings of one set.
+
+    **It takes an ALREADY-assembled fold**, split from its assembly at plan step
+    X-g2a so a reader that needs the cash columns AND something else off the
+    same account pays for ONE walk, ONE plan load and ONE valuation rather than
+    two.  The grid is that reader: from plan step X-g2b it renders the modelled
+    balance -- :func:`app.services.balance_at._asset_fold.resolve` over this very
+    :class:`~._cash_fold.AssembledCashFold` -- beside the budget-clock subtotals
+    this returns, and calling two entry points would have assembled the account
+    twice.  Taking the assembled record rather than the account is what makes
+    that sharing STRUCTURAL: the columns and whatever the caller resolves beside
+    them are readings of one valued row set by construction, not two producers
+    that a test keeps in step.
+
+    **The convenience twin that assembled first is GONE (plan step X-i4).**  A
+    ``cash_period_view(account, basis, as_of, window)`` stood beside this and
+    had no caller in ``app/`` at all -- the grid, its only production reader,
+    already came through here.  It took the account and the pass's own
+    derivations as independent arguments (finding **N-354**), which is the
+    shape X-i4 removes, and keeping a production function alive for test callers
+    alone is what ``CLAUDE.md`` rule 13 forbids.  Its callers now spell
+    ``period_view_of(assembled_fold(account, ctx), window)``, where the pass
+    binds the account it values.
 
     **Why the subtotals had to change basis, measured.**  Today's subtotal counts
     only rows that are still UNPAID (``cash_ledger.sum_projected`` filters through
@@ -188,18 +228,25 @@ def cash_period_view(
     the real account's 130 settled rows; nets to ``$0.00`` across history and
     swings to ``-$2,007.46`` inside one period), and a still-projected row
     ruling R-G clamped forward out of its column.
-    :attr:`~CashPeriodFigures.book_vs_bank` carries the balance ASSERTIONS (51
-    after the opening on the real account, ``-$2,906.31`` net), which are about
-    what the app did not know.  Rejected at the ruling: leaving the subtotals
+    :attr:`~CashPeriodFigures.book_vs_bank` carries EVERY balance ASSERTION
+    (the first one included since plan step X-f3c-2a, where the opening used to
+    be held back because the fold had swallowed its correction into the seed)
+    (``-$2,906.31`` net over the 51 that follow the opening on the real
+    account, measured 2026-08-01), which are about what the app did not know.
+    Rejected at the ruling: leaving the subtotals
     unpaid-only, which turns the remainder into a garbage bucket holding all
     real past activity; shipping no remainder at all, which leaves a visible
     contradiction on the screen; and summing the two, which is what shipped
     until 2026-08-01 and produced a figure with no action attached to it.
 
-    **The OPENING assertion is in neither** (ruling R-I): the fold moves that one
-    correction into its seed -- back-projecting the first assertion over the
-    records it already contains -- so it moves no balance inside any period and
-    must not appear in a period's remainder either.
+    **The OPENING EQUITY is in neither, and since plan step X-f3c-2a the reason
+    is structural rather than an exclusion.**  What an account held before its
+    records begin is the fold's SEED -- a stored
+    ``budget.account_openings`` fact, not a correction -- so it is part of the
+    level every period is measured from and steps no period's balance.  The
+    first ASSERTION does appear here like any other, because it is now an
+    ordinary correction: ``0.00`` where the owner's declaration agrees with the
+    books, and a real movement where it does not.
 
     Kind-blind, exactly as the fold is (ruling R-J): this is the CASH-FLOW view,
     whose balance has to reconcile with the transaction rows rendered beside it.
@@ -207,14 +254,10 @@ def cash_period_view(
     which is the ``+ accrual[p]`` term of R-K's identity.
 
     Args:
-        account: The account to project.  Must be attached to ``db.session``;
-            its kind is not consulted.
-        basis: The read pass's
-            :class:`~app.services.cash_ledger.AmountBasis`, carrying the
-            scenario whose rows are grouped and the derivations they are priced
-            through (plan step X-au-c2b).
-        as_of: The reader's NOW (ruling R-G's clamp floor) -- NOT a valuation
-            date; each period is valued at its own ``end_date``.
+        folded: The account's :class:`~._cash_fold.AssembledCashFold`
+            (:func:`~._cash_fold.assembled_fold`), which carries the account's
+            walk, its plan and the scenario and pricing basis both were loaded
+            under.  The account's kind is not consulted.
         window: The pay periods to report, as a slice of the owner's ONE
             derived calendar
             (:meth:`~app.services.balance_at.BalanceContext.reported_periods`).
@@ -228,49 +271,16 @@ def cash_period_view(
     Returns:
         The :class:`CashPeriodView`: one :class:`CashPeriodFigures` per period
         of *window* (a period with no rows and no assertions reports zeros
-        against its folded balance), plus the live override map the projection
-        was computed with.
-    """
-    return period_view_of(assemble(account, basis, as_of), window)
-
-
-def period_view_of(
-    folded: AssembledCashFold, window: PeriodWindow,
-) -> CashPeriodView:
-    """Regroup an ALREADY-assembled fold into its per-period columns.
-
-    :func:`cash_period_view`'s body, split from its assembly so a reader that
-    needs the cash columns AND something else off the same account pays for ONE
-    walk, ONE plan load and ONE valuation rather than two (plan step X-g2a).
-    The grid is that reader: from plan step X-g2b it renders the modelled
-    balance -- :func:`app.services.balance_at._asset_fold.resolve` over this very
-    :class:`~._cash_fold.AssembledCashFold` -- beside the budget-clock subtotals
-    this returns, and calling both entry points would have assembled the account
-    twice.
-
-    Taking the assembled record rather than the account is what makes the
-    sharing STRUCTURAL: the columns and whatever the caller resolves beside them
-    are readings of one valued row set by construction, not two producers that a
-    test keeps in step.
-
-    Args:
-        folded: The account's :class:`~._cash_fold.AssembledCashFold`
-            (:func:`~._cash_fold.assemble`).
-        window: The pay periods to report.  See :func:`cash_period_view` for
-            the windowing contract.
-
-    Returns:
-        The :class:`CashPeriodView`.
+        against its folded balance).
     """
     return CashPeriodView(
         columns=_assemble_figures(
             window,
-            _period_balances(folded, window),
+            period_balances(folded, window),
             _budget_legs(folded.walk, folded.plan, window),
             _cash_sums(folded.walk, folded.day_nets, window),
-            _assertion_sums(folded.walk, window),
+            _assertion_sums(folded.corrections, window),
         ),
-        amount_overrides=live_amounts(folded.plan.basis, folded.plan.rows),
     )
 
 
@@ -290,8 +300,10 @@ def _column_for(window: PeriodWindow, day: date) -> "int | None":
     otherwise -- no nearest-period fallback, deliberately.  The FILING rule
     (:meth:`app.services.pay_calendar.PayCalendar.filing_period`) does clamp,
     to the latest period that OPENED on or before the target, which is right
-    for the question it answers (an anchor correction needs a home period, and
-    ``journal_entries.pay_period_id`` is NOT NULL) and wrong for this one: the
+    for the question it answers (every per-period reader must be able to place
+    every ledger entry, which ``journal_entries.pay_period_id``'s ``NOT NULL``
+    EXPRESSES rather than causes -- ruling **pay_calendar:R-PC53**) and wrong
+    for this one: the
     identity these columns satisfy reads a period's balance change as the steps
     inside its OWN span, so a step outside every reported span belongs to no
     column and must not be pulled into the nearest one.  The pay-calendar arc
@@ -372,8 +384,10 @@ def _budget_legs(
         window: The reported periods.
 
     Returns:
-        ``{period_id: (income, expense)}`` -- both magnitudes, UNROUNDED (the
-        caller rounds once at the boundary), and total over the window.
+        ``{period_id: (income, expense)}`` -- SIGNED, UNROUNDED (the caller
+        rounds once at the boundary), and total over the window.  Each is a
+        magnitude in the ordinary case; the paragraph above states the two
+        shapes that invert one.
     """
     income = _zeroed(window)
     expense = _zeroed(window)
@@ -383,8 +397,12 @@ def _budget_legs(
         if fact.is_income:
             income[fact.pay_period_id] += fact.delta
         else:
-            # A settled expense's leg is NEGATIVE (money left), and the expense
-            # row on screen is a magnitude.
+            # A settled expense's leg is NEGATIVE (money left), so negating it
+            # puts the row on screen the right way up.  **Total over both
+            # directions**: a leg that inverted -- a correction below the card
+            # entries, or an envelope its refunds carried below zero (ruling
+            # **bank_import:R-II**) -- comes out as a NEGATIVE expense, which
+            # is the classification this function pins by TYPE.
             expense[fact.pay_period_id] -= fact.delta
     by_period: "dict[int, list[Transaction]]" = defaultdict(list)
     for txn in plan.rows:
@@ -437,33 +455,44 @@ def _cash_sums(
 
 
 def _assertion_sums(
-    walk: CashLedgerWalk, window: PeriodWindow,
+    corrections: "list[CashAnchorCorrection]", window: PeriodWindow,
 ) -> "dict[int, Decimal]":
-    """Return ``{period_id: correction}`` -- what the user's true-ups booked.
+    """Return ``{period_id: correction}`` -- what the user's assertions booked.
 
-    Every assertion correction EXCEPT the opening's, on the civil day it was
-    asserted.  The opening is excluded because ruling R-I moves it into the
-    fold's seed (:func:`~._cash_fold._actual_steps`), where it back-projects
-    over the records it already contains rather than stepping the balance on its
-    own day; counting it here would put a jump in a column the balance never
-    took.
+    EVERY assertion correction, on the civil day it was asserted (plan step
+    **X-f3c-2a**).
 
-    The slice is the exact COMPLEMENT of ``_actual_steps``' ``[0]``, and
-    that is why it is a slice rather than a second ``is_opening`` test: two
-    independent predicates could come to disagree about which correction the
-    seed swallowed, while ``[0]`` and ``[1:]`` partition the list by
-    construction.
+    **The opening used to be excluded and the exclusion is GONE with the thing
+    that required it.**  While the fold computed its own seed, the first
+    assertion's correction WAS that seed -- back-projected over the records it
+    already contained and cancelled on its own day (ruling R-I) -- so counting
+    it here would have put a jump in a column the balance never took, and this
+    function took ``corrections[1:]`` as the exact complement of the fold's
+    ``[0]``.  The seed is a stored fact now
+    (:attr:`~app.services.cash_ledger.CashLedgerWalk.opening`), so no correction
+    is swallowed, the two functions partition nothing between them, and the
+    first assertion books what it is: ``0.00`` where the owner's declaration
+    agrees with the books, and a real movement where a BACK-DATED assertion
+    disagrees with the recorded opening -- which belongs in this remainder
+    exactly as any other disagreement does.
+
+    All the corrections are replayed ONCE per fold
+    (:func:`~._assertions.assertion_corrections`) and carried on
+    :class:`~._cash_fold.AssembledCashFold`, which is plan step X-f3c-1's doing:
+    this reader and the fold's step list read one object rather than two replays
+    that could have applied different assertion policies.
 
     Args:
-        walk: The account's walk.  Its ``anchor_corrections`` are chronological
-            and the FIRST is the opening (the leaf's own contract).
+        corrections: The account's assertion corrections, chronological
+            (:attr:`~._cash_fold.AssembledCashFold.corrections`).  All of them
+            are counted; there is no longer a first one to hold back.
         window: The reported periods.
 
     Returns:
         ``{period_id: correction}`` -- signed, UNROUNDED, total over the window.
     """
     asserted = _zeroed(window)
-    for correction in walk.anchor_corrections[1:]:
+    for correction in corrections:
         period_id = _column_for(window, correction.observed_on)
         if period_id is not None:
             asserted[period_id] += correction.delta
@@ -498,7 +527,7 @@ def _assemble_figures(
     Args:
         window: The pay periods to report.
         balances: The fold sampled at every period ``end_date``, keyed by
-            period id (:func:`~._cash_fold._period_balances`).
+            period id (:func:`~._cash_fold.period_balances`).
         legs: The budget-clock ``(income, expense)`` per period.
         moved: The cash-clock net per period.
         asserted: The assertion corrections per period.

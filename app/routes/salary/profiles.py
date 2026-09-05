@@ -31,12 +31,15 @@ from app.services import (
     account_service,
     paycheck_calculator,
     recurrence_engine,
+    salary_profile_service,
     template_amount_service,
 )
-from app.services.pay_calendar import calendar_for
+from app.services import pay_schedule_service
+from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import PayCadence, cadence_for
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.services.generation_schedule import GenerationSchedule
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.payroll_basis import PayrollBasis
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.routes._commit_helpers import (
     DbErrorContext,
@@ -58,6 +61,45 @@ from app.routes.salary._helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _paychecks_per_year() -> "int | None":
+    """Return how many paychecks the owner receives a year, or ``None``.
+
+    **The form's read-only replacement for the ``pay_periods_per_year``
+    dropdown** (plan step R-F16).  The engine divides the annual salary by this
+    number, so the page has to state it or the gross it previews is
+    unexplainable -- but it is not the owner's to choose HERE: it derives from
+    ``budget.pay_schedule.cadence_days``, which the pay-period settings own,
+    and offering a second control was the finding.
+
+    ``None`` for an owner with no resolvable cadence, which the template
+    renders as a pointer to generate a schedule.  Answered rather than raised:
+    a form page must not 500 on the state the form itself is the fix for, and
+    such an owner cannot create a profile either way (``_paycheck_template``
+    needs a payday to seat the recurrence on).
+
+    **Through ``resolve_cadence`` rather than ``cadence_for`` or a whole
+    calendar**, and the two doors beside it are why each is wrong here.
+    :func:`~app.services.pay_calendar.cadence_for` REFUSES the unresolvable
+    owner, which is right for a producer of money and wrong for a form.
+    **Since plan step ``pay_calendar:C4-d`` (ruling R-PC45) so does**
+    :func:`~app.services.pay_calendar.calendar_for` -- this paragraph said it
+    "answers without refusing", which was true of the empty cadence-less
+    calendar that step deleted and is now false of both calendar doors.  It
+    remains the wrong door here for its OTHER stated reason, which the step did
+    not touch: it derives the owner's whole payday set to answer, 61 rows on
+    production, on two pages that load a calendar for nothing else.
+    ``resolve_cadence`` is the SOFT door and is what this form wants -- the one
+    fact both of those read, asked directly, and answered rather than raised.
+
+    Returns:
+        The paycheck count as an ``int``, or ``None``.
+    """
+    cadence_days = pay_schedule_service.resolve_cadence(current_user.id)
+    if cadence_days is None:
+        return None
+    return int(PayCadence(cadence_days=cadence_days).periods_per_year)
+
+
 @salary_bp.route("/salary/new")
 @login_required
 @require_owner
@@ -71,6 +113,7 @@ def new_profile():
         raise_types=[],
         deduction_timings=[],
         calc_methods=[],
+        paychecks_per_year=_paychecks_per_year(),
         now_year=date.today().year,
     )
 
@@ -108,7 +151,7 @@ def _salary_category(user_id: int) -> Category:
 
 
 def _paycheck_template(
-    data: dict, *, account_id: int, category_id: int,
+    data: dict, *, account_id: int, category_id: int, calendar,
 ) -> TransactionTemplate:
     """Create and flush the every-paycheck template a salary profile files through.
 
@@ -122,39 +165,59 @@ def _paycheck_template(
     salary profile fans its paychecks across every pay period the owner has,
     closed ones included.  Plan ledger row **D34** carries whether it should.
 
+    **The per-paycheck amount is the annual salary over the OWNER's paycheck
+    count** (plan step R-F16).  It read a ``pay_periods_per_year`` off the
+    submitted payload until then -- a second answer to a question the calendar
+    this function already loads had already answered, and one that could
+    disagree with it.  The docstring above is why there was never a second
+    answer to give: a salary profile's paycheck recurs every pay period by
+    definition, so the count of paychecks in a year IS the count of pay
+    periods in a year.
+
+    **The calendar is TAKEN rather than derived here** (pay-calendar plan step
+    C2-f3c).  ``create_profile`` derives one anyway for the paycheck it then
+    prices, so deriving a second one inside this helper made one POST answer
+    "what is this owner's schedule" twice from two reads that a concurrent
+    write could separate.
+
     Args:
-        data: The validated create payload; read for the name, the annual
-            salary and the pay-period count.
+        data: The validated create payload; read for the name and the annual
+            salary.
         account_id: The non-loan deposit account the paychecks land in.
         category_id: This owner's ``Income: Salary`` category.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
+            read for the schedule's opening payday and for the paycheck count
+            the annual salary is divided by.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
         carrying an id the profile can link.
     """
-    calendar = calendar_for(current_user.id)
-    rule = author_rule(
+    template = TransactionTemplate(
+        user_id=current_user.id,
+        account_id=account_id,
+        category_id=category_id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+        name=data["name"],
+        default_amount=calendar.cadence.annual_to_per_paycheck(
+            data["annual_salary"],
+        ),
+        is_active=True,
+    )
+    db.session.add(template)
+    db.session.flush()
+    # **The paycheck cadence is authored ONTO the template** (plan step R-F6):
+    # the rule carries its owner's FK, so the definition has to exist first.
+    # The order reversed here; the cadence itself is unchanged.
+    author_rule(
         RecurrenceSpec(
             user_id=current_user.id,
             unit=RecurrenceUnitEnum.PERIOD,
             starts_on=calendar.opening_bound(),
         ),
         calendar,
+        template,
     )
-    template = TransactionTemplate(
-        user_id=current_user.id,
-        account_id=account_id,
-        category_id=category_id,
-        recurrence_rule_id=rule.id,
-        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-        name=data["name"],
-        default_amount=(
-            data["annual_salary"] / data.get("pay_periods_per_year", 26)
-        ),
-        is_active=True,
-    )
-    db.session.add(template)
-    db.session.flush()
     return template
 
 
@@ -170,9 +233,12 @@ def create_profile():
 
     data = _create_schema.load(request.form)
 
-    # Get baseline scenario
-    scenario = get_baseline_scenario(current_user.id)
-    if not scenario:
+    # ONE read pass for the whole POST (plan step R7d-c-1): the baseline
+    # scenario this branch refuses on, the owner's schedule every step below
+    # reads, and the pass the generate runs in are one value rather than three
+    # lookups that have to agree.
+    ctx = BalanceContext.build(current_user.id)
+    if ctx.scenario is None:
         flash(Markup(
             "No baseline scenario found. Please "
             '<a href="/register" class="alert-link">register a new account</a> '
@@ -209,23 +275,28 @@ def create_profile():
     # session (PendingRollbackError) rather than yield the id.
     user_id = current_user.id
 
+    # The template's opening bound and per-paycheck amount, the generate pass,
+    # and the net-pay recompute below all read the pass's own derivation of it
+    # (pay-calendar plan step C2-f3c; plan step R7d-c-1 moved it onto the pass).
+    calendar = ctx.calendar()
+
     try:
         template = _paycheck_template(
             data,
             account_id=account.id,
             category_id=salary_category.id,
+            calendar=calendar,
         )
 
         # Create the salary profile
         profile = SalaryProfile(
             user_id=current_user.id,
-            scenario_id=scenario.id,
+            scenario_id=ctx.scenario_id,
             template_id=template.id,
             filing_status_id=data["filing_status_id"],
             name=data["name"],
             annual_salary=data["annual_salary"],
             state_code=data["state_code"],
-            pay_periods_per_year=data.get("pay_periods_per_year", 26),
             qualifying_children=data.get("qualifying_children", 0),
             other_dependents=data.get("other_dependents", 0),
             additional_income=data.get("additional_income", 0),
@@ -236,21 +307,20 @@ def create_profile():
         db.session.flush()
 
         # Generate income transactions via recurrence engine.  The schedule
-        # is the OWNER's whole one, which is also what the paycheck
-        # calculator reads as ``all_periods`` (plan step R4b-1).
-        schedule = GenerationSchedule.for_user(current_user.id)
-        # The DERIVED half of that one schedule (pay-calendar plan step
-        # C2-f2d-3), which ``GenerationSchedule.__post_init__`` proves is the
-        # same periods in the same order as its ORM half -- so this is not a
-        # second read of the owner's paydays.
-        periods = schedule.calendar.saved()
-        recurrence_engine.generate_for_template(template, schedule, scenario.id)
+        # is the OWNER's whole one, off the same calendar the paycheck engine
+        # prices against (plan step R4b-1).  ONE derivation answers both
+        # (pay-calendar plan steps C2-f2d-3, C2-f3c).
+        schedule = GenerationSchedule.for_pass(ctx)
+        periods = calendar.saved()
+        recurrence_engine.generate_for_template(
+            template, schedule, ctx.scenario_id,
+        )
 
         # Update the template's default_amount from gross to net so that
         # any future fallback (e.g. missing tax configs for a period)
         # uses the net amount rather than the gross.
         ref_period = (
-            schedule.calendar.period_containing(date.today())
+            calendar.period_containing(date.today())
             or (periods[0] if periods else None)
         )
         if ref_period:
@@ -260,7 +330,7 @@ def create_profile():
                 current_user.id, profile, ref_period.start_date.year,
             )
             init_breakdown = paycheck_calculator.calculate_paycheck(
-                profile, ref_period, periods, tax_configs
+                PayrollBasis(profile, calendar), ref_period, tax_configs,
             )
             # Through the amount's one write door (plan step X-au-a).  The
             # profile above is already flushed and active, so the door sees a
@@ -327,6 +397,7 @@ def edit_profile(profile_id):
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
         inactive_profiles=inactive_profiles,
+        paychecks_per_year=_paychecks_per_year(),
         now_year=date.today().year,
     )
 
@@ -379,9 +450,14 @@ def update_profile(profile_id):
     # (lazy="joined"), so this touches no DB and stages safely before the
     # guard below picks up the commit.
     if profile.template and "annual_salary" in data:
-        pay_periods = profile.pay_periods_per_year or 26
+        # The owner's paycheck count, off their cadence and from nowhere else
+        # (plan step R-F16).  ``cadence_for`` rather than a whole calendar:
+        # this needs the count and not the paydays.
         template_amount_service.set_amount(
-            profile.template, data["annual_salary"] / pay_periods,
+            profile.template,
+            cadence_for(current_user.id).annual_to_per_paycheck(
+                data["annual_salary"],
+            ),
             effective_on=display_today(),
         )
         if "name" in data:
@@ -436,21 +512,36 @@ def delete_profile(profile_id):
     if profile is None:
         abort(404)
 
+    # **BEFORE the flag, and the ordering IS the fix** (finding **N-261**,
+    # ruled 2026-09-02).  Archiving removes the producer behind amount rule 2,
+    # and since plan step X-au-d the rows it priced hold no figure of their
+    # own -- so they must record what they were last worth here, while this
+    # profile is still what prices them.  ``is_salary_linked_template`` reads
+    # the identity-mapped collection, so a pending ``is_active = False`` is
+    # already visible to it: freezing after the flag would freeze the
+    # ``default_amount`` this exists to avoid.  Measured on the 2026-09-02
+    # production clone: without it the archive re-prices 50 of 59 rows and
+    # moves the projected balance by ``-$9,677.24``.
+    salary_profile_service.archive_profile(profile)
+
     profile.is_active = False
     if profile.template:
         profile.template.is_active = False
         # The template's amount stops being DERIVED the moment the profile is
-        # archived (plan step X-au-a): with no ACTIVE profile the recurrence
-        # engine prices its rows from ``default_amount``
-        # (``recurrence_engine._get_transaction_amount``), so that column
-        # becomes the definition's stated price and the write door opens its
-        # series at it.  Without this the template would satisfy
+        # archived (plan step X-au-a): with no ACTIVE profile its rows are
+        # priced by its own series rather than by the paycheck engine, so that
+        # column becomes the definition's stated price and the write door opens
+        # its series at it.  Without this the template would satisfy
         # ``owns_its_amount`` while holding NO version -- an eligible
         # definition with an empty series, which is the one gap
-        # ``amount_as_of`` reports as ``None`` and which plan step X-au-b's
-        # resolver is specified to REFUSE rather than fall back on.  Found by
-        # adversarial review; measured at 58 rows on production's one salary
-        # template.
+        # ``amount_as_of`` reports as ``None`` and which the amount resolver is
+        # specified to REFUSE rather than fall back on.  Found by adversarial
+        # review; measured at 58 rows on production's one salary template.
+        #
+        # **It no longer decides what the EXISTING rows are worth**, which is
+        # the half N-261 was about: the freeze above has already made every one
+        # of them state its own figure, so this version is what a row generated
+        # from the template AFTER the archive would read.
         template_amount_service.set_amount(
             profile.template, profile.template.default_amount,
             effective_on=display_today(),

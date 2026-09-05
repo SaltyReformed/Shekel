@@ -13,6 +13,11 @@ from decimal import Decimal
 
 import pytest
 
+from app.utils.money import (
+    MONTHS_PER_YEAR,
+    accrue_monthly_interest,
+    round_money,
+)
 from app.services.debt_strategy_service import (
     AccountPayoff,
     DebtAccount,
@@ -779,3 +784,64 @@ class TestResultStructure:
         )
         assert result.total_interest == expected_interest
         assert result.total_paid == expected_paid
+
+
+class TestTheAccrualIsTheSharedPrimitive:
+    """The simulation charges interest through the ONE monthly-accrual primitive.
+
+    Plan step **X-au-g-2c-3c**.  ``_accrue_interest`` was a FIFTH inline
+    spelling of the monthly accrual and it was not the same function as the
+    primitive: it associated ``(balance * rate) / 12`` where
+    :func:`~app.utils.money.accrue_monthly_interest` associates
+    ``balance * (rate / 12)``.  Finding **D52** recorded the duplicate under the
+    evidence *"the two orderings agree on 200,000 randomised draws"*; that
+    sentence is refuted by the pinned case below.
+
+    The divergent input is pinned rather than swept.  A random sweep that
+    happened to miss it would report agreement and read exactly like proof of
+    it.
+    """
+
+    # Measured 2026-09-02 over 500,000 randomised draws: the ONE input where
+    # the two associations part.  (b*r)/12 -> 565.37;  b*(r/12) -> 565.36.
+    DIVERGENT_BALANCE = Decimal("271375.20")
+    DIVERGENT_RATE = Decimal("0.025")
+
+    def test_the_two_associations_really_do_differ_on_the_pinned_case(self):
+        """The premise, asserted rather than assumed.
+
+        Without this, the test below would pass on inputs where the two
+        spellings agree and prove nothing about which one is in use.
+        """
+        retired_spelling = round_money(
+            self.DIVERGENT_BALANCE * self.DIVERGENT_RATE / MONTHS_PER_YEAR,
+        )
+        assert retired_spelling == Decimal("565.37")
+        assert accrue_monthly_interest(
+            self.DIVERGENT_BALANCE, self.DIVERGENT_RATE,
+        ) == Decimal("565.36")
+        assert retired_spelling != accrue_monthly_interest(
+            self.DIVERGENT_BALANCE, self.DIVERGENT_RATE,
+        )
+
+    def test_the_simulation_charges_the_primitives_figure(self):
+        """One month on the pinned case yields the primitive's cent.
+
+        A single debt, the smallest legal minimum (the door refuses ``0.00``)
+        and no extra, over a one-month horizon: nothing can cascade, and a
+        one-cent payment cannot absorb the cent that separates the two
+        spellings.
+        """
+        result = calculate_strategy(StrategyRequest(
+            [_debt(1, "Pinned", str(self.DIVERGENT_BALANCE),
+                   str(self.DIVERGENT_RATE), "0.01")],
+            Decimal("0.00"),
+            STRATEGY_AVALANCHE,
+            start_date=FIXED_START,
+            max_horizon_months=1,
+        ))
+        assert result.per_account[0].total_interest == Decimal("565.36"), (
+            "the simulation charged the RETIRED spelling's figure -- "
+            "_accrue_interest is no longer routing through "
+            "accrue_monthly_interest"
+        )

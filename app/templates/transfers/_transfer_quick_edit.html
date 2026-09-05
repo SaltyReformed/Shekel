@@ -4,7 +4,7 @@
 
    Expected context: xfer -- a Transfer object.
 
-   Finalised transfers (is_immutable: Paid / Received / Settled /
+   Finalised transfers (is_immutable: Paid / Received /
    Cancelled) lock the amount: the input is disabled (so it neither
    accepts nor submits a value, matching the route guard #26) and a hint
    directs the user to the full-edit popover, where the Status dropdown
@@ -26,6 +26,12 @@
          class="form-control form-control-sm txn-quick-input flex-1-min-0"
          aria-label="Edit amount for {{ xfer.name or 'Transfer' }}"
          {% if locked %}disabled{% else %}autofocus{% endif %}>
+  {# WHAT WE SHOWED (ruling R-JR, plan step X-au-h) -- the transfer popover's
+     twin of this carries the same companion and states the argument in full.
+     This door offers ONLY an amount, so submitting it unchanged is the
+     ordinary way to dismiss it. #}
+  <input type="hidden" name="amount_as_rendered"
+         value="{{ xfer.amount }}">
   <button type="button"
           class="btn btn-sm btn-link p-0 xfer-expand-btn"
           title="More options (F2)"

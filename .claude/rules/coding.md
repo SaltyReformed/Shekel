@@ -10,6 +10,9 @@ The must-knows for code in this project. Full standards, with rationale and
 examples: `docs/coding-standards.md` -- read it when a point here needs depth.
 Several rules are enforced by gates (the per-edit hook, the custom pylint
 checkers, CI); fix what a gate flags at the root, never with a bare disable.
+The `code-reviewer` agent restates these rules deliberately, so a review
+carries them even where this file has not loaded; a change to a rule here
+updates that mirror in the same commit.
 
 ## Python
 
@@ -47,7 +50,7 @@ checkers, CI); fix what a gate flags at the root, never with a bare disable.
 IDs and enums drive logic; `.name` strings are display only. Never compare a
 `.name` against a string literal in Python or Jinja (gate: `shekel-refname-compare`
 in Python; the template hook in Jinja). Enums in `app/enums.py`, cached in
-`app/ref_cache.py`.
+`app/ref_cache/`.
 
 ## HTML / Jinja2
 

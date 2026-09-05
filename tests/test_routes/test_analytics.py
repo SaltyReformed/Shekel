@@ -13,7 +13,7 @@ Tests for the analytics page shell and HTMX tab endpoints:
 
 import json
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from html import unescape
 
@@ -22,10 +22,34 @@ import pytest
 from app import ref_cache
 from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
-from app.services import account_service, pay_period_write
+from app.services import account_service, pay_period_write, status_seam
 
-from tests._test_helpers import default_settle_day, settlement_columns
+from app.utils.dates import display_today
+
+from tests._test_helpers import (
+    rhythm_of,
+    default_settle_day,
+    settle_day_columns,
+    settlement_columns,
+)
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
+from tests._test_helpers import (
+    add_entry,
+    create_envelope_txn,
+    settlement_if_settling,
+)
+from app.routes.analytics_view import (  # pylint: disable=protected-access
+    _bar_pct,
+    _history_note,
+    _size_lens_rows,
+)
+from app.services.spending_report_service import (
+    SeriesPoint,
+    SpendingGroupRow,
+    SpendingItemRow,
+    SpendingWindow,
+)
+from app.models.amount_ownership import AmountOwnership
 
 
 @pytest.fixture(autouse=True)
@@ -76,15 +100,16 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
     txn = Transaction(
         account_id=seed_user["account"].id,
         scenario_id=seed_user["scenario"].id,
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         status_id=paid_status_id,
         transaction_type_id=expense_type_id,
         name=name,
-        estimated_amount=amount,
+        amount_ownership=AmountOwnership.own(amount),
         category_id=cat.id if cat else None,
         # A settled row carries the whole record -- day, figure and basis --
         # through the one door a bare-built fixture uses (plan step X-au-c3).
-        settled_on=seed_periods[0].start_date,
+        **settle_day_columns(seed_periods[0].start_date),
         **settlement_columns(seed_periods[0].start_date, amount),
     )
     db.session.add(txn)
@@ -628,6 +653,160 @@ class TestIncomeStatementTab:
             assert b"2100" in resp.data
 
 
+
+# ── The window comes from the DERIVATION (plan step C2-f3a) ───────
+
+
+class TestTheWindowIsAnsweredByTheDerivation:
+    """The Statements window resolves off ONE pay-calendar derivation.
+
+    This render asked ``budget.pay_periods`` FOUR times before plan step
+    C2-f3a, and every one of the four is a question the derivation answers:
+    which period is current (``pay_period_service.get_current_period`` -- SQL
+    whose ``.first()`` carried no ``ORDER BY``, ledger row **P19**), the whole
+    list for the ``<select>``, the earliest period for the year list, and the
+    chosen period's dates for the heading, that last one issued again inside
+    ``ledger_report_service``.
+
+    **Two of the three cases below FAIL on the merge base**, which is what
+    makes them a regression gate rather than a pin: the retired reader read
+    the STORED span and the PROCESS clock, and each case moves exactly one of
+    those away from what the paydays say.  The third pins that the heading and
+    the ``<option>`` the reader picked it from cannot drift apart, which is
+    ledger row **P47**'s duplicate half made a predicate.
+
+    ``seed_periods`` is ten biweekly periods from 2026-01-02, and this module
+    freezes today to 2026-03-20 -- inside period 5, which runs 2026-03-13
+    through 2026-03-26 because period 6's payday is 2026-03-27.
+    """
+
+    @staticmethod
+    def _selected_option(html):
+        """Return ``(value, label)`` of the window ``<select>``'s selected option."""
+        match = re.search(
+            r'<option value="(\d+)" selected>\s*(.*?)\s*</option>', html,
+        )
+        assert match is not None, "no selected period option in the rendered window"
+        return int(match.group(1)), unescape(match.group(2))
+
+    # **``test_a_doctored_stored_end_date_does_not_move_the_default_window`` was
+    # deleted at plan step ``pay_calendar:C4-c``.**  It rewrote period 5's stored
+    # ``end_date`` to the day before the frozen today and asserted the statement
+    # page still defaulted to period 5 -- the derivation's answer -- where the
+    # retired SQL matched ``start_date <= today <= end_date`` against the
+    # doctored column, found no period covering today, and fell through to the
+    # last one, showing a paycheck three months out with no sign anything was
+    # wrong.
+    #
+    # **It planted a stored ``budget.pay_periods.end_date`` that disagreed with
+    # the owner's paydays, and plan step ``pay_calendar:C4-c`` dropped that
+    # column.**  The plant is not merely unreachable, it is SILENT: assigning to
+    # an attribute the model no longer maps sets a plain Python attribute, writes
+    # no UPDATE, and survives ``expire_all`` -- so the case and its own premise
+    # assertion both went on passing while measuring nothing.  Deleted rather
+    # than left green.
+    #
+    # The two cases that remain in this class grade what outlives the column:
+    # that the default window follows the OWNER's civil day rather than the
+    # container's clock, and that the selected option and the report heading
+    # render one label rule.
+
+    def test_the_default_window_follows_the_OWNERS_day_not_the_containers(
+        self, app, db, auth_client, seed_user, seed_periods, monkeypatch,
+    ):
+        """Midnight UTC on a payday is the PREVIOUS paycheck for the owner.
+
+        Ledger row **P49**: none of the retired reader's call sites passed an
+        ``as_of``, so every "which paycheck am I in" answer was the container's
+        civil day.  Frozen at midnight UTC on 2026-03-27 -- which is 8pm on
+        2026-03-26 in ``America/New_York`` -- the two clocks name DIFFERENT
+        paychecks, because 03-27 is period 6's payday and 03-26 is period 5's
+        last covered day.
+
+        The owner is still in period 5, so that is what the page must default
+        to.  On the merge base ``date.today()`` answered 2026-03-27 and the
+        page opened on period 6.  In the deployed container the two agree --
+        both compose files pin ``TZ: America/New_York`` (the 2026-06-12 parity
+        audit's finding M01) -- so this grades the code rather than the
+        deployment, which is the whole point of the row.
+        """
+        freeze_today(monkeypatch, date(2026, 3, 27), at_time=time.min)
+        # RE-LOGIN under the moved clock.  ``auth_client`` authenticated at the
+        # module freeze (2026-03-20 noon UTC) and the session's idle bound is
+        # measured against the same ``datetime.now`` this freeze moves, so a
+        # seven-day jump logs that session out and the route answers 302.  The
+        # 302 is the session's, not the window's, and it would read exactly
+        # like this case failing.
+        assert auth_client.post("/login", data={
+            "email": "test@shekel.local", "password": "testpass",
+        }).status_code == 302
+        with app.app_context():
+            assert date.today() == date(2026, 3, 27), (
+                "the freeze did not move the PROCESS clock, so this case "
+                "cannot tell the two apart"
+            )
+            assert display_today() == date(2026, 3, 26), (
+                "the freeze did not put the two clocks on different civil "
+                "days, so this case cannot tell them apart"
+            )
+            expected_id = seed_periods[5].id
+            other_id = seed_periods[6].id
+
+            resp = auth_client.get(
+                "/analytics/income-statement",
+                headers={"HX-Request": "true"},
+            )
+
+        assert resp.status_code == 200
+        value, _label = self._selected_option(resp.data.decode())
+        assert value != other_id, (
+            "the page opened on the paycheck the CONTAINER's clock is in"
+        )
+        assert value == expected_id
+
+    def test_the_option_and_the_heading_are_one_label_rule(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """The selected ``<option>`` and the report heading render one string.
+
+        They were two: an inline Jinja expression here and
+        ``ledger_report_service._income_statement._window_label``, both
+        producing ``"Feb 21 - Mar 06, 2026"`` from separate code.  Ledger row
+        **P47** measured six spellings of a period's range and named these two
+        as the same register written twice; plan step C2-f3a put both on
+        ``spending_analysis.window_label``, which the Spending report's third
+        copy also calls now.
+
+        This is a PIN rather than a regression catcher -- the two agreed on the
+        merge base too -- and it is worth pinning because they sit on one
+        screen: the heading is what the ``<option>`` swaps in.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/income-statement",
+                headers={"HX-Request": "true"},
+            )
+
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        _value, label = self._selected_option(html)
+        # The heading renders in ONE of two places: the hero caption when the
+        # window has posted rows, and the empty state's sentence when it has
+        # none.  This fixture's window is genuinely empty -- the seed
+        # Checking's opening is an Equity correction and never reaches the
+        # Income/Expense filter -- so the empty state is the one that renders,
+        # and it carries the same ``report.window_label``.  Both are matched so
+        # the case does not silently stop grading if the fixture gains a row.
+        heading = re.search(
+            r'<div class="nw-hero__cap">(.*?) &middot;', html,
+        ) or re.search(r"No income or expenses in (.*?)\.", html)
+        assert heading is not None, (
+            "neither the statement hero caption nor its empty state rendered, "
+            "so there is no heading to compare the option against"
+        )
+        assert unescape(heading.group(1)) == label
+
+
 # ── Balance Sheet Tab Tests ───────────────────────────────────────
 
 
@@ -1062,12 +1241,13 @@ class TestCalendarMonthView:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Test Income",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("3000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("3000.00")),
                 due_date=date(2026, 1, 5),
             )
             db.session.add(txn)
@@ -1170,7 +1350,6 @@ class TestCalendarYearView:
     def test_calendar_third_paycheck_badge(self, app, auth_client, seed_user, db):
         """Year with 26 periods shows '3rd check' badge."""
         with app.app_context():
-            from app.services import pay_period_service
             from datetime import date
             # The BINDING went with the ``current_anchor_period_id`` line it
             # fed (ruling R-EH); the CALL is fixture setup and stays -- these
@@ -1179,7 +1358,7 @@ class TestCalendarYearView:
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -1240,22 +1419,24 @@ class TestCalendarInlineTotals:
 
             txn_inc = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Test Paycheck",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                estimated_amount=Decimal("2500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
                 due_date=date(2026, 1, 5),
             )
             txn_exp = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Test Rent",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("1200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
                 due_date=date(2026, 1, 5),
             )
             db.session.add_all([txn_inc, txn_exp])
@@ -1281,12 +1462,13 @@ class TestCalendarInlineTotals:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Electric Bill Detail",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
                 due_date=date(2026, 1, 10),
             )
             db.session.add(txn)
@@ -1312,12 +1494,13 @@ class TestCalendarInlineTotals:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Popover Check",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 due_date=date(2026, 1, 15),
             )
             db.session.add(txn)
@@ -1344,12 +1527,13 @@ class TestCalendarInlineTotals:
             # Jan 20 due date, so the clamped attribution lands on the 20th.
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods[1].user_id,
                 pay_period_id=seed_periods[1].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Click Test",
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
                 due_date=date(2026, 1, 20),
             )
             db.session.add(txn)
@@ -1598,12 +1782,13 @@ class TestCalendarFlowStrip:
             for name, txn_type, amount in flows:
                 db.session.add(Transaction(
                     account_id=seed_user["account"].id,
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                     name=name,
                     transaction_type_id=ref_cache.txn_type_id(txn_type),
-                    estimated_amount=amount,
+                    amount_ownership=AmountOwnership.own(amount),
                     due_date=date(2026, 1, 5),
                 ))
             db.session.commit()
@@ -1657,7 +1842,6 @@ def _seed_taxes_profile(seed_user, db):
         scenario_id=seed_user["scenario"].id,
         name="Taxes Tab Profile",
         annual_salary=Decimal("130000.00"),
-        pay_periods_per_year=26,
         filing_status_id=filing_status.id,
         state_code="NC",
         is_active=True,
@@ -1801,7 +1985,6 @@ class TestTaxesTab:
                 scenario_id=seed_user["scenario"].id,
                 name="MFJ Four Kids",
                 annual_salary=Decimal("130000.00"),
-                pay_periods_per_year=26,
                 filing_status_id=filing_status.id,
                 state_code="NC",
                 is_active=True,
@@ -1870,18 +2053,19 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
     txn = Transaction(
         account_id=seed_user["account"].id,
         scenario_id=seed_user["scenario"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         status_id=ref_cache.status_id(StatusEnum.DONE),
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
-        estimated_amount=Decimal(estimated),
+        amount_ownership=AmountOwnership.own(Decimal(estimated)),
         category_id=cat.id if cat else None,
         due_date=due_date,
         # A settled row carries the day its money moved AND the record of what
         # moved -- one fact in three columns (plan steps X-f1 / X-au-c3),
         # resolved through the one door a bare-built fixture uses.  *actual* is
         # a figure a HUMAN typed, which makes the record ``corrected``.
-        settled_on=due_date or period.start_date,
+        **settle_day_columns(due_date or period.start_date),
         **settlement_columns(
             due_date or period.start_date, Decimal(estimated),
             submitted=Decimal(actual) if actual is not None else None,
@@ -2107,3 +2291,306 @@ class TestSpendingTab:
             html = resp.data.decode()
             assert "shekel-scroll-pills" in html
             assert _shell_autoload_target(html) == "/analytics/spending"
+
+
+class TestARefundedCategoryDrawsNoBar:
+    """The By-size lens's geometry when a category's total is NEGATIVE.
+
+    Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``.  A merchant
+    credit files as a NEGATIVE purchase, so a category whose refunds exceeded
+    its purchases comes to a negative total.  ``_totals_by_category`` took an
+    ``abs()`` until that step and this geometry could not see one.
+
+    **What a bar answers is *how much of the budget did this consume*, and the
+    answer for such a row is none.**  Asserted at the SERVER, because the
+    clamp in ``progress_bar.js`` is written as a defence against a malformed
+    value -- a refunded category is not malformed, and a money-shaped decision
+    left to the browser is one no test in this project drives.
+    """
+
+    @staticmethod
+    def _group(name, amount, share):
+        """One singleton group row worth *amount*."""
+        return SpendingGroupRow(
+            group_name=name, amount=Decimal(amount), share=Decimal(share),
+            delta=Decimal("0.00"), is_new=False,
+            items=[SpendingItemRow(
+                category_id=1, item_name=name, amount=Decimal(amount),
+                share=Decimal(share), delta=Decimal("0.00"), is_new=False,
+            )],
+        )
+
+    def test_a_negative_group_gets_a_zero_width_bar(self):
+        """The refunded row, beside an ordinary one that still scales."""
+        rows = _size_lens_rows([
+            self._group("Home", "1200.00", "0.93"),
+            self._group("Amazon", "-86.67", "-0.07"),
+        ])
+
+        assert rows[0]["bar_pct"] == 100.0
+        assert rows[1]["bar_pct"] == 0.0, (
+            "a category whose refunds exceeded its purchases consumed no "
+            "budget, so it draws no bar"
+        )
+        # The FIGURE is untouched: only the geometry is floored.
+        assert rows[1]["amount"] == Decimal("-86.67")
+        assert rows[1]["share"] == Decimal("-0.07")
+
+    def test_a_window_of_only_refunds_draws_no_bars_at_all(self):
+        """Every row negative, so the largest is too and nothing scales.
+
+        The arm ``max_amount <= 0`` covers, which was reachable before this
+        step only for an all-ZERO window.
+        """
+        rows = _size_lens_rows([
+            self._group("Amazon", "-86.67", "0"),
+            self._group("Walmart", "-29.79", "0"),
+        ])
+
+        assert [row["bar_pct"] for row in rows] == [0.0, 0.0]
+
+    def test_an_ordinary_positive_row_still_scales(self):
+        """The control: the floor is on the sign, not on every row."""
+        assert _bar_pct(Decimal("50.00"), Decimal("200.00")) == 25.0
+
+    @staticmethod
+    def _group_of(name, items):
+        """One group row whose amount is the SIGNED sum of its items."""
+        total = sum((Decimal(a) for _, a in items), Decimal("0.00"))
+        return SpendingGroupRow(
+            group_name=name, amount=total, share=Decimal("0"),
+            delta=Decimal("0.00"), is_new=False,
+            items=[
+                SpendingItemRow(
+                    category_id=index, item_name=item_name,
+                    amount=Decimal(amount), share=Decimal("0"),
+                    delta=Decimal("0.00"), is_new=False,
+                )
+                for index, (item_name, amount) in enumerate(items, start=1)
+            ],
+        )
+
+    def test_an_ITEM_bar_cannot_exceed_its_own_track(self):
+        """A mixed-sign group holds an item BIGGER than any group total.
+
+        Plan step ``bank_import:X-gj-2b-3``, found by adversarial financial
+        review.  The denominator was ``max(group.amount ...)``, and every bar
+        was bounded at 100% only because an item could not exceed its group:
+        while every category total was non-negative, ``item <= group <= max``.
+        Ruling **bank_import:R-II** ended that.
+
+        ``Food`` = ``Groceries +600.00`` and ``Restaurants -500.00`` sums to
+        ``+100.00`` while holding a ``+600.00`` item; against ``Housing``'s
+        ``+300.00`` that item rendered **200.0** -- off its own track, and
+        clamped only by ``progress_bar.js``, which is the tier ``_bar_pct``
+        says in as many words a money-shaped decision may not be left to.
+
+        Asserts the BOUND over every rendered bar rather than one number, so a
+        denominator that merely moves the overflow somewhere else still fails.
+        """
+        rows = _size_lens_rows([
+            self._group_of("Food", [
+                ("Groceries", "600.00"), ("Restaurants", "-500.00"),
+            ]),
+            self._group_of("Housing", [("Rent", "300.00")]),
+        ])
+
+        every_bar = [row["bar_pct"] for row in rows] + [
+            item["bar_pct"] for row in rows for item in row["item_rows"]
+        ]
+        assert every_bar, "the case staged no bars, so it graded nothing"
+        assert max(every_bar) <= 100.0, (
+            f"a bar overflowed its track: {every_bar}"
+        )
+        # ...and the largest RENDERED row is what fills it, which is the
+        # contract the docstring states.
+        assert max(every_bar) == 100.0
+
+    def test_a_window_with_no_refunds_scales_exactly_as_before(self):
+        """The control the fix turns on: nothing moves without a refund.
+
+        An item cannot exceed its own group while every category is
+        non-negative, so the maximum over groups and the maximum over
+        everything rendered are the SAME figure -- and this case fails if the
+        denominator were changed in a way that moved an ordinary window.
+        """
+        rows = _size_lens_rows([
+            self._group_of("Food", [
+                ("Groceries", "600.00"), ("Restaurants", "200.00"),
+            ]),
+            self._group_of("Housing", [("Rent", "400.00")]),
+        ])
+        by_name = {row["name"]: row for row in rows}
+
+        # max over groups is Food's 800.00, and no item exceeds it.
+        assert by_name["Food"]["bar_pct"] == 100.0
+        assert by_name["Housing"]["bar_pct"] == 50.0
+        assert [item["bar_pct"] for item in by_name["Food"]["item_rows"]] == [
+            75.0, 25.0,
+        ]
+
+
+class TestTheHeroStatesBOTHBasesWhenTheyDiffer:
+    """The card carried two undisclosed bases the moment a refund landed.
+
+    Developer ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``, found by
+    adversarial design review.  The hero is the NET (``_spent_total``) and
+    every breakdown row's percent is a slice of what MOVED
+    (``_breakdown._share_base``).  Ruling **bank_import:R-II** separated the
+    two: `Groceries $600.00` beside `Electronics -$500.00` gave a hero of
+    `$100.00` over rows reading `55%` and `-45%` -- percentages summing to
+    about 9%, and a row six times its own hero.  The second figure is stated
+    where they differ so a reader can multiply a row by a number on the card.
+    """
+
+    @staticmethod
+    def _settled_envelope(db, seed_user, period, name, category_key, amounts):
+        """Settle an envelope worth exactly the purchases handed to it.
+
+        A negative CATEGORY total cannot come from a negative transaction --
+        ``ck_transactions_estimated_amount`` is ``>= 0`` -- so the refunded
+        shape is an ENVELOPE whose entries net below zero, which is the shape
+        ruling **bank_import:R-II** actually creates.
+        """
+        txn = create_envelope_txn(
+            seed_user, db.session, period, name, Decimal("0.00"),
+        )
+        txn.category_id = seed_user["categories"][category_key].id
+        for amount in amounts:
+            add_entry(
+                db.session, seed_user, txn, Decimal(amount),
+                period.start_date,
+            )
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.DONE),
+            settlement=settlement_if_settling(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            ),
+        )
+        db.session.flush()
+        return txn
+
+    def test_a_refunded_month_states_what_MOVED_beside_the_net(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """`$600.00` out and `$500.00` back: hero `$100.00`, moved `$1,100.00`."""
+        with app.app_context():
+            self._settled_envelope(
+                db, seed_user, seed_periods[0], "Shop", "Groceries",
+                ["600.00"],
+            )
+            self._settled_envelope(
+                db, seed_user, seed_periods[0], "Return", "Rent",
+                ["-500.00"],
+            )
+            db.session.commit()
+
+            html = auth_client.get(
+                "/analytics/spending?year=2026&month=1",
+                headers={"HX-Request": "true"},
+            ).data.decode()
+            said = " ".join(html.split())
+
+            assert "$100.00" in said, "the hero is still the NET"
+            assert "$1,100.00 moved" in said
+            assert "net of refunds above" in said
+
+    def test_an_ORDINARY_month_states_ONE_figure(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """The control: the two bases are the same figure without a refund.
+
+        Printing one number twice would be noise, and this is what makes the
+        second line a disclosure rather than decoration -- it fails if the
+        line were rendered unconditionally.
+        """
+        with app.app_context():
+            self._settled_envelope(
+                db, seed_user, seed_periods[0], "Shop", "Groceries",
+                ["600.00"],
+            )
+            db.session.commit()
+
+            said = " ".join(auth_client.get(
+                "/analytics/spending?year=2026&month=1",
+                headers={"HX-Request": "true"},
+            ).data.decode().split())
+
+            assert "$600.00" in said
+            assert "moved" not in said
+            assert "net of refunds above" not in said
+
+
+class TestTheHistoryNoteAgreesWithTheBarsBesideIt:
+    """The chart's *settled history begins* caption asks *did money MOVE*.
+
+    Plan step ``bank_import:X-gj-2b-3``.  The note exists to explain a LEADING
+    RUN OF EMPTY BARS, and it found the first bar by ``point.total > 0`` on the
+    stated premise that a window's total is non-negative.  Ruling
+    **bank_import:R-II** ended that premise: a month whose refunds exceeded its
+    purchases has a negative total and DRAWS A BAR, so a leading negative month
+    got a caption saying history began a month after the chart's own first bar
+    -- the sentence contradicting the picture it sits under.
+
+    A window with pay periods but no settled spend is ``Decimal("0")`` and is
+    genuinely an empty bar; one before the owner's periods is ``None``.  Both
+    still count as no history, which is what the cases below pin.
+    """
+
+    @staticmethod
+    def _point(year, month, total):
+        """One series bar for *month*, worth *total* (``None`` = pre-history)."""
+        return SeriesPoint(
+            window=SpendingWindow(
+                window_type="month", month=month, year=year,
+            ),
+            total=None if total is None else Decimal(total),
+        )
+
+    def test_a_leading_REFUNDED_month_is_where_history_begins(self):
+        """A negative first bar is history, so there is no note to make.
+
+        Under ``total > 0`` this returned *settled history begins Feb 2026*
+        while January's bar was drawn at ``-50.00`` right beside it.
+        """
+        assert _history_note([
+            self._point(2026, 1, "-50.00"),
+            self._point(2026, 2, "100.00"),
+        ]) is None
+
+    def test_a_leading_EMPTY_month_still_makes_the_note(self):
+        """The control: a zero month really is an empty bar.
+
+        Without this case the class above would pass on a function that never
+        returned a note at all.
+        """
+        assert _history_note([
+            self._point(2026, 1, "0.00"),
+            self._point(2026, 2, "100.00"),
+        ]) == "settled history begins Feb 2026"
+
+    def test_a_leading_PRE_HISTORY_month_still_makes_the_note(self):
+        """``None`` is a window before the owner's pay periods, not a zero."""
+        assert _history_note([
+            self._point(2025, 12, None),
+            self._point(2026, 2, "100.00"),
+        ]) == "settled history begins Feb 2026"
+
+    def test_a_series_that_moved_nothing_makes_no_note(self):
+        """Nothing to date, so nothing is said."""
+        assert _history_note([
+            self._point(2026, 1, "0.00"),
+            self._point(2026, 2, None),
+        ]) is None
+
+    def test_a_REFUNDED_month_after_a_zero_one_dates_the_note_to_itself(self):
+        """The two halves together: zero is not history and negative is.
+
+        January ``0.00`` then February ``-50.00`` -- the note must name
+        February, which is the first bar the chart draws.  Under ``total > 0``
+        this returned ``None`` and the leading empty bar went unexplained.
+        """
+        assert _history_note([
+            self._point(2026, 1, "0.00"),
+            self._point(2026, 2, "-50.00"),
+        ]) == "settled history begins Feb 2026"

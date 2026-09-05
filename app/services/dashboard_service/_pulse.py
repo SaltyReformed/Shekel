@@ -23,6 +23,7 @@ from app.models.user import UserSettings
 from app.services import balance_at, cash_ledger
 from app.services.entry_service import compute_remaining
 from app.utils.money import round_money
+from app.utils.period_projections import SIX_MONTHS
 
 from ._bills import _query_unpaid_expense_rows, txn_to_bill_dict
 from ._section import _DEFAULT_STALENESS_DAYS, DashboardSection
@@ -32,20 +33,33 @@ if TYPE_CHECKING:
     # one since pay-calendar plan step C2-f2e -- the current one, the next
     # one, and every point the chart, the trough and the peak read -- where
     # the current period and the forward set were ``budget.pay_periods`` ORM
-    # rows carrying the two derived columns plan step **C4** drops.  Type-only:
+    # rows carrying the two derived columns plan step **C4-c** dropped.  Type-only:
     # the values arrive from ``balance_ctx.calendar()`` and
     # ``balance_ctx.reported_periods()``, which this module reaches through the
     # section's ``BalanceContext``.
-    from app.services.pay_calendar import DerivedPeriod
+    from app.services.pay_calendar import DerivedPeriod, PayCadence
 
 _ZERO = Decimal("0")
 
 
-# The projected end-balance chart shows the current period plus the next
-# 12 (~6 months at biweekly cadence -- the developer's normal grid
-# timeframe; data-value pass, Gate B amendments).  Fewer points render
-# when fewer periods exist.
-_CHART_HORIZON_PERIODS = 13
+# The span the projected end-balance chart covers, in MONTHS.
+#
+# The developer's normal grid timeframe (data-value pass, Gate B amendments),
+# and `period_projections.SIX_MONTHS` rather than a literal so it is the same
+# span the grid's `6M` button and the mobile Plan tab name.  Fewer points
+# render when fewer periods exist.
+#
+# **It was `_CHART_HORIZON_PERIODS = 13` -- a pay-period COUNT -- until plan
+# step R-F17**, with `dashboard/_pulse.html`'s canvas announcing "the next six
+# months" to every screen reader beside it.  13 periods is six months only at a
+# biweekly cadence: a weekly-paid owner's chart plotted 91 days under that
+# label and a monthly-paid one plotted thirteen months.  Ledger row **F-17**
+# names two surfaces and the developer widened the step to the grid; this one
+# was found by BOTH adversarial reviews re-grepping the row's own predicate
+# rather than the diff, which is the check
+# `feedback_a_closed_row_needs_its_predicate_regrepped` exists for -- the row
+# could not honestly close while it stood.
+_CHART_HORIZON_MONTHS = SIX_MONTHS
 
 # Most rows a single street station shows before collapsing the remainder
 # into a "+N more" line.  Several bills regularly share one due date
@@ -113,13 +127,17 @@ def compute_pulse_section(
     # no grid account, and no period containing today.
     #
     # **The account is checked FIRST and that ORDER is load-bearing.**  Reading
-    # the owner's reported window derives their calendar, which RAISES
-    # ``PayCalendarError`` for an owner whose paydays cannot define one (ledger
-    # row **P35**, a legacy period stored before ``budget.pay_schedule``
-    # existed).  A no-account owner reached no calendar before this step and
-    # must not start reaching one now, so the cheap structural refusal comes
-    # before the derivation -- the opposite of ``/grid``, which derives before
-    # it looks at an account and which P35 records as WIDENED for exactly that.
+    # the owner's reported window derives their calendar, and a no-account
+    # owner reached no calendar before this step; a producer that starts
+    # deriving one for them is how a cheap structural refusal turns into
+    # whatever the derivation decides.  The failure that made the order
+    # URGENT is closed -- ledger row **P35**, a legacy period whose stored span
+    # ``resolve_cadence`` read back as a cadence outside 1..365, which plan
+    # step C4-b-2 made unstorable -- but the ORDER stays, because it is about
+    # not asking a question this owner has no answer for, and that is true
+    # whatever the derivation happens to refuse today.  It is the opposite of
+    # ``/grid``, which derives before it looks at an account and which P35
+    # recorded as WIDENED for exactly that.
     if section is None:
         return None
 
@@ -254,7 +272,13 @@ def compute_pulse_section(
             section, end_balances[current_period.period_id], current_period,
             next_period,
         ),
-        "chart": _chart(forward_periods, end_balances, settings),
+        # The cadence is read behind the ``current_index is None`` return
+        # above, which is the proof the calendar holds paydays and therefore a
+        # readable cadence (plan step R-F17; see ``horizon_offsets``).
+        "chart": _chart(
+            forward_periods, end_balances, settings,
+            balance_ctx.calendar().cadence,
+        ),
         "trough": _trough(
             forward_periods, end_balances, current_period,
         ),
@@ -446,10 +470,12 @@ def _chart(
     forward_periods: "list[DerivedPeriod]",
     end_balances: dict[int, Decimal],
     settings: UserSettings | None,
+    cadence: PayCadence,
 ) -> dict:
     """Build the projected end-balance chart series and threshold line.
 
-    Up to 13 points -- the current period plus the next 12 (fewer when
+    The current period plus however many of the owner's paychecks fall inside
+    :data:`_CHART_HORIZON_MONTHS` (fewer when
     fewer periods exist) -- each ``{end_date, balance}`` from the
     anchor-forward end-balance map.  The first point coincides with the
     hero by construction: both are the current period's entry in the SAME
@@ -467,13 +493,29 @@ def _chart(
             the seam's folded ``cash_balance_map``.
         settings: The user's settings, or ``None`` when the user has no
             settings row.
+        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`,
+            which decides how many of their paychecks the span holds.  Read by
+            the caller only behind its own no-current-period return, which is
+            the proof the calendar carries a cadence at all.
 
     Returns:
         A dict with keys ``points`` (a list of ``{end_date, balance}``
         dicts) and ``low_balance_threshold`` (``Decimal``, or ``None``
         when ``settings`` is ``None``).
     """
-    chart_periods = forward_periods[:_CHART_HORIZON_PERIODS]
+    # As many POINTS as the owner has paychecks inside the span -- a COUNT
+    # starting at the current period, the same reading the grid's range buttons
+    # and the Plan tab take, NOT the chips' offset (plan step R-F17).  At
+    # biweekly that is 13, exactly the literal it replaces: 13 points span
+    # 13 x 14 = 182 days, so the canvas's "next six months" label is now true
+    # at every cadence rather than only at the developer's.
+    #
+    # The floor of one is the same POLICY `_build_plan_view` states: a chart on
+    # the dashboard must draw something, where a range BUTTON may simply not be
+    # offered.
+    chart_periods = forward_periods[
+        :max(cadence.paychecks_within(_CHART_HORIZON_MONTHS), 1)
+    ]
     points = [
         {"end_date": period.end_date, "balance": end_balances[period.period_id]}
         for period in chart_periods
@@ -695,7 +737,17 @@ def _row_still_due(
     An entry-tracked (envelope) row contributes its entries-aware
     remaining (its resolved BUDGET minus the sum of all recorded
     entries, via :func:`compute_remaining`) floored at zero -- so an
-    over-budget envelope contributes ``0`` rather than a negative.  A
+    over-budget envelope contributes ``0`` rather than a negative.
+
+    **It is floored BELOW and deliberately not above** (developer ruling
+    2026-09-01, plan step ``bank_import:X-gj-2b-3``).  Since ruling
+    **bank_import:R-II** a refund files as a negative purchase, so an
+    envelope's remaining can EXCEED its budget -- `$150.00` still due against a
+    `$100.00` plan, for one holding a `-$50.00` refund and nothing else -- and
+    that figure is what the ruled net basis means: the envelope's plan is
+    `$100.00` of NET spending and `-$50.00` of it has happened.  Capping it at
+    the budget was refused with those numbers, because the dashboard would then
+    disagree with the balance projection beside it.  A
     non-tracked row contributes what the row is WORTH (the obligation the
     bill row already displays; positive for an expense).  Returned
     unrounded; the caller rounds the period sum once at the boundary.
