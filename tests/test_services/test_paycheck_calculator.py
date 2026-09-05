@@ -417,6 +417,93 @@ class TestRaiseOrdering:
         assert apply_raises(Decimal("100000"), [pct, flat], as_of) == expected
 
 
+class TestChronologicalRaiseOrder:
+    """Applications land in DATE order, not grouped by raise.
+
+    Until this rule, ``apply_raises`` sorted the RAISES and then applied
+    each one's whole run of yearly applications before starting the next.
+    A percentage raise therefore multiplied flat dollars that had not
+    arrived yet.  These cases grade the interleaving; the counts are
+    unchanged, so an owner holding only percentage raises is unaffected,
+    which the last case pins.
+    """
+
+    def test_a_percentage_does_not_compound_flat_dollars_that_arrive_later(self):
+        """A recurring flat COLA and a recurring percentage merit interleave yearly.
+
+        base 100,000; flat $1,500 and 4%, both recurring from 2026-01.
+        Each year the flat lands, then the percentage multiplies what is
+        there -- so the percentage never grows a dollar that arrives after
+        it:
+          2026: (100,000 + 1,500) * 1.04 = 105,560.00
+          2027: (105,560 + 1,500) * 1.04 = 111,342.40
+          2028: (111,342.40 + 1,500) * 1.04 = 117,356.10
+
+        The old grouped order added all three $1,500s to the base first
+        and compounded once: 104,500 * 1.04^3 = 117,548.29 at 2028, which
+        credited three years of growth to dollars that had not arrived.
+        """
+        flat = FakeRaise(flat_amount="1500", effective_month=1,
+                         effective_year=2026, is_recurring=True)
+        pct = FakeRaise(percentage="0.04", effective_month=1,
+                        effective_year=2026, is_recurring=True)
+        base = Decimal("100000")
+        assert apply_raises(base, [flat, pct], date(2026, 12, 1)) == Decimal("105560.00")
+        assert apply_raises(base, [flat, pct], date(2027, 12, 1)) == Decimal("111342.40")
+        assert apply_raises(base, [flat, pct], date(2028, 12, 1)) == Decimal("117356.10")
+
+    def test_input_order_still_does_not_change_the_answer(self):
+        """Reversing the input list changes nothing (M-01 determinism preserved).
+
+        The ordering key is the application's date and method, never the
+        row order, so the DB may return these two in either order.  Same
+        2028 value as the case above.
+        """
+        flat = FakeRaise(flat_amount="1500", effective_month=1,
+                         effective_year=2026, is_recurring=True)
+        pct = FakeRaise(percentage="0.04", effective_month=1,
+                        effective_year=2026, is_recurring=True)
+        base = Decimal("100000")
+        assert apply_raises(base, [pct, flat], date(2028, 12, 1)) == Decimal("117356.10")
+
+    def test_a_one_time_raise_lands_on_its_own_date_not_last(self):
+        """A mid-series one-time raise compounds only what preceded it.
+
+        base 100,000; a recurring flat $1,000 from 2026-01 and a ONE-TIME
+        10% on 2027-06.  In date order:
+          2026-01 +1,000 -> 101,000
+          2027-01 +1,000 -> 102,000
+          2027-06 *1.10  -> 112,200
+          2028-01 +1,000 -> 113,200.00
+
+        The old order applied the flat's three additions first and then
+        the 10%, reaching 113,300.00 -- the extra $100 being 10% of a
+        2028 dollar credited in 2027.
+        """
+        flat = FakeRaise(flat_amount="1000", effective_month=1,
+                         effective_year=2026, is_recurring=True)
+        once = FakeRaise(percentage="0.10", effective_month=6,
+                         effective_year=2027, is_recurring=False)
+        result = apply_raises(Decimal("100000"), [flat, once], date(2028, 12, 1))
+        assert result == Decimal("113200.00")
+
+    def test_percentage_only_raises_are_completely_unaffected(self):
+        """Ordering cannot matter when every raise is a percentage.
+
+        Multiplication commutes, so regrouping the applications changes
+        nothing -- which is why this rule moves no money for an owner
+        whose raises are all percentages.  3% from 2026-01 and 2% from
+        2026-07, at 2027-12: both have two applications, and
+        ``100,000 * 1.03^2 * 1.02^2 = 110,376.04``.
+        """
+        merit = FakeRaise(percentage="0.03", effective_month=1,
+                          effective_year=2026, is_recurring=True)
+        cola = FakeRaise(percentage="0.02", effective_month=7,
+                         effective_year=2026, is_recurring=True)
+        result = apply_raises(Decimal("100000"), [merit, cola], date(2027, 12, 1))
+        assert result == Decimal("110376.04")
+
+
 # ── New Tests ────────────────────────────────────────────────────
 
 
