@@ -47,9 +47,10 @@ Deferred or corrected:
 
 ## Background — what the harness is
 
-- Test entrypoint: `scripts/test.sh` → restarts the test-db container, then execs `pytest`.
-  `pytest.ini` sets `addopts = ... --dist=loadgroup -n 12`, so **every** local run fans out across
-  12 pytest-xdist workers.
+- Test entrypoint: `scripts/test.sh` → execs `pytest`; restarts the test-db container first only
+  when `RESTART_TEST_DB` is set to `1`/`true`/`yes`/`on` (opt-in since 2026-09-04; an unrecognised
+  value is refused rather than guessed). `pytest.ini` sets `addopts = ... --dist=loadgroup -n 12`,
+  so **every** local run fans out across 12 pytest-xdist workers.
 - Most tests are pure Python / static config assertions. **Eight classes across six files** touch
   the docker daemon (all gated by `_docker_available()`, all now `@pytest.mark.docker`). Of those:
   - **Three actually spawn containers.**

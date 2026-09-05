@@ -72,6 +72,7 @@ template picks the phrase up and styles it.
 """
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
@@ -81,6 +82,13 @@ from app.services.recurrence._bounds import (
     EndsAfterOccurrences,
     EndsOnDate,
     NeverEnds,
+)
+from app.services.recurrence._closing import (
+    ClosesOn,
+    Closing,
+    DerivedStop,
+    Empty,
+    Indefinite,
 )
 from app.services.recurrence._resolution import ResolvedRecurrence
 from app.utils.dates import month_name, weekday_name
@@ -156,9 +164,29 @@ class RecurrenceDescription:
             template styles it and never assembles it, so the shape of the
             phrase is decided in one place for every cadence including the
             ones nothing authors yet.
-        stops: When the recurrence stops, as ONE finished phrase --
-            ``"until Mar 01, 2027"``, ``"for 12 occurrences"`` -- or ``None``
-            when it runs indefinitely and the cell shows no second line.
+        stops: When the definition stops, as ONE finished phrase --
+            ``"until Mar 01, 2027"``, ``"for 12 occurrences"`` --
+            or ``None`` when nothing stops it and the cell shows no second
+            line.
+
+            **It answers for EVERYTHING that stops the definition since plan
+            step R7d-d, not only for the bound its owner authored.**  A
+            recurring transfer into a loan stops when the debt does, and until
+            that step the only way that fact reached this phrase was a cached
+            copy of the loan's derived payoff written into the authored
+            bound's own column by ten call sites -- so the sentence named
+            whichever value a chokepoint had most recently written.  It now
+            words the whole :class:`~app.services.recurrence.Closing` -- the
+            same value the occurrence walk reads, so the cell and the walk
+            cannot disagree with each other.  Limits stand while the R7d
+            leaves land: generation walks the rule's own bound until plan step
+            R7d-c-2 takes the same door; and the cached ``end_date`` column
+            does not reach this phrase for the ACTIVE loan payment the app
+            bounds (the door reads it as the cache it is, ruling **R-R56**),
+            but it does for an ARCHIVED one, whose column the app wrote while
+            it was active, until R7d-g NULLs it; and a bound an owner authored
+            on the generic create form is read as the cache before the first
+            chokepoint writes it.
 
             **It was two fields, ``until`` and ``after_occurrences``, with a
             ``__post_init__`` refusing the pair, until plan step R7b-3.**  That
@@ -378,8 +406,15 @@ def _never_stops(_bound: NeverEnds) -> None:
     return None
 
 
-def _stops_on_date(bound: EndsOnDate) -> str:
-    """Return ``"until Mar 01, 2027"``.
+def _until(day: date) -> str:
+    """Return ``"until Mar 01, 2027"`` for one date.
+
+    The ONE place this application words a stop date, shared by the AUTHORED
+    date bound (:func:`_stops_on_date`) and by a DERIVED one
+    (:func:`_derived_closes_on`) since plan step R7d-d -- because "the owner
+    said it stops here" and "the loan pays off here" are the same sentence
+    about a different fact, and wording them apart is how two spellings of one
+    phrase start.
 
     The month is named from :func:`app.utils.dates.month_name`, this
     application's one month-name producer, rather than formatted with ``%b``
@@ -389,13 +424,24 @@ def _stops_on_date(bound: EndsOnDate) -> str:
     for a reason unrelated to this step.
 
     Args:
+        day: The last day an occurrence may fall on.
+
+    Returns:
+        The phrase.
+    """
+    return f"until {month_name(day.month, abbr=True)} {day.day:02d}, {day.year}"
+
+
+def _stops_on_date(bound: EndsOnDate) -> str:
+    """Return ``"until Mar 01, 2027"``.
+
+    Args:
         bound: The date shape.
 
     Returns:
         The phrase.
     """
-    day = bound.on
-    return f"until {month_name(day.month, abbr=True)} {day.day:02d}, {day.year}"
+    return _until(bound.on)
 
 
 def _stops_after_count(bound: EndsAfterOccurrences) -> str:
@@ -430,8 +476,8 @@ _STOP_PHRASES: dict[type[EndBound], "Callable[[Any], str | None]"] = {
 }
 
 
-def _stops_phrase(bound: EndBound) -> str | None:
-    """Return the words for when a recurrence stops, or ``None`` for never.
+def _authored_phrase(bound: EndBound) -> str | None:
+    """Return the words for the bound the OWNER authored, or ``None`` for never.
 
     Total over :data:`~app.services.recurrence._bounds.END_BOUND_KINDS` and
     RAISING for a shape it has no wording for, which is the same contract
@@ -447,11 +493,11 @@ def _stops_phrase(bound: EndBound) -> str | None:
     be worded by two branches.
 
     Args:
-        bound: The recurrence's closing bound.
+        bound: The recurrence's authored closing bound.
 
     Returns:
-        The phrase for the cell's second line, or ``None`` when the recurrence
-        is indefinite and there is no second line.
+        The phrase for the cell's second line, or ``None`` when the owner
+        stated no stop and there is no second line.
 
     Raises:
         RecurrenceDescriptionError: When *bound*'s shape has no wording.
@@ -465,6 +511,149 @@ def _stops_phrase(bound: EndBound) -> str | None:
             f"which is money the surface says will keep being spent."
         )
     return phrase(bound)
+
+
+def _derived_never_narrows(
+    _derived: Indefinite, authored: EndBound,
+) -> str | None:
+    """Return the authored phrase unchanged: nothing derived stops this.
+
+    A loan that never pays off within its plan bounds nothing, so the cell
+    says exactly what it said before the definition had a destination worth
+    asking about.
+
+    Takes the shape it will not read, because the three narrowing functions
+    are dispatched over one table and must share a signature.
+
+    Args:
+        authored: The bound the owner stated.
+
+    Returns:
+        The authored phrase, or ``None`` when the owner stated no stop.
+    """
+    return _authored_phrase(authored)
+
+
+def _derived_never_runs(_derived: Empty, _authored: EndBound) -> str:
+    """Return ``"never runs"``: the destination closed before the first firing.
+
+    A loan trued to zero before its payment's first installment falls due.  The
+    definition names occurrences and none of them is ever emitted, so the cell
+    says so rather than naming the window's closing date -- which is earlier
+    than the first occurrence and would read as a stop that had once been a
+    start.
+
+    Both parameters go unread: an empty window covers no date to name, and
+    nothing the owner stated can make the definition run.  They are taken
+    because the three narrowing functions share one dispatch signature.
+
+    Returns:
+        The phrase.
+    """
+    return "never runs"
+
+
+def _derived_closes_on(derived: ClosesOn, authored: EndBound) -> str:
+    """Return the words for a definition two things stop, in one phrase.
+
+    Three branches.  The date arm discriminates on
+    :attr:`~app.services.recurrence.EndBound.end_date`, which every shape
+    answers, so no second table of authored kinds is introduced; the other two
+    delegate to :func:`_authored_phrase`, which is total over
+    :data:`~app.services.recurrence.END_BOUND_KINDS` and FAILS LOUD for a shape
+    it cannot word.  Asking it first is what makes that refusal reachable from
+    here too.
+
+    * **The owner named a date too** -- both are the same kind of statement, so
+      the phrase names the EARLIER of the two.  There is nothing to conjoin:
+      whichever comes first is when the definition stops, and saying both would
+      state one fact twice.
+    * **The owner named no stop at all** -- the derived date is the whole
+      answer.  This is the case every live loan payment is in once plan step
+      R7d-g NULLs the cached column.
+    * **The owner named a stop that is not a date** -- a count, today, and the
+      two are INCOMPARABLE without walking the occurrences: "for 12 of them"
+      and "until the loan clears" cannot be ordered as values.  Both bind, so
+      both are said.  Stating them is exact; picking one would be a guess, and
+      the row's own "Next" column already shows which is biting.
+
+    Args:
+        derived: The derived stop's closing date.
+        authored: The bound the owner stated.
+
+    Returns:
+        The phrase.
+    """
+    # The authored phrase is asked FIRST and unconditionally, so its refusal
+    # fires on every path.  An adversarial review of this step caught the other
+    # order: branching on ``end_date`` before asking meant an authored shape
+    # missing from ``_STOP_PHRASES`` rendered silently through this arm and
+    # raised through the non-derived one -- the same input, two dispositions,
+    # and the arm that stayed quiet is the one with a second stop on it.
+    authored_phrase = _authored_phrase(authored)
+    authored_on = authored.end_date
+    if authored_on is not None:
+        return _until(min(authored_on, derived.on))
+    if authored_phrase is None:
+        return _until(derived.on)
+    return f"{authored_phrase}, or {_until(derived.on)}"
+
+
+#: How a DERIVED stop changes what the cell says, keyed by its shape.
+#:
+#: Total over :data:`~app.services.recurrence._closing.DERIVED_STOP_KINDS` for
+#: the reason :data:`_STOP_PHRASES` is total over the authored set, and with a
+#: sharper consequence.  A missing AUTHORED shape renders a blank second line;
+#: a missing DERIVED shape would -- were this table consulted permissively --
+#: word the owner's bound alone, so a definition its destination has already
+#: stopped would read as a live commitment with a future date beside it.
+#: :func:`_stops_phrase` RAISES instead, which is a 500 rather than a lie.
+#:
+#: Each entry takes its OWN shape plus the authored bound, so the value type is
+#: ``Any`` rather than ``DerivedStop`` -- a table of exact-shape handlers is
+#: contravariant in its argument, the same note :data:`_STOP_PHRASES` carries.
+_DERIVED_PHRASES: dict[
+    type[DerivedStop], "Callable[[Any, EndBound], str | None]",
+] = {
+    Indefinite: _derived_never_narrows,
+    ClosesOn: _derived_closes_on,
+    Empty: _derived_never_runs,
+}
+
+
+def _stops_phrase(closing: Closing) -> str | None:
+    """Return the words for when a definition stops, or ``None`` for never.
+
+    The ONE place the two kinds of stop are worded together (plan step R7d-d).
+    A definition can be stopped by the bound its owner authored and by
+    something outside the rule -- a recurring transfer into a loan stops when
+    the debt does -- and both are real, so the cell answers for both rather
+    than for whichever one a surface happened to read.
+
+    Args:
+        closing: Everything that stops this definition.
+
+    Returns:
+        The phrase for the cell's second line, or ``None`` when nothing stops
+        it and there is no second line.
+
+    Raises:
+        RecurrenceDescriptionError: When either half names a shape this module
+            has no wording for.
+    """
+    if closing.derived is None:
+        return _authored_phrase(closing.authored)
+    narrowed = _DERIVED_PHRASES.get(type(closing.derived))
+    if narrowed is None:
+        raise RecurrenceDescriptionError(
+            f"derived stop {type(closing.derived).__name__!r} has no wording.  "
+            f"Every shape a derived stop can take must have one, and the "
+            f"alternative to raising is worse than a 500: falling back to the "
+            f"owner's own bound would word a definition its destination has "
+            f"already stopped as a live commitment with a future date beside "
+            f"it."
+        )
+    return narrowed(closing.derived, closing.authored)
 
 
 def describe(resolved: ResolvedRecurrence) -> RecurrenceDescription:
@@ -495,7 +684,7 @@ def describe(resolved: ResolvedRecurrence) -> RecurrenceDescription:
     parenthetical = _parenthetical(resolved)
     cadence = stem if parenthetical is None else f"{stem} ({parenthetical})"
     return RecurrenceDescription(
-        cadence=cadence, stops=_stops_phrase(resolved.end_bound),
+        cadence=cadence, stops=_stops_phrase(resolved.closing),
     )
 
 

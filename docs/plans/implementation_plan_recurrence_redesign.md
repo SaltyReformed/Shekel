@@ -410,62 +410,19 @@ because nothing else in `docs/` references it. Its `_plan.py` half is superseded
 on -- Van Loan, 24 projected rows, stamped clone 2026-08-31: unedited `2029-02-22`, rows raised to
 `$900.00` `2028-02-22`, halved to `$265.97` `2030-04-22`. The rows bound the generator.
 
-- [ ] **R7d-h -- a loan gets ONE closing date, past AND future.**
-      *(Id append-only per conventions rule 2; its RANK is before `R7d-d`, which it blocks.)*
+- [x] **R7d-h** `83dd4b8a` -- a loan gets ONE closing date, past AND future: `loan_closing_date`
+      answers the forward crossing while the loan owes and the day it LAST became closed once it
+      does not (**R-R51**, the later of two crossings); `recurrence_end_date` is deleted. Two things
+      later steps still obey: the inverted-window refusal SKIPS an app-derived window (R7d-f
+      finishes that module), and a loan cleared before its first installment now STORES an inverted
+      pair until R7d-g NULLs the column. As built: the commit message and PR #214.
 
-`balance_at.loan_payoff_date` answers HALF its own question: it folds FORWARD from the confirmed
-present seed, so a loan already at zero has no crossing left to date and returns `None` -- which
-does not mean *never*, it means *not my half*. Three consumers each invent a meaning --
-`recurrence_end_date` substitutes the READ CLOCK, `LoanFigures` adds `is_retired`, the equity chart
-and `/savings` drop the loan -- rule 14's derived half broken by a producer refusing half its
-domain, with each coping strategy an epicycle around a walk nobody wrote.
-
-**The date IS derivable today, which is what the step rests on.** `walk_loan_ledger` ->
-`dated_deltas` already produces the dated recorded balance and `balance:X-au-g-2c-3b-2` (`3b7716f8`)
-put both tiers on `replay_loan_events`, so the backward crossing is `plan_payoff_date`'s forward
-rule read the other way. Production clone at head, Van Loan trued to `$0.00`, read `2026-12-25`:
-`payoff_date=None`, `is_retired=True`, recorded balance folds to `<= 0` on **`2026-09-01`** over
-nine dated movements.
-
-`loan_closing_date(account, ctx) -> date | None` -- closed at `as_of`, the day it LAST became
-closed; else the forward crossing; else `None`, which now means only *never*. `recurrence_end_date`
-is then DELETED and `is_retired` stops being a BOUND discriminator (it stays for badging). It
-deletes a defect rather than ruling on one: a retired loan's stop tracked `ctx.as_of`, so the
-admitted set GREW one occurrence per cadence period where the stored column froze, and at `R7d-c-2`
-that writes a past-dated row per pass against a debt that is gone. A loan closed then trued back UP
-has two crossings and the rule takes the LATER, **RULED `R-R51`** (developer, 2026-09-03): taking
-the first stops recurrence across a span the loan genuinely owed, which under-generates.
-
-**Scope.** A NEW producer beside `loan_payoff_date`, not a change to its contract, so the card,
-`/savings` and the equity chart move one at a time; deleting `loan_payoff_date` at its last consumer
-is a LATER `balance` step, not minted here. No migration.
-
-**It DOES move a stored value, and the first draft of this line said it did not.** An adversarial
-review caught it and the state was then reproduced: `sync_recurring_payment_bounds` WRITES the
-derived answer into `recurrence_rules.end_date`, so every retired loan's stored bound changes at the
-next chokepoint -- usually one past date for another, but for a loan cleared BEFORE its first
-installment the stored pair becomes `[2026-07-15, 2026-06-21]` and is inverted PERMANENTLY, where
-the old `ctx.as_of` bound drifted past `starts_on` and healed. The refusal `refuse_inverted_window`
-reads that stored pair whenever a submission omits both bound keys, and the form locks a loan
-payment's start and "Ends" controls but NOT its "Repeats" select -- so the owner was refused on an
-edit still offered to them, with no control that could fix it. The remedy taken is the one the CHECK
-ruling already implies: that door SKIPS a definition whose window the app derives
-(`owns_validity_window`), because a derived empty window is a correct answer and refusing on it
-makes the door the constraint `ck_recurrence_rules_valid_window` declined to be. `R7d-f` moves the
-rest of that module's loan-payment reads off the column.
-
-- [ ] **R7d-d -- the DISPLAY readers take the resolver, through a COMPOSED DOOR.**
-
-`recurring_view` and `describe` stop reading the column, so the Recurring surface's cadence sentence
-and its next date name the derived payoff rather than the last value a chokepoint wrote.
-
-**It reaches as far as the COMPOSED VALUE** (developer, 2026-09-02, over two smaller options): the
-conjunction of the authored bound and the derived stop is a VALUE the walk already reads
-(`ResolvedRecurrence.closing`), not a narrowing each of five surfaces performs, and the answer
-SHAPES move to `recurrence/_closing.py` because `_describe` cannot import `loan_recurrence_sync`
-without a cycle. **BLOCKED on `R7d-h`**, whose absence this step first papered over with a fourth
-shape. Held at `ea61116d` (`feat/r7d-d`, no PR) -- composed value, door and type move built and
-green; the display readers are NOT moved and the step may not tick until they are.
+- [x] **R7d-d** `4a839587` -- the DISPLAY readers took the resolver through a COMPOSED DOOR:
+      `recurring_view` and its route take ONE read pass and read each definition through
+      `recurring_definition`; the resolver takes the resolved rule; `4f40d6de` is ruling **R-R56**
+      (an app-written `end_date` is read as the cache). Later steps obey: R7d-e moves the monthly
+      equivalent off the column; R7d-f owns **N-511** and **N-512**; R7d-g deletes the door's arm
+      with the column. As built: commits `f6ba59f8`..`713c4fce` (PR #240).
 
 - [ ] **R7d-e -- `/obligations` and the emergency-fund baseline take the resolver.**
 
@@ -490,7 +447,14 @@ could invert it no longer store a closing bound. Decide first what repairs the t
 `_sync_loan_cadence` covers -- and note it does the SAME read-and-write-back round trip, inside the
 module this leaf rewrites, so it OUTLIVES the deletion unless named: finding **D50**, re-pointed
 here from `R7d-c` on 2026-08-27. **D35 only HALF closes** (`starts_on` stays derived AND persisted
-under R-R29), so re-point that row rather than ticking it.
+under R-R29), so re-point that row rather than ticking it. **D56 is an OPEN fork**: a
+NULL-every-loan-payment predicate cannot tell an authored bound from the cache, so this step either
+scopes the migration to the rows the sync wrote or rules the erasure intended -- and must DECIDE
+archived loan payments, whose cached columns the composed door still reads as authored (ruling
+**R-R56**). It stops nine of the ten syncs and must NAME whether the tenth (`params.py:190`, kept
+for the opening bound) still overwrites a closing bound authored on the generic create form
+(**N-512**); if none does, the door's arm in `recurring_definition` must be DELETED with the column
+or it reads that owner's word as the cache forever.
 
 - [ ] **R7e -- the recurrence form's three-state fields become ONE typed submission.**
 

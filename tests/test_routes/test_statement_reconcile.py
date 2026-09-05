@@ -1307,7 +1307,8 @@ class TestAVerbWithNoDoorRendersNoControl:
         # incidental**: `rec-verb-shut` is emitted once per shut verb, and
         # TRANSFER is shut on every card (`offers_for` passes TRANSFER_WAITS as
         # a literal), so a second card would make this 2 on its own.  The
-        # assertion two lines up proves the one shut verb is TRANSFER, since
+        # assertion naming "pair a bank line with another of your own
+        # accounts" above proves the one shut verb is TRANSFER, since
         # `waiting_for` renders only on the shut arm.
         assert page.count("rec-verb-shut") == 1, (
             "exactly one verb should render shut on this card (TRANSFER); "

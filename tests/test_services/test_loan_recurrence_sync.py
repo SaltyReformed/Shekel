@@ -28,19 +28,20 @@ import pytest
 from app.exceptions import BaselineMissingError
 from app.services import balance_at, loan_recurrence_sync, template_amount_service
 from app.services.balance_at import BalanceContext
-from app.services.recurrence import resolved_recurrence
-from app.services.loan_recurrence_sync import (
+from app.services.recurrence import (
     EMPTY,
     INDEFINITE,
     ClosesOn,
+    DerivedStop,
     Empty,
     Indefinite,
-    LoanPaymentWindow,
+    resolved_recurrence,
+)
+from app.services.loan_recurrence_sync import (
     loan_payment_window,
 )
 from app.services.loan_payment_service import compute_contractual_pi
 from app.services.loan_loaders import load_loan_params, load_rate_changes
-from app.models.pay_period import PayPeriod
 from app.models.transfer_template import TransferTemplate
 from tests._test_helpers import (
     create_account_of_type,
@@ -55,6 +56,33 @@ from tests._test_helpers import (
     make_transfer_template,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
+
+
+def _window(template, ctx):
+    """Ask the resolver about *template*, the way the composed door does.
+
+    :func:`~app.services.loan_recurrence_sync.loan_payment_window` takes the
+    definition's RESOLVED recurrence since plan step R7d-d rather than
+    resolving the rule itself -- the door resolves it once to build the value
+    and hands that down, so the EMPTY comparison reads the walk's first
+    occurrence and never the stored column.  This is the same two-line
+    composition ``recurring_definition.resolved_definition`` makes, held here
+    so every case below asks the production question in the production shape.
+
+    Args:
+        template: A definition that carries a rule.  One that does not is the
+            door's ``None`` ("does not repeat") and never reaches the resolver;
+            ``test_recurring_definition`` holds that.
+        ctx: The read pass.
+
+    Returns:
+        The resolver's answer.
+    """
+    return loan_payment_window(
+        template,
+        resolved_recurrence(template.recurrence_rule, ctx.calendar()),
+        ctx,
+    )
 
 
 class TestSyncRecurringPaymentBounds:
@@ -458,14 +486,14 @@ class TestOwnsValidityWindow:
             assert loan_recurrence_sync.owns_validity_window(template) is False
 
 
-class TestLoanPaymentWindowShapes:
+class TestTheDerivedStopShapes:
     """The three shapes, as pure values -- no loan, no database, no clock.
 
-    :meth:`~app.services.loan_recurrence_sync.LoanPaymentWindow.admits` is the
+    :meth:`~app.services.recurrence.DerivedStop.admits` is the
     ONE question every shape answers, so every shape is asked it here and the
     boundary is asked on both sides.  A shape whose ``admits`` were left
     unwritten cannot be constructed at all (``@abstractmethod``), which is the
-    half of the contract :class:`TestLoanPaymentWindowIsTotal` pins.
+    half of the contract :class:`TestTheDerivedStopIsTotal` pins.
     """
 
     def test_a_closing_date_admits_its_own_day(self):
@@ -534,7 +562,7 @@ class TestLoanPaymentWindowShapes:
         assert closes_before_it_starts != EMPTY
 
 
-class TestLoanPaymentWindowIsTotal:
+class TestTheDerivedStopIsTotal:
     """A shape that does not answer ``admits`` cannot exist.
 
     The ``@abstractmethod`` is not decoration: the default it refuses -- "a
@@ -545,9 +573,9 @@ class TestLoanPaymentWindowIsTotal:
     """
 
     def test_the_base_type_itself_cannot_be_instantiated(self):
-        """``LoanPaymentWindow()`` is not a window; it is the question."""
+        """``DerivedStop()`` is not a stop; it is the question."""
         with pytest.raises(TypeError):
-            LoanPaymentWindow()  # pylint: disable=abstract-class-instantiated
+            DerivedStop()  # pylint: disable=abstract-class-instantiated
 
     def test_a_shape_omitting_admits_cannot_be_instantiated(self):
         """The fourth-shape trap, sprung deliberately.
@@ -556,7 +584,7 @@ class TestLoanPaymentWindowIsTotal:
         be a ``TypeError`` at construction and never a window that silently
         admits everything.
         """
-        class _HalfWritten(LoanPaymentWindow):
+        class _HalfWritten(DerivedStop):
             """A shape that states no rule for admitting an occurrence."""
 
         with pytest.raises(TypeError):
@@ -581,7 +609,7 @@ class TestLoanPaymentWindowIsTotal:
 #: One instance of each window shape, so immutability is asserted over the
 #: WHOLE set rather than over three hand-written examples.  Held total by
 #: ``TestTheWindowShapesAreValues.test_every_concrete_shape_is_sampled``.
-_WINDOW_SAMPLES: dict[type[LoanPaymentWindow], LoanPaymentWindow] = {
+_WINDOW_SAMPLES: dict[type[DerivedStop], DerivedStop] = {
     ClosesOn: ClosesOn(on=date(2029, 2, 22)),
     Indefinite: INDEFINITE,
     Empty: EMPTY,
@@ -599,14 +627,14 @@ class TestTheWindowShapesAreValues:
         later step adds fails here rather than quietly sitting outside it.
 
         **Scoped to shapes declared in ``app/``, and this file is why.**
-        ``TestLoanPaymentWindowIsTotal`` above declares ``_HalfWritten``
+        ``TestTheDerivedStopIsTotal`` above declares ``_HalfWritten``
         inside a test body, ``__subclasses__()`` is a live interpreter-wide
         registry, and a class object survives until the cyclic collector takes
         it.  Unscoped, this gate fails whenever that test has already run --
         a failure unrelated to the code, which is broken rather than flaky.
         """
         declared_in_app = {
-            kind for kind in LoanPaymentWindow.__subclasses__()
+            kind for kind in DerivedStop.__subclasses__()
             if kind.__module__.startswith("app.")
         }
 
@@ -623,7 +651,7 @@ class TestTheWindowShapesAreValues:
 
         Probed through ``admits``, the one name every shape declares: the base
         makes it ``@abstractmethod``, so a shape without one cannot be built
-        at all (``TestLoanPaymentWindowIsTotal`` holds that), which makes it
+        at all (``TestTheDerivedStopIsTotal`` holds that), which makes it
         each shape's OWN name rather than an arbitrary one.  **One name is the
         whole claim** -- frozen is a property of the CLASS and is
         all-or-nothing, so a shape that refuses one name refuses every name,
@@ -640,11 +668,25 @@ class TestTheWindowShapesAreValues:
             setattr(_WINDOW_SAMPLES[kind], "admits", None)
 
 
-class TestLoanPaymentWindow:
+class TestLoanPaymentWindowResolver:
     """The RESOLVER, against real loans (plan step R7d-b).
 
-    Nothing in ``app/`` reads it at this step, so these tests are the whole of
-    its coverage until plan step R7d-c moves generation over.
+    Its first reader arrived at plan step R7d-d -- the composed door
+    ``recurring_definition.resolved_definition``, which puts this answer on
+    the resolved recurrence's ``Closing`` -- so these are no longer the whole
+    of its coverage; ``test_recurring_definition`` grades what a surface does
+    with the answer, and this grades the answer.
+
+    **Two of the resolver's former refusals moved to the door with that step,
+    and their cases moved with them.**  The resolver now TAKES the resolved
+    recurrence, so a definition with no rule and an owner with no pay periods
+    -- the two states in which there is no resolved value to hand it -- never
+    reach it; the door answers *does not repeat* for both
+    (``test_a_definition_with_no_rule_does_not_repeat`` and
+    ``test_an_owner_with_no_pay_periods_reads_as_not_repeating`` in
+    ``test_recurring_definition``).  The ``rule.starts_on`` fallback the
+    second state used to take here is gone with it, so the stored column is
+    unreachable from the EMPTY comparison by construction.
     """
 
     @pytest.fixture(autouse=True)
@@ -685,7 +727,7 @@ class TestLoanPaymentWindow:
             figures = balance_at.loan_figures(loan, ctx)
             assert figures.payoff_date == date(2028, 7, 1)
 
-            assert loan_payment_window(tpl, ctx) == ClosesOn(
+            assert _window(tpl, ctx) == ClosesOn(
                 on=date(2028, 7, 1),
             )
 
@@ -699,7 +741,8 @@ class TestLoanPaymentWindow:
         column are derived by two different code paths here -- one through
         :attr:`~app.services.balance_at.LoanFigures.closing_date` into an
         ``EndBound``, one through it into a
-        :class:`LoanPaymentWindow` -- so this is the seam where they could
+        :class:`~app.services.recurrence.DerivedStop` -- so this is the seam
+        where they could
         disagree, and R7d-g deletes the writer on the strength of them not
         doing so.
 
@@ -720,7 +763,7 @@ class TestLoanPaymentWindow:
             db.session.refresh(rule)
             assert rule.end_date is not None
 
-            window = loan_payment_window(tpl, self._ctx(seed_user))
+            window = _window(tpl, self._ctx(seed_user))
 
             assert window == ClosesOn(on=rule.end_date)
 
@@ -785,8 +828,8 @@ class TestLoanPaymentWindow:
             )
 
             ctx = self._ctx(seed_user)
-            sweep_window = loan_payment_window(sweep, ctx)
-            payment_window = loan_payment_window(payment, ctx)
+            sweep_window = _window(sweep, ctx)
+            payment_window = _window(payment, ctx)
 
             assert sweep_window == payment_window, (
                 "two recurring transfers into one loan resolved to different "
@@ -823,7 +866,7 @@ class TestLoanPaymentWindow:
             assert figures.payoff_date is None, "precondition: it never clears"
             assert figures.is_retired is False, "precondition: it still owes"
 
-            assert loan_payment_window(tpl, ctx) == INDEFINITE
+            assert _window(tpl, ctx) == INDEFINITE
 
     def test_a_RETIRED_loan_closes_on_the_day_it_BECAME_closed(
         self, app, db, seed_user, seed_periods,
@@ -886,7 +929,7 @@ class TestLoanPaymentWindow:
                 f"zero, got {figures.closing_date}"
             )
 
-            assert loan_payment_window(tpl, ctx) == ClosesOn(
+            assert _window(tpl, ctx) == ClosesOn(
                 on=date(2026, 6, 15),
             )
 
@@ -952,7 +995,7 @@ class TestLoanPaymentWindow:
                 f"got {figures.closing_date}"
             )
 
-            assert loan_payment_window(tpl, ctx) == EMPTY
+            assert _window(tpl, ctx) == EMPTY
 
     def test_a_loan_RETIRING_ON_the_day_it_first_fires_is_NOT_empty(
         self, app, db, seed_user, seed_periods,
@@ -968,10 +1011,13 @@ class TestLoanPaymentWindow:
 
         A window whose ends coincide is not
         empty -- it admits exactly the occurrence on that date, because
-        ``ClosesOn`` is INCLUSIVE for the same reason
-        :meth:`~app.services.recurrence.EndsOnDate.admits` is: the payment due
-        on the closing date is the one that cleared the loan, so an exclusive
-        bound would drop the final installment from every projection.
+        ``ClosesOn`` is INCLUSIVE, and here that is the boundary being pinned
+        rather than a claim about which installment cleared the loan: this
+        loan was cleared by a true-up BEFORE its first installment ever fired,
+        so the 2026-07-01 payment is emphatically not the one that paid it off.
+        The inclusive comparison is what separates a window whose ends coincide
+        from an empty one, and getting it wrong turns a loan's last payment
+        into a loan that never had one.
 
         **This is the case the other two cannot see.** The control's closing
         date is a month past its first occurrence and the EMPTY case's is two
@@ -1010,7 +1056,7 @@ class TestLoanPaymentWindow:
                 "on the boundary it names -- the as-of also falls on this day"
             )
 
-            window = loan_payment_window(tpl, ctx)
+            window = _window(tpl, ctx)
 
             assert window == ClosesOn(on=date(2026, 7, 1))
             assert window.admits(date(2026, 7, 1)) is True
@@ -1078,56 +1124,13 @@ class TestLoanPaymentWindow:
             figures = balance_at.loan_figures(loan, between)
             assert figures.is_retired is True, "precondition: it owes nothing"
 
-            window = loan_payment_window(tpl, between)
+            window = _window(tpl, between)
 
             assert window == ClosesOn(on=figures.closing_date), (
                 "the window was decided against the stored column, so a "
                 "definition with a live occurrence reads as finished"
             )
             assert window.admits(resolved_first) is True
-
-    def test_a_definition_the_app_cannot_RESOLVE_still_answers(
-        self, app, db, seed_user,
-    ):
-        """An owner with NO pay periods gets the conservative answer.
-
-        ``resolved_recurrence`` returns ``None`` for an empty schedule -- the
-        one refusal it swallows, because the Recurring surface renders every
-        definition a user has and a whole page must not 500 for it.  Nothing
-        generates for such an owner either way, so the honest answer is the one
-        that does NOT claim the definition is finished.
-
-        The loan and its definition are built while the ``seed_user``
-        bootstrap period still exists -- the account factory anchors against
-        it -- and the schedule is emptied afterwards, which is the order the
-        state actually arises in.
-        """
-        with app.app_context():
-            loan = create_loan_account(
-                seed_user, db.session, name="No Schedule Loan",
-                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
-                term=24, origination_date=date(2026, 7, 1),
-            )
-            tpl = make_loan_payment_template(
-                db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
-            )
-            db.session.flush()
-            db.session.query(PayPeriod).filter_by(
-                user_id=seed_user["user"].id,
-            ).delete(synchronize_session=False)
-            db.session.flush()
-
-            ctx = self._ctx(seed_user)
-            assert not ctx.calendar().periods, (
-                "precondition: this owner must have no pay periods"
-            )
-
-            window = loan_payment_window(tpl, ctx)
-
-            assert not isinstance(window, Empty), (
-                "an owner whose schedule does not exist yet was told their "
-                "loan payment is finished"
-            )
 
     def test_a_transfer_into_a_NON_loan_has_no_derived_window(
         self, app, db, seed_user, seed_periods,
@@ -1145,7 +1148,7 @@ class TestLoanPaymentWindow:
             tpl = make_transfer_template(db.session, seed_user, savings)
             db.session.commit()
 
-            assert loan_payment_window(tpl, self._ctx(seed_user)) is None
+            assert _window(tpl, self._ctx(seed_user)) is None
 
     def test_an_amortizing_account_without_params_has_no_derived_window(
         self, app, db, seed_user, seed_periods,
@@ -1168,24 +1171,7 @@ class TestLoanPaymentWindow:
             tpl = make_loan_payment_template(db.session, seed_user, acct)
             db.session.commit()
 
-            assert loan_payment_window(tpl, self._ctx(seed_user)) is None
-
-    def test_a_definition_that_does_not_repeat_has_no_derived_window(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """No rule means no occurrences to bound.
-
-        A one-time transfer into a loan is a single dated payment; there is no
-        cadence for a window to narrow, and answering a shape for it would
-        invite a reader to apply one.
-        """
-        with app.app_context():
-            loan = self._current_loan(seed_user, db.session)
-            tpl = make_loan_payment_template(db.session, seed_user, loan)
-            tpl.recurrence_rule = None
-            db.session.commit()
-
-            assert loan_payment_window(tpl, self._ctx(seed_user)) is None
+            assert _window(tpl, self._ctx(seed_user)) is None
 
     def test_a_transaction_template_has_no_derived_window(
         self, app, db, seed_user, seed_periods,
@@ -1201,7 +1187,7 @@ class TestLoanPaymentWindow:
             tpl = make_expense_template(db.session, seed_user)
             db.session.commit()
 
-            assert loan_payment_window(tpl, self._ctx(seed_user)) is None
+            assert _window(tpl, self._ctx(seed_user)) is None
 
     def test_resolving_a_SECOND_definition_on_one_pass_costs_NO_queries(
         self, app, db, seed_user, seed_periods,
@@ -1263,12 +1249,25 @@ class TestLoanPaymentWindow:
                 .all()
             )
             assert len(templates) == 3, "precondition: three definitions"
+            # Resolved OUTSIDE the capture too: since plan step R7d-d the
+            # resolver TAKES the resolved recurrence, so resolving the rule is
+            # the door's cost -- reading the rule's columns and the pass's
+            # memoized calendar -- and not the resolver's.
+            resolved = {
+                t.id: resolved_recurrence(t.recurrence_rule, ctx.calendar())
+                for t in templates
+            }
             # The first resolve warms the pass's loan resolution and payoff.
             first, first_statements = capture_sql_statements(
-                lambda: loan_payment_window(templates[0], ctx),
+                lambda: loan_payment_window(
+                    templates[0], resolved[templates[0].id], ctx,
+                ),
             )
             rest, rest_statements = capture_sql_statements(
-                lambda: [loan_payment_window(t, ctx) for t in templates[1:]],
+                lambda: [
+                    loan_payment_window(t, resolved[t.id], ctx)
+                    for t in templates[1:]
+                ],
             )
 
             assert isinstance(first, ClosesOn)
@@ -1295,7 +1294,7 @@ class TestLoanPaymentWindow:
             db.session.commit()
             staged = db.session.get(TransferTemplate, other_tpl.id)
             other, other_statements = capture_sql_statements(
-                lambda: loan_payment_window(staged, ctx),
+                lambda: _window(staged, ctx),
             )
 
             assert isinstance(other, ClosesOn)
@@ -1326,7 +1325,7 @@ class TestLoanPaymentWindow:
                 as_of=date(2026, 7, 1),
             )
             with pytest.raises(BaselineMissingError):
-                loan_payment_window(tpl, ctx)
+                _window(tpl, ctx)
 
     def test_a_NON_loan_still_resolves_without_a_baseline_scenario(
         self, app, db, seed_user, seed_periods,
@@ -1350,4 +1349,4 @@ class TestLoanPaymentWindow:
                 user_id=seed_user["user"].id, scenario=None,
                 as_of=date(2026, 7, 1),
             )
-            assert loan_payment_window(tpl, ctx) is None
+            assert _window(tpl, ctx) is None

@@ -169,8 +169,9 @@ classes ruling **R-GH** consents to. A rule pass cannot name an act it may not p
 field is not there, and `__post_init__` deletes whole.
 
 Under 2.1 this also stops being a policy question. A disposition row records WHO, so a rule-filed
-skip is representable, labelled, visible on the receipt and undoable in one click -- and the only
-question left is whether the product wants a skip rule, which is section 6's fork.
+skip is representable, labelled, visible on the receipt and undoable in one click. The product does
+want one: ruling **bank_import:R-JZ** (developer, 2026-09-04) ships a skip rule in exactly the shape
+section 6.1 works through, which is why that example is a specification and not an illustration.
 
 ## 3. What the design deletes
 
@@ -254,19 +255,24 @@ vocabulary. It does not buy the key.
 
 ## 6. The forks still owed a ruling
 
-1. **Does a SKIP rule ship?** The design makes one representable; it does not decide that the
-   product wants one. The case for: `docs/design/bank_import_audit.md`'s own verb table says
-   *the owner, once; a rule can skip a signature*. The case against: a skip rule is the only
-   standing answer whose effect is INVISIBLE -- an ADD rule creates a budget row the owner can see,
-   a skip rule creates nothing but an absence from the inbox, while the books-versus-bank difference
-   the hero reports stays exactly where it was. A worked example is in section 6.1.
-2. **Does the trigger in section 5 ship with the container, or is the zombie filter kept?** The
+1. **Does the trigger in section 5 ship with the container, or is the zombie filter kept?** The
    first costs a trigger and a migration; the second keeps `act_still_names_a_row` and gives up the
    key, which is most of the reason to do the work.
-3. **Does `never a purchase` migrate to a refusal flag, or is it re-stated per merchant?** On the
+2. **Does `never a purchase` migrate to a refusal flag, or is it re-stated per merchant?** On the
    measured data (2026-08-19) the developer holds 30 standing rules and the answer is load-bearing
    on the Capital One family; a migration is mechanical, but if those merchants become TRANSFER
    under the card arc the refusal may have no members left.
+
+*Fork 1 was **does a SKIP rule ship**, and it is RULED*: it does, with rule-authored skips shown
+SEPARATELY -- disposition rows carrying `applied_by_rule = true`, rendered under
+*Skipped by your rule* rather than *Skipped*, itemised on the import receipt with the one-click undo
+**R-GG** built, and EXCLUDED from `filed_total`, because a skip names no created subject. That is
+section 6.1's second panel, which stops being a hypothetical and becomes what `X-gl-3` and `X-gl-5`
+build (developer, 2026-09-04, ruling **bank_import:R-JZ**). The case against was recorded and lost
+on its merits: a skip rule is the only standing answer whose effect is INVISIBLE, an absence from
+the inbox while the books-versus-bank difference the hero reports does not move -- and the remedy
+taken is to make that absence VISIBLE on a surface of its own rather than to refuse the rule, so the
+ruling is honoured only where that surface ships with it.*
 
 *Fork 4 was **does this become a new ARC or a `bank_import` container**, and it is RULED*: a
 decomposed container inside `bank_import`, `X-gl`, leaves `X-gl-1..n` (developer, 2026-09-04,
@@ -313,7 +319,8 @@ piece IS, so that this document and the registry cannot describe different work.
 - **The consent.** Section 2.3: two batch types, and `__post_init__` deleted.
 - **The screen.** Section 4: the merchant control rebuilt on the four verbs, the settled tabs'
   authorship split extended to SKIP, and `AddAct` deleted.
-- **The skip rule** (fork 1), if it is ruled in.
+- **The skip rule** (ruling **R-JZ**): the SKIP disposition a merchant rule may state, its
+  *Skipped by your rule* surface, and its exclusion from `filed_total`.
 
 **The container is `bank_import:X-gl`** and its leaves are the pieces above; `docs/plans/steps.md`
 ranks them and this document does not.
