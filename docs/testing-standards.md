@@ -84,8 +84,8 @@ must-knows; a fact lives in one tier and the other tiers point at it.
 
   So what remains is a resource fact rather than a defect, and the instrument is information: the
   wrapper prints any other live pytest it can see, with its worktree, and proceeds.
-  **The cwd is the identity, not the argv** -- every worktree on this host shares one venv, so a
-  peer's command line names the main checkout whatever tree it is testing.
+  **The cwd locates a peer and the argv does not** -- every worktree on this host shares one venv,
+  so a peer's command line names the main checkout whatever tree it is testing.
 - **First-time setup: none, and a migration needs no manual rebuild.** The template is baked into a
   tagged image whose cache key is derived from every input the build reads, and the wrapper
   re-verifies that image on EVERY invocation rather than trusting the tag -- so a stale or damaged

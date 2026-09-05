@@ -255,13 +255,23 @@ fi
 # is live and proceeds.  Nothing to acquire, nothing to release, nothing to go
 # stale, and no run that cannot start because somebody forgot to release.
 #
-# **The CWD is the identity, not the argv.**  Every worktree on this host
+# **The CWD locates a peer; the ARGV does not.**  Every worktree on this host
 # shares ONE venv at the main checkout, so a peer's pytest reads
 # ``/home/josh/projects/Shekel/.venv/bin/pytest`` in its command line whatever
 # tree it is testing.  Reading ``/proc/<pid>/cwd`` was already the doctrine's
 # rule for killing by PID; it is the same rule for naming a peer, and an
 # argv-based version of this block would have named the main checkout for
-# every session on the box.
+# every session on the box -- as one did, misattributing a peer's suite during
+# the session that wrote this.
+#
+# **What cwd CANNOT do is tell two sessions apart inside ONE checkout**, and
+# that case is real rather than theoretical: the shared main checkout is where
+# a release lane runs.  Two such peers print two lines with the same directory.
+# That is a weaker label than it looks and a strong enough one for the job --
+# what this note is FOR is how many suites are competing for the cores, and the
+# PID count answers that whatever the directories say.  Do not upgrade the
+# claim: nothing in ``/proc`` names the session, so a fuller identity would
+# have to come from the sessions themselves.
 #
 # Fails soft in every direction: no ``pgrep``, an unreadable ``/proc`` entry, a
 # process that exits mid-scan -- all just mean a quieter note.  A status
