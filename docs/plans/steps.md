@@ -61,7 +61,7 @@ the coordinator could cite it.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**289 steps, 169 open.** The dependency graph holds 112 edges over 91 rows.
+**290 steps, 170 open.** The dependency graph holds 113 edges over 92 rows.
 
 ## The order
 
@@ -207,6 +207,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-bg | -- | Tell *this occurrence did not happen* apart from *archive this row*, which the transfer delete door conflates into one `is_deleted` flag read off the template link, so a settled instance the owner removes stays restorable by the recurrence conflict chooser with no control between it and the books. Closes **N-386**. | #138 | -- | NOW |
 | balance | X-br-3 | -- | Point the harness at a daemon of its own. ITS FIRST ACT IS THE DEVELOPER'S: `sudo pacman -S docker-rootless-extras`, since `rootlesskit` and `slirp4netns` are absent on this host and no session can install them. Then `DOCKER_HOST` selects it, so per-run containers stop landing on the daemon that runs production. | #139 | -- | NOW |
 | balance | X-br-4 | -- | DELETE the fences the shared postmaster needed: `scripts/suite_slot.sh`, the live-backend probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX` and `TEST_TEMPLATE_DATABASE`, with the catalog-fragmentation section that justified the restart. A private cluster per run has no shared state to coordinate, so each of them guards nothing rather than guards less. Closes **N-457**. | #140 | -- | after #139 / balance:X-br-2 (shipped) / balance:X-br-3 |
+| balance | X-bt | -- | Make ONE producer answer whether a docker daemon is safe to spawn containers on: `test.sh` ASKS it (`docker info`), `conftest.py` matches a PATH ALLOWLIST, neither knows the other, and `CI=false` is truthy in both so it sanctions the production daemon -- `X-br-3` fixed that in one home only. The allowlist is DELETED. Closes **N-461**. | #141 | -- | after #139 / balance:X-br-3 |
 | bank_import | X-gm | -- | Made the grid's bank badge and the Reconcile inbox ONE producer: `inbox_partition` is one Python walk the badge counts and the pass is built from, `to_explain` counts the cards the inbox BUILT rather than summing four lists, and the badge's LINK moved to Reconcile so the figure and the page agree. **27 against 18 -> 18 against 18.** Closed **N-476**. | SHIPPED | `1b722d52` | -- |
 | recurrence | R7d-e | -- | Moved the monthly totals onto the resolver: `obligations_aggregator` reads each definition through the composed door and `has_ended` judges its composed closing, so a RETIRED loan's payment leaves the Recurring totals and the `/savings` floor on the day the loan closed (**R-R57**: R-R45's reading for the derived stop). `$0.00` on dev, `$200.00`/mo both ways in tests. Opened **N-513**, **N-514**. | SHIPPED | `89302ba4` | -- |
 | salary | R14-b | -- | Applied **R-SAL2** to what a payroll deduction's gross is priced from: the contribution tier CONSUMES the engine's per-period breakdown instead of re-deriving it, retiring the second spelling of a deduction's amount. **MOVED `+$452.42`** on two independent bases. Ships an INTERIM tail rule whose two residues are measured (**N-541**). Closed **D45**, **N-532**. | SHIPPED | `e0f0c05f` | -- |

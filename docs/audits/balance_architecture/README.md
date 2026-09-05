@@ -999,11 +999,7 @@ section 4, under their unchanged ids.*
   in its module docstring must not be re-derived. **A later step must obey:**
   the cache key is an OPTIMISATION and verification runs on EVERY invocation,
   so a stale image is refused rather than trusted.
-* [x] **X-br-2** `7c739495` -- the wrapper starts **X-br-1**'s image on an
-  assigned port and exports the admin and template DSNs at it. It cannot `exec`
-  pytest: an exec has no after in which to remove the container, and INT and TERM
-  are trapped with EXIT since Ctrl-C is what strands one. Opt-in behind
-  `TEST_DB_PER_RUN` until **X-br-3**; measured FASTER than the shared cluster.
+* [x] **X-br-2** `7c739495` -- a run gets its own cluster, pytest as a CHILD so there is an after in which to remove it, INT and TERM trapped with EXIT. Opt-in behind `TEST_DB_PER_RUN` until **X-br-3**; measured FASTER than the shared cluster.
 * [ ] **X-br-3** `chore(test): the harness gets a daemon of its own` -- FIRST
   ACT IS THE DEVELOPER'S and no session can do it: `sudo pacman -S
   docker-rootless-extras`, since `docs/test-harness-isolation.md` records
@@ -1015,6 +1011,14 @@ section 4, under their unchanged ids.*
   `TEST_TEMPLATE_DATABASE` and the catalog-fragmentation section all go.
   Closes **N-457**, whose remedy was always deletion. After **X-br-2** AND
   **X-br-3**.
+* [ ] **X-bt** `refactor(test): one producer answers whether a daemon is safe to spawn on` --
+  `scripts/test.sh` ASKS the daemon (`docker info`) while `tests/test_deploy/conftest.py` matches a
+  PATH ALLOWLIST, and the conftest cannot read the wrapper's answer because in every case it exists
+  for there IS no wrapper. **The drift already happened**: both gate `CI` by PRESENCE, `CI=false` is
+  truthy and sanctions the production daemon, and **X-br-3** fixed that in one home while
+  `conftest.py:69` still carries it. Build ONE predicate both reach and DELETE the allowlist; it must
+  separate UNREACHABLE from NOT-ISOLATED (**X-br-3**'s M6) and read `CI` through a vocabulary.
+  **Its rank risk**: on GitHub `docker info` says NOT ROOTLESS, throwing 28 tests onto the `CI` arm.
 * [ ] **X-bg** `feat(transfers): an occurrence that did not happen is not an archive` --
   closes **N-386**, whose row carries the measurement. **The door derives its own
   destructiveness from a link rather than from what the owner said**:
