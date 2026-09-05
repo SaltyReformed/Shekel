@@ -79,7 +79,6 @@ def _feed(paydays, *, employee=None, gross=None):
             else {day: Decimal(str(gross)) for day in paydays}
         ),
         is_payroll_linked=employee is not None,
-        periods_per_year=Decimal("26"),
     )
 
 

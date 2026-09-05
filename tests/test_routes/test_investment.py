@@ -3004,7 +3004,9 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
         answers ZERO before either bound is consulted.
         """
         # pylint: disable=import-outside-toplevel
-        from app.services.investment_projection import _ytd_contributions
+        from app.services.investment_projection._inputs import (
+            _ytd_contributions,
+        )
         assert _ytd_contributions([], None, inclusive=True) == Decimal("0")
         assert _ytd_contributions([], None, inclusive=False) == Decimal("0")
 
