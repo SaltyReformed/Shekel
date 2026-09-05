@@ -15,6 +15,8 @@ import pytest
 
 from app.services.exceptions import InvalidGrossPayError
 from app.services.tax_calculator import calculate_fica
+from app.services.salary_raises import TerminatedRaise
+from app.models.salary_raise import SalaryRaise
 from app.services.paycheck_calculator import (
     apply_raises,
     _is_third_paycheck,
@@ -415,6 +417,111 @@ class TestRaiseOrdering:
         # tie-break the stable sort keeps percentage first -> 108000.00.
         assert apply_raises(Decimal("100000"), [flat, pct], as_of) == expected
         assert apply_raises(Decimal("100000"), [pct, flat], as_of) == expected
+
+
+class TestRaiseTermination:
+    """A raise stops accruing where its own belief stops.
+
+    ``terminal_year`` is the last year a raise is believed to happen.
+    :func:`apply_raises` honours it by not accruing applications past that
+    year, and by never applying a one-time raise dated beyond it.  These
+    cases grade the clamp itself; the mapping that DECIDES each raise's
+    terminal year is graded in ``test_pension_calculator``.
+    """
+
+    @staticmethod
+    def _raise(percentage, *, month=1, year=2026, recurring=True,
+               terminal_year=None):
+        """A percentage :class:`TerminatedRaise`, defaulting to recurring."""
+        return TerminatedRaise(
+            effective_year=year, effective_month=month,
+            is_recurring=recurring, percentage=Decimal(percentage),
+            flat_amount=None, terminal_year=terminal_year,
+        )
+
+    def test_the_orm_row_carries_no_terminal_year_so_the_engine_is_untouched(self):
+        """`SalaryRaise` has no such column, which is why paychecks are unmoved.
+
+        The paycheck engine passes ``profile.raises`` -- real ORM rows --
+        so if they carried a ``terminal_year`` the engine would silently
+        start clamping.  Asserted against the mapped class rather than
+        against a test double, because a double trivially lacks the
+        attribute and would keep passing after a migration added it.
+
+        ``hasattr`` rather than ``__table__.columns`` because that is the
+        surface the code actually reads: ``_applications`` probes
+        ``getattr(raise_obj, "terminal_year", None)``, which a
+        ``property`` or ``hybrid_property`` would satisfy while the column
+        set would not.  Both are checked, the attribute first.
+        """
+        assert not hasattr(SalaryRaise, "terminal_year"), (
+            "SalaryRaise gained a terminal_year attribute; the paycheck "
+            "engine now clamps and this step's premise needs re-deriving"
+        )
+        columns = {c.name for c in SalaryRaise.__table__.columns}
+        assert "terminal_year" not in columns
+
+    def test_a_raise_with_no_terminal_year_compounds_indefinitely(self):
+        """3% recurring from 2026, asked at 2036, is 11 applications.
+
+        ``100,000 * 1.03^11 = 138,423.39``.  This is the shape every
+        in-window paycheck uses.
+        """
+        result = apply_raises(
+            Decimal("100000"), [self._raise("0.03")], date(2036, 12, 1),
+        )
+        assert result == Decimal("138423.39")
+
+    def test_a_terminated_recurring_raise_stops_accruing(self):
+        """Terminating at 2030 caps the same raise at five applications.
+
+        2026..2030 is 5, so ``100,000 * 1.03^5 = 115,927.41`` -- and it
+        stays there however far past 2030 the caller asks, because the
+        raise stopped rather than slowed.
+        """
+        terminated = self._raise("0.03", terminal_year=2030)
+        base = Decimal("100000")
+        assert apply_raises(base, [terminated], date(2036, 12, 1)) == Decimal("115927.41")
+        assert apply_raises(base, [terminated], date(2099, 12, 1)) == Decimal("115927.41")
+
+    def test_a_one_time_raise_past_its_terminal_year_never_applies(self):
+        """A 2035 one-time raise believed only through 2030 is dropped."""
+        beyond = self._raise("0.10", year=2035, recurring=False,
+                             terminal_year=2030)
+        result = apply_raises(Decimal("100000"), [beyond], date(2036, 12, 1))
+        assert result == Decimal("100000.00")
+
+    def test_a_one_time_raise_within_its_terminal_year_still_applies(self):
+        """Its 2028 sibling is kept: 100,000 * 1.10 = 110,000.00.
+
+        Without this, the case above would pass on a rule that dropped
+        every one-time raise.
+        """
+        within = self._raise("0.10", year=2028, recurring=False,
+                             terminal_year=2030)
+        result = apply_raises(Decimal("100000"), [within], date(2036, 12, 1))
+        assert result == Decimal("110000.00")
+
+    def test_a_raise_applies_through_the_END_of_its_terminal_year(self):
+        """A July raise terminating in 2026 still gets its 2026 application.
+
+        Termination is a whole-year fact, so a raise effective later in
+        that year is still counted in it: ``100,000 * 1.03 = 103,000.00``.
+        """
+        july = self._raise("0.03", month=7, terminal_year=2026)
+        result = apply_raises(Decimal("100000"), [july], date(2036, 12, 1))
+        assert result == Decimal("103000.00")
+
+    def test_inside_the_terminal_year_the_callers_own_month_still_governs(self):
+        """March 2026 has not reached a July raise, terminal year or not.
+
+        The clamp is a ceiling on the asked date, never a floor: it must
+        not back-date a raise into months before it exists.  Same raise as
+        the case above, asked earlier, answers the untouched base.
+        """
+        july = self._raise("0.03", month=7, terminal_year=2026)
+        result = apply_raises(Decimal("100000"), [july], date(2026, 3, 1))
+        assert result == Decimal("100000")
 
 
 class TestChronologicalRaiseOrder:

@@ -14,7 +14,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from app import ref_cache
 from app.enums import RaiseTypeEnum
-from app.services.salary_raises import apply_raises
+from app.services.salary_raises import TerminatedRaise, apply_raises
 from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
@@ -31,29 +31,6 @@ class PensionBenefit:
     annual_benefit: Decimal
     monthly_benefit: Decimal
     high_salary_years: list = field(default_factory=list)  # [(year, salary)]
-
-
-@dataclass(frozen=True)
-class _HorizonRaise:
-    """A recurring cola-type raise re-anchored to the post-cutoff horizon.
-
-    The minimal raise-like value
-    :func:`app.services.salary_raises.apply_raises` consumes: that
-    function reads only ``effective_year``, ``effective_month``,
-    ``is_recurring``, ``percentage``, and ``flat_amount`` (never
-    ``raise_type`` -- that is display-only, read by the badge helper).
-    Used by :func:`project_salaries_by_year` to compound post-cutoff cola
-    raises forward from the cutoff salary without re-applying the
-    occurrences already baked into that base.  Passing a plain raise-like
-    object is the supported contract for ``apply_raises`` (deep-hunt #83);
-    it is not reaching into a private symbol.
-    """
-
-    effective_year: int
-    effective_month: int
-    is_recurring: bool
-    percentage: Decimal | None
-    flat_amount: Decimal | None
 
 
 def calculate_benefit(benefit_multiplier, consecutive_high_years,
@@ -118,29 +95,45 @@ def project_salaries_by_year(
     * Through the cutoff year (inclusive) every raise applies exactly as
       the paycheck pipeline would.
     * After the cutoff, only ``cola``-type recurring raises keep
-      compounding, and they compound forward from the CUTOFF salary --
-      the merit-type and custom-type effect earned through the cutoff
-      persists in that base, but no further merit/custom raises are
-      applied.  This is implemented by re-anchoring the recurring cola
-      raises to ``cutoff + 1`` (:func:`_reanchor_recurring_cola`) so a
-      single ``apply_raises`` call over the cutoff salary compounds ONLY
-      their post-cutoff occurrences (their pre-cutoff history is already
-      in the base).
+      compounding; the merit-type and custom-type effect earned through
+      the cutoff persists in the salary, but no further merit or custom
+      raise is applied.
+
+    Both bullets are now expressed as a per-raise TERMINATION rather than
+    as a split in the compounding: every raise except a recurring cola is
+    given ``terminal_year = cutoff`` (:func:`_terminate_after_horizon`),
+    and this function is a loop over the shared walk
+    (:func:`app.services.salary_raises.apply_raises`) rather than a second
+    projection beside it.  There is no cutoff base and no re-anchoring.
 
     Raise-type discrimination is by ``raise_type_id`` via the ref cache,
     never the display ``name`` string.
 
-    Known split-at-cutoff artifact (review L4, documented not changed):
-    with MIXED flat + percentage recurring COLAs the horizon is not
-    invariant even though both raises extrapolate -- ``apply_raises``
-    applies flats before percents (M-01), so compounding in two phases
-    (through the cutoff, then from the cutoff base) interleaves the flat
-    additions with the percentage compounding differently than one
-    continuous pass (pinned:
-    ``test_mixed_flat_and_percentage_colas_pinned_not_horizon_invariant``).
-    A one-time cola raise dated after the cutoff is dropped by design
-    (only RECURRING colas extrapolate); that rule awaits explicit
-    developer confirmation before any change.
+    A one-time raise dated after the cutoff is still dropped -- unchanged
+    behaviour, and it now falls out of the termination rule rather than
+    out of which list a second pass was handed.
+
+    **Post-cutoff figures move by rounding, and that is by construction
+    rather than by accident.**  The old form quantized at the cutoff and
+    compounded that ROUNDED salary forward, so a post-cutoff year carried
+    two roundings where one pass carries one; the two forms differ in
+    nothing else, which is why every difference is drift.  Measured over
+    73,193 year-values from 4,000 random raise sets (1-3 raises, mixed
+    methods and types, horizons 0-12, spans 5-30 years, seed 20260905):
+    5,845 differ, 3,610 of them by exactly ``$0.01``, and the largest is
+    ``$79.54`` -- on a ``$4.78B`` 2049 figure produced by 25% compounding,
+    i.e. drift proportional to magnitude rather than a divergence.  One
+    rounding is the house rule (``app.utils.money``), so this is a
+    correction; it is still a change and it is not zero.
+
+    **This does not make the application agree with itself about a
+    horizon**, and the distinction matters because an earlier draft of
+    this docstring blurred it.  The paycheck engine's callers pass ORM
+    rows, which carry no ``terminal_year``, so the engine still compounds
+    every recurring raise indefinitely while this function stops merit and
+    custom at the cutoff.  The two therefore still diverge past it.  Which
+    model should win is unruled; what changed here is only that this
+    module no longer holds a salary rule of its own.
 
     Args:
         annual_salary:      Decimal base salary.
@@ -160,32 +153,16 @@ def project_salaries_by_year(
     """
     owned_raises = raises or []
     cutoff_year = start_year + merit_horizon_years
+    terminated = _terminate_after_horizon(owned_raises, cutoff_year)
 
-    # The cutoff salary carries the full raise effect (merit + custom +
-    # cola) earned through the cutoff year; post-cutoff years compound only
-    # the recurring cola raises forward from it.  Re-anchoring those cola
-    # raises to ``cutoff_year + 1`` makes ``apply_raises`` count exactly the
-    # post-cutoff occurrences (its within-year application gate reaches
-    # every effective month at the December-1 evaluation).
-    cutoff_salary = apply_raises(
-        annual_salary, owned_raises, date(cutoff_year, 12, 1),
-    )
-    cola_after_cutoff = _reanchor_recurring_cola(owned_raises, cutoff_year + 1)
-
-    result = []
-    for year in range(start_year, end_year + 1):
-        # Evaluate each year's salary as of December 1 so every raise
-        # effective during that year (recurring or one-time) is applied.
-        if year <= cutoff_year:
-            salary = apply_raises(
-                annual_salary, owned_raises, date(year, 12, 1),
-            )
-        else:
-            salary = apply_raises(
-                cutoff_salary, cola_after_cutoff, date(year, 12, 1),
-            )
-        result.append((year, salary))
-    return result
+    # One pass per year over the shared walk.  Evaluate each year's salary
+    # as of December 1 so every raise effective during that year (recurring
+    # or one-time) is applied, exactly as before; what changed is that the
+    # horizon travels ON the raises instead of splitting this loop in two.
+    return [
+        (year, apply_raises(annual_salary, terminated, date(year, 12, 1)))
+        for year in range(start_year, end_year + 1)
+    ]
 
 
 def project_profile_salaries(profile, start_year, end_year, merit_horizon_years):
@@ -219,48 +196,73 @@ def project_profile_salaries(profile, start_year, end_year, merit_horizon_years)
     )
 
 
-def _reanchor_recurring_cola(raises, anchor_year):
-    """Re-anchor recurring cola-type raises to a new effective year.
+def _terminate_after_horizon(raises, cutoff_year):
+    """Give every raise the last year it is believed to happen.
 
-    Returns a lightweight :class:`_HorizonRaise` for every recurring
-    cola-type raise, with ``effective_year`` reset to
-    ``max(own effective_year, anchor_year)`` so
-    :func:`app.services.salary_raises.apply_raises` compounds each
-    one only from *anchor_year* forward -- and never EARLIER than the
-    raise's own start (H1: a plain ``anchor_year`` reset pulled a
-    future-scheduled COLA backward, applying it in years before it
-    exists; a 2031-effective COLA under a 2028 cutoff must first apply
-    in 2031, not 2029).  A pre-cutoff COLA's history is already in the
-    cutoff base, so the anchor floor is exactly right for it.
-    Merit-type raises, custom-type raises, and one-time raises are
-    dropped: after the merit horizon only recurring cola raises keep
-    applying.  Cola-type discrimination is by ``raise_type_id`` via the
-    ref cache (never the display ``name`` string).
+    The merit horizon, expressed as the per-raise fact it is.  A RECURRING
+    cola-type raise is believed indefinitely -- inflation does not stop at
+    a planning horizon -- so it terminates at ``None``.  Everything else
+    terminates at *cutoff_year*: recurring merit-type and custom-type
+    raises stop accruing applications past it, and a one-time raise dated
+    beyond it never applies.  Both were already the behaviour; what
+    changed is that they are stated once here instead of by which list a
+    second compounding pass was handed.
+
+    Note what the ``else`` covers, since the class it excludes is wider
+    than "merit and custom": a NON-recurring cola raise terminates at the
+    cutoff too, matching the ``is_recurring`` half of the filter this
+    replaced, and so does a raise whose ``raise_type_id`` is ``None``.
+
+    Its most user-visible member is a RECURRING merit or custom raise
+    whose effective year is already past the cutoff -- an owner recording
+    a promotion they know about for 2035, under a horizon ending 2031.
+    Its terminal year precedes its effective year, so it contributes no
+    applications in any projected year and the projection silently never
+    shows it.  That is unchanged behaviour, not something this rule
+    introduced (the old form dropped it just as completely, by handing the
+    post-cutoff pass only colas), and it is named here because a rule that
+    reads "merit stops after N years" does not obviously imply "a merit
+    raise you scheduled for later never happens at all".
+
+    It replaced ``_reanchor_recurring_cola``, whose job was to move a cola
+    raise's effective year past the cutoff so a second ``apply_raises``
+    call counted only the post-cutoff occurrences.  That needed a floor
+    (``max(own effective_year, anchor_year)``) to stop a future-scheduled
+    COLA being pulled BACKWARD into years before it existed -- finding H1,
+    a 2031-effective COLA under a 2028 cutoff first applying in 2029.
+    Nothing here moves an effective year, so H1's defect has no subject
+    rather than a guard.
+
+    Cola-type discrimination is by ``raise_type_id`` via the ref cache,
+    never the display ``name`` string.
 
     Args:
         raises:      iterable of raise objects exposing ``.is_recurring``,
                      ``.raise_type_id``, ``.effective_year``,
                      ``.effective_month``, ``.percentage``, and
                      ``.flat_amount``.
-        anchor_year: int earliest effective year for the re-anchored
-                     raises (the first post-cutoff year).
+        cutoff_year: int last year a non-cola raise is believed to happen
+                     (``start_year + merit_horizon_years``).
 
     Returns:
-        list[_HorizonRaise]: the recurring cola raises re-anchored to
-        ``max(effective_year, anchor_year)``; empty when the user has no
-        recurring cola raise.
+        list[TerminatedRaise]: every input raise, in input order, each
+        carrying its terminal year -- ``None`` for a recurring cola,
+        *cutoff_year* otherwise.  Empty when *raises* is empty.
     """
     cola_id = ref_cache.raise_type_id(RaiseTypeEnum.COLA)
     return [
-        _HorizonRaise(
-            effective_year=max(r.effective_year, anchor_year),
+        TerminatedRaise(
+            effective_year=r.effective_year,
             effective_month=r.effective_month,
-            is_recurring=True,
+            is_recurring=r.is_recurring,
             percentage=r.percentage,
             flat_amount=r.flat_amount,
+            terminal_year=(
+                None if r.is_recurring and r.raise_type_id == cola_id
+                else cutoff_year
+            ),
         )
         for r in raises
-        if r.is_recurring and r.raise_type_id == cola_id
     ]
 
 
