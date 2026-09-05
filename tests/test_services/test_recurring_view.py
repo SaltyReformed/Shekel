@@ -907,11 +907,12 @@ class TestTheDestinationsStopReachesTheRow:
         archived loan payment is no longer that -- so the column the chokepoints
         wrote while it was active is read in the Archived drawer as its owner's
         bound, and a cache EARLIER than the derived stop still binds the drawer
-        row.  The drawer is one of three readers of the cache left on this
-        surface (the monthly equivalent and generation are the others); the
-        schema records who wrote a bound nowhere, so no predicate can tell this
-        cache from an owner's date, and plan step R7d-g must DECIDE archived
-        loan payments rather than sweep them (ledger row D56).
+        row.  The drawer is not the cache's only remaining reader: the monthly
+        equivalent on this surface, the edit form and generation off it read
+        the column too.  The schema records who wrote a bound nowhere, so no
+        predicate can tell this cache from an owner's date, and plan step R7d-g
+        must DECIDE archived loan payments rather than sweep them (ledger row
+        D56, an open fork).
 
         **What trips this is a predicate change, not R7d-g.**  The case writes
         the stale column itself, so R7d-g's migration does not reach it; it

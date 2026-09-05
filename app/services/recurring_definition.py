@@ -77,7 +77,7 @@ lock the Ends control -- the destination is unknown at render -- and
 ``settle_first_occurrence`` refuses only a bound BEFORE the derived start, so
 an owner CAN author a closing bound on a loan-destination transfer there; no
 chokepoint runs on that path, so the column holds the owner's word until the
-first settle overwrites it with the payoff (the closing-bound twin of the
+first chokepoint overwrites it with the payoff (the closing-bound twin of the
 opening-bound defect plan step R7c-b fixed; a ledger row through the
 coordinator).  For that window this door already reads the column as the cache
 the sync will make it, so the Recurring row names the payoff while generation
@@ -86,14 +86,14 @@ account's active transfer -- has the column the app wrote while it was active
 read as its owner's bound in the Archived drawer, and a cache EARLIER than the
 derived stop still binds that drawer row until plan step R7d-g NULLs it.  R7d-g
 must DECIDE archived loan payments rather than sweep them (plan ledger row
-**D56**: a NULL-every-loan-payment predicate cannot tell an authored bound from
-the cache, so its migration is scoped to the rows the sync wrote).  (3)
-**R7d-g deletes this arm with the column** only while the edit form's lock
-stands: once nothing stores that bound, ``end_bound_from_columns`` reads
-``NEVER_ENDS`` on its own and the arm is dead code; if R7d-f unlocks the edit
-control as the create form already is, the arm must go WITH the unlock or it
-discards an owner's word.  Either way it is a fence around the stored copy and
-not a design.
+**D56**, an OPEN fork: a NULL-every-loan-payment predicate cannot tell an
+authored bound from the cache, so D56 asks R7d-g either to scope the migration
+or to rule the erasure intended).  (3) **R7d-g must DELETE this arm with the
+column**, and not because the arm goes dead: limit (1) means the create form
+stores an owner's bound in that column and R7d-g removes the sync that
+overwrote it, so a kept arm would read that owner's word as the cache forever.
+The same holds if R7d-f unlocks the edit control first.  It is a fence around
+the stored copy and not a design, and it leaves with the copy.
 
 Flask-isolated (``CLAUDE.md`` Architecture): it takes a template and a read
 pass and returns plain values, reads no ``request`` / ``session``, opens no
