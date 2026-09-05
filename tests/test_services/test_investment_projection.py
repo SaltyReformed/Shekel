@@ -819,8 +819,10 @@ class TestBuildContributionTimeline:
         IDENTICALLY for their first two paydays, and their true tails are
         ``$500`` and ``$38.46``.  With no complete calendar year there is no
         annual figure to derive, so the hold falls back to the last PRICED
-        payday -- exact for an uncapped deduction, and for a capped one the
-        trailing clamped figure, which understates rather than over.
+        payday -- exact for an uncapped deduction, and for a capped one that
+        payday's clamped figure, which can read either way: this fixture's
+        trailing ``$0.00`` understates, while a window ending on the ``$400``
+        of a ``$600``/``$1,000`` pair annualises to ``$10,400``, 10.4x.
 
         13 paydays of ``$500``, half a year: the tail holds ``$500``, the
         rate every priced payday shows.
@@ -905,11 +907,13 @@ class TestBuildContributionTimeline:
 
         **And the refusal this asserts is further from truth still**, at
         ``$0.00``.  That is the trade taken deliberately: the count test was
-        wrong about WHICH years it could average -- 129 of 20,000 randomised
-        windows against this rule's 0 -- and every year it stops averaging
-        moves the held figure DOWN, never up.  A conservative wrong number
-        beats a confident one, and the salary-path step removes both by
-        pricing the tail.
+        wrong about WHICH years it could average, and this rule is not.  It
+        is NOT the case that refusing only ever lowers the figure: extend
+        this window by one payday, to 2028-01-14, and the fallback reads that
+        payday and holds ``$600`` where the count test holds ``$38.46``.  An
+        earlier revision of this docstring claimed the opposite and used it
+        as a warrant; an adversarial pass measured it false.  The salary-path
+        step removes the branch rather than bounding it.
         """
         full_year = [
             date(2027, 1, 1) + timedelta(days=14 * i) for i in range(27)

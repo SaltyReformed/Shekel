@@ -17,10 +17,9 @@ pylint's 1000-line ceiling.  The split falls to whoever breaks it, per ruling
 ``balance:R-IR``.  Nothing outside the package imports this module: the
 package re-exports every public name under its original path, so imports and
 ``:class:`` references written before the split resolve unchanged.  The
-PRIVATE names moved with their code and their four references were repointed
-at ``._inputs`` -- two in the splitting commit and two an adversarial pass
-found surviving it, which is why this sentence now says which names it
-covers.
+PRIVATE names moved with their code, and every reference to one names
+``._inputs``; three successive adversarial passes each found one this
+sentence had missed, so it states the property rather than a count.
 """
 
 from collections.abc import Mapping
@@ -205,18 +204,19 @@ class AccountPayrollFeed:
         wrong on exactly that shape (``docs/plans/lessons.md``, the R14-b
         entry, holds the three and their figures).  The fallback is exact for
         an uncapped deduction, which is every live one on the developer's
-        data, and reads a capped one's trailing CLAMPED figure -- unless the
-        window ends just past a January, where the cap has reset and that
-        payday is a fresh UNCLAMPED payment.  **Then it OVERSTATES**, by
-        15.6x on a measured 27-payday biweekly window and 31.2x on its weekly
-        analogue.  The trigger is not window LENGTH, which an earlier
-        revision claimed; it is which calendar year the window's last payday
-        falls in.  See the fallback branch below for the measurement and for
-        why no rule over this fold can close it.
+        data.  **For a capped one it can OVERSTATE**: it reads one payday,
+        and that payday over-reads whenever the cap has not yet bound in its
+        own calendar year.  Measured at cadence 14, ``$600`` a payday against
+        a ``$1,000`` cap, window ``2027-01-15..2028-01-14``: holds ``$600``,
+        annualising to ``$15,600``, **15.6x**.  See the fallback branch for
+        the bound and for what was declined.
 
-        The residue is the SHORT window, not a cadence: any owner whose saved
-        schedule covers one whole calendar year gets the exact figure,
-        biweekly or weekly.  What would make it exact for EVERYONE is the
+        The residue is the window's SPAN.  A window plus one interval at each
+        end must cover a whole calendar year for any year to qualify, which
+        is 52 biweekly paydays or 104 weekly; below that the fallback runs
+        and the over-read depends on the deduction, not only on the window.
+
+        What would make it exact for EVERYONE is the
         ENGINE pricing the tail rather than this extrapolating it -- the
         salary-path step the developer ruled on 2026-09-04 to follow this
         one, which deletes this method and its fallback entirely.
@@ -237,38 +237,36 @@ class AccountPayrollFeed:
         if not complete:
             # No complete year, so no annual total to divide, and the LAST
             # PRICED payday is the fallback.  **It is the weakest thing in
-            # this module and it can OVERSTATE without bound.**  It reads one
-            # payday, so it inherits whatever that payday happened to be: for
-            # an uncapped deduction that is exact, and for a capped one it is
-            # the trailing CLAMPED figure -- unless the window ends just past
-            # a January, where the cap has reset and the last payday is a
-            # fresh UNCLAMPED payment.
+            # this module.**  Exact for an uncapped deduction; for a capped
+            # one it OVER-READS whenever the cap has not yet bound in that
+            # payday's own calendar year.
             #
-            # Measured, biweekly, a $600-a-payday deduction against a $1,000
-            # cap on 2027-01-15..2028-01-14: this holds $600, annualising to
-            # $15,600, **15.6x the cap**, for the whole tail.  A one- or
-            # two-payday window is the same defect earlier: $500 held,
-            # $13,000 annualised, 13x.  The ratio scales with cadence (31.2x
-            # measured weekly), so the multiple is an instance, not a bound.
+            # Measured (cadence 14, $1,000 cap, 730 anchors from 2026-01-01,
+            # "over-reads" = held x periods_per_year > cap):
+            #   $600/payday, window 2027-01-15..2028-01-14 -> holds $600,
+            #     annualises to $15,600, 15.6x
+            #   $50/payday,  40-payday windows -> 170/730 over-read
+            #   $40/payday,  40-payday windows -> 310/730 over-read
+            #   any amount,  63-payday windows -> 0/3650 over-read, and
+            #     0/3650 reach this branch at all
+            # The multiples are instances, not bounds; the ratio scales with
+            # cadence and with amount/cap.
             #
-            # **An earlier revision of this comment claimed every
-            # disagreement with the count test moves the figure DOWN, never
-            # up, and used that as the warrant for accepting a larger
-            # absolute error.  An adversarial pass measured it FALSE** on the
-            # window above, where the count test holds the CORRECT $38.46.
-            # The premise was true -- coverage accepts a strict subset of the
-            # count test's years -- but shrinking that set to EMPTY switches
-            # formula, and the fallback is not conservative.  There is no
-            # warrant, and none is claimed now: no rule over this fold can be
-            # safe, because the fold does not carry the cap that would bound
-            # it.  Reverting to the count test does not fix it either
-            # (measured over 730 anchors at 27 paydays: coverage over-reads
-            # the cap on 30 windows, the count test on 28).  What fixes it is
-            # the ENGINE pricing the tail, which is the salary-path step.
-            #
-            # The exposure is bounded by window shape rather than argued
-            # away: over the same 730 anchors, NO window of 40 or 63 paydays
-            # over-reads under either rule, capped or uncapped.
+            # **A SAFE RULE EXISTS and was declined, which is not the same as
+            # impossible.**  An earlier revision of this comment asserted no
+            # rule over this fold could be safe; an adversarial pass refuted
+            # it by building one -- per observed calendar year, that year's
+            # priced total over the paydays that year really holds, minimum
+            # across years -- which cannot exceed the cap, because the priced
+            # amounts are already clamped.  Measured 0 over-reads against
+            # this branch's 24.5% over 8,820 shapes.  The developer declined
+            # it on 2026-09-04 (ledger row N-541) after the alternatives were
+            # put to him: it is the seventh rule over a fold that has had six,
+            # each safe until measured against a shape nobody had considered,
+            # and the salary-path step deletes the whole branch rather than
+            # adding to it.  Reverting to the count test is not an escape
+            # either (730 anchors, 27 paydays: this rule over-reads 30, the
+            # count test 28).
             last = self.employee_by_payday[max(self.employee_by_payday)]
             first = self.employee_by_payday[min(self.employee_by_payday)]
             return (first, last)
@@ -294,8 +292,10 @@ class AccountPayrollFeed:
         27 observed, understating a front-loaded capped deduction.  This rule
         is exact on both: two adversarial passes graded it against a rhythm
         oracle over 200,000 randomised windows at cadences 1-45 with zero
-        mismatches, and its only refusals are windows of one payday, which
-        cannot establish an interval.  The two
+        mismatches.  It REFUSES rather than over-accepts where it cannot
+        prove coverage -- a window of one payday, which establishes no
+        interval, and an irregular rhythm, whose smallest observed gap
+        understates the real one.  The two
         shapes are pinned by ``test_a_27_PAYDAY_year_is_divided_by_27`` and
         ``test_a_27_PAYDAY_year_seen_26_times_is_NOT_complete`` in
         ``TestBuildContributionTimeline``.
