@@ -128,12 +128,19 @@ def project_salaries_by_year(
 
     **This does not make the application agree with itself about a
     horizon**, and the distinction matters because an earlier draft of
-    this docstring blurred it.  The paycheck engine's callers pass ORM
-    rows, which carry no ``terminal_year``, so the engine still compounds
-    every recurring raise indefinitely while this function stops merit and
-    custom at the cutoff.  The two therefore still diverge past it.  Which
-    model should win is unruled; what changed here is only that this
-    module no longer holds a salary rule of its own.
+    this docstring blurred it.  The engine still compounds every recurring
+    raise indefinitely while this function stops merit and custom at the
+    cutoff, so the two still diverge past it.
+
+    **Which model wins is RULED since 2026-09-05** (**R-SAL11**), and the
+    REASON the divergence survives has changed with the ruling's first
+    leaf.  The paycheck engine's ORM rows DO carry ``terminal_year`` now
+    (plan step **salary:S3-b**) and every value is ``NULL``, so the engine
+    reads "no end year" off the rows while this function fabricates one
+    from the global setting.  The cutover (**S3-c**) deletes this function
+    and ``auth.user_settings.merit_raise_horizon_years`` together -- it
+    MUST, because until it does, a value written to the column would be
+    overwritten here rather than read.
 
     Args:
         annual_salary:      Decimal base salary.
@@ -211,7 +218,15 @@ def _terminate_after_horizon(raises, cutoff_year):
     Note what the ``else`` covers, since the class it excludes is wider
     than "merit and custom": a NON-recurring cola raise terminates at the
     cutoff too, matching the ``is_recurring`` half of the filter this
-    replaced, and so does a raise whose ``raise_type_id`` is ``None``.
+    replaced.
+
+    *A draft of this note claimed a second member -- "a raise whose
+    ``raise_type_id`` is ``None``" -- and an adversarial review of plan step
+    salary:S3-b measured it IMPOSSIBLE: that column is ``nullable=False``
+    (``app/models/salary_raise.py``).  The correction is the argument rather
+    than a tidy-up.  A set spelled EVERYTHING-EXCEPT names members nobody
+    censused, and this one named one that cannot exist; the non-recurring
+    COLA is real and is the whole of the surplus.*
 
     Its most user-visible member is a RECURRING merit or custom raise
     whose effective year is already past the cutoff -- an owner recording
