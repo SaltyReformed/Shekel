@@ -165,6 +165,20 @@ rationale, where a reader meets it at the moment it fires.
   from prose; and COUNT THE CALL GRAPH, NOT THE CALL SITES -- one finding said four spellings, the
   tree held 18. A census and a gate can be blind the same way, and then they confirm each other.
 - **A CENSUS THAT IS NOT COMMITTED IS AN UNCITED CLAIM.**
+- **A PROBE MUST BREAK ON A STATE IT OBSERVED, NEVER ON THE ABSENCE OF ONE.** FIVE instruments in
+  one day turned *I failed to measure* into a confident, plausible answer, three of them arriving as
+  a GREEN exit: a swallow reporting a fault as a stale image, fixtures reporting a broken container
+  as a skip (**N-460**), a mutation harness reporting a mutation it never applied, a PR watcher
+  breaking on `!= OPEN` when an API error yields no state at all, and a second one grepping for the
+  BUSY string an error message does not contain. A rule about `!= OPEN` catches one and misses the
+  other; only OBSERVED catches both, and the three that are not poll loops. Give UNREACHABLE and
+  ABSENT separate arms: an API that answers and omits the check is PERMANENT rather than transient,
+  and settles green forever the day a job is renamed.
+- **A ROUTE SWEEP WITHOUT THE HTMX HEADER CANNOT SEE AN HTMX-ONLY DEFECT, and reads as a clean bill
+  of health.** 292 routes returned zero 5xx on a release candidate; the same sweep WITH `HX-Request`
+  over 323 returned one. A plain GET of `/analytics/spending` serves the page SHELL and answers
+  200 -- the 500 is the FRAGMENT. This app is htmx-first, so every route sweep inherits it, and the
+  corrected sweep finding exactly ONE regression is what made it a bound.
 - **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.**
 - **BEFORE READING A CLEAN DIFF, CHECK THE FIGURE THE STEP IS ABOUT IS NOT NULL IN IT.** C2-f2c's
   harness was byte-identical over 39,939 lines while `retirement_marker_index` (**P48**) was `None`
@@ -193,4 +207,10 @@ rationale, where a reader meets it at the moment it fires.
   fourth instance was written WHILE fixing the third, and two more surfaced only because a line
   ceiling forced a docstring to be re-read. A fix's claims about its own correctness are written
   LAST, under post-measurement confidence, and are the one thing its own tests cannot grade. **Grade
-  them separately, and never let the pass that fixes them also be the pass that wrote them.**
+  them separately, and never let the pass that fixes them also be the pass that wrote them.** **The
+  mechanism, measured again 2026-09-05 (`pay_calendar:C14-d`): the sentence is written by the part
+  of the reasoning the fix has not yet updated**, so the wrong answer is the SPECIFIC wrong answer
+  the old model produces -- two docstrings predicted `[13, 27, 41]`, which is what the CASH-anchored
+  writer that step DELETES emits, against the measured `[13, 28, 42]`. Both were added to satisfy a
+  review finding about unauthorised future failures, so the review that caught one ungraded claim
+  was the vector for the next.

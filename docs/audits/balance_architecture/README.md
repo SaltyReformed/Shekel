@@ -1000,12 +1000,23 @@ section 4, under their unchanged ids.*
   the cache key is an OPTIMISATION and verification runs on EVERY invocation,
   so a stale image is refused rather than trusted.
 * [x] **X-br-2** `7c739495` -- a run gets its own cluster, pytest as a CHILD so there is an after in which to remove it, INT and TERM trapped with EXIT. Opt-in behind `TEST_DB_PER_RUN` until **X-br-3**; measured FASTER than the shared cluster.
-* [ ] **X-br-3** `chore(test): the harness gets a daemon of its own` -- FIRST
-  ACT IS THE DEVELOPER'S and no session can do it: `sudo pacman -S
-  docker-rootless-extras`, since `docs/test-harness-isolation.md` records
-  those packages absent. Then `DOCKER_HOST` selects it, so per-run containers
-  stop landing on the daemon running production. Unblocks the 28
-  `tests/test_deploy` tests that run nowhere locally.
+* [x] **X-br-3** `8ee74b95` -- the harness got a daemon of its own; `DOCKER_HOST` selects a rootless
+  one, so per-run containers stop landing on the daemon running production. **25 passed, 3 skipped**,
+  not the 28 predicted, and those 3 are **N-459**/**N-460**, which **X-bs** owns. FOUR of this
+  entry's pre-ship clauses were refuted by the ship -- the install is an AUR `yay -S`, it shipped as
+  `feat(test):`, and `slirp4netns` is absent AND unnecessary under `--network=none`; the corrections
+  are in `docs/test-harness-isolation.md`, which says "Do not restore them here."
+* [ ] **X-bs** `fix(test): a failure must fail, and the last two ports go` -- owns **N-460** and
+  **N-459**, two defects in the same files that HIDE EACH OTHER. Seven `pytest.skip` calls in
+  `test_proxy_trust_and_headers.py` fire on something that RAN AND FAILED rather than on something
+  missing, and the predicate is **did the capability EXIST? skip. Did it exist and FAIL? FAIL** --
+  `:929` leads the row (a container started, then `docker port` unreadable), and `:470` proves it is
+  a PRINCIPLE and not a docker rule, since `shutil.which("openssl")` passed nineteen lines earlier.
+  Two published ports remain, `:911`'s `-p 0:443` and the builder's BAKE container, which needs a
+  host port because the entrypoint's bootstrap `psql` hardcodes `/var/run/postgresql`.
+  **THE ORDER IS LOAD-BEARING -- unmask FIRST, then the ports**: the three tests now skipping ARE
+  the collision and the only witnesses that the laundering arms are wrong, so fixing the ports first
+  leaves the laundering untested with its witnesses gone, which is strictly worse than today.
 * [ ] **X-br-4** `refactor(test): delete what the shared postmaster needed` --
   the payoff: the slot, the probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX`,
   `TEST_TEMPLATE_DATABASE` and the catalog-fragmentation section all go.
