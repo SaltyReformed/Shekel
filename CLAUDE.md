@@ -118,9 +118,11 @@ Several Claude sessions regularly work this repo at once, each in its own worktr
   (developer ruling 2026-09-02); a pushed branch is not a handoff and not a request to merge.
 - **Planning-document ids are reserved through the coordinator.** Never grep sibling worktrees for a
   free ledger or ruling id; a snapshot cannot see a worktree created after you looked.
-- **A gating suite run takes the slot first**: `./scripts/suite_slot.sh acquire <name>`, then the
-  run, then `release <name>`. The postmaster is shared and a probe is not a lock; why the slot is
-  mandatory, its exemptions and its staleness rules: `.claude/rules/testing.md`.
+- **Suite runs no longer need coordinating, and there is no slot to take.** `./scripts/test.sh`
+  gives every run a postgres cluster of its own, so no run can restart, corrupt or collide with
+  another -- in one worktree or many. What concurrent runs still share is this host's cores, which
+  is a resource fact rather than a defect: the wrapper PRINTS any other live pytest and its
+  worktree, then proceeds. The measurement and the argument: `.claude/rules/testing.md`.
 - **Never `pkill` shared tooling.** Kill by PID after reading `/proc/<pid>/cwd` to confirm whose
   process it is.
 - **Data grants** (developer grant, restated 2026-09-02): production data at `/opt/docker/shekel`
@@ -135,9 +137,9 @@ root; never silence it with a bare disable.
 - **Per-edit hooks (`scripts/hooks/`)** lint each `app/`/`scripts/` Python edit and hard-block on
   errors and the custom checkers `shekel-decimal-from-float` / `shekel-refname-compare`; templates
   and `requirements.txt` have their own guards.
-- **SessionStart hook** (`scripts/hooks/session-start.sh`) prints the session's checkout, branch,
-  the suite-slot state and the plan of record's next step into context at session start, plus a
-  pointer to the Multi-session doctrine.
+- **SessionStart hook** (`scripts/hooks/session-start.sh`) prints the session's checkout, branch and
+  the plan of record's next step into context at session start, plus a pointer to the Multi-session
+  doctrine.
 - **PR-guard hook** (`scripts/hooks/guard-pr-actions.sh`) turns `gh pr create` / `gh pr merge` into
   a permission prompt outside the coordinator session (which exports `SHEKEL_PR_COORDINATOR=1`);
   `git push` is never gated. Advisory by design, the ask-decision shape of the migration guard.
@@ -172,9 +174,9 @@ docker compose -f docker-compose.dev.yml up -d && docker logs -f shekel-dev-app
 flask run
 
 # Tests -- the full suite takes MINUTES; see the Tests section and docs/testing-standards.md
-./scripts/test.sh                             # full suite (no restart; see RESTART_TEST_DB below)
+./scripts/test.sh                             # full suite (in a throwaway cluster of its own)
 ./scripts/test.sh tests/path/test_file.py::test_name -v  # single test (fast feedback)
-python scripts/build_test_template.py         # first-time setup; rebuild after migrations
+python scripts/build_test_db_image.py         # rebuild the baked test-db image by hand (the wrapper does it)
 
 # Lint (custom checkers load via .pylintrc; same gate CI enforces)
 pylint app/ --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import
@@ -260,15 +262,18 @@ updates the mirror in the same commit -- a discipline no gate enforces yet.
 
 ## Tests
 
-Run via `./scripts/test.sh`, never bare `pytest`. The full suite is MINUTES, not seconds; the
-current count and dated timing live in `docs/testing-standards.md` (Test Run Guidelines), and the
-suite-slot protocol for concurrent worktrees is `.claude/rules/testing.md`. **The wrapper defaults
-to `-m "not docker"`, which DESELECTS the container-spawning `tests/test_deploy` tests** -- they
-vanish from the report rather than appearing as skips, so a green local run is not a claim about
-them; CI runs bare `pytest` and executes them all. Single test:
-`./scripts/test.sh tests/path/test_file.py::test_name -v`. The wrapper does NOT restart the shared
-test-db container unless you ask: `RESTART_TEST_DB=1 ./scripts/test.sh` before a gating full-suite
-run. Rebuild the template after migrations: `python scripts/build_test_template.py`.
+Run via `./scripts/test.sh`, never bare `pytest`.
+**It gives every run a POSTGRES CLUSTER OF ITS OWN** -- a container started from a baked image on a
+rootless docker daemon, reached over a unix socket, removed on exit -- so two runs never meet, in
+one worktree or many. The full suite is MINUTES, not seconds; the current count and dated timing
+live in `docs/testing-standards.md` (Test Run Guidelines). **The wrapper defaults to
+`-m "not docker"`, which DESELECTS the container-spawning `tests/test_deploy` tests** -- they vanish
+from the report rather than appearing as skips, so a green local run is not a claim about them; CI
+runs bare `pytest` and executes them all. Single test:
+`./scripts/test.sh tests/path/test_file.py::test_name -v`.
+**A migration needs no manual template rebuild**: the template is baked into the image and the
+wrapper re-verifies it on EVERY invocation, rebuilding when the key moved
+(`scripts/build_test_db_image.py`).
 
 ## Deployment
 

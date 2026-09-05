@@ -299,10 +299,12 @@ class TestEnvExampleUriTemplatesSanitized:
 
     The standalone ``POSTGRES_PASSWORD=`` line was sanitised in C-38
     (covered by ``TestEnvExampleSanitized`` above).  The DATABASE_URL
-    and TEST_DATABASE_URL templates that EMBED the same password
-    inside a connection URI are the second F-109 surface, closed by
-    the C-38 follow-up Issue 3 work documented in
+    template that EMBEDS the same password inside a connection URI is
+    the second F-109 surface, closed by the C-38 follow-up Issue 3
+    work documented in
     ``docs/audits/security-2026-04-15/c-38-followups.md``.
+    ``TEST_DATABASE_URL`` was the other one until ``balance:X-br-4``
+    deleted the line entirely; the first test below holds it deleted.
 
     These tests assert the URI lines never contain the historical
     ``shekel_pass`` default and always contain the sentinel token
@@ -318,9 +320,38 @@ class TestEnvExampleUriTemplatesSanitized:
         """Return the full .env.example source as a string."""
         return ENV_EXAMPLE.read_text(encoding="utf-8")
 
+    def test_no_test_database_url_template_exists(
+        self, env_example_text: str,
+    ) -> None:
+        """``TEST_DATABASE_URL`` is absent, which is stronger than sanitised.
+
+        It used to be the second URI template swept below, pointing at the
+        long-lived ``shekel-dev-test-db`` container on port 5433.
+        ``balance:X-br-4`` deleted that container: ``./scripts/test.sh`` starts
+        a throwaway cluster per run and EXPORTS this variable at its unix
+        socket, so a value in ``.env`` would be overwritten on every run and
+        could only mislead.  A template that does not exist cannot be copied
+        unsubstituted, so this asserts the absence rather than the sentinel --
+        and it fails if anyone reintroduces a test DSN here, which is the
+        regression worth catching.
+        """
+        match = re.search(
+            r"^TEST_DATABASE_URL=([^\n]*)$",
+            env_example_text,
+            re.MULTILINE,
+        )
+
+        assert match is None, (
+            ".env.example defines TEST_DATABASE_URL again, as "
+            f"{match.group(1)!r}. The test runner exports this variable "
+            "itself, naming the private cluster's unix socket, so a value "
+            "here is dead at best and a credential template nobody sweeps "
+            "at worst. Delete the line."
+        )
+
     @pytest.mark.parametrize(
         "var_name",
-        ["DATABASE_URL", "TEST_DATABASE_URL"],
+        ["DATABASE_URL"],
     )
     def test_uri_template_does_not_embed_shekel_pass(
         self, env_example_text: str, var_name: str,
@@ -359,7 +390,7 @@ class TestEnvExampleUriTemplatesSanitized:
 
     @pytest.mark.parametrize(
         "var_name",
-        ["DATABASE_URL", "TEST_DATABASE_URL"],
+        ["DATABASE_URL"],
     )
     def test_uri_template_carries_sentinel(
         self, env_example_text: str, var_name: str,

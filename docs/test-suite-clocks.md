@@ -202,37 +202,32 @@ equal to the distance between the faked date and the real one.
 
 ### The test template goes stale across branches
 
-`scripts/build_test_template.py` builds `shekel_test_template` at the **current branch's** migration
-head. Switching between branches that differ by a migration and running the suite produces a flood
-of errors that look nothing like a migration problem:
+The template carries the **current branch's** migration head, and a stale one produces a flood of
+errors that look nothing like a migration problem:
 
 ```text
 psycopg2.errors.UndefinedColumn: column "observed_on" of relation "account_anchor_history"
     does not exist
 ```
 
-**Rebuild after every branch switch that crosses a migration**, and be suspicious of any run with
-thousands of errors:
-
-```bash
-TEST_DATABASE_URL="postgresql://shekel_user:shekel_pass@127.0.0.1:5433/shekel_test" \
-TEST_ADMIN_DATABASE_URL="postgresql://shekel_user:shekel_pass@127.0.0.1:5433/postgres" \
-    .venv/bin/python scripts/build_test_template.py
-```
-
 This nearly produced a wrong conclusion: a sweep run reporting *4,979 errors* was read as "the
 Postgres-clock gap makes the instrument unusable", when it was a stale template and the real number
 was 20.
 
-`TEST_TEMPLATE_DATABASE=<name>` builds a second template under a different name -- useful for
-comparing a branch against `origin/main` in a worktree without destroying the branch's own template.
+**Since `balance:X-br-4` there is nothing to rebuild by hand.** The template is baked into a tagged
+image whose cache key covers every input the build reads -- the migrations AND the in-code trigger
+definitions applied after them -- and `./scripts/test.sh` re-verifies the image on every invocation,
+so a branch switch that crosses a migration rebuilds at the door. The flood above is still worth
+recognising, because a run that somehow reaches a stale template still fails this way; it is no
+longer something a branch switch can cause through the wrapper.
 
 ### Comparing against `main`
 
 Use `git worktree add`, never `git checkout` -- a checkout reverts the working tree and discards
-uncommitted work. The worktree needs its own template (see `TEST_TEMPLATE_DATABASE` above) and
-explicit `TEST_DATABASE_URL` / `TEST_ADMIN_DATABASE_URL`, because `scripts/test.sh` derives the
-admin DSN from the test DSN and neither is inherited.
+uncommitted work. The worktree needs nothing else: `./scripts/test.sh` builds that checkout's own
+image, starts its own cluster and exports its own DSNs, so the two trees' suites cannot see each
+other and can run at the same time. Before `balance:X-br-4` this paragraph had to name a separate
+template and explicit DSNs per worktree, because one postmaster served them all.
 
 ### Environment
 
@@ -278,6 +273,7 @@ Thousands of errors, not failures
    the app's. The reverse -- process date *behind* -- has never been run, and a coupling that only
    breaks in that direction would not be caught.
 3. **The sweep cannot fake PostgreSQL** (section 5). Closing that would need `libfaketime` inside
-   the test-db container, which is invasive; the marker is the accepted alternative.
+   the postgres container the suite runs against -- since `balance:X-br-4` a throwaway one per run,
+   started from a baked image -- which is invasive; the marker is the accepted alternative.
 4. **Five calendar positions, not all of them.** A coupling keyed to something else -- a specific
    weekday, a DST transition -- would need its date added to the matrix.

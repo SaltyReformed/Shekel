@@ -1,31 +1,33 @@
-"""``TEST_DB_PER_RUN`` gives a run its own cluster and leaves nothing behind.
+"""The test runner gives every run a private cluster and leaves nothing behind.
 
-Step ``balance:X-br-2``.  The suite clones a per-worker database from
-``shekel_test_template`` for every test, and that template has always lived on
-ONE container shared by every worktree -- which is why the repo carries a
-suite-slot lock, a hygiene-restart flag, a live-backend probe,
-``TEST_DB_PREFIX`` and ``TEST_TEMPLATE_DATABASE``.  Per-run mode gives the run
-a private cluster from the image ``scripts/build_test_db_image.py`` bakes, so
-none of that coordination applies.
+Steps ``balance:X-br-2`` (the cluster), ``X-br-3`` (the daemon and the socket)
+and ``X-br-4`` (it stopped being optional).  The suite clones a per-worker
+database from ``shekel_test_template`` for every test, and that template used
+to live on ONE container shared by every worktree -- which is why the repo
+carried a suite-slot lock, a hygiene-restart flag, a live-backend probe,
+``TEST_DB_PREFIX`` and ``TEST_TEMPLATE_DATABASE``.  ``X-br-4`` deleted all
+five and the shared path with them, so there is no flag here to grade any
+more: a container per run is what the wrapper does.
 
-**None of this block was graded when it was written**, and a review said so.
-The two defects that found is what these tests pin:
+**None of the per-run block was graded when it was written**, and a review
+said so.  What that review found is what these tests pin, and one of its two
+findings has since been deleted rather than fixed:
 
-* ``TEST_DB_PER_RUN`` was INHERITED by pytest, and five cases in the sibling
-  module re-invoke the wrapper with ``env={**os.environ, ...}``.  Each
-  re-entered per-run mode, started two more containers on the production
-  daemon nested inside the suite, and asserted on a message it never got:
-  8 failed against the same module's 26 green on the shared path.  A child
-  must take the SHARED path, which is what those cases grade.
 * A signal to the wrapper could not be serviced while pytest ran in the
   FOREGROUND, so ``timeout`` stopped working and the SIGKILL escalation left
   a live container plus an orphaned pytest.  pytest is backgrounded and
   ``wait``ed now, because ``wait`` is interruptible.
+* ``TEST_DB_PER_RUN`` was INHERITED by pytest, so a child that re-invoked the
+  wrapper started two more containers nested inside the suite.  The wrapper
+  scrubbed the flag before handing the environment on.  With the flag gone
+  that scrub is gone too -- there is no shared path left for a child to be
+  pushed onto, because there is no shared path at all.
 
 These drive a stub ``docker`` and a stub ``pytest`` on ``PATH``, so they need
 no daemon, no image and no database, and they run in CI.  The suite-scale
-behaviour they stand in for was measured separately: 13,156 passed in 342.8 s
-in a private cluster against 356.4 s on the shared one.
+behaviour they stand in for was measured separately, on 2026-09-05 at
+``balance:X-br-2``: 13,156 passed in 342.8 s in a private cluster against
+356.4 s on the shared one.
 """
 from __future__ import annotations
 
@@ -131,6 +133,10 @@ def _run_wrapper(
     daemon the RUNNING SUITE happens to be using, nor on whether it is running
     in CI.  Each of the three has already been observed inverting a case.
 
+    ``env_extra`` is often empty now: since ``balance:X-br-4`` the wrapper
+    needs no flag to take the per-run path, so the premise of most cases here
+    is simply that it was invoked.
+
     Args:
         binaries: Directory holding the stubs.
         env_extra: Environment overrides.
@@ -183,59 +189,59 @@ def _run_wrapper(
             shutil.rmtree(scratch, ignore_errors=True)
 
 
-class TestThePerRunFlagIsResolvedNotGuessed:
-    """The flag agrees with ``RESTART_TEST_DB``'s vocabulary."""
+class TestTheWrapperItself:
+    """Properties of the script that every other case here presupposes."""
 
-    @pytest.mark.parametrize("value", ["banana", "2", "yes please"])
-    def test_an_unrecognised_value_is_refused(
-        self, tmp_path: Path, value: str
-    ) -> None:
-        """An unknown value exits 2 rather than being guessed at.
+    def test_the_wrapper_is_valid_bash(self) -> None:
+        """``scripts/test.sh`` parses. Nothing else in the repo checks this.
+
+        Kept from the deleted container-state module, which is where it was
+        earned: that module stripped shell quoting from the state
+        classifier's arm patterns, so its canonical spelling of the paused arm
+        was ``*(Paused)*`` -- precisely the spelling that is a SYNTAX ERROR in
+        the shell.  Removing the quotes at the source was measured to leave
+        every test there green while ``bash -n scripts/test.sh`` failed and
+        the wrapper refused to run at all, taking every local test invocation
+        with it.  shellcheck and shfmt both accept that form, so without this
+        assertion the breakage reaches a developer's terminal before any gate.
+        The classifier went with the shared path; a syntax error in this file
+        still stops the whole repository's testing, so the check outlives what
+        motivated it.
+        """
+        result = subprocess.run(
+            ["bash", "-n", str(_TEST_RUNNER)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/test.sh is not valid bash: {result.stderr.strip()}. "
+            "Every test invocation in this repo goes through that wrapper, "
+            "so this breaks all local testing."
+        )
+
+
+class TestTheClusterTheChildTalksTo:
+    """pytest is handed DSNs naming THIS run's socket, and nothing else.
+
+    The wrapper used to read ``TEST_DATABASE_URL`` out of ``.env`` -- naming
+    the shared container on ``localhost:5433`` -- and the per-run branch
+    overwrote it afterwards.  ``balance:X-br-4`` deleted that read along with
+    the shared path, so the only DSNs that can reach pytest are the ones built
+    from the socket directory this invocation made.  Restoring a dotenv read
+    would point the suite back at a cluster other runs share, which is the
+    defect this arc exists to remove; these assertions are what would notice.
+    """
+
+    def test_both_dsns_name_this_run_s_own_socket(self, tmp_path: Path) -> None:
+        """The admin and the application DSN both reach the private cluster.
 
         Args:
             tmp_path: scratch directory.
-            value: The unrecognised value.
-        """
-        result = _run_wrapper(_stub_tree(tmp_path), {"TEST_DB_PER_RUN": value})
-
-        assert result.returncode == 2, result.stderr
-        assert "is not a value I will guess at" in result.stderr
-
-    def test_a_typo_in_the_other_flag_is_still_refused(
-        self, tmp_path: Path
-    ) -> None:
-        """``RESTART_TEST_DB`` is validated even when per-run mode is on.
-
-        Both flags are resolved before either branch is taken.  Resolving
-        per-run first and exiting inside its branch made a typo'd
-        ``RESTART_TEST_DB`` silently acceptable whenever the other flag was
-        set -- a refusal that depends on which other flag is present is not
-        a refusal.
-        """
-        result = _run_wrapper(
-            _stub_tree(tmp_path),
-            {"TEST_DB_PER_RUN": "1", "RESTART_TEST_DB": "garbage"},
-        )
-
-        assert result.returncode == 2, result.stderr
-        assert "RESTART_TEST_DB" in result.stderr
-
-
-class TestThePerRunFlagDoesNotReachPytest:
-    """The child takes the SHARED path, or the suite re-enters itself."""
-
-    def test_the_flag_is_scrubbed_from_pytest_s_environment(
-        self, tmp_path: Path
-    ) -> None:
-        """``TEST_DB_PER_RUN`` must not be inherited by pytest.
-
-        Five cases in the sibling module re-invoke this wrapper with the
-        whole environment.  With the flag inherited, each re-entered per-run
-        mode, started two more containers nested inside the suite, and
-        asserted on a state message it never received: measured 8 failed.
         """
         binaries = _stub_tree(tmp_path)
-        result = _run_wrapper(binaries, {"TEST_DB_PER_RUN": "1"})
+        result = _run_wrapper(binaries, {})
         env_dump = tmp_path / "pytest-env.json"
 
         assert env_dump.exists(), (
@@ -244,25 +250,60 @@ class TestThePerRunFlagDoesNotReachPytest:
         )
         handed = json.loads(env_dump.read_text(encoding="utf-8"))
 
-        assert "TEST_DB_PER_RUN" not in handed, (
-            "pytest inherited TEST_DB_PER_RUN, so any child that re-invokes "
-            "this wrapper re-enters per-run mode and spawns nested containers"
-        )
-        # The DSNs it DOES need must still be there, or the child would talk
-        # to the wrong cluster -- the scrub has to be surgical.
-        for required in (
-            "TEST_ADMIN_DATABASE_URL",
-            "TEST_TEMPLATE_DATABASE",
-        ):
+        for required in ("TEST_ADMIN_DATABASE_URL", "TEST_DATABASE_URL"):
             assert required in handed, f"{required} was not handed to pytest"
-        assert "?host=/" in handed["TEST_ADMIN_DATABASE_URL"], (
-            "the admin DSN does not name the private cluster's socket "
-            f"directory: {handed['TEST_ADMIN_DATABASE_URL']}"
-        )
+            # The socket DIRECTORY, and this RUN's: a bare ``?host=/`` would
+            # pass for any socket-shaped DSN, a dotenv's included.  The
+            # wrapper names the directory after the container, which carries
+            # its PID.
+            assert "?host=" in handed[required], (
+                f"{required} does not name a unix socket at all, so it is not "
+                f"this run's private cluster: {handed[required]}"
+            )
+            assert "/shekel-testrun-" in handed[required], (
+                f"{required} does not name a directory this invocation made "
+                f"-- it may be coming from somewhere shared: {handed[required]}"
+            )
 
 
 class TestThePrivateClusterIsCleanedUp:
     """The container is removed with its volume, on every path."""
+
+    @pytest.mark.parametrize("signal_name", ["EXIT", "INT", "TERM", "HUP"])
+    def test_teardown_is_armed_for_every_signal_that_can_end_a_run(
+        self, signal_name: str
+    ) -> None:
+        """An untrapped fatal signal skips the EXIT trap and leaks the cluster.
+
+        Bash runs the EXIT trap on a normal exit and on a signal it has a
+        handler for -- and NOT on an untrapped fatal signal, which terminates
+        the shell outright.  So each of these needs its own arm, and each has
+        a way of arriving: INT is Ctrl-C at the terminal, TERM is what
+        ``timeout`` and process supervisors send, and HUP is the terminal
+        closing on a running suite.  HUP was the one missing, while the
+        wrapper's own header claimed every exit path was covered.
+
+        A leaked container is not merely untidy: the run names it after its
+        PID, and the wrapper's teardown warns that a survivor collides with
+        the next run that reuses that PID.
+
+        This reads the SOURCE rather than delivering real signals, which is
+        what the module's socket-budget test does for the same reason -- the
+        behaviour needs a live container and a race, and what actually
+        regresses is an arm being dropped from the trap list.
+
+        Args:
+            signal_name: The signal whose arm must be present.
+        """
+        source = _TEST_RUNNER.read_text(encoding="utf-8")
+
+        armed = re.findall(r"^trap\s+'[^']*'\s+([A-Z]+)$", source, re.M)
+
+        assert signal_name in armed, (
+            f"scripts/test.sh does not trap {signal_name}; it traps {armed}. "
+            "A run ended that way leaks its postgres container and its socket "
+            "directory, and the next run reusing that PID collides with them."
+        )
 
     def test_the_container_is_removed_with_its_volume(
         self, tmp_path: Path
@@ -277,7 +318,7 @@ class TestThePrivateClusterIsCleanedUp:
         invocations.
         """
         binaries = _stub_tree(tmp_path)
-        _run_wrapper(binaries, {"TEST_DB_PER_RUN": "1"})
+        _run_wrapper(binaries, {})
         calls = (tmp_path / "docker-calls").read_text(encoding="utf-8")
 
         removals = [line for line in calls.splitlines() if line.startswith("rm ")]
@@ -299,7 +340,7 @@ class TestThePrivateClusterIsCleanedUp:
         With them the same suite is 342.8 s, marginally FASTER than shared.
         """
         binaries = _stub_tree(tmp_path)
-        _run_wrapper(binaries, {"TEST_DB_PER_RUN": "1"})
+        _run_wrapper(binaries, {})
         calls = (tmp_path / "docker-calls").read_text(encoding="utf-8")
 
         run_lines = [line for line in calls.splitlines() if line.startswith("run ")]
@@ -332,7 +373,7 @@ class TestPerRunModeRefusesTheProductionDaemon:
         """The default socket must not receive a container per run."""
         result = _run_wrapper(
             _stub_tree(tmp_path, rootless=False),
-            {"TEST_DB_PER_RUN": "1", "DOCKER_HOST": "unix:///var/run/docker.sock"},
+            {"DOCKER_HOST": "unix:///var/run/docker.sock"},
         )
 
         assert result.returncode == 2, result.stderr
@@ -346,7 +387,7 @@ class TestPerRunModeRefusesTheProductionDaemon:
         binaries = _stub_tree(tmp_path, rootless=False)
         _run_wrapper(
             binaries,
-            {"TEST_DB_PER_RUN": "1", "DOCKER_HOST": "unix:///var/run/docker.sock"},
+            {"DOCKER_HOST": "unix:///var/run/docker.sock"},
         )
         calls = (tmp_path / "docker-calls").read_text(encoding="utf-8").split("\n")
 
@@ -368,7 +409,6 @@ class TestPerRunModeRefusesTheProductionDaemon:
         result = _run_wrapper(
             binaries,
             {
-                "TEST_DB_PER_RUN": "1",
                 "DOCKER_HOST": "unix:///var/run/docker.sock",
                 **sanction,
             },
@@ -391,7 +431,6 @@ class TestPerRunModeRefusesTheProductionDaemon:
         result = _run_wrapper(
             _stub_tree(tmp_path, rootless=False),
             {
-                "TEST_DB_PER_RUN": "1",
                 "DOCKER_HOST": "unix:///var/run/docker.sock",
                 "CI": value,
             },
@@ -424,7 +463,7 @@ class TestPerRunModeRefusesTheProductionDaemon:
         )
         (binaries / "docker").chmod(0o755)
 
-        result = _run_wrapper(binaries, {"TEST_DB_PER_RUN": "1"})
+        result = _run_wrapper(binaries, {})
 
         assert result.returncode == 2, result.stderr
         assert "could not ask" in result.stderr, result.stderr
@@ -447,7 +486,7 @@ class TestPerRunModeRefusesTheProductionDaemon:
             binaries = _stub_tree(tmp_path)
             result = _run_wrapper(
                 binaries,
-                {"TEST_DB_PER_RUN": "1", "XDG_RUNTIME_DIR": str(runtime_dir)},
+                {"XDG_RUNTIME_DIR": str(runtime_dir)},
             )
             assert result.returncode == 0, result.stderr
             handed = json.loads(
@@ -475,7 +514,7 @@ class TestThePrivateClusterHasNoPort:
     def test_no_port_is_published(self, tmp_path: Path) -> None:
         """A published port re-opens the collision class outright."""
         binaries = _stub_tree(tmp_path)
-        _run_wrapper(binaries, {"TEST_DB_PER_RUN": "1"})
+        _run_wrapper(binaries, {})
         calls = (tmp_path / "docker-calls").read_text(encoding="utf-8")
 
         started = [ln for ln in calls.splitlines() if ln.startswith("run ")]
@@ -494,7 +533,7 @@ class TestThePrivateClusterHasNoPort:
         does not care which driver is in use.
         """
         binaries = _stub_tree(tmp_path)
-        _run_wrapper(binaries, {"TEST_DB_PER_RUN": "1"})
+        _run_wrapper(binaries, {})
         started = [
             ln
             for ln in (tmp_path / "docker-calls")
@@ -523,7 +562,7 @@ class TestThePrivateClusterHasNoPort:
         against ``/sockets``.
         """
         binaries = _stub_tree(tmp_path)
-        _run_wrapper(binaries, {"TEST_DB_PER_RUN": "1"})
+        _run_wrapper(binaries, {})
         started = [
             ln
             for ln in (tmp_path / "docker-calls")
@@ -548,7 +587,7 @@ class TestThePrivateClusterHasNoPort:
             binaries = _stub_tree(tmp_path)
             result = _run_wrapper(
                 binaries,
-                {"TEST_DB_PER_RUN": "1", "XDG_RUNTIME_DIR": str(runtime)},
+                {"XDG_RUNTIME_DIR": str(runtime)},
             )
             assert result.returncode == 0, result.stderr
             leftovers = list(runtime.glob("shekel-testrun-*"))
@@ -569,7 +608,7 @@ class TestThePrivateClusterHasNoPort:
             binaries = _stub_tree(tmp_path)
             result = _run_wrapper(
                 binaries,
-                {"TEST_DB_PER_RUN": "1", "XDG_RUNTIME_DIR": str(runtime)},
+                {"XDG_RUNTIME_DIR": str(runtime)},
             )
 
             assert result.returncode == 2, result.stdout + result.stderr
@@ -633,7 +672,7 @@ class TestAReadyContainerWithNoSocketIsRefused:
         """`pg_isready` answering is not proof the socket is on the host."""
         binaries = _stub_tree(tmp_path, make_socket=False)
 
-        result = _run_wrapper(binaries, {"TEST_DB_PER_RUN": "1"})
+        result = _run_wrapper(binaries, {})
 
         assert result.returncode == 2, (
             "a DSN naming a nonexistent socket was handed to pytest: "

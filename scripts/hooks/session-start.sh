@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # SessionStart: print the multi-session context every Shekel session needs
-# before its first action -- where it stands, who coordinates merges, whether
-# the shared suite slot is held, and what the plan of record says is next.
+# before its first action -- where it stands, who coordinates merges, and what
+# the plan of record says is next.
+#
+# It used to report the shared suite slot too.  ``balance:X-br-4`` deleted the
+# slot: ``scripts/test.sh`` gives every run a private cluster, so there is no
+# shared postmaster left for two runs to serialise against.
 #
 # stdout on exit 0 is added to the session's context (the SessionStart hook
 # contract). A status hook must never block a session, so every probe fails
@@ -18,12 +22,6 @@ toplevel="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" || toplevel="$
 echo "Shekel session context (SessionStart hook):"
 echo "- checkout: ${toplevel}, branch: ${branch}"
 echo "- coordination doctrine: CLAUDE.md, Multi-session operation (stated once there, not here)"
-
-if [ -x "${toplevel}/scripts/suite_slot.sh" ]; then
-    slot="$("${toplevel}/scripts/suite_slot.sh" status 2>&1)" || true
-    echo "- suite slot:"
-    printf '%s\n' "$slot" | sed 's/^/    /'
-fi
 
 steps="${toplevel}/docs/plans/steps.md"
 if [ -r "$steps" ]; then

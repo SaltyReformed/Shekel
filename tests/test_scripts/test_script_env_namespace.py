@@ -9,12 +9,19 @@ once: a worktree isolating its suite with ``DB_CONTAINER=<name>-test-db``
 silently re-aimed ``restore.sh``, and an operator who exported
 ``DB_CONTAINER=shekel-prod-db`` for a backup then aimed the test runner's
 ``docker restart`` at production.  ``deploy/shekel-deploy.sh`` had already
-sidestepped it by reading ``SHEKEL_DB_CONTAINER``; the test runner now reads
+sidestepped it by reading ``SHEKEL_DB_CONTAINER``; the test runner took
 ``TEST_DB_CONTAINER``.
 
-Nothing structural stops the name coming back -- shell environments are one
-flat namespace and the two scripts never import each other -- so the
-invariant is asserted here rather than left to a reviewer's memory.
+**That specific collision is now structurally gone, and the general one is
+not, which is why this module stayed.**  ``balance:X-br-4`` deleted the
+shared container along with the restart, so the runner no longer takes a
+container name from anybody: it names its own throwaway
+``shekel-testrun-$$``.  What it still does is ``docker rm -fv`` -- so the
+shape survives with a different verb, and any future knob naming a container
+would re-arm it.  Nothing structural stops the name coming back either --
+shell environments are one flat namespace and the two scripts never import
+each other -- so the invariant is asserted here rather than left to a
+reviewer's memory.
 
 The comparison set is DISCOVERED, not listed
     An earlier draft of this module hand-listed "every script that writes to
@@ -32,8 +39,9 @@ The comparison set is DISCOVERED, not listed
     script added under ``tools/`` or ``.github/`` would not be compared, and
     the floor test below pins one member per root so a root that stops
     resolving fails loudly instead of shrinking the sweep in silence.
-    Measured 2026-09-04: 19 scripts, zero collisions, so the broad form
-    costs nothing today.
+    Measured 2026-09-05: 18 scripts, zero collisions, so the broad form
+    costs nothing today.  (19 on 2026-09-04, before ``balance:X-br-4``
+    deleted ``scripts/suite_slot.sh``.)
 
 What the extractor matches, and which way it errs
     It collects UPPER-CASE names three ways: both expansion forms,
@@ -49,18 +57,19 @@ What the extractor matches, and which way it errs
     not narrow the pattern back.  Nothing else catches that shape either:
     shellcheck flags UNQUOTED expansions, not unbraced ones -- SC2250 is
     optional and this repo's ``.shellcheckrc`` does not enable it, and
-    ``scripts/test.sh`` itself expands ``"$TEST_DB_CONTAINER"`` unbraced
-    throughout while shellcheck exits clean; count them with
-    ``grep -o '\$TEST_DB_CONTAINER' scripts/test.sh | wc -l`` rather than
+    ``scripts/test.sh`` itself expands ``"$PYTEST_MARKER_EXPR"`` unbraced
+    while shellcheck exits clean.  Count such expansions with
+    ``grep -o '\$[A-Z][A-Z0-9_]*' scripts/test.sh | wc -l`` rather than
     trusting a number here (``grep -c`` counts matching LINES, so it
     undercounts any line carrying two expansions -- the first instrument
     written to replace an untrustworthy number was itself the wrong tool).
     This sentence carried a literal count twice and was wrong
     both times -- "seven", then "nine" against an actual twelve, each written
-    just after editing the very file being counted.  A figure that must be
-    re-derived on every edit of its own subject does not belong in prose, and
-    the argument never needed it: what matters is that the form is used at
-    all and that nothing else flags it.
+    just after editing the very file being counted; the variable those counts
+    were OF has since been deleted, which is a third way for such a figure to
+    go wrong.  A figure that must be re-derived on every edit of its own
+    subject does not belong in prose, and the argument never needed it: what
+    matters is that the form is used at all and that nothing else flags it.
 
     Case is the filter that keeps this quiet enough to live with.  Operator
     -settable variables in these scripts are ALL-CAPS by convention and
@@ -69,13 +78,16 @@ What the extractor matches, and which way it errs
     name an export can reach.
 
     What this does NOT assert is that the runner's variables are unshared in
-    general.  ``TEST_DATABASE_URL``, ``TEST_DB_PREFIX`` and
-    ``TEST_TEMPLATE_DATABASE`` are deliberately shared operator variables --
-    set in ``.env``, read by ``tests/conftest.py`` and
-    ``scripts/build_test_template.py``, and exported by the runner on
-    purpose.  Those consumers are PYTHON and are outside this sweep by
-    construction; the invariant here is between the runner and other SHELL
-    scripts, which is where the flat-namespace hazard lives.
+    general.  ``TEST_DATABASE_URL`` and ``TEST_ADMIN_DATABASE_URL`` are
+    deliberately shared -- the runner EXPORTS both, naming its private
+    cluster's socket, and ``tests/conftest.py`` reads them.  (Until
+    ``balance:X-br-4`` two more were shared the other direction,
+    ``TEST_DB_PREFIX`` and ``TEST_TEMPLATE_DATABASE``, read from ``.env`` by
+    the runner and by ``scripts/build_test_template.py``; a cluster per run
+    left them nothing to name apart and they were deleted.)  Those consumers
+    are PYTHON and are outside this sweep by construction; the invariant here
+    is between the runner and other SHELL scripts, which is where the
+    flat-namespace hazard lives.
 
     It still OVER-connects, deliberately: ``deploy/shekel-deploy.sh``
     assigns its own local ``DB_CONTAINER`` from ``SHEKEL_DB_CONTAINER`` and
@@ -107,8 +119,8 @@ _ENV_READ = re.compile(r"\$\{?([A-Z][A-Z0-9_]*)\b")
 #
 # That line never EXPANDS ``DB_CONTAINER``, so a read-only extractor stays
 # green while the runner injects the production container's name into every
-# child process it spawns.  Measured 2026-09-04: unioning assignments adds
-# zero names to the runner's set and zero collisions across all 19 scripts,
+# child process it spawns.  Measured 2026-09-05: unioning assignments adds
+# zero names to the runner's set and zero collisions across all 18 scripts,
 # so this costs nothing today and closes the shape.
 _ENV_WRITE = re.compile(r"^[ \t]*(?:export[ \t]+)?([A-Z][A-Z0-9_]*)=", re.M)
 
@@ -130,9 +142,10 @@ _SHELL_OWNED = frozenset(
     }
 )
 
-# The smallest count that proves discovery ran.  Well under the 19 measured
-# on 2026-09-04, so ordinary churn does not trip it, but far above what a
-# broken glob returns.
+# The smallest count that proves discovery ran.  Well under the 18 measured
+# on 2026-09-05 (19 on 2026-09-04, before ``balance:X-br-4`` deleted
+# ``scripts/suite_slot.sh``), so ordinary churn does not trip it, but far
+# above what a broken glob returns.
 _MIN_DISCOVERED_SCRIPTS = 12
 
 
@@ -246,9 +259,13 @@ class TestScriptEnvNamespace:
         runner = _upper_case_names(_TEST_RUNNER)
         restore = _upper_case_names(Path("scripts/restore.sh"))
 
-        assert "TEST_DB_CONTAINER" in runner, (
+        assert "TEST_DB_IMAGE" in runner, (
             f"extractor found {sorted(runner)} in {_TEST_RUNNER}, which does "
-            "not include the container name it demonstrably reads"
+            "not include an operator variable it demonstrably reads.  The pin "
+            "was TEST_DB_CONTAINER until balance:X-br-4 deleted the shared "
+            "container; if TEST_DB_IMAGE goes the same way, repin it on "
+            "another name the runner reads rather than dropping this "
+            "assertion -- two empty sets are disjoint"
         )
         assert "DB_CONTAINER" in restore, (
             f"extractor found {sorted(restore)} in scripts/restore.sh, which "
@@ -322,7 +339,7 @@ class TestScriptEnvNamespace:
             "the production container.  Three remedies, in the order to "
             "consider them: give whichever side is newer its own prefixed "
             "name (TEST_ for the runner, SHEKEL_ for deploy, as "
-            "TEST_DB_CONTAINER and SHEKEL_DB_CONTAINER already do); or, if "
+            "TEST_DB_IMAGE and SHEKEL_DB_CONTAINER already do); or, if "
             "it is a script-internal local, lower-case it, since this check "
             "reads ALL-CAPS as operator-settable by convention; or, if the "
             "sharing is deliberate and safe, narrow this test and say why "
@@ -330,9 +347,18 @@ class TestScriptEnvNamespace:
         )
 
     def test_runner_does_not_read_the_bare_db_container(self) -> None:
-        """The specific regression: ``DB_CONTAINER`` is production's alone."""
+        """The specific regression: ``DB_CONTAINER`` is production's alone.
+
+        The runner no longer takes a container name from anyone -- it names
+        its own ``shekel-testrun-$$`` -- so this is a guard against the knob
+        coming back, not against one that is there.  It is worth keeping
+        because the runner still runs ``docker rm -fv`` on whatever it is
+        pointed at: the verb changed from ``docker restart`` and the
+        consequence did not.
+        """
         assert "DB_CONTAINER" not in _upper_case_names(_TEST_RUNNER), (
             "scripts/test.sh reads the bare DB_CONTAINER again.  That name "
             "means the PRODUCTION container to scripts/restore.sh, which "
-            "DROPs the database it is given.  Use TEST_DB_CONTAINER."
+            "DROPs the database it is given -- and this runner force-removes "
+            "the container it is given.  Prefix any such name with TEST_."
         )

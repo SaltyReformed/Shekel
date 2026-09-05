@@ -368,23 +368,25 @@ Edit `.env` and set at minimum:
 SECRET_KEY=<any random string for dev>
 ```
 
-The default `DATABASE_URL` and `TEST_DATABASE_URL` in `.env.example` point to `localhost:5432` and
-`localhost:5433`, which match the dev Docker databases started in the next step.
+The default `DATABASE_URL` in `.env.example` points to `localhost:5432`, which matches the dev
+Docker database started in the next step. There is no `TEST_DATABASE_URL` to set:
+`./scripts/test.sh` exports the test DSNs at the throwaway cluster it starts for each run.
 
-### 4. Start the Dev Databases
+### 4. Start the Dev Database
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d db test-db
+docker compose -f docker-compose.dev.yml up -d db
 ```
 
-This starts two PostgreSQL containers:
+This starts one PostgreSQL container:
 
 - `shekel-dev-db` on port 5432 (development database)
-- `shekel-dev-test-db` on port 5433 (test database)
 
-**Important:** These containers use project name `shekel-dev` and are fully isolated from
-production. Running `docker compose down -v` from the production directory cannot affect them, and
-vice versa.
+**There is no test database to start.** `./scripts/test.sh` creates a throwaway postgres container
+of its own for every run and removes it afterwards, so the suite needs nothing running beforehand.
+
+**Important:** This container uses project name `shekel-dev` and is fully isolated from production.
+Running `docker compose down -v` from the production directory cannot affect them, and vice versa.
 
 ### 5. Initialize the Database
 
@@ -423,17 +425,29 @@ configuration steps.
 
 ### Running Tests
 
+Run the suite through `./scripts/test.sh`, never bare `pytest`. The wrapper starts a throwaway
+PostgreSQL container for the run -- the test template baked into it -- exports the test DSNs at its
+unix socket, and removes it afterwards. A bare `pytest` has no database to reach.
+
 ```bash
-# Run all tests (use timeout -- full suite takes ~9 minutes)
-timeout 660 pytest -v --tb=short
+# Run all tests (the full suite is minutes, not seconds)
+./scripts/test.sh
 
 # Run with coverage
-timeout 660 pytest --cov=app --cov-report=term-missing
+./scripts/test.sh --cov=app --cov-report=term-missing
 
 # Run specific test files (fast feedback during development)
-pytest tests/test_services/test_cash_fold.py -v
-pytest tests/test_routes/test_grid.py -v
+./scripts/test.sh tests/test_services/test_cash_fold.py -v
+./scripts/test.sh tests/test_routes/test_grid.py -v
 ```
+
+**Prerequisite: a rootless Docker daemon.** The wrapper refuses a non-rootless one rather than
+spawning a container per run on the daemon that serves production, so without it every invocation
+exits 2 with instructions. Start it with `systemctl --user start docker.service` and
+`loginctl enable-linger $USER`; the full host setup is in `docs/test-harness-isolation.md`.
+
+Do not wrap the wrapper in `timeout`: it forwards INT, TERM and HUP to pytest and tears its
+container down, and an outer `timeout`'s SIGKILL escalation defeats both.
 
 ### Database Migrations
 
