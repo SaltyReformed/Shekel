@@ -790,7 +790,7 @@ class TestTheAcceptedFoldDoesNotScaleWithTheAccount:
         listener = lambda *args, **kwargs: seen.append(1)  # noqa: E731
         event.listen(db.engine, "before_cursor_execute", listener)
         try:
-            statement_match.register_set(
+            statement_match.accepted_register(
                 seed_user["user"].id, seed_user["account"].id, None,
             )
         finally:
@@ -1061,12 +1061,12 @@ class TestTheRegisterBoundsWhatItRenders:
         for ordinal in range(3):
             self._an_act(seed_user, ordinal)
 
-        register = statement_match.register_set(
+        register = statement_match.accepted_register(
             seed_user["user"].id, seed_user["account"].id, 1,
         )
 
-        assert len(register.accepted.shown) == 1
-        assert register.accepted.withheld_count == 2
+        assert len(register.shown) == 1
+        assert register.withheld_count == 2
 
     def test_an_act_that_NO_LONGER_HOLDS_is_shown_however_old(
         self, app, db, seed_user,
@@ -1092,30 +1092,30 @@ class TestTheRegisterBoundsWhatItRenders:
         )
         db.session.flush()
 
-        register = statement_match.register_set(
+        register = statement_match.accepted_register(
             seed_user["user"].id, seed_user["account"].id, 1,
         )
 
-        shown = [group.match_id for group in register.accepted.shown]
+        shown = [group.match_id for group in register.shown]
         assert doomed.match_id in shown, (
             "the act that no longer holds was withheld by the bound"
         )
         assert shown[0] == doomed.match_id, (
             "an act that no longer holds must sort above the ones that do"
         )
-        assert register.accepted.withheld_count == 1
+        assert register.withheld_count == 1
 
     def test_NO_bound_renders_the_whole_record(self, app, db, seed_user):
         """What the *show everything* link asks for."""
         for ordinal in range(3):
             self._an_act(seed_user, ordinal)
 
-        register = statement_match.register_set(
+        register = statement_match.accepted_register(
             seed_user["user"].id, seed_user["account"].id, None,
         )
 
-        assert len(register.accepted.shown) == 3
-        assert register.accepted.withheld_count == 0
+        assert len(register.shown) == 3
+        assert register.withheld_count == 0
 
 
 class TestTheDeleteRemovesTheRowItWasHANDED:

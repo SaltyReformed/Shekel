@@ -406,20 +406,15 @@ class TestWhatTheScreenSaysInstead:
         assert "Restate" in bound.restatement_act
         assert "Restate" not in bound.said
 
-    def test_both_bound_flags_include_it(self, app, db, seed_user):
-        """The two panels ask ONE question each, answered in the service.
-
-        FIRING CONTROL for the partition: a books bound absent from
-        ``any_pick_list_limit`` leaves the workbench captioning a line list
-        shorter than it claims, which is the *no silent caps* rule.
-        """
-        day = _the_calendars_first_day(db, seed_user)
-        a_bank_line(seed_user, an_import(seed_user), posted_on=day)
-
-        bounds = review_set(a_scope(seed_user)).bounds
-
-        assert bounds.any_limit is True
-        assert bounds.any_pick_list_limit is True
+    # **The two bound FLAGS went at plan step ``bank_import:X-gi-3``**, and
+    # with them ``test_both_bound_flags_include_it``.  ``any_limit`` was the
+    # review queue's *anything unexamined* question and ``any_pick_list_limit``
+    # the workbench's; ``bank_import:X-gi-2`` deleted both templates, which
+    # left the two properties with no app reader (finding **bank_import:BI-480**).
+    # What the books bound is FOR is unchanged and is graded above and below:
+    # it is ``ReconcilePage.books_bound``, which carries an ACT, and the
+    # Reconcile page decides for itself which bounds it states
+    # (``_reconcile._unexamined``).
 
     def test_the_two_day_bounds_are_DISJOINT(self, app, db, seed_user):
         """A line before BOTH bounds is counted ONCE, under the calendar.

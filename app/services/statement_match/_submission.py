@@ -78,7 +78,7 @@ _TOKEN_FIELDS: int = 4
 #:
 #: **Nothing TIES this to the producer, and the failure mode is the whole
 #: pass rather than one item.**  A figure outside it renders a token this same
-#: module refuses, the schema raises, and ``batch_payload`` fails the entire
+#: module refuses, the schema raises, and the pass reader fails the entire
 #: submission at 400 -- so every apply on that account would die under a
 #: message blaming the owner's page.  The control is a test rather than a type:
 #: ``test_candidates.TestEveryOFFEREDRowCanCarryItsOwnTokenBack`` round-trips
@@ -392,9 +392,9 @@ class MatchSubmission:
     **The real alternative was NOT "two parallel lists", and an adversarial
     review was right that arguing against that one is arguing against a straw**
     (2026-08-23).  This POST already carries per-row attributes another way:
-    :func:`~app.schemas.validation.statements._creation_items` keys them by row
-    id IN THE FIELD NAME (``destination-<line_id>``,
-    ``envelope_name-<line_id>``), assembled by scanning prefixed keys -- so
+    :func:`~app.schemas.validation.statement_reconcile.reconcile_payload`
+    keys them by row id IN THE FIELD NAME (``destination-<line_id>``,
+    ``envelope_name-<line_id>``) -- so
     ``match-<i>-row-<kind>-<id>-figure`` and ``-version`` was available, needs
     no format of its own, and cannot desynchronise because the key IS the
     identity.  **What decided it is that a match names N rows where a creation

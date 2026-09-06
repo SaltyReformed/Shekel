@@ -661,8 +661,8 @@ def _one_creatable(
         pay_period_id=period_id,
         destinations=tuple(offered),
         # **No placement where the door would refuse**, which is the pairing
-        # the ``Returns`` above argues for: a placement is what
-        # :func:`~._queue._sweeps_for` counts and what a one-click sweep
+        # the ``Returns`` above argues for: a placement is what the inbox's
+        # sweep counts and what a one-click sweep
         # presses, so a refused line carrying one is a bulk control that
         # cannot succeed.
         placement=(

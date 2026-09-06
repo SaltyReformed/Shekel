@@ -41,7 +41,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.statement_match import StatementMatch
 from app.services import statement_match
 from app.services.statement_match import (
-    register_set,
+    merchant_directory,
     CreationBar,
     CreationBars,
     NewEnvelope,
@@ -845,12 +845,17 @@ class TestWhatTheScreenShowsInstead:
         as an account payment is entitled to see why their Save is now being
         refused.
 
-        **Read off the REGISTER since plan step ``bank_import:X-gf-2``** (ruling
-        **bank_import:R-GX**), and the move is the case rather than a detour:
-        this merchant HAS been answered for, so its row is where answers are
-        changed -- and the flag has to survive the move, because the register
-        is now the only surface offering that owner the two options the door
-        refuses.
+        **Read off the MERCHANTS surface** (plan step ``bank_import:X-gk``,
+        ruling **bank_import:R-IC**), and the surface is the case rather than a
+        detour: this merchant HAS been answered for, so its row is where
+        answers are changed -- and the flag has to survive the move, because
+        that surface is the only one offering this owner the two options the
+        door refuses.
+
+        *It read the REGISTER from plan step ``bank_import:X-gf-2`` until
+        ``bank_import:X-gi-3`` deleted it; the row is the same
+        :class:`MerchantSummary` either way, which is why the assertions are
+        unchanged.*
         """
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)
@@ -858,10 +863,10 @@ class TestWhatTheScreenShowsInstead:
         db.session.commit()
 
         row = {
-            item.merchant: item
-            for item in register_set(
-                seed_user["user"].id, seed_user["account"].id,
-            ).merchants.merchants
+            entry.summary.merchant: entry.summary
+            for entry in merchant_directory(
+                seed_user["user"].id, seed_user["account"].id, {},
+            ).entries
         }[CARD_MERCHANT]
 
         assert row.rule.answer is RuleAnswer.NEVER

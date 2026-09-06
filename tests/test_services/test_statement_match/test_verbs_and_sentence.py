@@ -492,9 +492,10 @@ class TestTheOKControlFollowsTheDOORAndNotTheSentence:
 class TestNoSweptCardCarriesASentenceOrMoneyAtRisk:
     """The developer's ruling of 2026-08-28, restated as a predicate.
 
-    :func:`~._queue._sweeps_for` kept it by giving sweeps to one evidence
-    group only -- a coupling to a grouping ruling **R-HP** has since replaced.
-    Stated on the value, it survives the regrouping.
+    The retired queue's ``_sweeps_for`` kept it by giving sweeps to one
+    evidence group only -- a coupling to a grouping ruling **R-HP** has since
+    replaced.  Stated on the value, it survives the regrouping, and it
+    outlived that producer: plan step ``bank_import:X-gi-3`` deleted it.
     """
 
     def _card(self, *, notes=(), arrivals_already_held=None, risk="into_open"):
