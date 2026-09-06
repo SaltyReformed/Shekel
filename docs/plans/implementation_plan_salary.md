@@ -173,16 +173,18 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       and no reader. **A LATER LEAF MUST OBEY**: the column is LIVE to the engine the moment it
       exists, `apply_raises` having probed it by `getattr` since S3-a, so what keeps figures unmoved
       is that it is all-NULL.
-- [ ] **S3-c -- THE CUTOVER.** The stored end year becomes a raise's only source of termination;
-      `_terminate_after_horizon` and `merit_raise_horizon_years` go. **MOVES MONEY**, and
-      **IT OPENS ON A STOP**: the developer deferred the `/retirement` lever fork to this step's own
-      session. The worked option space is `~/projects/shekel-r14-handoff/s3b_shipped_s3c_handoff.md`
-      section 1, including its *Also unruled inside A* subsection. Two inherited obligations: delete
-      `_terminate_after_horizon` in the SAME change that opens the write door, or a stored end year
-      is overwritten by the global cutoff; and `get_raise_event` badges a raise in years after its
-      end.
+- [x] **S3-c** `62567d87` -- THE CUTOVER: the stored end year is a raise's only source of
+      termination, `_terminate_after_horizon` and `merit_raise_horizon_years` gone, migration
+      `d4e8b1c62f07` BACKFILLS (**R-SAL12**) and a new recurring raise is asked its span with no
+      default (**R-SAL13**). **A LATER STEP MUST OBEY**: the downgrade is state-lossy, so a lossless
+      rollback needs `UPDATE salary.salary_raises SET terminal_year = NULL` beside it; the deploy
+      script's own rollback is dump-and-restore.
 - [ ] **S3-d** -- `income_service.project_profile` takes a HORIZON and prices to it. Carries
       **N-540**.
+- [ ] **S3-f** -- the PER-RAISE probe and its Save on the `/retirement` rail. **OPENS ON A STOP**:
+      the developer asked *"how would you design this from scratch"* and has not answered the lane's
+      reply, so the design is undecided. Its id was cited in four files `S3-c` shipped before this
+      row existed.
 - [ ] **S3-e** -- delete `AccountPayrollFeed`'s hold and `salary_basis(beyond=)`; `employee_at`
       becomes a lookup that RAISES past the horizon. Closes **N-541**.
 - [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (**R-SAL3**; findings **F-21**,

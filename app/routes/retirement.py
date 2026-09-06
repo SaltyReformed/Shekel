@@ -50,7 +50,7 @@ _PENSION_FIELDS = {
 }
 _SETTINGS_FIELDS = {
     "safe_withdrawal_rate", "planned_retirement_date",
-    "estimated_retirement_tax_rate", "merit_raise_horizon_years",
+    "estimated_retirement_tax_rate",
 }
 
 # Name of the composite unique constraint that backstops the
@@ -83,8 +83,9 @@ def dashboard():
     what-if-only assumed-return row, and the settings row the included
     assumptions rail echoes its stored values from (P4 live-verify
     defect: the P3c slim dropped ``settings``, so every rail input
-    rendered its empty/fallback state -- the stored SWR invisible, the
-    merit horizon showing the template literal 5).  The legacy gap-table
+    rendered its empty/fallback state, the stored SWR invisible).  The rail
+    also reads the owner's active salary profiles, whose recurring raises it
+    states the end year of (plan step salary:S3-c).  The legacy gap-table
     context (gap analysis, chart data, SWR slider default) retired with
     the old page (P3c).
 
@@ -128,6 +129,10 @@ def dashboard():
         salary_profiles=inputs.gap.salary_profiles,
         settings=inputs.gap.settings,
         date_provenance=readiness["date_provenance"],
+        raise_assumptions=(
+            retirement_dashboard_service
+            .resolve_recurring_raise_assumptions(inputs.gap.salary_profiles)
+        ),
     )
 
 
@@ -394,7 +399,7 @@ def delete_pension(pension_id):
 def readiness_fragment():
     """HTMX fragment: readiness verdict with optional what-if overrides.
 
-    Optional ``swr`` / ``return_rate`` / ``merit_raise_horizon_years``
+    Optional ``swr`` / ``return_rate``
     query parameters recompute the readiness picture as a what-if against
     the stored-settings baseline and return the panel's delta facts
     (funded-ratio delta in points, shortfall delta in dollars); optional
@@ -432,14 +437,13 @@ def readiness_fragment():
     inputs = retirement_plan.load_retirement_inputs(
         BalanceContext.build(current_user.id),
     )
-    # RESOLVED against the owner's settings, not carried as overrides: the
-    # merit-horizon input is pre-filled with the stored value and so submits it
+    # RESOLVED against the owner's settings, not carried as overrides: a
+    # saveable rail input is pre-filled with the stored value and so submits it
     # on every request, and an override that equals the stored value is the
     # stored plan.  ``plan_with`` is the door that makes those one key.
     point = inputs.plan_with(
         swr_override=query_data.get("swr"),
         return_rate_override=query_data.get("return_rate"),
-        merit_horizon_override=query_data.get("merit_raise_horizon_years"),
     )
     whatif = retirement_readiness.compute_readiness_whatif(inputs, point)
     return render_template(
@@ -505,6 +509,15 @@ def update_settings():
         .filter_by(user_id=current_user.id, is_active=True)
         .all()
     )
+    # The rail states the end year of every recurring raise (plan step
+    # salary:S3-c), so its re-render needs them exactly as the dashboard's
+    # include does.  Loaded beside the pensions above rather than through a
+    # read pass: this route derives no picture and opens none.
+    salary_profiles = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .all()
+    )
 
     def rail_response(rail_errors, form_data):
         """Render the assumptions fragment with freshly resolved provenance.
@@ -520,6 +533,10 @@ def update_settings():
             date_provenance=(
                 retirement_dashboard_service
                 .resolve_retirement_date_provenance(pensions, settings)
+            ),
+            raise_assumptions=(
+                retirement_dashboard_service
+                .resolve_recurring_raise_assumptions(salary_profiles)
             ),
         )
 

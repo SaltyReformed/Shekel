@@ -42,7 +42,16 @@
                marker, paired with screen-reader text (P-SA2 / RC3). #}
             {% if r.is_recurring %}
               <i class="bi bi-arrow-repeat text-accent" aria-hidden="true"></i>
-              <span class="visually-hidden">Recurring</span>
+              {# The last year it is believed, stated on the row rather than
+                 only inside the edit form: it moves every projected figure
+                 past it, so a raise whose belief ends must not look like one
+                 that runs forever (plan step salary:S3-c). #}
+              {% if r.terminal_year %}
+              <span class="visually-hidden">Recurring, ends after</span>
+              <small class="text-muted">through {{ r.terminal_year }}</small>
+              {% else %}
+              <span class="visually-hidden">Recurring, no end year</span>
+              {% endif %}
             {% else %}
               <i class="bi bi-dash text-muted" aria-hidden="true"></i>
               <span class="visually-hidden">One-time</span>
@@ -57,6 +66,7 @@
                     data-raise-percentage="{{ '%.2f'|format((r.percentage|to_percent)) if r.percentage else '' }}"
                     data-raise-flat="{{ '%.2f'|format(r.flat_amount) if r.flat_amount else '' }}"
                     data-raise-recurring="{{ 'true' if r.is_recurring else 'false' }}"
+                    data-raise-terminal-year="{{ r.terminal_year if r.terminal_year else '' }}"
                     data-raise-version-id="{{ r.version_id }}"
                     data-raise-edit-url="{{ url_for('salary.update_raise', raise_id=r.id) }}">
               <i class="bi bi-pencil"></i>
@@ -139,7 +149,46 @@
               </label>
             </div>
           </div>
-          <div class="col-md-1">
+        </div>
+        {# How long the raise is BELIEVED, asked with no default (plan step
+           salary:S3-c, ruling R-SAL11 + the developer's 2026-09-05 ruling
+           that the answer is asked rather than pre-filled: a default is one
+           global belief wearing per-raise clothing, which is the deleted
+           merit-horizon setting's own shape).  Neither radio is `checked`,
+           so `form.reset()` returns the pair to unanswered and the schema
+           refuses a recurring raise that says nothing.  Hidden for a
+           one-time raise, which cannot carry an end year at all
+           (ck_salary_raises_terminal_year_only_on_a_recurring_raise). #}
+        <div class="row g-2 mt-1" id="raise-end-year-group" hidden>
+          <div class="col-12">
+            <label class="form-label mb-1">How long is this raise believed?</label>
+            <div class="d-flex flex-wrap gap-3 align-items-center">
+              <div class="form-check mb-0">
+                <input class="form-check-input" type="radio" name="raise_end_mode"
+                       value="none" id="raise-end-mode-none">
+                <label class="form-check-label" for="raise-end-mode-none">
+                  <small>No end year</small>
+                </label>
+              </div>
+              <div class="form-check mb-0">
+                <input class="form-check-input" type="radio" name="raise_end_mode"
+                       value="year" id="raise-end-mode-year">
+                <label class="form-check-label" for="raise-end-mode-year">
+                  <small>Ends after</small>
+                </label>
+              </div>
+              <input type="number" name="terminal_year" id="raise-terminal-year"
+                     class="form-control form-control-sm input-rem-7"
+                     min="2000" max="2100" placeholder="year"
+                     aria-label="Last year this raise is believed">
+            </div>
+          </div>
+        </div>
+        {# Save LAST, because the end-year question above it is required for a
+           recurring raise: a submit control rendered before a question reads
+           as though the question is optional. #}
+        <div class="row g-2 mt-2">
+          <div class="col-12">
             <button type="submit" class="btn btn-sm btn-primary" id="raise-submit-btn">
               <i class="bi bi-plus"></i>
             </button>

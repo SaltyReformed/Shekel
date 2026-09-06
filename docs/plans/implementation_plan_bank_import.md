@@ -142,18 +142,12 @@ what it leaves a LATER step is on that step's own entry.
       `_queue.py`, `_register.py`, four test modules -- and SIX live inbound links to repoint FIRST.
       *It VOIDED its own headline*: 287 matches, none naming two bank lines, measures an import
       feature the developer had abandoned, so no step may cite it.
-  - [ ] **X-gi-1** `feat(import): the links point at Reconcile, and MATCH works unscripted` -- the
-        FOUR repoints left, plus **R-KA**: `?open=<line_id>` renders ONE card's candidate rows
-        server-side. Rendering ALL of them is 143,298 bytes of a 238,645-byte page, which is
-        **N-374** re-opened; one card is at most 15 rows. `X-gm` took the grid pair.
-        **The parent's "SIX" was a count with no census under it and it enumerated FIVE.** The
-        census, 2026-09-05, over every `url_for` to the three retiring endpoints on a template
-        `X-gi-2` keeps: `statements.html` 45, 88, 375, and `_statement_reconcile_macros.html:138`.
-        JS carries none. **THE FOURTH IS R-KA, NOT A REPOINT**: it is the Reconcile page's own
-        `<noscript>` Build link, the scriptless path for the hand-built group match **R-GJ** leaves
-        as a parked card payment's ONLY arm (`$7,412.94`), pointing into the workbench `X-gi-2`
-        deletes -- so it becomes `?open=<line_id>` or the arm goes. Had `X-gi-2` shipped on the old
-        enumeration that class would have lost its only act and looked like a clean deletion.
+  - [x] **X-gi-1** `8543c80f` -- the four remaining links point at Reconcile and the MATCH pane
+        works unscripted behind `?open=<line_id>` (**R-KA**, **R-BI1**), offering EVERY unexplained
+        row because that render has no search, and rendering a TICKED row whatever list is shown.
+        **A LATER STEP MUST OBEY**: `X-gi-2` PRUNES `_statement_queue_macros.html` rather than
+        deleting it, because `_statement_reconcile_macros.html:3` imports `books_already_hold` from
+        it; and **BI-478** is armed by that same step.
   - [ ] **X-gi-2** `refactor(import): review, register and workbench retire as pages` -- **R-HU**'s
         deletion, once nothing links in. Closes **N-404**, whose remedy was always this.
   - [ ] **X-gi-3** `refactor(import): the queue's model has no reader` -- `_queue.py` whole

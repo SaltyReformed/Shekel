@@ -294,7 +294,6 @@ class TestOnePicturePerPlan:
                 replace(inputs.stored_plan, month_offset=24),
                 inputs.plan_with(swr_override=Decimal("0.0300")),
                 inputs.plan_with(return_rate_override=Decimal("0.02000")),
-                inputs.plan_with(merit_horizon_override=1),
             ):
                 assert picture_at(inputs, varied) is not stored_picture
 

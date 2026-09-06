@@ -9,8 +9,15 @@ producers, which is the whole reason it is a module of its own.
 **The settlement arm is what makes the two halves total between them** (plan
 step X-au-c3).  A row is a PLAN until its money moves and a RECORD of what moved
 once it has, and the two never share a column: :func:`settled_figure` answers
-from the record, :func:`owned_amount` answers from the plan, and a row is in
-exactly one of the two states.  Before that split a settled row's record was
+from the record, the amount model answers from the plan, and a row is in
+exactly one of the two states.  *The plan half used to be named here too, as
+an ``owned_amount`` accessor reading the ``estimated_amount`` column.  Plan
+step X-bu DELETED it: it was a second spelling of what
+:func:`~app.services.cash_ledger.resolve_transaction_amount` answers, and
+the two parted on a row whose plan a cutover had declared DERIVED (finding
+BAL-462).  What survives here is :func:`own_figure`, the refusal itself,
+which takes the column as an ARGUMENT rather than reading it -- so a caller
+reaching for a row's own figure has to say so.*  Before that split a settled row's record was
 optional, so most settled rows fell through to the plan -- and since the plan is
 a derivation, the plan had to be frozen at settle to stop a later price change
 moving a figure the bank had already taken.
@@ -416,51 +423,6 @@ def own_figure(amount, kind: str, row_id: int) -> Decimal:
     return amount
 
 
-def owned_amount(txn) -> Decimal:
-    """Return the amount a row that OWNS its figure states, refusing otherwise.
-
-    The BUDGET half of the pair :func:`owned_contribution` completes (plan step
-    X-au-c2b): the cheap accessor for a reader that takes a row's own PLAN and
-    can only ever see rows whose plan is their own.  Such a reader needs no
-    amount basis, so it does not run the paycheck engine to re-derive a figure
-    the row already states.
-
-    **It answers the PLAN, never the settlement**, which is the whole distinction
-    from :func:`owned_contribution` beside it.  Ruling E-21: a row's budget base
-    is ``estimated_amount`` unconditionally, so a variance's two terms -- what
-    was planned, and what moved -- stay two different reads.  Answering the
-    settled figure here would make every settled row's variance zero by
-    construction, which is the defect the spending report's surprises list
-    exists to surface.
-
-    **A SETTLED row does not automatically satisfy its precondition, and plan
-    step X-au-c3 is where that stopped being true.**  This function's own
-    docstring used to say that after the freeze every settled row owned its plan,
-    because the freeze wrote the resolved figure into ``estimated_amount``.
-    Nothing writes a plan column at settle now, so a settled row whose plan a
-    later cutover declares DERIVED stores none and this refuses -- correctly, and
-    loudly.  The readers that want a settled row's BUDGET (the spending report's
-    variance) therefore owe an amount basis from the cutover that declares their
-    rows onward; that obligation is finding **N-296**'s, owned by the first
-    cutover to make it live.
-
-    **The name is the assertion, and the refusal is what makes it one**: a row
-    whose amount is DERIVED carries none, so this raises rather than handing a
-    ``None`` into a subtraction.  See :func:`owned_contribution` for why that
-    refusal is what makes the per-kind cutovers safe to ship one at a time.
-
-    Args:
-        txn: The row whose ``estimated_amount`` is its own.
-
-    Returns:
-        The row's stated budget.
-
-    Raises:
-        AmountUnresolvable: When the row's amount is derived, so it stores none.
-    """
-    return own_figure(txn.estimated_amount, "transaction", txn.id)
-
-
 def owned_contribution(txn) -> Decimal:
     """Return what a row that OWNS its figure contributes.
 
@@ -472,7 +434,7 @@ def owned_contribution(txn) -> Decimal:
 
     **A settled row never reaches the second arm, and that is plan step
     X-au-c3's doing rather than a caller convention.**  :func:`fixed_contribution`
-    answers every settled row from its SETTLEMENT, so the ``owned_amount``
+    answers every settled row from its SETTLEMENT, so the :func:`own_figure`
     fall-through below is reached only by a row that has not settled --
     i.e. by a reader that has been handed a row outside its stated scope.  Before
     that step a settled row with no correction fell through to its plan, which is
@@ -565,4 +527,4 @@ def owned_contribution(txn) -> Decimal:
     fixed = fixed_contribution(txn)
     if fixed is not None:
         return fixed
-    return owned_amount(txn)
+    return own_figure(txn.estimated_amount, "transaction", txn.id)

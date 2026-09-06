@@ -25,6 +25,7 @@ from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
     TransactionType,
 )
+from app.utils.dates import display_today
 from tests._test_helpers import make_every_period_rule
 
 
@@ -240,28 +241,28 @@ class TestRetirementDashboard:
 
         P4 live-verify regression: the P3c-slimmed dashboard context
         dropped ``settings``, so the rail's inputs silently rendered
-        their empty/fallback states -- undetectable with default data
-        because the merit horizon's template fallback literal (5) equals
-        the column default.  Non-default stored values close that hole:
+        their empty/fallback states.  A NON-DEFAULT stored value closes
+        that hole, because a fallback cannot produce one:
           SWR 0.0350 -> to_percent 3.50 -> "%.2f" -> value="3.50"
-          merit_raise_horizon_years 7 -> value="7"
-        Neither can come from a fallback (the SWR renders '' and the
-        horizon renders 5 when settings is missing).  The unset tax rate
-        must also surface its not-set flag -- an Undefined ``settings``
-        suppressed it too.
+        The unset tax rate must also surface its not-set flag -- an
+        Undefined ``settings`` suppressed it too.
+
+        *It pinned ``merit_raise_horizon_years 7 -> value="7"`` as a second
+        probe until plan step salary:S3-c deleted that setting.  The rail's
+        other context-dropping hole is now the recurring-raise rows, which
+        read ``salary_profiles`` rather than ``settings`` and are covered
+        by ``TestTheRailStatesEachRecurringRaisesEndYear``.*
         """
         settings = db.session.query(UserSettings).filter_by(
             user_id=seed_user["user"].id,
         ).one()
         settings.safe_withdrawal_rate = Decimal("0.0350")
-        settings.merit_raise_horizon_years = 7
         db.session.commit()
 
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert 'value="3.50"' in html
-        assert 'value="7"' in html
         assert 'data-assumption-flag="tax-missing"' in html
 
     def test_pension_owned_date_row_is_editable_with_provenance(
@@ -1811,16 +1812,175 @@ def _seed_underfunded(seed_user, db_session):
     db_session.commit()
 
 
+class TestTheRailStatesEachRecurringRaisesEndYear:
+    """The rail row that replaced "Merit raises continue (years)".
+
+    Plan step **salary:S3-c** (ruling **R-SAL11**) deleted the global setting
+    that row saved, because the horizon a recurring raise decays over is a
+    fact on the RAISE.  The rail states each recurring raise's end year
+    instead, READ-ONLY, with a link to the salary page that owns the edit --
+    so ``/retirement`` says what it is projecting from and has no second home
+    for the belief to disagree from.  Probing one without saving is plan step
+    salary:S3-f's.
+
+    **Both render sites are covered and they load differently.**  The
+    dashboard's include gets the profiles off the render's own
+    ``RetirementInputs``; ``retirement.update_settings`` re-renders the same
+    fragment after a save and loads them itself.  A context dropped at either
+    site renders the empty state silently -- which is exactly the P4
+    live-verify defect that made ``settings`` worth pinning, one fragment
+    earlier.
+    """
+
+    @staticmethod
+    def _seed_raise(seed_user, db, *, ends_after=None, effective_year=None):
+        """Give the owner one recurring 2.5% January raise.
+
+        *ends_after* is a number of years PAST the effective year, not a
+        literal: a fixture pinned to 2033 starts failing in 2033 against
+        ``ck_salary_raises_terminal_year_not_before_effective``, which is a
+        test that expires rather than one that measures.
+        """
+        # Pylint: ``import-outside-toplevel`` (2) -- both models are imported
+        # locally, exactly as the neighbouring raise-seeding case in this
+        # module does, so the module's import block is left unchanged.
+        from app.models.ref import RaiseType  # pylint: disable=import-outside-toplevel
+        from app.models.salary_raise import SalaryRaise  # pylint: disable=import-outside-toplevel
+
+        profile = _create_salary_profile(seed_user, db.session)
+        merit = db.session.query(RaiseType).filter_by(name="merit").one()
+        starts = effective_year or (display_today().year + 1)
+        db.session.add(SalaryRaise(
+            salary_profile_id=profile.id,
+            raise_type_id=merit.id,
+            percentage=Decimal("0.0250"),
+            effective_month=1,
+            effective_year=starts,
+            is_recurring=True,
+            terminal_year=None if ends_after is None else starts + ends_after,
+        ))
+        db.session.commit()
+        return starts + (ends_after or 0)
+
+    def test_the_dashboard_states_a_stored_end_year(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A raise with an end year reads "ends after <that year>" on the rail."""
+        ends = self._seed_raise(seed_user, db, ends_after=6)
+
+        html = auth_client.get("/retirement").data.decode()
+
+        assert 'data-assumption="raise_terminal_year"' in html
+        assert f"ends after {ends}" in html
+
+    def test_the_dashboard_states_a_raise_with_no_end_year(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """``NULL`` is an ANSWER and the rail says so, rather than blank.
+
+        "no end year" and an empty cell are different claims: the first says
+        the owner believes the raise continues, the second reads as a fact
+        nobody has supplied.  The projection compounds it forever either way,
+        so the rail must not make that look unstated.
+        """
+        self._seed_raise(seed_user, db, ends_after=None)
+
+        html = auth_client.get("/retirement").data.decode()
+
+        assert "no end year" in html
+
+    def test_an_owner_with_no_recurring_raises_reads_none_recorded(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The empty state is STATED, not a silently missing row.
+
+        The rail lost a row it always had; rendering nothing at all would read
+        as the feature having disappeared rather than as there being nothing
+        to say.
+        """
+        _create_salary_profile(seed_user, db.session)
+        db.session.commit()
+
+        html = auth_client.get("/retirement").data.decode()
+
+        assert "none recorded" in html
+
+    def test_a_one_time_raise_contributes_no_row(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Only recurring raises carry the question at all.
+
+        ``ck_salary_raises_terminal_year_only_on_a_recurring_raise`` forbids a
+        one-time raise an end year, so a row for one would state a question
+        that cannot be answered.
+        """
+        # Pylint: ``import-outside-toplevel`` (2) -- both models are imported
+        # locally, exactly as the neighbouring raise-seeding case in this
+        # module does, so the module's import block is left unchanged.
+        from app.models.ref import RaiseType  # pylint: disable=import-outside-toplevel
+        from app.models.salary_raise import SalaryRaise  # pylint: disable=import-outside-toplevel
+
+        profile = _create_salary_profile(seed_user, db.session)
+        merit = db.session.query(RaiseType).filter_by(name="merit").one()
+        db.session.add(SalaryRaise(
+            salary_profile_id=profile.id,
+            raise_type_id=merit.id,
+            percentage=Decimal("0.0250"),
+            effective_month=1,
+            effective_year=date.today().year + 1,
+            is_recurring=False,
+        ))
+        db.session.commit()
+
+        html = auth_client.get("/retirement").data.decode()
+
+        assert "none recorded" in html
+
+    def test_the_rail_keeps_the_rows_after_a_save(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The SECOND render site, which loads the profiles for itself.
+
+        ``update_settings`` re-renders this fragment from its own queries
+        rather than from a render's ``RetirementInputs``, so a missing load
+        there shows up only after a save -- the rail would state the raise
+        before you touched it and "none recorded" afterwards, on the same
+        page, with no error anywhere.
+        """
+        ends = self._seed_raise(seed_user, db, ends_after=6)
+
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"safe_withdrawal_rate": "3.5"},
+            headers={"HX-Request": "true"},
+        )
+
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert f"ends after {ends}" in html, (
+            "the rail's re-render after a save lost the recurring-raise "
+            "rows, so update_settings is not loading the salary profiles the "
+            "dashboard's include supplies"
+        )
+
+
 class TestAssumptionSaves:
     """P3a per-field assumption saves through retirement.update_settings."""
 
-    def test_merit_horizon_persists(
+    def test_a_merit_horizon_post_is_dropped_not_stored(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """A single-field merit-horizon POST persists the new value.
+        """The deleted setting has no save path left (plan step salary:S3-c).
 
-        The column defaults to 5 (P1a migration); posting 10 stores the
-        plain integer (no percent conversion on a year count).
+        ``merit_raise_horizon_years`` was a saveable rail field until ruling
+        **R-SAL11** moved the belief onto each raise row.  Both its schema
+        field and its ``_SETTINGS_FIELDS`` allowlist entry are gone, so
+        ``BaseSchema``'s ``unknown = EXCLUDE`` drops a stale post -- from a
+        bookmark, a replayed form, or a cached page -- rather than 422-ing
+        it.  **The assertion that matters is that nothing is WRITTEN**: an
+        allowlist entry surviving the column would be a 500 on the setattr,
+        and a schema field surviving it would be a silent write to a column
+        that no longer exists.
         """
         resp = auth_client.post("/retirement/settings", data={
             "merit_raise_horizon_years": "10",
@@ -1829,23 +1989,12 @@ class TestAssumptionSaves:
         settings = db.session.query(UserSettings).filter_by(
             user_id=seed_user["user"].id,
         ).one()
-        assert settings.merit_raise_horizon_years == 10
-
-    def test_merit_horizon_out_of_bounds_is_422(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """51 exceeds the schema Range (0-50, mirroring the DB CHECK).
-
-        The stored value must stay at the column default of 5.
-        """
-        resp = auth_client.post("/retirement/settings", data={
-            "merit_raise_horizon_years": "51",
-        })
-        assert resp.status_code == 422
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id,
-        ).one()
-        assert settings.merit_raise_horizon_years == 5
+        assert not hasattr(settings, "merit_raise_horizon_years"), (
+            "auth.user_settings still carries merit_raise_horizon_years; "
+            "plan step salary:S3-c deletes it, and while it exists the "
+            "retirement page has a second home for a belief that lives on "
+            "the raise row"
+        )
 
     def test_htmx_save_returns_assumptions_fragment(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1922,7 +2071,6 @@ class TestAssumptionSaves:
             before.safe_withdrawal_rate,
             before.planned_retirement_date,
             before.estimated_retirement_tax_rate,
-            before.merit_raise_horizon_years,
         )
         resp = auth_client.post("/retirement/settings", data={
             "assumed_annual_return": "9",
@@ -1937,7 +2085,6 @@ class TestAssumptionSaves:
             after.safe_withdrawal_rate,
             after.planned_retirement_date,
             after.estimated_retirement_tax_rate,
-            after.merit_raise_horizon_years,
         ) == snapshot
 
 
@@ -2428,7 +2575,6 @@ class TestReadinessFragment:
         """Out-of-bounds what-if params return 422 with field errors."""
         for query in (
             "swr=-5",                       # negative percent
-            "merit_raise_horizon_years=51",  # above the 0-50 CHECK mirror
             "months=181",                   # above the +180 solver cap
             "months=abc",                   # non-numeric offset
             "contribution=-1",              # negative money

@@ -139,7 +139,7 @@ from app.enums import AmountSourceEnum
 from app.exceptions import AmountUnresolvable
 from app.services import template_amount_service
 from app.services.recurring_transfer_query import loan_payment_config
-from app.services.row_valuation import own_figure, owned_amount
+from app.services.row_valuation import own_figure
 from app.utils.money import round_money
 
 from ._amount_basis import AmountBasis
@@ -641,13 +641,54 @@ def _own_answer(txn, _basis: AmountBasis) -> Decimal:
     signature -- which is what lets the dispatch below be a mapping keyed on the
     rule rather than five special cases.
 
+    **The body arrived here at plan step X-bu, and it is the same shape the
+    transfer side has always had.**  It read ``row_valuation.owned_amount``, a
+    public one-line accessor over :func:`~app.services.row_valuation.own_figure`
+    that answered "what is this row's plan" from the ``estimated_amount``
+    column -- a SECOND spelling of the question this module answers, and the two
+    parted on a row whose plan an amount-source cutover had declared DERIVED:
+    the accessor refused where the resolver resolves, and ``/analytics/spending``
+    returned 500 on production-shaped data (finding **BAL-462**).
+    :func:`resolve_transfer_amount` below spells its own arm exactly this way,
+    so the two tables read alike.
+
+    **NO READER OUTSIDE THE AMOUNT MODEL ASKS THE PLAN COLUMN ANY MORE**, and
+    the step's scope grew by one reader to make that sentence true.  Its first
+    draft kept ``spending_analysis.resolved_actual_amount``'s fall-through on
+    the column -- BAL-462's remedy said that reader "is correct and stays" --
+    and two neutral adversarial reviews measured what stayed with it: the same
+    refusal, on an UNSETTLED derived row, while the estimate half beside it
+    resolved. The developer superseded the clause on 2026-09-05, so that reader
+    asks this module now and its zero variance is structural rather than an
+    agreement between two producers.
+
+    **The refusal itself is NOT unrepresentable, and the step's one-line summary
+    says it is.**  ``own_figure`` still raises, reached from
+    ``row_valuation.owned_contribution``, which plan step X-bx deletes. What
+    this step made unrepresentable is a PUBLIC, one-token answer to "what is
+    this row's plan" that a reader could take instead of asking this module. The
+    summary is owed that narrowing when it is ticked.
+
+    **The composition is spelled TWICE, and nothing holds the two in step.**
+    ``own_figure`` is the shared leaf; the argument triple
+    ``(txn.estimated_amount, "transaction", txn.id)`` is not shared, and
+    pylint's ``duplicate-code`` cannot see a one-line repeat. The other site is
+    ``owned_contribution``'s fall-through, so X-bx takes the second copy with
+    the accessor and this arm is left as the ONE. Naming the cost here is the
+    alternative to building a fence around it for one step's lifetime.
+
     Args:
         txn: The transaction being priced.
 
     Returns:
         The row's stored ``estimated_amount``.
+
+    Raises:
+        AmountUnresolvable: When the row owns its amount and carries none, which
+            is ``ck_transactions_amount_ownership`` broken rather than a state
+            the model represents.  See :func:`~app.services.row_valuation.own_figure`.
     """
-    return owned_amount(txn)
+    return own_figure(txn.estimated_amount, "transaction", txn.id)
 
 
 def _salary_answer(txn, basis: AmountBasis) -> Decimal:

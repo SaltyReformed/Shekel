@@ -264,10 +264,18 @@ def get_payment_history(
     measurement rather than an expectation.**  Both accessors gate on
     :func:`~app.services.row_valuation.fixed_contribution` first -- ``0`` for a
     row that does not contribute, the SETTLEMENT for a row whose money has moved
-    -- so they can differ only on an unsettled row, where one reads
-    ``owned_amount`` and the other dispatches.  A row carrying no
-    ``amount_source_id`` dispatches to ``AmountRule.OWN``, whose answer IS
-    ``owned_amount``.  Measured against production 2026-09-01 (stamp
+    -- so they can differ only on an unsettled row, where one reads the row's
+    own column and the other dispatches.  A row carrying no
+    ``amount_source_id`` dispatches to ``AmountRule.OWN``, whose answer is that
+    same column read.  *Both sides CALLED ``owned_amount`` until plan step X-bu
+    deleted that accessor, and the identity was STRUCTURAL then -- one function,
+    two callers.  It is not now: each arm spells
+    ``own_figure(txn.estimated_amount, "transaction", txn.id)`` itself, sharing
+    the leaf but not the composition, so an edit to one arm's column, kind
+    literal or id no longer propagates to the other.  This paragraph's claim
+    became something a reader must CHECK rather than inherit, which is a cost
+    X-bu took knowingly and plan step X-bx is where one of the two copies
+    goes.*  Measured against production 2026-09-01 (stamp
     ``a4c6f1d92b73``): **all 58 loan-side income shadows** -- 29 Mortgage, 29
     Van Loan -- and all 175 transfers carry ``amount_source_id IS NULL``, so
     every row in this feed takes that arm.  What changes is only what a row the

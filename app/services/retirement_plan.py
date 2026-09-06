@@ -22,9 +22,9 @@ rather than reconciling it.
 
 **The two values that make it one producer.**
 
-* :class:`PlanPoint` -- WHICH plan, RESOLVED: the withdrawal rate and the merit
-  horizon this plan is solved at, whether they came from the settings or from a
-  what-if slider, plus the retire-later lever's month offset.  It is frozen and
+* :class:`PlanPoint` -- WHICH plan, RESOLVED: the withdrawal rate this plan is
+  solved at, whether it came from the settings or from a what-if slider, plus
+  the assumed return and the retire-later lever's month offset.  It is frozen and
   hashable because it is the memo key, and resolved because a memo key must be
   CANONICAL -- two spellings of one plan are the two derivations this module
   exists to remove.  Built through :attr:`RetirementInputs.stored_plan` and
@@ -115,17 +115,20 @@ class PlanPoint:
     two spellings of one plan are two derivations of one figure, which is the
     defect (row **P57**) this module exists to remove.**
 
-    So the two assumptions a what-if can move are stored here as the VALUES they
-    resolve to, not as the overrides they arrived as.  The first draft stored
+    So the assumption a what-if can move is stored here as the VALUE it
+    resolves to, not as the override it arrived as.  The first draft stored
     overrides, and it was measured wrong the same day (adversarial design
-    review, 2026-08-16): the assumptions rail's merit-horizon input is a
-    SAVEABLE setting and so renders pre-filled with the stored value, which
-    means every real fragment request ships ``merit_raise_horizon_years=5``
-    when 5 is exactly what is stored.  ``PlanPoint(merit_horizon_override=5)``
-    and ``PlanPoint()`` are two keys for one plan, and the what-if panel
-    derived its baseline and its "override" as two full projections agreeing in
+    review, 2026-08-16): every saveable row in the assumptions rail renders
+    pre-filled with its stored value, so every real fragment request ships that
+    value back as an "override".  ``PlanPoint(swr_override=Decimal("0.04"))``
+    and ``PlanPoint()`` are then two keys for one plan, and the what-if panel
+    derives its baseline and its "override" as two full projections agreeing in
     every digit -- P57's own sentence, restated inside the step that closed it.
-    Resolved values cannot express that: 5 is 5 whichever door it came through.
+    Resolved values cannot express that: 4% is 4% whichever door it came
+    through.  *It was measured on the merit-horizon row, which plan step
+    salary:S3-c deleted (ruling **R-SAL11**: a raise's end year is a fact on
+    the raise); the rail's remaining saveable rows are pre-filled the same way,
+    so the rule outlived the row it was found on.*
 
     Built through :attr:`RetirementInputs.stored_plan` and
     :meth:`RetirementInputs.plan_with`, because resolving an assumption needs
@@ -144,7 +147,6 @@ class PlanPoint:
             identity).
         swr: The fractional safe-withdrawal rate this plan is solved at, already
             resolved from the what-if or the stored settings.
-        merit_horizon: The merit-raise horizon in years, likewise resolved.
         return_rate_override: A fractional annual return applied UNIFORMLY to
             every account, or ``None`` -- and this one is genuinely an OVERRIDE
             rather than a resolved value, because ``None`` does not stand for a
@@ -155,7 +157,6 @@ class PlanPoint:
 
     month_offset: int
     swr: Decimal
-    merit_horizon: int
     return_rate_override: Decimal | None
 
 
@@ -197,8 +198,7 @@ class RetirementInputs:
             loan and derive the pay calendar once for the whole render.
         gap: The :class:`~app.services.retirement_dashboard_service.GapInputs`
             bundle: settings, active pensions, active salary profiles, the
-            current-pay snapshot, the stored merit horizon and the owner's pay
-            cadence.
+            current-pay snapshot and the owner's pay cadence.
         base_date: The STORED plan's resolved retirement date (a pension's beats
             the settings', latest pension wins), or ``None`` when neither
             supplies one -- the page's no-horizon state.
@@ -244,14 +244,13 @@ class RetirementInputs:
 
     def plan_with(
         self, *, swr_override=None, return_rate_override=None,
-        merit_horizon_override=None,
     ) -> PlanPoint:
         """Resolve a what-if against this owner's stored settings.
 
         **The canonicalising door.**  An override that equals the stored value
         resolves to the same :class:`PlanPoint` as no override at all, so the
-        memo cannot hold two keys for one plan -- which matters because the
-        merit-horizon input is pre-filled with the stored value and therefore
+        memo cannot hold two keys for one plan -- which matters because a
+        saveable rail input is pre-filled with the stored value and therefore
         submits it on every single fragment request.
 
         Args:
@@ -259,8 +258,6 @@ class RetirementInputs:
                 stored one.
             return_rate_override: A uniform fractional annual return, or
                 ``None`` to leave each account on its own stored rate.
-            merit_horizon_override: A merit-raise horizon in years, or ``None``
-                for the stored one.
 
         Returns:
             The resolved :class:`PlanPoint`, at no delay.
@@ -270,10 +267,6 @@ class RetirementInputs:
             swr=(
                 swr_override if swr_override is not None
                 else resolve_swr_fraction(self.gap.settings)
-            ),
-            merit_horizon=(
-                merit_horizon_override if merit_horizon_override is not None
-                else self.gap.merit_horizon_years
             ),
             return_rate_override=return_rate_override,
         )
@@ -608,10 +601,10 @@ def _derive_picture(
     """Compute the picture at *point* from the render's loaded inputs.
 
     BOTH sides of the gap move with the plan: a later date extends the
-    merit-horizon salary path, the pension's years of service and its
-    high-salary window, the employer salary basis and the growth horizon, and it
-    re-derives the income target from that longer path -- so the required target
-    moves as well as the projected balance.  Every one of those is recomputed
+    salary path, the pension's years of service and its high-salary window, the
+    employer salary basis and the growth horizon, and it re-derives the income
+    target from that longer path -- so the required target moves as well as the
+    projected balance.  Every one of those is recomputed
     here; nothing that was LOADED is.
 
     Args:
@@ -622,7 +615,6 @@ def _derive_picture(
         The :class:`RetirementPicture`, uncached (:func:`picture_at` caches it).
     """
     gap = inputs.gap
-    merit_horizon = point.merit_horizon
     retirement_date = (
         None if inputs.base_date is None
         else add_months(inputs.base_date, point.month_offset)
@@ -635,7 +627,7 @@ def _derive_picture(
     # the lever card's from N+1.
     as_of = inputs.balance_ctx.as_of
     pension = compute_pension_summary(
-        gap.pensions, merit_horizon, as_of, point.month_offset,
+        gap.pensions, as_of, point.month_offset,
     )
     # Every point-dependent field replaced together, from a context the render
     # built once: the account query and the period calendar do not move with a
@@ -645,15 +637,14 @@ def _derive_picture(
         planned_retirement_date=retirement_date,
         return_rate_override=point.return_rate_override,
         employer_salary_basis=build_employer_salary_basis(
-            gap.salary_profiles, retirement_date, merit_horizon, as_of,
-            gap.pay_cadence,
+            gap.salary_profiles, retirement_date, as_of, gap.pay_cadence,
         ),
     )
     axis = resolve_projection_axis(ctx)
     projections = project_accounts_with_batch(ctx, inputs.batch, axis)
     net = calculate_gap(
         net_biweekly_pay=compute_gap_net_biweekly(
-            gap, retirement_date, pension.salary_by_year, merit_horizon, as_of,
+            gap, retirement_date, pension.salary_by_year, as_of,
         ),
         pay_cadence=gap.pay_cadence,
         monthly_pension_income=pension.monthly_income,

@@ -346,7 +346,7 @@ class TestTheQueryArgumentsAreRefusedRatherThanIgnored:
     """A value that names nothing is a tampered or stale request.
 
     **404 rather than a rendered apology**, which is the answer
-    ``statement_reconcile._requested_tab`` already gives for the same shape:
+    ``_reconcile_query.requested_tab`` already gives for the same shape:
     nothing composes these URLs by hand, so silently falling back to the
     default would let a broken link look like a working page.
     """

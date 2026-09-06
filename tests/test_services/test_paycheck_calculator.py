@@ -15,7 +15,6 @@ import pytest
 
 from app.services.exceptions import InvalidGrossPayError
 from app.services.tax_calculator import calculate_fica
-from app.services.salary_raises import TerminatedRaise
 from app.models.salary_raise import SalaryRaise
 from app.services.paycheck_calculator import (
     apply_raises,
@@ -75,12 +74,17 @@ class FakeRaise:
 
     def __init__(self, percentage=None, flat_amount=None,
                  effective_month=3, effective_year=2026,
-                 is_recurring=False):
+                 is_recurring=False, terminal_year=None):
         self.percentage = Decimal(str(percentage)) if percentage else None
         self.flat_amount = Decimal(str(flat_amount)) if flat_amount else None
         self.effective_month = effective_month
         self.effective_year = effective_year
         self.is_recurring = is_recurring
+        # The last year the raise is believed to happen, None for
+        # indefinitely.  REQUIRED on the stand-in since plan step
+        # salary:S3-c: the walk reads it as a plain attribute now, so a
+        # double without it no longer silently reads as "no end year".
+        self.terminal_year = terminal_year
         self.raise_type = FakeRaiseType()
 
 
@@ -432,8 +436,17 @@ class TestRaiseTermination:
     @staticmethod
     def _raise(percentage, *, month=1, year=2026, recurring=True,
                terminal_year=None):
-        """A percentage :class:`TerminatedRaise`, defaulting to recurring."""
-        return TerminatedRaise(
+        """A percentage :class:`SalaryRaise`, defaulting to recurring.
+
+        An UNATTACHED row rather than a hand-rolled double: plan step
+        salary:S3-c deleted ``TerminatedRaise``, the fabricated value the
+        pension projector used to build, so a real row is the only shape
+        :func:`apply_raises` is ever handed now and the only one worth
+        grading it against.  Every attribute the walk reads is set
+        explicitly, because a client-side ``default`` fires at INSERT and
+        this row never reaches a session.
+        """
+        return SalaryRaise(
             effective_year=year, effective_month=month,
             is_recurring=recurring, percentage=Decimal(percentage),
             flat_amount=None, terminal_year=terminal_year,
@@ -453,13 +466,18 @@ class TestRaiseTermination:
 
         **The premise moved from ABSENCE to a DEFAULT of nothing.**  The
         paycheck engine passes ``profile.raises`` -- real ORM rows -- and
-        ``_applications`` probes ``getattr(raise_obj, "terminal_year",
-        None)``, so the engine reads this field on every row now.  What
-        keeps paychecks unmoved is that the field answers ``None``, which
-        is exactly what that ``getattr`` answered when the attribute did
-        not exist.  A ``default`` on the column would end that silently
-        and in the money-moving direction, which is what these assertions
-        guard.
+        ``_applications`` reads ``raise_obj.terminal_year`` on every one of
+        them.  What keeps a paycheck unmoved is that the field answers
+        ``None`` for a raise nobody gave an end year.  A ``default`` on the
+        column would end that silently and in the money-moving direction,
+        which is what these assertions guard.
+
+        *The read was ``getattr(raise_obj, "terminal_year", None)`` until
+        plan step salary:S3-c, whose deletion of the pension projector's
+        fabricated values left the row as the only shape passed.  A missing
+        attribute now raises instead of defaulting, which is a tightening
+        this class does not grade -- ``test_s3b_raise_terminal_year.py``
+        does.*
 
         **It is NOT strictly stronger than the check it replaces, and an
         adversarial review of this step corrected a draft that said it
@@ -475,7 +493,7 @@ class TestRaiseTermination:
         **The instance probe is the surface that governs**, and it is here
         because the deleted test argued for it: it used ``hasattr`` rather
         than ``__table__.columns`` precisely because a ``property`` or
-        ``hybrid_property`` would satisfy the engine's ``getattr`` while
+        ``hybrid_property`` would satisfy the engine's attribute read while
         the column set would not.  ``SalaryRaise().terminal_year is None``
         is that argument kept.
 
@@ -497,7 +515,7 @@ class TestRaiseTermination:
         )
         assert SalaryRaise().terminal_year is None, (
             "a fresh SalaryRaise answers something other than None for "
-            "terminal_year, so the paycheck engine's getattr now clamps a "
+            "terminal_year, so the paycheck engine now clamps a "
             "raise nobody gave an end year -- check for a property, a "
             "hybrid_property or an __init__ default shadowing the column"
         )

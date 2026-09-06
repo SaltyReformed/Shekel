@@ -405,10 +405,10 @@ def _reject_unaccepted_difference(
     **A browser cannot produce it, and that was verified rather than
     assumed**: the attribution select sits inside ``.rec-match-picks``, whose
     change swaps ``closest .rec-match`` with ``outerHTML``, and the consent box
-    is inside that element -- so changing where the money lands always
-    re-renders the box UNTICKED.  The only party who can craft such a body is
-    the account's own owner, on their own rows, and every act it could reach is
-    one they may perform through the screen anyway.  **Rejected: widening the
+    is inside that element -- so it always re-renders UNTICKED.  *Not on the
+    ``?open=`` pane, where nothing swaps; :mod:`._opened` states the narrower
+    ground that holds it there and `X-gn` must re-read.*  The only party who
+    can craft such a body is the account's own owner, on their own rows.  **Rejected: widening the
     consent value to carry the remedy beside the figure.**  That is R-IA's rule
     one field wider and it is not wrong -- it was refused because it changes
     the wire format of a field two surfaces submit and one strict reader
