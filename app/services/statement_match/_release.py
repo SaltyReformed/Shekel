@@ -525,14 +525,33 @@ def _subject_removal(
             else cash_ledger.settled_cash_leg(subject)
         )
     except AmountUnresolvable:
+        # **AN EDIT OUTRANKS AN UNPRICEABLE ROW, and plan step balance:X-bx is
+        # what made the pairing reachable.**  ``settled_cash_leg`` refuses a row
+        # that has not SETTLED now, rather than pricing its plan column, so the
+        # commonest way into this handler is an ordinary REVERT of a row this
+        # act minted settled (``_uncategorized.mint_uncategorized``) -- and a
+        # revert bumps ``version_id``, so the owner has edited it.  Reporting
+        # "the app can no longer work out what that row is worth" for a row the
+        # owner simply reverted is false and offers no repair, where the edit
+        # sentence below is true and tells them what to do.  The version test is
+        # made HERE rather than hoisted above the pricing so the priced path is
+        # untouched; the two branches state the same rule in the same order.
+        edited_since = subject.version_id != creation.created_version_id
         return PlannedRemoval(
             kind=RowKind.TRANSACTION, row_id=subject.id, label=label,
             cash_amount=Decimal("0.00"), is_container=False, subject=subject,
         ), (
-            f'Undoing this match would remove "{label}", which it created, '
-            f"but the app can no longer work out what that row is worth -- so "
-            f"it cannot tell you what removing it would take out of your "
-            f"books.  Nothing was changed."
+            (
+                f'Undoing this match would remove "{label}", which it created '
+                f"-- but you have edited that row since, so it is your record "
+                f"now.  Delete it yourself if you want it gone, then undo the "
+                f"match.  Nothing was changed."
+            ) if edited_since else (
+                f'Undoing this match would remove "{label}", which it created, '
+                f"but the app can no longer work out what that row is worth -- "
+                f"so it cannot tell you what removing it would take out of "
+                f"your books.  Nothing was changed."
+            )
         )
     row = PlannedRemoval(
         kind=RowKind.PURCHASE if is_purchase else RowKind.TRANSACTION,

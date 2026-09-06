@@ -8,7 +8,7 @@ to the Status model.  Verifies that:
   - The cache raises RuntimeError when a database row is missing.
   - The Status boolean columns (is_settled, is_immutable, excludes_from_balance)
     are correct for every status.
-  - owned_contribution(Transaction) respects the boolean columns.
+  - settled_contribution(Transaction) respects the boolean columns.
   - The grid shows "Paid" instead of "Done" for the mark-done button.
   - GoalMode and IncomeUnit ref_cache accessors return valid IDs.
   - GoalModeEnum and IncomeUnitEnum match their database rows exactly.
@@ -58,8 +58,10 @@ from app.models.ref import (
     TransactionType,
 )
 from app.models.transaction import Transaction
-from app.services.row_valuation import owned_contribution
+from app.services.cash_ledger import contribution_of
+from app.services.row_valuation import settled_contribution
 from tests._test_helpers import (
+    amount_basis_for,
     settle_day_columns,
     settlement_basis_id,
 )
@@ -279,7 +281,7 @@ class TestEffectiveAmount:
             db.session.add(txn)
             db.session.flush()
 
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
     def test_effective_amount_uses_actual_for_settled_status(
         self, app, db, seed_user, seed_periods
@@ -312,12 +314,19 @@ class TestEffectiveAmount:
             db.session.add(txn)
             db.session.flush()
 
-            assert owned_contribution(txn) == Decimal("487.00")
+            assert settled_contribution(txn) == Decimal("487.00")
 
     def test_effective_amount_uses_estimated_for_projected(
         self, app, db, seed_user, seed_periods
     ):
-        """effective_amount returns estimated_amount for Projected status."""
+        """effective_amount returns estimated_amount for Projected status.
+
+        Asked of the AMOUNT MODEL since plan step X-bx: a Projected row has not
+        settled, so what it contributes is
+        :func:`~app.services.cash_ledger.contribution_of` and never the
+        settled-only accessor its two siblings above use.  Same figure, same
+        rule; the accessor simply no longer answers for this row (**BAL-465**).
+        """
         with app.app_context():
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             expense_type = (
@@ -339,7 +348,7 @@ class TestEffectiveAmount:
             db.session.add(txn)
             db.session.flush()
 
-            assert owned_contribution(txn) == Decimal("500.00")
+            assert contribution_of(txn, amount_basis_for(txn)) == Decimal("500.00")
 
 
 class TestGridShowsPaidNotDone:

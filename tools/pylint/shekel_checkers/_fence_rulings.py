@@ -177,11 +177,13 @@ _KIND_CLASSIFIER_MODULES = frozenset({
 
 # The producer-free half of the cash valuation (plan step X-au-c2).  It was
 # defined inside ``cash_ledger`` and moved DOWN a tier because the loan stack
-# needs ``owned_contribution`` and could never import that package: its
+# needs ``settled_contribution`` and could never import that package: its
 # ``_amount_source`` reached UP into ``loan_payment_service`` for amount rule
 # 4's producer, so any loan-stack module naming ``cash_ledger`` closed an import
-# cycle.  ``cash_ledger`` re-exports ``owned_contribution``, the only one of
-# the three that was ever public, so no consumer moved.
+# cycle.  ``cash_ledger`` re-exports ``settled_contribution``, the only one of
+# the three that was ever public, so no consumer moved.  *It was named
+# ``owned_contribution`` until plan step X-bx, which deleted its fall-through
+# onto the plan column and renamed it for the assertion that survived.*
 #
 # **THAT REACH IS GONE as of plan step X-au-g-2a**, which moved rule 4's
 # producer into ``cash_ledger`` -- so the loan stack CAN name that package now,
@@ -197,7 +199,7 @@ _KIND_CLASSIFIER_MODULES = frozenset({
 # cash ledger on a PACKAGE says a fail-closed gate is escaped by adding a
 # sibling -- and a new TOP-LEVEL module is that escape one level further out.
 # Extracting a fenced module's contents into an unfenced neighbour would have
-# silently un-ruled ``owned_contribution``, which is the exact shape (a fence
+# silently un-ruled ``settled_contribution``, which is the exact shape (a fence
 # that fails open when the code moves) findings N-28 / N-31 are about.  A flat
 # module rather than a package, so the key is exact rather than prefix-matched;
 # if it ever becomes a package the prefix match already covers the submodules.
@@ -228,31 +230,35 @@ _FENCED_MODULE_RULINGS = {
     # this module imports no producer and cannot -- that is the property that
     # made it a separate module.
     "app.services.row_valuation": (frozenset(), frozenset({
-        # The three arms of what one row is worth that need no producer, ruled
+        # The two arms of what one row is worth that need no producer, ruled
         # on exactly the ground the ``cash_ledger._amounts`` valuation family
         # below stands on: each answers what ONE ROW is worth, and none folds,
         # dates, sums, or reads an anchor.  ``fixed_contribution`` is the
-        # status / soft-delete / entered-actual gate every other form shares,
-        # ``own_figure`` is the refusal that keeps the amount model TOTAL (a
-        # row owning its amount must store one), and ``owned_contribution``
-        # composes that refusal with the gate for a reader that can only ever
-        # see rows owning their figure.
+        # status / soft-delete / settlement gate every other form shares, and
+        # ``settled_contribution`` composes that gate with a REFUSAL for a
+        # reader whose rows have all settled.
         #
-        # **There were FOUR until plan step X-bu**, the fourth being
-        # ``owned_amount`` -- ``own_figure`` applied to a transaction's own
-        # column, and ``owned_contribution``'s BUDGET twin from plan step
-        # X-au-c2b.  It was not un-ruled, it was DELETED: a public accessor
-        # answering "what is this row's plan" from the column is a second
-        # spelling of what ``cash_ledger.resolve_transaction_amount`` answers,
-        # and the two parted on a row a cutover had declared DERIVED (finding
-        # **BAL-462**).  Its body is rule 1's own arm now.  Dropping the name
-        # here is REQUIRED rather than tidy: the reverse-staleness arm of
+        # **There were FOUR, and two went in consecutive steps.**  Plan step
+        # X-bu deleted ``owned_amount`` -- ``own_figure`` applied to a
+        # transaction's own column, and the BUDGET twin of the accessor above
+        # from plan step X-au-c2b: a public accessor answering "what is this
+        # row's plan" from the column is a second spelling of what
+        # ``cash_ledger.resolve_transaction_amount`` answers, and the two
+        # parted on a row a cutover had declared DERIVED (finding **BAL-462**).
+        # Plan step **X-bx** then took ``own_figure`` itself, which that
+        # deletion had left with callers only inside
+        # ``cash_ledger._amount_source``: it MOVED there as the private
+        # ``_own_figure``, so it is not un-ruled here but out of the fence's
+        # reach entirely (finding **BAL-465**).  The same step renamed
+        # ``owned_contribution`` to ``settled_contribution``.
+        #
+        # Dropping a name here is REQUIRED rather than tidy, whether it left by
+        # deletion, by a move or by a rename: the reverse-staleness arm of
         # ``test_classification_sets_match_the_real_fenced_modules`` fails on a
         # ruling for a function the module no longer defines, because such an
         # entry would silently un-fence whatever the name was reused for.
         "fixed_contribution",
-        "own_figure",
-        "owned_contribution",
+        "settled_contribution",
         # The settlement RECORD's three names (plan step X-au-c3), ruled on the
         # same ground: each answers about ONE ROW, from that row's own columns
         # and children, and none folds, dates, sums or reads an anchor.
@@ -356,11 +362,12 @@ _FENCED_MODULE_RULINGS = {
         # one-row and batch forms that resolve first.  Each answers what ONE
         # ROW is worth -- none folds, dates, sums, or reads an anchor, and the
         # batch is a dict keyed by row id rather than anything per account.
-        # ``owned_contribution`` is ruled with them,
+        # ``settled_contribution`` is ruled with them,
         # under :data:`_ROW_VALUATION_MODULES` -- it is DEFINED one module
         # down and only re-exported here, and this fence keys on where a
-        # function is DEFINED.  (Its budget twin ``owned_amount`` was ruled
-        # there too until plan step X-bu deleted the accessor.)
+        # function is DEFINED.  (It was ``owned_contribution`` until plan step
+        # X-bx renamed it; its budget twin ``owned_amount`` was ruled there too
+        # until plan step X-bu deleted the accessor.)
         "contributed_amount",
         "contribution_of",
         "contributions_by_id",

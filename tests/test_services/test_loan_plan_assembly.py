@@ -19,7 +19,7 @@ from app.enums import AmountSourceEnum, StatusEnum
 from app.models.escrow_line import EscrowComponentVersion
 from app.models.loan_features import RateHistory
 from app.services import loan_loaders, transfer_service
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.services.balance_at._plan import (
     _PAYOFF_EXTENSION_MONTHS,
     loan_plan,
@@ -185,7 +185,8 @@ def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
     **The PLAN tier's half of plan step balance:X-au-g-2c-1**, and the reason
     that step routed two readers rather than the one its finding named.
     ``_planned_from_shadows`` valued these rows through
-    ``row_valuation.owned_contribution``, which REFUSES a row whose plan is
+    ``row_valuation.settled_contribution`` (then ``owned_contribution``), which
+    REFUSED a row whose plan is
     DERIVED -- the same accessor and the same refusal that made
     ``get_payment_history`` the named blocker of finding **N-266**(a).  Routing
     only the named one would have left the cutover to 500 here instead, on
@@ -195,7 +196,10 @@ def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
 
     The paired refusal below is what makes this a measurement rather than a
     happy path: the SAME declaration, in the same fixture, still breaks the
-    accessor the tier used to call.
+    accessor the tier used to call.  *Its ``match`` is load-bearing since plan
+    step X-bx, which widened that accessor to refuse ANY unsettled row: a bare
+    ``pytest.raises`` would pass on the shadow's Projected STATUS alone, leaving
+    ``declare_derived`` -- the subject of the fixture -- ungraded by it.*
     """
     account = create_loan_account(
         seed_user, db.session,
@@ -214,8 +218,8 @@ def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
     db.session.commit()
 
     # The accessor the tier used to call still refuses this row...
-    with pytest.raises(AmountUnresolvable):
-        owned_contribution(shadow)
+    with pytest.raises(AmountUnresolvable, match="has not settled"):
+        settled_contribution(shadow)
 
     # ...and the tier prices it anyway, from the parent transfer.
     ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)

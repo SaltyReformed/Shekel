@@ -53,8 +53,26 @@ from app.services import (
     status_seam,
 )
 from app.services import account_service
-from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.cash_ledger import contribution_of
+from app.services.row_valuation import settled_contribution, settled_figure
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import amount_basis_for
+
+
+def _worth(txn):
+    """What *txn* contributes at whatever status it is in right now.
+
+    The state-machine cases below walk ONE row through Projected, Cancelled,
+    Credit and the settled band, so they need the valuation that is total over
+    status: :func:`~app.services.cash_ledger.contribution_of`, which answers a
+    settled row from its record and an unsettled one from the amount model.
+
+    They asked ``row_valuation.owned_contribution`` until plan step X-bx, which
+    deleted its fall-through onto the plan column -- so it answers only for a
+    row that has SETTLED now (finding **BAL-465**) and cannot grade a walk that
+    passes through Projected.  Every figure these cases assert is unchanged.
+    """
+    return contribution_of(txn, amount_basis_for(txn))
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -208,7 +226,7 @@ class TestStateMachineViolations:
             original_amount = txn.estimated_amount  # Decimal("100.00")
 
             # Verify initial effective_amount.
-            assert owned_contribution(txn) == original_amount
+            assert _worth(txn) == original_amount
 
             # Step 1: Cancel the transaction.
             resp = auth_client.post(f"/transactions/{txn.id}/cancel")
@@ -216,7 +234,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
-            assert owned_contribution(txn) == Decimal("0")
+            assert _worth(txn) == Decimal("0")
 
             # Step 2: PATCH back to projected.
             projected = db.session.query(Status).filter_by(name="Projected").one()
@@ -231,7 +249,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Projected"
-            assert owned_contribution(txn) == original_amount
+            assert _worth(txn) == original_amount
 
     def test_done_to_cancelled_transition(
         self, app, auth_client, seed_user, seed_periods,
@@ -253,7 +271,7 @@ class TestStateMachineViolations:
             db.session.commit()
 
             # Verify initial effective_amount uses actual_amount.
-            assert owned_contribution(txn) == Decimal("85.00")
+            assert settled_contribution(txn) == Decimal("85.00")
 
             # Cancel the transaction -- now refused.
             resp = auth_client.post(f"/transactions/{txn.id}/cancel")
@@ -263,7 +281,7 @@ class TestStateMachineViolations:
             # Row stays Paid; actual_amount preserved.
             assert txn.status.name == "Paid"
             assert txn.settled_amount == Decimal("85.00")
-            assert owned_contribution(txn) == Decimal("85.00")
+            assert settled_contribution(txn) == Decimal("85.00")
 
     def test_received_to_projected_reversion(
         self, app, auth_client, seed_user, seed_periods,
@@ -302,7 +320,7 @@ class TestStateMachineViolations:
             db.session.commit()
 
             # The row is worth what it RECORDED while it is settled.
-            assert owned_contribution(txn) == Decimal("2800.00")
+            assert _worth(txn) == Decimal("2800.00")
 
             # PATCH back to projected.
             projected = db.session.query(Status).filter_by(name="Projected").one()
@@ -327,7 +345,7 @@ class TestStateMachineViolations:
             # was really received, which is the danger this case names. The
             # STATUS is what decides that, not the absence of the record.
             assert settled_figure(txn) is None
-            assert owned_contribution(txn) == Decimal("3000.00")
+            assert _worth(txn) == Decimal("3000.00")
 
     def test_credit_to_projected_reversion_deletes_payback(
         self, app, auth_client, seed_user, seed_periods,
@@ -353,7 +371,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Credit"
-            assert owned_contribution(txn) == Decimal("0")
+            assert _worth(txn) == Decimal("0")
 
             # Find the payback transaction.
             payback = db.session.query(Transaction).filter_by(
@@ -371,7 +389,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Projected"
-            assert owned_contribution(txn) == Decimal("100.00")
+            assert _worth(txn) == Decimal("100.00")
 
             # The payback is hard-deleted with the reversion, exactly
             # like unmark_credit.
@@ -456,7 +474,7 @@ class TestStateMachineViolations:
             # The row stays Cancelled -- no partial mutation.
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
     def test_cancel_already_cancelled_transaction(
         self, app, auth_client, seed_user, seed_periods,
@@ -476,7 +494,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
     def test_mark_done_on_cancelled_transaction(
         self, app, auth_client, seed_user, seed_periods,
@@ -505,7 +523,7 @@ class TestStateMachineViolations:
             # No actual_amount recorded -- the rejected request did
             # not commit any partial state.
             assert txn.settled_amount is None
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
     def test_mark_credit_on_done_transaction(
         self, app, auth_client, seed_user, seed_periods,
@@ -530,7 +548,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Paid"
-            assert owned_contribution(txn) == Decimal("100.00")
+            assert settled_contribution(txn) == Decimal("100.00")
 
 
 # ══════════════════════════════════════════════════════════════════════

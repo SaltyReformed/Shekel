@@ -54,7 +54,7 @@ from tests._test_helpers import (
     settlement_basis_id,
     shadow_amount,
 )
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.services.settle_day import (
     record_settle_day,
     recorded_settle_day,
@@ -1624,10 +1624,28 @@ class TestTransferInstance:
             db.session.refresh(xfer)
             assert xfer.is_override is True
 
-    def test_cancelled_transfer_effective_amount_zero(
+    def test_cancelled_transfer_contributes_nothing_through_its_shadows(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """A cancelled transfer has effective_amount of Decimal('0')."""
+        """A cancelled transfer's SHADOW LEGS are each worth ``$0.00``.
+
+        **It asked the wrong object until plan step X-bx, and finding BAL-465
+        recorded this exact line as the occurrence.**  It handed the parent
+        :class:`~app.models.transfer.Transfer` to
+        ``row_valuation.settled_contribution``, which is a TRANSACTION accessor
+        -- a ``Transfer`` defines no ``estimated_amount`` and no
+        ``settled_basis_id`` at all, so the only thing standing between that
+        call and an ``AttributeError`` was the Cancelled row short-circuiting on
+        ``is_balance_contributing`` before either attribute was read.  It
+        therefore passed while proving nothing about production, where no code
+        path asks that accessor about a ``Transfer``.
+
+        What a balance actually reads is the SHADOWS -- transfer invariant 5,
+        "the balance calculator queries ONLY budget.transactions" -- and
+        invariant 3 pairs their statuses to the parent's, so cancelling the
+        transfer is what makes both legs worth nothing.  That is the claim, and
+        this now makes it on the rows that carry it.
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
@@ -1635,7 +1653,14 @@ class TestTransferInstance:
             auth_client.post(f"/transfers/instance/{xfer.id}/cancel")
 
             db.session.refresh(xfer)
-            assert owned_contribution(xfer) == Decimal("0")
+            shadows = db.session.query(Transaction).filter(
+                Transaction.transfer_id == xfer.id,
+            ).all()
+            # Exactly two, per transfer invariant 1 -- so a regression that
+            # orphaned a leg cannot pass this by leaving nothing to sum.
+            assert len(shadows) == 2
+            for shadow in shadows:
+                assert settled_contribution(shadow) == Decimal("0")
 
     def test_update_other_users_transfer(self, app, auth_client, seed_user):
         """PATCH /transfers/instance/<id> for another user's transfer returns 404.
