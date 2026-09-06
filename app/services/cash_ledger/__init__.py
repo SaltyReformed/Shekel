@@ -174,7 +174,6 @@ from ._amounts import (
     contributed_amount,
     contribution_of,
     contributions_by_id,
-    owned_amount,
     owned_contribution,
 )
 from ._cash_leg import (
@@ -259,7 +258,6 @@ __all__ = [
     "loan_pricing",
     "cash_leg_of",
     "off_statement_sum",
-    "owned_amount",
     "owned_contribution",
     "planned_cash_rows",
     "posted_purchase_sum",

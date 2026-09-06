@@ -228,22 +228,30 @@ _FENCED_MODULE_RULINGS = {
     # this module imports no producer and cannot -- that is the property that
     # made it a separate module.
     "app.services.row_valuation": (frozenset(), frozenset({
-        # The four arms of what one row is worth that need no producer, ruled
+        # The three arms of what one row is worth that need no producer, ruled
         # on exactly the ground the ``cash_ledger._amounts`` valuation family
         # below stands on: each answers what ONE ROW is worth, and none folds,
         # dates, sums, or reads an anchor.  ``fixed_contribution`` is the
         # status / soft-delete / entered-actual gate every other form shares,
         # ``own_figure`` is the refusal that keeps the amount model TOTAL (a
-        # row owning its amount must store one), ``owned_amount`` is that
-        # refusal applied to a transaction's own column, and
-        # ``owned_contribution`` composes it with the gate for a reader that
-        # can only ever see rows owning their figure.  The last two are the
-        # BUDGET / WORTH pair plan step X-au-c2b completed: one answers what a
-        # row's amount IS, the other what it is worth, and a reader takes
-        # whichever question it is asking.
+        # row owning its amount must store one), and ``owned_contribution``
+        # composes that refusal with the gate for a reader that can only ever
+        # see rows owning their figure.
+        #
+        # **There were FOUR until plan step X-bu**, the fourth being
+        # ``owned_amount`` -- ``own_figure`` applied to a transaction's own
+        # column, and ``owned_contribution``'s BUDGET twin from plan step
+        # X-au-c2b.  It was not un-ruled, it was DELETED: a public accessor
+        # answering "what is this row's plan" from the column is a second
+        # spelling of what ``cash_ledger.resolve_transaction_amount`` answers,
+        # and the two parted on a row a cutover had declared DERIVED (finding
+        # **BAL-462**).  Its body is rule 1's own arm now.  Dropping the name
+        # here is REQUIRED rather than tidy: the reverse-staleness arm of
+        # ``test_classification_sets_match_the_real_fenced_modules`` fails on a
+        # ruling for a function the module no longer defines, because such an
+        # entry would silently un-fence whatever the name was reused for.
         "fixed_contribution",
         "own_figure",
-        "owned_amount",
         "owned_contribution",
         # The settlement RECORD's three names (plan step X-au-c3), ruled on the
         # same ground: each answers about ONE ROW, from that row's own columns
@@ -348,10 +356,11 @@ _FENCED_MODULE_RULINGS = {
         # one-row and batch forms that resolve first.  Each answers what ONE
         # ROW is worth -- none folds, dates, sums, or reads an anchor, and the
         # batch is a dict keyed by row id rather than anything per account.
-        # ``owned_contribution`` and ``owned_amount`` are ruled with them,
-        # under :data:`_ROW_VALUATION_MODULES` -- both are DEFINED one module
+        # ``owned_contribution`` is ruled with them,
+        # under :data:`_ROW_VALUATION_MODULES` -- it is DEFINED one module
         # down and only re-exported here, and this fence keys on where a
-        # function is DEFINED.
+        # function is DEFINED.  (Its budget twin ``owned_amount`` was ruled
+        # there too until plan step X-bu deleted the accessor.)
         "contributed_amount",
         "contribution_of",
         "contributions_by_id",

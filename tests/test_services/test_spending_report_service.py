@@ -70,6 +70,7 @@ from tests._test_helpers import (
     create_envelope_txn,
     create_savings_account,
     create_settled_transfer,
+    create_transfer,
     make_expense_template,
     state_template_price,
     default_settle_day,
@@ -1699,6 +1700,123 @@ class TestNewMeansTheCategoryWasNotThereBefore:
         assert changes[0].is_new is True
 
 
+class TestTheActualHalfAsksTheAmountModel:
+    """`resolved_actual_amount`'s fall-through, which had NO test at all.
+
+    **The kernel was public, documented as the shared "what did this row
+    actually cost" rule, and reached by exactly one settled-only caller** -- so
+    every case in this file drove it through the arm that returns a settlement,
+    and the arm below ran nowhere in the suite.  Two neutral adversarial reviews
+    of plan step X-bu found what was hiding there: it read the row's own
+    ``estimated_amount`` column and REFUSED a row carrying none, which is
+    finding **BAL-462**'s failure mode on the UNSETTLED population instead of
+    the settled one -- the same exception, the same page, the same class of row,
+    held off only by a caller convention.  X-bu re-pointed it at the amount
+    model (developer ruling 2026-09-05, superseding BAL-462's "is correct and
+    stays" clause) and this class is the arm's first coverage.
+    """
+
+    def test_an_unsettled_derived_row_is_PRICED_not_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A projected transfer shadow: no figure of its own, and a plan anyway.
+
+        The fixture is the production shape rather than a contrivance -- plan
+        step X-au-g-2c-2 declared EVERY transfer shadow derived, so a projected
+        transfer's expense leg stores no plan and is exactly what the old column
+        read could not answer.
+
+        It asserts the FIGURE, not the absence of an exception: a test that only
+        proved this returns would pass against a fix that priced the row from
+        its settlement or from zero, and `$0.00` is precisely the answer that
+        never looks wrong on a page.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Projected Savings", Decimal("1000.00"),
+            )
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("321.00"),
+            )
+            db.session.commit()
+
+            expense_leg = (
+                db.session.query(Transaction)
+                .filter_by(
+                    transfer_id=xfer.id,
+                    transaction_type_id=ref_cache.txn_type_id(
+                        TxnTypeEnum.EXPENSE,
+                    ),
+                )
+                .one()
+            )
+            assert expense_leg.estimated_amount is None, (
+                "the precondition: a projected shadow stores no plan of its "
+                "own, so the column read this arm used to make cannot answer it"
+            )
+            assert expense_leg.settled_basis_id is None, (
+                "and it has recorded nothing, so this row reaches the "
+                "fall-through rather than the settlement arm"
+            )
+
+            basis = amount_basis(
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            assert spending_analysis.resolved_actual_amount(
+                expense_leg, basis,
+            ) == Decimal("321.00"), (
+                "an unsettled row's actual is what the amount model says its "
+                "plan is -- the parent transfer's figure, resolved live"
+            )
+
+    def test_an_unsettled_rows_variance_is_zero_BY_CONSTRUCTION(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Both halves are the same call, so there is nothing to disagree.
+
+        The property the re-point buys, and the reason it is worth more than a
+        second producer that happens to agree: the surprises list's two terms
+        for an unsettled row are now ``resolved_actual_amount`` and
+        ``resolve_transaction_amount`` over the SAME row and the SAME basis, so
+        the delta cannot be non-zero.  Before X-bu the two were different
+        producers over different sources -- the column and the amount model --
+        and on a derived row they did not merely differ, one of them RAISED.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Variance Savings", Decimal("1000.00"),
+            )
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("321.00"),
+            )
+            db.session.commit()
+
+            expense_leg = (
+                db.session.query(Transaction)
+                .filter_by(
+                    transfer_id=xfer.id,
+                    transaction_type_id=ref_cache.txn_type_id(
+                        TxnTypeEnum.EXPENSE,
+                    ),
+                )
+                .one()
+            )
+            basis = amount_basis(
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            surprises = _build_surprises([expense_leg], basis)
+
+            assert surprises.rows == [], (
+                "an unsettled row is not a surprise: its actual and its "
+                "estimate are one call on one row against one basis"
+            )
+            assert surprises.net == Decimal("0")
+
+
 class TestASettledRowWhosePlanIsDerivedIsPriced:
     """A settled row carrying no figure of its OWN still has a plan."""
 
@@ -1711,11 +1829,16 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
         2026-09-05.  The amount-source cutovers declare a row DERIVED and empty
         its ``estimated_amount``; 116 of the rows they declared on production
         are SETTLED, and a settled EXPENSE is exactly what this window loads.
-        This list read ``owned_amount``, the cheap accessor that answers a row's
-        own column and REFUSES one carrying none -- so the first derived row it
+        This list read ``owned_amount``, a cheap accessor that answered a row's
+        own column and REFUSED one carrying none -- so the first derived row it
         met raised ``AmountUnresolvable`` and ``/analytics/spending`` returned
         500 for every window.  Measured: 200 on the shipped image, 500 on the
-        candidate, across 323 routes the only regression.
+        candidate, across 323 routes the only regression.  *That accessor no
+        longer exists: plan step X-bu deleted it and folded its body into the
+        resolver's own OWN arm, so the one-token answer this list reached for is
+        gone.  X-bu also took the ACTUAL half's fall-through onto the same
+        resolver, which is the sibling case ``TestTheActualHalfAsksTheAmountModel``
+        below pins.*
 
         **It asserts the FIGURE, not the absence of an exception.**  A test that
         only proved this returns at all would pass against a fix that priced the

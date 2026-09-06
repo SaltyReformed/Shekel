@@ -18,23 +18,31 @@ derivation needs the owner's whole pay-period set -- so the figure arrives as an
 ARGUMENT a caller cannot forget.  :func:`contributions_by_id` is the batch a
 reader with a row set uses, and
 :func:`~app.services.row_valuation.owned_contribution` is the cheap accessor
-for a reader that can only ever see rows owning their figure.  The BUDGET twins
-of those two are :func:`._amount_source.amounts_by_id` and
-:func:`~app.services.row_valuation.owned_amount`, which answer what a row's
-amount IS rather than what it is worth (ruling E-21, plan step X-au-c2b).
+for a reader that can only ever see rows owning their figure.  The BUDGET twin
+of the first two is :func:`._amount_source.amounts_by_id`, which answers what a
+row's amount IS rather than what it is worth (ruling E-21, plan step X-au-c2b).
+*The cheap accessor had a budget twin too -- ``owned_amount`` -- and plan step
+X-bu DELETED it: a public accessor answering "what is this row's plan" from the
+``estimated_amount`` column is a second spelling of what
+:func:`._amount_source.resolve_transaction_amount` answers, and the two parted
+on a row a cutover had declared DERIVED (finding **BAL-462**).  Its body is now
+rule 1's own arm.  ``owned_contribution`` is the SAME shape and plan step X-bx
+takes it the same way.*
 
 **The arms that need no producer live one module DOWN, in
 :mod:`app.services.row_valuation`** (plan step X-au-c2).  ``fixed_contribution``
 (the status / soft-delete / entered-actual gate), ``own_figure`` (the NULL
-refusal) and the pair ``owned_amount`` / ``owned_contribution`` are pure per-row
-reads.  The loan stack
+refusal) and ``owned_contribution`` are pure per-row reads.  The loan stack
 needs the last of them and cannot name this package without raising pylint's
 ``cyclic-import``, because :mod:`._amount_source` reaches UP into
 ``loan_payment_service`` for rule 4's producer; that module's docstring carries
-the measurement.  Of the four, ``owned_amount`` and ``owned_contribution`` are
-re-exported from this package (``__init__``'s ``__all__``) -- ``fixed_contribution``
-is imported here for the valuations below and ``own_figure`` only by
-``owned_amount`` itself, both as internal uses rather than public surface.  There is
+the measurement.  Of the three, only ``owned_contribution`` is re-exported from
+this package (``__init__``'s ``__all__``).  ``fixed_contribution`` is imported
+here for the valuations below, an internal use rather than public surface, and
+``own_figure`` is not re-exported at all: a caller that means "this row's OWN
+stored figure, refusing a row that carries none" names it on ``row_valuation``
+directly, which is deliberate -- the argument it takes is the column, so
+reaching for it is a statement rather than a convenience.  There is
 still exactly ONE definition of each rule, which is the claim this module
 exists to make.  What is genuinely inverted is that upward reach, and plan step
 X-au-g owns unwinding it.
@@ -96,13 +104,14 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-# ``owned_amount`` is imported for the package's public surface rather than for
-# this module's own use: ``__init__`` re-exports the pair from here so a reader
-# takes both budget accessors from one place (see the module docstring).
+# ``owned_contribution`` is imported for the package's public surface rather
+# than for this module's own use: ``__init__`` re-exports it from here so a
+# reader takes it from the same place as the valuations (see the module
+# docstring).  Its budget twin ``owned_amount`` was re-exported beside it until
+# plan step X-bu deleted the accessor.
 # Pylint: ``unused-import`` -- the re-export IS the use; ``__init__`` names it.
 from app.services.row_valuation import (  # pylint: disable=unused-import
     fixed_contribution,
-    owned_amount,
     owned_contribution,
 )
 from app.utils.balance_predicates import is_projected
