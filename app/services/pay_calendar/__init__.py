@@ -102,8 +102,13 @@ from ._derive import (
     derive_periods,
     projected_payday,
 )
-from ._grid import nominal_payday
-from ._loader import cadence_for, calendar_at_schedule, calendar_for
+from ._grid import cadence_steps_to, nominal_payday
+from ._loader import (
+    cadence_for,
+    calendar_at_schedule,
+    calendar_for,
+    schedule_for,
+)
 from ._rhythm import (
     paydays_in_month_through,
     paydays_in_year_before,
@@ -115,6 +120,7 @@ from ._searches import (
     earliest_started_period,
     final_covered_day,
     latest_started_period,
+    nominal_payday_after,
     opening_payday,
     period_by_id,
 )
@@ -132,6 +138,7 @@ __all__ = [
     "PayCalendarError",
     "PeriodWindow",
     "cadence_for",
+    "cadence_steps_to",
     "calendar_at_schedule",
     "calendar_for",
     "containing_period",
@@ -140,6 +147,7 @@ __all__ = [
     "final_covered_day",
     "latest_started_period",
     "nominal_payday",
+    "nominal_payday_after",
     "opening_payday",
     "paychecks_from",
     "paydays_in_month_through",
@@ -147,4 +155,5 @@ __all__ = [
     "period_by_id",
     "projected_payday",
     "saved_paydays_in_month_through",
+    "schedule_for",
 ]

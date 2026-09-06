@@ -24,8 +24,9 @@ from datetime import (
 from decimal import Decimal
 from app.enums import BusinessDayShiftEnum
 from app.models.amount_ownership import AmountOwnership
-from app.services import pay_calendar, pay_schedule_service
+from app.services import pay_calendar, pay_rhythm, pay_schedule_service
 from app.services.pay_calendar import _derive as pay_calendar_derive
+from app.services.pay_calendar import _searches as pay_calendar_searches
 from app.utils.business_days import shift_to_business_day
 
 
@@ -2722,7 +2723,7 @@ def shift_id_of(shift=BusinessDayShiftEnum.NONE):
 
 
 def rhythm_of(cadence_days, shift=BusinessDayShiftEnum.NONE):
-    """Return a :class:`~app.services.pay_schedule_service.Rhythm`.
+    """Return a :class:`~app.services.pay_rhythm.Rhythm`.
 
     Plan step ``pay_calendar:C14-b`` made the pay-schedule writers take the
     cadence and the payday convention as ONE value, because the two carry a
@@ -2748,7 +2749,7 @@ def rhythm_of(cadence_days, shift=BusinessDayShiftEnum.NONE):
     Returns:
         The rhythm.
     """
-    return pay_schedule_service.Rhythm(
+    return pay_rhythm.Rhythm(
         cadence_days=cadence_days, shift=shift,
     )
 
@@ -2771,14 +2772,37 @@ def displace_paydays_under(monkeypatch, shift):
     :func:`~app.utils.business_days.shift_to_business_day` is the shipped
     displacement from plan step ``C14-a``, not a stand-in for one.
 
-    **BOTH bindings are patched, and that is the whole reason this helper is
+    **THREE bindings are patched, and that is the whole reason this helper is
     shared rather than copied.**  ``from ._derive import projected_payday`` in
-    the package's ``__init__`` makes a SECOND name for one function, so
-    patching either alone leaves half the application displaced and half of it
-    nominal -- a world no convention can produce, and one a green assertion
-    could not tell from the real thing.  ``pay_calendar._derive`` is what
-    ``derive_periods`` and ``project_period_after`` call; ``pay_calendar`` is
-    what ``pay_period_write._reject_backward_payday`` calls since ``C14-d``.
+    the package's ``__init__`` makes a SECOND name for one function, and
+    ``pay_calendar._searches``' own ``from ._derive import projected_payday`` a
+    THIRD, so patching any of them alone leaves half the application displaced
+    and half of it nominal -- a world no convention can produce, and one a
+    green assertion could not tell from the real thing.
+    ``pay_calendar._derive`` is what ``derive_periods`` and
+    ``project_period_after`` call; ``pay_calendar`` is what
+    ``pay_period_write._reject_backward_payday`` calls since ``C14-d``;
+    ``pay_calendar._searches`` is what ``nominal_payday_after`` calls, which is
+    the extend door's grid-index producer since ``C14-e-2``.
+
+    *The third was found by a case that FAILED rather than by reading, and the
+    failure is the argument: with the floor displaced and the search nominal,
+    the door refused a perfectly ordinary extend with a message no correct
+    implementation and no real convention can produce.  That is exactly the
+    half-displaced world this paragraph already warned about, reached through a
+    binding it had not enumerated.  It MOVED once inside the same step, when
+    the grid-index search left ``pay_period_admin`` for the package -- so the
+    census is a thing to re-take rather than a list to trust, and eleven cases
+    went red the moment it was stale.*
+
+    **It displaces under the shift it is HANDED and not under
+    ``rhythm.shift``**, which is what the shipped producer will read, and the
+    difference is deliberate while ``C14-e-3`` is unshipped: a case that
+    displaces globally without storing a convention passes a rhythm whose
+    shift is ``NONE``, and reading the rhythm would silently turn the
+    simulation off.  ``C14-e-3`` DELETES this helper rather than reconciling
+    the two -- a double that simulates a shipped producer is a fence with a
+    subject, and the subject goes when the producer lands.
 
     Args:
         monkeypatch: pytest's patcher.
@@ -2790,16 +2814,18 @@ def displace_paydays_under(monkeypatch, shift):
         The substituted producer, so a caller can state the day it expects
         without re-deriving the displacement by hand.
     """
-    def _displaced(anchor, cadence_days, steps):
+    def _displaced(anchor, rhythm, steps):
         """Displace the nominal rhythm day onto a business day."""
         return shift_to_business_day(
-            anchor + _real_timedelta(days=steps * cadence_days), shift,
+            anchor + _real_timedelta(days=steps * rhythm.cadence_days), shift,
         )
 
     # ``monkeypatch.setattr`` checks that the attribute EXISTS and never that
-    # the double matches it, so the day ``C14-e`` gives the real producer the
-    # convention argument it must take, every case here would keep passing
-    # against a producer that never shipped.  Asserted rather than trusted, on
+    # the double matches it, so the day the real producer's shape moves, every
+    # case here would keep passing against a producer that never shipped.  It
+    # FIRED at plan step ``C14-e-1``, exactly as designed: the producer's
+    # second parameter became the ``Rhythm`` and this double still took a bare
+    # cadence.  Asserted rather than trusted, on
     # an adversarial review's finding: this is the substitution's own
     # expiry date, and it should be loud.
     shipped = list(
@@ -2811,7 +2837,7 @@ def displace_paydays_under(monkeypatch, shift):
         f"no longer simulates the producer C14-e ships.  Update the double "
         f"and every caller of this helper together."
     )
-    for module in (pay_calendar, pay_calendar_derive):
+    for module in (pay_calendar, pay_calendar_derive, pay_calendar_searches):
         monkeypatch.setattr(module, "projected_payday", _displaced)
     return _displaced
 
@@ -2826,7 +2852,7 @@ def registration_spec(**overrides):
 
     **``cadence_days`` and ``shift`` stay spellable as overrides**, though the
     spec itself carries the pair as one
-    :class:`~app.services.pay_schedule_service.Rhythm` since plan step
+    :class:`~app.services.pay_rhythm.Rhythm` since plan step
     ``pay_calendar:C14-b``.  A case about the cadence is not a case about the
     convention, and making every such case name both halves would have put the
     default in each of them; assembled here, the default is stated once.  Pass
@@ -6644,7 +6670,7 @@ def derived_calendar(
 
     return PayCalendar.from_paydays(
         [(index + 1, payday) for index, payday in enumerate(sorted(paydays))],
-        cadence_days,
+        rhythm_of(cadence_days),
         user_id=user_id,
         history_opens_on=history_opens_on,
     )
@@ -6694,7 +6720,7 @@ def derived_window(paydays, cadence_days):
             (index + 1, payday)
             for index, payday in enumerate(sorted(paydays))
         ],
-        cadence_days,
+        rhythm_of(cadence_days),
         user_id=1,
         history_opens_on=None,
     )
@@ -6965,7 +6991,7 @@ def read_pass_over_paydays(
             (index + 1, payday)
             for index, payday in enumerate(sorted(paydays))
         ],
-        cadence_days,
+        rhythm_of(cadence_days),
         user_id=user_id,
         history_opens_on=history_opens_on,
     )

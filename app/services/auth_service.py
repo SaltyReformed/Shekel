@@ -37,6 +37,7 @@ from app.exceptions import AuthError, ConflictError, ValidationError
 from app.services import (
     account_service,
     pay_period_write,
+    pay_rhythm,
     pay_schedule_service,
 )
 from app.services.tax_seed_data import (
@@ -738,7 +739,7 @@ class RegistrationSpec:
             first payday, not for a balance asserted today.
         rhythm: How often the owner is paid and what their payroll does when
             a payday lands on a weekend or a federal holiday
-            (:class:`~app.services.pay_schedule_service.Rhythm`).  Persisted
+            (:class:`~app.services.pay_rhythm.Rhythm`).  Persisted
             as the owner's schedule, so extend and the rolling top-up have
             both halves to continue from.  *They used to infer a cadence where
             it was absent -- pay-calendar finding **P8** -- which plan step
@@ -773,7 +774,7 @@ class RegistrationSpec:
     password: str
     display_name: str
     first_payday: date
-    rhythm: pay_schedule_service.Rhythm
+    rhythm: pay_rhythm.Rhythm
     num_periods: int
     history_opens_on: "date | None"
 

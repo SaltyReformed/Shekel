@@ -29,6 +29,7 @@ from app.utils.money import round_money
 from tests._test_helpers import (
     biweekly_window,
     derived_window,
+    rhythm_of,
     window_head,
 )
 
@@ -825,7 +826,7 @@ class TestTheEngineOverARealAxis:
         # projected and carries no id.  Here the axis is 25 periods, of which
         # only the first two are saved.
         calendar = PayCalendar.from_paydays(
-            [(11, date(2026, 1, 2)), (12, date(2026, 1, 16))], 14, user_id=1,
+            [(11, date(2026, 1, 2)), (12, date(2026, 1, 16))], rhythm_of(14), user_id=1,
             history_opens_on=None,
         )
         whole = calendar.axis(date(2026, 1, 2), date(2026, 12, 4))

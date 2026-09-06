@@ -573,7 +573,7 @@ class TestConcurrentRollingTopUp:
     @staticmethod
     def _enable_rolling(db_session, user_id, target):
         """Give the user a schedule row with rolling on at ``target``."""
-        pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+        pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
         pay_schedule_service.set_rolling(
             user_id, enabled=True, target_periods=target,
         )

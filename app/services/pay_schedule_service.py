@@ -8,14 +8,28 @@ began, and the rolling-window configuration the continuous top-up
 consumes.
 
 **The row holds three facts about the RHYTHM and two about a WRITE**, and
-the doors here are split on that line.  ``cadence_days``,
-``history_opens_on`` and ``shift_id`` are what a pay CALENDAR is derived
-from; :func:`resolve_schedule` answers the first two in one read as
-:class:`ScheduleFacts`, and the third has its own reader
-(:func:`resolve_shift`) until plan step ``C14-e`` gives the calendar a
-reason to carry it.  ``rolling_enabled`` and ``rolling_target_periods``
+the doors here are split on that line.  ``cadence_days``, ``shift_id`` and
+``history_opens_on`` are what a pay CALENDAR is derived from, and since plan
+step ``C14-e`` :func:`resolve_schedule` answers all three in ONE read as
+:class:`ScheduleFacts` -- the cadence and the convention as the
+:class:`~app.services.pay_rhythm.Rhythm` the derivation now displaces
+under, the opening bound beside it.  *``shift_id`` had a scalar reader of
+its own,* ``resolve_shift``, *for the single caller that continues a stored
+rhythm without asking what it is; that was a knowingly accepted second query
+of a row the same request had already resolved, and ``C14-e`` deleted the
+function rather than keeping it, which is the disposition its own docstring
+scheduled.*  ``rolling_enabled`` and ``rolling_target_periods``
 configure the on-request top-up and are read off the row itself by the
 caller that is about to write.
+
+**:class:`~app.services.pay_rhythm.Rhythm` is DECLARED in the pay-calendar
+package and imported back here** (plan step ``C14-e``).  It is a pure value --
+a frozen ``int`` beside an ``Enum`` member -- and this module holds a session,
+so declaring it here put it out of reach of the derivation that must now read
+it.  Rule 14's remedy for a leaf a layer has misplaced is to move the leaf,
+not to mint a second one; see that class for the whole argument.  Every door
+that spells ``pay_rhythm.Rhythm`` reaches one definition, and
+the one definition.
 
 **It no longer owns the advisory lock that serializes the structural
 pay-period mutations** (plan step X-f1c3c).  That lock moved, unchanged
@@ -49,6 +63,7 @@ from app.models.pay_schedule import (
     CADENCE_DAYS_MIN,
     PaySchedule,
 )
+from app.services.pay_rhythm import Rhythm
 from app.utils.business_days import shortest_collision_free_cadence
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
@@ -56,58 +71,24 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class Rhythm:
-    """How often an owner is paid, and what payroll does on a closed day.
-
-    Plan step **C14-b**.  The pair ``budget.pay_schedule`` stores as
-    ``cadence_days`` and ``shift_id``, and a TYPE rather than two arguments
-    because they carry a JOINT rule: a convention that displaces a payday is
-    legal only on a cadence longer than the longest run of consecutive closed
-    days (:func:`reject_shift_on_short_cadence`).  Written through two
-    statements the row passes through a state neither statement means, and
-    either order refuses a legal request -- so :func:`upsert_schedule` takes
-    the pair, judges the pair, and writes the pair, and no caller is able to
-    hand it half of one.
-
-    **It is not :class:`ScheduleFacts` under another name.**  That value is
-    what a pay CALENDAR is DERIVED from and pairs the cadence with
-    ``history_opens_on``; this is what a payday batch WRITES.  The two overlap
-    on the cadence because one column serves both questions, which is the
-    row's shape rather than a second home for the value: neither type stores
-    anything, and both read the same column.
-
-    Attributes:
-        cadence_days: Days between consecutive paydays.  Bounded by
-            :func:`reject_out_of_range_cadence`, not by this type -- a range
-            is the column's own rule and belongs where its one writer asks it.
-        shift: What payroll does when a payday lands on a day no money moves
-            on, as the :class:`~app.enums.BusinessDayShiftEnum` member rather
-            than the ``ref.business_day_shifts`` id that spells it on the
-            wire.  The id is what crosses a form and what the column holds, so
-            :class:`~app.schemas.validation.pay_periods.BusinessDayShiftField`
-            converts on the way in and :func:`upsert_schedule` converts on the
-            way out; between them the value is a member, which is what
-            :func:`~app.utils.business_days.shift_to_business_day` requires --
-            it REFUSES an integer rather than defaulting, so a rhythm carrying
-            an id would hand plan step ``C14-e`` a raise instead of a payday.
-            This is IDs-for-logic as the project means it: no ``name`` string
-            is ever compared.
-    """
-
-    cadence_days: int
-    shift: BusinessDayShiftEnum
-
-
-@dataclass(frozen=True)
 class ScheduleFacts:
-    """The two ``budget.pay_schedule`` facts a pay CALENDAR is built from.
+    """The ``budget.pay_schedule`` facts a pay CALENDAR is built from.
 
-    Plan step **balance:X-bh-2**.  One value rather than two return types
+    Plan step **balance:X-bh-2**.  One value rather than several return types
     because they arrive from one row and are read by one consumer -- a
-    :class:`~app.services.pay_calendar.PayCalendar` needs both, and resolving
-    them separately would be two queries of the same row per calendar load,
-    which is exactly the redundant-schedule-read defect ledger rows **P68** and
-    **P69** record.
+    :class:`~app.services.pay_calendar.PayCalendar` needs them all, and
+    resolving them separately would be several queries of the same row per
+    calendar load, which is exactly the redundant-schedule-read defect ledger
+    rows **P68** and **P69** record.
+
+    **It carries THREE columns since plan step ``C14-e-1``, in two fields**:
+    the cadence and the payday convention travel as one
+    :class:`~app.services.pay_rhythm.Rhythm`, because from ``C14-e-3`` a
+    projected payday is the nominal grid day displaced under that convention
+    and the two are a single owner's single rhythm.  That is the shape this
+    value was already built for -- ``ScheduleFacts.of`` is "the one place that
+    says which columns are the calendar facts", so a third fact reaches every
+    consumer without a signature moving, and none did.
 
     **It is the facts OF A ROW, and since plan step C4-d it cannot say
     otherwise** (ruling **R-PC45**).  ``cadence_days`` was typed ``int | None``
@@ -132,11 +113,14 @@ class ScheduleFacts:
     the row itself (:func:`get_schedule`), because it is about to write.
 
     Attributes:
-        cadence_days: Days between paydays.  The STORED value and never an
-            inferred one; the arm that inferred it closed findings **P8** and
-            **P35** on its way out (see :func:`resolve_schedule`).  Not
-            optional, because the column is ``NOT NULL``: a row states its
-            cadence or it is not a row.
+        rhythm: How often the owner is paid and what payroll does when a payday
+            lands on a closed day
+            (:class:`~app.services.pay_rhythm.Rhythm`).  Both halves are
+            STORED values and never inferred ones; the arm that inferred the
+            cadence closed findings **P8** and **P35** on its way out (see
+            :func:`resolve_schedule`).  Neither is optional, because both
+            columns are ``NOT NULL``: a row states its rhythm or it is not a
+            row.
         history_opens_on: How far back this owner's paychecks reach, or
             ``None`` for NOT STATED (ruling **balance:R-IA**, amended
             2026-08-31) -- an absence rather than a claim, and one the
@@ -146,10 +130,23 @@ class ScheduleFacts:
             fallback for it: an owner with no schedule row has stated nothing,
             and the first recorded payday is a record boundary rather than an
             answer.
+        nominal_anchor: A day the owner's NOMINAL pay grid passes through, or
+            ``None`` for a schedule row holding no paydays (plan step
+            ``pay_calendar:C14-e-2``).  **The GRID's phase, which is not the
+            record's**: from ``C14-e-3`` a recorded payday is a CASH day, so
+            the two part company on every displaced payday and neither can be
+            read off the other.  ``pay_period_admin.extend_pay_periods`` is
+            its one reader -- it continues the rhythm from HERE rather than
+            from its own last output, which is what stops each batch
+            re-phasing the grid by the previous batch's displacement.
+            Optional for the same reason ``history_opens_on`` is: the column
+            is, and the state it stands for is an owner holding a schedule row
+            and zero paydays.
     """
 
-    cadence_days: int
+    rhythm: Rhythm
     history_opens_on: date | None
+    nominal_anchor: date | None
 
     @classmethod
     def of(cls, schedule: PaySchedule) -> "ScheduleFacts":
@@ -167,10 +164,30 @@ class ScheduleFacts:
 
         Returns:
             Its :class:`ScheduleFacts`.
+
+        Raises:
+            ValidationError: The row names a ``shift_id``
+                ``ref.business_day_shifts`` does not hold.  **This refusal
+                moved here from ``resolve_shift`` at plan step ``C14-e-1``**,
+                which deleted that function; it is stated once, at the one
+                place a stored id becomes a member.
         """
+        shift = ref_cache.business_day_shift_member(schedule.shift_id)
+        if shift is None:
+            raise ValidationError(
+                f"user {schedule.user_id}'s pay schedule names business-day "
+                f"shift {schedule.shift_id}, which this application does not "
+                f"model.  Refused rather than read as 'none': a missing "
+                f"convention would silently un-displace every projected "
+                f"payday, which is a wrong date rather than an error.  "
+                f"fk_pay_schedule_shift_id admits only seeded ids, so "
+                f"reaching this means ref.business_day_shifts was changed "
+                f"under the application."
+            )
         return cls(
-            cadence_days=schedule.cadence_days,
+            rhythm=Rhythm(cadence_days=schedule.cadence_days, shift=shift),
             history_opens_on=schedule.history_opens_on,
+            nominal_anchor=schedule.nominal_anchor,
         )
 
 
@@ -528,7 +545,9 @@ def set_history_opening(
     return schedule
 
 
-def upsert_schedule(user_id: int, rhythm: Rhythm) -> PaySchedule:
+def upsert_schedule(
+    user_id: int, rhythm: Rhythm, nominal_anchor: "date | None" = None,
+) -> PaySchedule:
     """Create or update the user's persisted RHYTHM, race-safe.
 
     Called when a schedule's rhythm is established (first generation)
@@ -570,11 +589,31 @@ def upsert_schedule(user_id: int, rhythm: Rhythm) -> PaySchedule:
 
     Args:
         user_id: The owning user's id.
-        rhythm: The :class:`Rhythm` to persist.  A caller CONTINUING a
-            schedule rather than stating one reads the stored convention
-            (:func:`resolve_shift`) and passes it back; there is deliberately
-            no "leave this half alone" argument, because a batch that cannot
-            say what the rhythm is cannot be judged against it.
+        rhythm: The :class:`~app.services.pay_rhythm.Rhythm` to persist.  A
+            caller CONTINUING a schedule rather than stating one reads the
+            stored pair off the calendar it already built
+            (:attr:`~app.services.pay_calendar.PayCalendar.rhythm`) and passes
+            it back; there is deliberately no "leave this half alone"
+            argument, because a batch that cannot say what the rhythm is
+            cannot be judged against it.  *It read the convention through a
+            scalar query of its own,* ``resolve_shift``, *until plan step
+            ``C14-e-1`` put the convention on the calendar and deleted the
+            function -- the disposition that function's own docstring
+            scheduled.*
+        nominal_anchor: A day the owner's NOMINAL grid passes through, or
+            ``None`` for a write that states no phase (plan step
+            ``C14-e-2``).  Written in the SAME statement as the pair above,
+            for the pair's own reason: the three describe one rhythm, and a
+            row written through two statements passes through a state neither
+            means.  **Its one producer is**
+            ``pay_period_write.record_paydays``, which derives it from the
+            batch's own first payday rather than accepting it from a door --
+            so a phase that is not on the batch's grid is UNREPRESENTABLE
+            rather than refused, which is what doctrine asks of a fence.
+            **``None`` LEAVES THE STORED PHASE STANDING** rather than clearing
+            it, which is the one place this door admits "leave that alone";
+            the statement below carries why the RHYTHM gets no such arm and
+            this does.
 
     Returns:
         The created or updated :class:`PaySchedule` row.
@@ -598,10 +637,38 @@ def upsert_schedule(user_id: int, rhythm: Rhythm) -> PaySchedule:
         user_id=user_id,
         cadence_days=rhythm.cadence_days,
         shift_id=shift_id,
+        nominal_anchor=nominal_anchor,
     )
     upsert_stmt = insert_stmt.on_conflict_do_update(
         constraint="uq_pay_schedule_user",
-        set_={"cadence_days": rhythm.cadence_days, "shift_id": shift_id},
+        set_={
+            "cadence_days": rhythm.cadence_days,
+            "shift_id": shift_id,
+            # COALESCE, so a write that states NO phase leaves the stored one
+            # standing rather than clearing it.  Written the other way it is a
+            # FOOTGUN: this is an UPSERT, so a caller changing the cadence
+            # alone would silently un-phase the owner and their next extend
+            # would be refused.  SIX cases proved that before this arm existed;
+            # ``app/`` has ONE caller and it always states a phase, so the
+            # defect was one door away rather than live -- which is the
+            # distance at which the right move is to make it unrepresentable.
+            #
+            # **The pair still carries a joint rule and this arm does not deny
+            # it**, which a second adversarial review corrected: a cadence and
+            # the phase it is measured from must come from ONE era, or the
+            # grid is one nobody chose.  That is ledger row **N-492** and it is
+            # why the migration backfills MAX rather than MIN.  What holds the
+            # rule here is that ``pay_period_write.record_paydays`` is the only
+            # caller and states BOTH from the batch it is recording -- a
+            # discipline kept by there being one writer, not by this argument
+            # being independent.  A caller that changes the cadence and means a
+            # new grid must say so; ``C17``'s era row is where that stops being
+            # a discipline and becomes a shape.
+            "nominal_anchor": func.coalesce(
+                insert_stmt.excluded.nominal_anchor,
+                PaySchedule.__table__.c.nominal_anchor,
+            ),
+        },
     )
     db.session.execute(upsert_stmt)
     # Reload through the ORM with populate_existing so any instance the
@@ -661,7 +728,7 @@ def set_rolling(user_id: int, enabled: bool, target_periods: int) -> PaySchedule
 
 
 def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
-    """Resolve the two facts a pay calendar is derived from, in ONE read.
+    """Resolve the facts a pay calendar is derived from, in ONE read.
 
     Plan step **balance:X-bh-2**.  :func:`resolve_cadence`'s body, widened to
     the pair -- because :func:`app.services.pay_calendar.calendar_for` needs
@@ -718,13 +785,20 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
     carrying no cadence -- and that split is why some screens showed a repair
     page for them and others showed a blank one.
 
+    **Since plan step ``C14-e-2`` it answers FOUR columns rather than two** --
+    the cadence and the convention as a :class:`~app.services.pay_rhythm.Rhythm`,
+    plus ``history_opens_on`` and ``nominal_anchor`` -- and still in the one
+    read, which is the property :class:`ScheduleFacts` was shaped to have.
+
     **``history_opens_on`` never had a fallback and that asymmetry was the
     point.**  Nothing in ``budget.pay_periods`` says when a job began -- the
     first recorded payday is a record boundary, not an answer -- so an owner who
     HAS a row and has stated nothing carries ``None`` there, and it reads as
     exactly that (ruling **balance:R-IA**, amended 2026-08-31).  It is the one
-    optional left on :class:`ScheduleFacts`, and it is optional because its
-    column is.
+    optional on :class:`ScheduleFacts` for that reason -- ``nominal_anchor``
+    is the other, and it is optional for a different one: the migration cannot
+    answer for a schedule row holding no paydays.  Each is optional because
+    its column is.
 
     Args:
         user_id: The owning user's id.
@@ -733,6 +807,18 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
         The :class:`ScheduleFacts`, or ``None`` when the user has no
         ``budget.pay_schedule`` row -- which by ``fk_pay_periods_schedule`` is
         an owner with no pay periods either.
+
+    Raises:
+        ValidationError: The row names a ``shift_id``
+            ``ref.business_day_shifts`` does not hold
+            (:meth:`ScheduleFacts.of`, since plan step ``C14-e-1``).  **This
+            does not make the door hard**, and the distinction is the one the
+            paragraph above draws: the SOFT answer is about an owner with no
+            schedule, which a form repairs, where a stored id this application
+            cannot name is a ``ref`` table edited under the app and is not a
+            state any form repairs.  Named here because every caller of this
+            door now inherits it, where before it belonged to one scalar
+            reader.
     """
     schedule = get_schedule(user_id)
     if schedule is None:
@@ -767,71 +853,4 @@ def resolve_cadence(user_id: int) -> int | None:
         extend path treats ``None`` as "generate your first schedule first".
     """
     facts = resolve_schedule(user_id)
-    return None if facts is None else facts.cadence_days
-
-
-def resolve_shift(user_id: int) -> BusinessDayShiftEnum:
-    """Resolve the convention to continue the user's schedule under.
-
-    :func:`resolve_cadence`'s sibling for the second half of the rhythm, and
-    it exists for ONE caller: ``pay_period_admin.extend_pay_periods``, the one
-    door that records paydays without asking what the rhythm is.  Every other
-    caller of :func:`upsert_schedule` is a door that STATES a convention
-    (**R-PC56**: the question is asked wherever a cadence is), and hands that
-    answer down.
-
-    **It is a KNOWINGLY ACCEPTED second read of a row the same request already
-    resolved**, and calling it anything softer would be the overclaim an
-    adversarial review of 2026-09-05 struck from this paragraph.  The extend
-    path builds a :class:`~app.services.pay_calendar.PayCalendar` first, which
-    reads ``budget.pay_schedule`` through :func:`resolve_schedule`; this is a
-    second scalar query against the same row, and it is the per-request
-    duplicate-read class ledger rows **P68** and **P69** record.
-
-    The alternative -- widening :class:`ScheduleFacts` and threading the value
-    through ``PayCalendar`` -- is what plan step ``C14-e`` does, because that
-    is the step where the PURE pay-calendar package acquires a reader for it.
-    Doing it here would put a field on the derivation that nothing in it uses,
-    which is the same trade from the other side.  So the cost is one indexed
-    lookup on a form POST until C14-e, when this function and its query are
-    deleted rather than kept.
-
-    Args:
-        user_id: The owning user's id.
-
-    Returns:
-        The stored convention as its
-        :class:`~app.enums.BusinessDayShiftEnum` member, ready to travel in a
-        :class:`Rhythm`.
-
-    Raises:
-        ValidationError: The user has no ``budget.pay_schedule`` row, or the
-            row names a convention this application does not model.  Refused
-            rather than answered with a fallback, for
-            :func:`reread_schedule`'s reason: the one caller has already built
-            a :class:`~app.services.pay_calendar.PayCalendar` for this owner,
-            which refuses an owner without a schedule, so absence here is a
-            row removed outside the application rather than a state to branch
-            on.  A fallback would have to INVENT a convention, and inventing
-            one is how a payday moves for an owner who was never asked.  The
-            second arm is ``fk_pay_schedule_shift_id`` failing at the same
-            time as the seed, which no application path reaches; it is refused
-            rather than silently read as ``none`` for the same reason.
-    """
-    shift_id = (
-        db.session.query(PaySchedule.shift_id)
-        .filter(PaySchedule.user_id == user_id)
-        .scalar()
-    )
-    if shift_id is None:
-        raise ValidationError(
-            f"user {user_id} has no budget.pay_schedule row, so there is no "
-            f"payday convention to continue their schedule under."
-        )
-    shift = ref_cache.business_day_shift_member(shift_id)
-    if shift is None:
-        raise ValidationError(
-            f"user {user_id}'s pay schedule names business-day shift "
-            f"{shift_id}, which this application does not model."
-        )
-    return shift
+    return None if facts is None else facts.rhythm.cadence_days

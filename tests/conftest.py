@@ -1659,6 +1659,7 @@ def bare_user_with_cadence(db, bare_user):
     """
     pay_schedule_service.upsert_schedule(
         bare_user["user"].id, rhythm=rhythm_of(14),
+        nominal_anchor=None,
     )
     db.session.commit()
     return bare_user
@@ -2224,7 +2225,7 @@ def _build_cross_page_calendar_periods(db, user):
     # period's projected end.  Every other end is the day before the next
     # payday, which is what makes these rows a real calendar-monthly schedule
     # rather than a stored claim to be one.
-    pay_schedule_service.upsert_schedule(user.id, rhythm_of(31))
+    pay_schedule_service.upsert_schedule(user.id, rhythm_of(31), None)
 
     all_periods = (
         db.session.query(PayPeriod)
