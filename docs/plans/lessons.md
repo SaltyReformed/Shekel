@@ -165,6 +165,23 @@ rationale, where a reader meets it at the moment it fires.
   from prose; and COUNT THE CALL GRAPH, NOT THE CALL SITES -- one finding said four spellings, the
   tree held 18. A census and a gate can be blind the same way, and then they confirm each other.
 - **A CENSUS THAT IS NOT COMMITTED IS AN UNCITED CLAIM.**
+- **"IS THIS NAME LIVE?" IS A CLASSIFICATION, AND A REGEX IS A SAMPLER OVER IT.** Six ways one
+  question gave a wrong answer in one night: prose on the line; a dict key WRITING the variable for
+  a subprocess; an expression spanning two lines; a private constant that REPLACED it and shares its
+  spelling; a substring of a different identifier --
+  **a name is not a read, and a name is not even always a name** -- and a METHOD NAME attached to a
+  number, which suppresses the re-derivation that would have caught it rather than causing the
+  error. Seven derivations, five answers, and the only two that held were the two where somebody
+  ENUMERATED AND READ. **No figure is recorded here on purpose**: the count moved every time it was
+  quoted.
+- **A NEGATIVE TEST CANNOT DISTINGUISH *past this change* FROM *before its predecessor*.** Auditing
+  which worktrees had adopted a new wrapper by the ABSENCE of a file read as adopted for any tree
+  older than the file itself. Census by a string the new thing INTRODUCES, never by what it removes.
+- **THE FORMATTER'S CLAIM ABOUT ITSELF IS UNGRADED.** `rumdl fmt` corrupts inline `#NN` refs, and
+  "it only re-wraps" is exactly the sentence a tool writes about itself. The procedure is cheap:
+  snapshot, fmt, check the corruption signature, confirm a known ref survives BY NAME, then diff the
+  whitespace-collapsed WORD STREAM. That is the difference between trusting a formatter and grading
+  one, and it ran four times tonight without a single false pass.
 - **A PROBE MUST BREAK ON A STATE IT OBSERVED, NEVER ON THE ABSENCE OF ONE.** FIVE instruments in
   one day turned *I failed to measure* into a confident, plausible answer, three of them arriving as
   a GREEN exit: a swallow reporting a fault as a stale image, fixtures reporting a broken container
