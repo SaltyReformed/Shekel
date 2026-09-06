@@ -535,7 +535,8 @@ def skipped_count(owner_id: int, account_id: int) -> int:
     between the statements would do it.  What survives: the only two-snapshot
     path is a POST re-render naming ``tab=skipped``, which no rendered control
     emits (the Skipped tab sits outside the Apply form, **R-HW**) and which
-    ``_requested_tab`` would have to be handed by a crafted body.
+    ``_reconcile_query.requested_tab`` would have to be handed by a crafted
+    body.
     :func:`skipped_acts` narrows on the same clause (:func:`_mine`) and adds
     TWO joins, neither of which can drop a row.  The INNER join to the line
     cannot, because ``fk_statement_line_skips_line_account`` guarantees the
