@@ -237,6 +237,14 @@ rationale, where a reader meets it at the moment it fires.
   *"a conflict is a lucky signal"*; this is the other half, where the marker fires and is itself
   what invites picking a side. The row conflict beside it kept ALL THREE rulings. A marker is a
   prompt to DERIVE.
+- **And two sides AGREEING is not evidence either, which is where the instinct hides last.**
+  `balance:X-f3c-2b-2c`'s THIRD merge in one night, TWICE in one tree: branch and `dev` both said
+  **305 steps** where the merged table held **306**, and both said **132 balance rulings** where it
+  held **133**. The conflict arm cannot fire when the sides agree, so agreement carries no signal at
+  all while reading as corroboration. Neither side had counted the merged table because neither
+  could: it did not exist until the merge made it. **Nor does conflict predict a third value**: of
+  nine counters some landed where neither side stood (ledger 302/297 -> **301**) and two landed on a
+  side's (ready 75/76 -> **75**). DERIVE every count from its own producer, every time.
 - **A pylint score is a RATIO, so widening the denominator hides the message.** `bank_import:X-gi-1`
   graded `app/routes/` at 10.00/10 with a real `line-too-long` in the one file it had edited; that
   file alone scores **9.44/10**. With a hand count of 163 against `crowded_ledger_rows()`'s 160, one
