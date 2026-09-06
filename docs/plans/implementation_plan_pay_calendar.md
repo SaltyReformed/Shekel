@@ -311,6 +311,14 @@ their only live specimen from them, which both `_staging` docstrings predict and
       day AND when consecutive recorded paydays are not one cadence apart (**R-PC55**); the second
       clause is the one that sees a MISSING payday, which is what **P80**'s own worked example turns
       out to be. Closes **P80**.
+- [ ] **C18 -- a payday may be recorded BEFORE the schedule's earliest, and a period below the books
+      generates nothing** (ruling **R-PC62**; closes **PC-499**, **PC-500**).
+      `_reject_backward_payday` bounds a batch after the LATEST payday, where its own docstring says
+      the only thing left to refuse is one INSIDE a paycheck (**C6**'s); it narrows to
+      *strictly inside `[min(paydays), the last paycheck's end)`*, tested on EVERY new payday, since
+      the narrowed rule is not monotone. And what it admits must not GENERATE: a prepend wrote a
+      `$531.94` Van Payment moving 173 figures. The bound is PER ACCOUNT (openings stagger 03-26 to
+      06-26); the date lives on `budget.transfers.occurs_on`.
 - [ ] **C17 -- a pay schedule is a SEQUENCE OF ERAS** (ruling **R-PC58**; closes **P78**,
       **N-492**). One row per *how I have been paid since* -- effective from, cadence, its KIND, the
       phase anchor and the convention -- replacing the single cadence `budget.pay_schedule` holds
@@ -364,48 +372,26 @@ rows **P62**, **P63** and **P64**'s engine half; its specification is
       `historical/pay_calendar_as_built_2026-08-16.md`. **Must not be undone**: `pay_period_write`
       is the ONE place in `app/` that constructs or deletes a pay period, and R-PC1's coverage half
       is DELETED.
-- [x] **C4 -- drop the derived columns.** `327a70f2`. The DECOMPOSED parent, split into seven leaves
-      2026-08-25 and into EIGHT on 2026-09-01 when `C4-b` split in two (**R-PC40**); it ticks with
-      `C4-d`, its last open leaf. Closes **P1**, **P4**, **P5**, **P8**, **P9**.
-      **A later leaf obeys the PREDICATE, never a count**: a read of `end_date` or `period_index`
-      reaching through a `budget.pay_periods` ROW. Reader census as built:
-      `historical/c4_reader_census_2026-09-02.md`.
+- [x] **C4 -- drop the derived columns.** `327a70f2`. The DECOMPOSED parent, eight leaves; ticked
+      with `C4-d`. Closed **P1**, **P4**, **P5**, **P8**, **P9**.
 - [x] **C4-a-1** `8962e073` + `2895f693` -- the balance seam's clamp. Closed **P38**.
-- [x] **C4-a-2** `82bd762c` -- reconcile panel; `utils.dates.attribution_date` DELETED for
-      `DerivedPeriod.attribution_day` (**R-PC31**).
-- [x] **C4-a-3** `a0fb14ba` -- purchase-date warning; `check_purchase_date_in_period` DELETED,
-      `DerivedPeriod.covers` lands (**R-PC34**, **R-PC35**). `$0.00` on production.
-- [x] **C4-a-4** `f18a58af` -- destination picker; `destinations_for` takes the CALENDAR, no
-      `owner_id` (**R-PC36**-**R-PC38**). `$0.00`.
-- [x] **C4-a-5** `95b2dc67` (+ `ce96887a`) -- the two LABEL readers; `PayPeriod.label` DELETED (the
-      COLUMN is dropped one leaf later, **R-PC39**). Opened **N-413**.
-- [x] **C4-b -- an owner with paydays HAS a recorded cadence.** `5db9f8a0`. The DECOMPOSED parent,
-      ticked with `C4-b-2`; what split it in two was that the key's prerequisite turned out to be
-      the TEST CORPUS rather than any reader (**R-PC40**).
-- [x] **C4-b-1 -- every test owner's calendar comes from the doors that own it.** `eb6597ae`. The
-      hand-built `PayPeriod(...)` sites that built an ORDINARY owner go through `record_paydays` and
-      `reset_pay_periods`; `_drop_seed_user_bootstrap`'s 135 lines are DELETED. It REFUTED N-392's
-      diagnosis: `POST /pay-periods/reset` does perform that resting state. Closed **N-392**; opened
-      **P78**. **What `C4-c` must still obey**: read no COUNT of hand-built constructions out of any
-      document -- re-run the grep this file's `C4-c` entry states.
-- [x] **C4-b-2 -- the key itself, and the fallback goes.** `5db9f8a0` (+ `2e3c609e`). Migration
-      `f1c8b3d5e920`; `fk_pay_periods_schedule` is **`ON DELETE RESTRICT`** (**R-PC41**), the
-      inferring arm and its ~25 docstrings are gone, and `PayCalendarError` gains the handler
-      **P35** deferred (**R-PC42**). Closed **P8** and **P35**. **What a later step must obey**: the
-      backfill reads the PAYDAYS, not the stored span -- restoring `(end - start) + 1` writes a
-      2x-wrong cadence (row **P28**); and `MIN_MATERIALISABLE_CADENCE_DAYS` now bounds only stored.
-- [x] **C4-d -- the cadence type stops admitting a row that cannot exist.** `327a70f2`. Ruling
-      **R-PC45**: a calendar HAS a cadence, and `calendar_for` RAISES for an owner with no
-      `budget.pay_schedule` row rather than answering an empty one. Six `int | None` declarations
-      and two live `cadence_days is not None` guards deleted.
-      **A later leaf wanting an empty calendar takes `bare_user_with_cadence`, never `bare_user`.**
-      Opened **P81**, **P82**. As built: `historical/c4_d_as_built_2026-09-02.md`.
-- [x] **C4-c -- the drop.** `c703e1c7`. Migration `b7a41e2c9d63`, RE-PARENTED onto `c9a4e7b21d58`;
-      63 rows byte-identical across that adjacency, the off-cadence control shown able to DISAGREE
-      first. `upgrade()` REPORTS a disagreeing stored pair; the downgrade names its three missing
-      promises and a one-day period aborts it whole. **What a later step must obey**: a migration
-      test predating this head must rewind first (**P79**). Closed TEN rows -- **P1**, **P4**,
-      **P5**, **P9**, **P26**, **P27**, **P28**, **P33**, **P53**, **P70**; opened **P79**, **P80**.
+- [x] **C4-a-2** `82bd762c` -- reconcile panel; `utils.dates.attribution_date` DELETED (**R-PC31**).
+- [x] **C4-a-3** `a0fb14ba` -- purchase-date warning (**R-PC34**, **R-PC35**). `$0.00`.
+- [x] **C4-a-4** `f18a58af` -- destination picker (**R-PC36**-**R-PC38**). `$0.00`.
+- [x] **C4-a-5** `95b2dc67` (+ `ce96887a`) -- the two LABEL readers (**R-PC39**). Opened **N-413**.
+- [x] **C4-b** `5db9f8a0` -- an owner with paydays HAS a recorded cadence; the decomposed parent
+      (**R-PC40**).
+- [x] **C4-b-1** `eb6597ae` -- every test owner's calendar comes from the doors that own it. Closed
+      **N-392**; opened **P78**.
+- [x] **C4-b-2** `5db9f8a0` (+ `2e3c609e`), migration `f1c8b3d5e920` -- the key,
+      `ON DELETE RESTRICT` (**R-PC41**, **R-PC42**). Closed **P8**, **P35**.
+      **A LATER STEP MUST OBEY**: its backfill reads the PAYDAYS, not the stored span -- restoring
+      `(end - start) + 1` writes a 2x-wrong cadence (**P28**).
+- [x] **C4-d** `327a70f2` -- a calendar HAS a cadence (**R-PC45**). Opened **P81**, **P82**.
+      **A LATER LEAF WANTING AN EMPTY CALENDAR TAKES `bare_user_with_cadence`, never `bare_user`.**
+- [x] **C4-c -- the drop.** `c703e1c7`, migration `b7a41e2c9d63`. Closed **P1**, **P4**, **P5**,
+      **P9**, **P26**, **P27**, **P28**, **P33**, **P53**, **P70**; opened **P79**, **P80**. As
+      built, with the whole `C4` span: `historical/c4_as_built_2026-09-06.md`.
 - [x] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** `4e8b40b3`. The
       decomposed parent, ticked with `C5b`. This span is COMPLETE and condensed under rule 5, to buy
       the room `C4-b`'s decomposition needed; the commits are the record and `steps.md` carries each

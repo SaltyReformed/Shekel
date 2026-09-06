@@ -1,5 +1,22 @@
 """Rehearse the account-10 repair through the app's own HTTP doors.
 
+**SUPERSEDED BY RULING `balance:R-BAL3` (2026-09-05). DO NOT RUN THIS AGAINST ANY
+DATABASE YOU CARE ABOUT, AND DO NOT TREAT A GREEN RUN AS EVIDENCE FOR THE REPAIR.**
+It performs the design R-BAL3 replaced: it opens account 10's books on
+2026-03-26 at the export's close for that day (``OPENED_ON`` below), DELETES
+transfer 102 -- which R-BAL3 keeps -- and re-records the absorbed leg as a
+``Financial: Emergency Fund`` expense the developer rejected in writing.  Under
+the new ruling both accounts open **2026-03-25** at their banks' own closes and
+the four bank lines of 2026-03-26 are RECORDED, transfer 102 among them.
+
+**Its INSTRUMENTS are still correct and are what this file is kept for**: the
+form parser and its six measured divergences from a browser, the flash-refusal
+trap, the postings fingerprint, the two-directional reconciliation and the
+class-move arms all survive the ruling untouched.  The ACTS and their figures
+are what changed; the rewrite is owed by ``balance:X-f3c-2b-2c`` and waits on
+``pay_calendar:C18``, because the rehearsal has to run against the calendar the
+repair will actually be performed on.
+
 The instrument behind plan step **balance:X-f3c-2b-2c**, whose product is a
 REHEARSED runbook rather than a code change: findings **N-379** and **N-382**
 are repaired by an owner clicking through the app, ruling **R-HJ** forbids a
