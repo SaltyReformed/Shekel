@@ -1,18 +1,61 @@
 # Runbook: the account-10 repair
 
-**STATUS: PREPARED AND REHEARSED, NOT PERFORMED.** Nothing here has been done to production. It is a
-live procedure, not a record; when it has been performed, say so here and tick `balance:X-f3c-2b-2c`
-in `../../plans/steps.md`.
+**STATUS: SUPERSEDED BY RULING `balance:R-BAL3` (2026-09-05). DO NOT PERFORM ANY ACT BELOW.**
+Nothing here has been done to production, and nothing here may be. **Four of its six acts are
+wrong under the new ruling and one of them MOVES MONEY THE WRONG WAY**: act 1 deletes transfer
+102, which R-BAL3 KEEPS as the surviving record of a real `$500` ACH; act 3 opens account 10's
+books on 2026-03-26 at `$5,350.21`, where R-BAL3 opens them 2026-03-25 at `$4,850.21`; act 4a
+drops transfer 1 for the wrong reason; and act 4b books `$500` of `Financial: Emergency Fund`
+expense the developer rejected in writing (*"I don't like faking or hiding money"*).
 
-**IT MOVES MONEY.** Six acts, 32 door submissions, three accounts. Read the whole thing first.
+**BOTH of the blockers this document names have since cleared, which is exactly why the banner is
+needed rather than a note.** The restatement door IS deployed -- production is `9de30bce`, which
+contains `59b485df`, measured 2026-09-05 by the `docker inspect` recipe below -- and act 4b is no
+longer OPEN but DELETED. A reader who checked only those two would conclude the procedure is
+unblocked and work it.
 
-**ONE ACT IS OPEN AND BLOCKS THE PROCEDURE: act 4b.** The developer rejected its method on
-2026-09-01 and the replacement design is not written. Everything else is ruled and rehearsed, but
-this runbook cannot be worked end to end until 4b is settled -- see act 4.
+**What replaces it.** `balance:R-BAL3` in `../../plans/rulings.md`: the `$500` ACH left Checking
+and reached Fidelity on 2026-03-26, the day BOTH accounts' books opened, so under **R-HG** it was
+absorbed on both sides and had nowhere true to live. Both accounts now open **2026-03-25** at
+their banks' own closes -- `$1,234.04` for Checking, `$4,850.21` for account 10 -- and the FOUR
+bank lines of 2026-03-26 are RECORDED on 2026-03-26, the `$500` among them as one ordinary
+transfer on the day both banks posted it. Act 4b does not exist. The step also waits on
+`pay_calendar:C18`.
 
-**It cannot start until the restatement door has DEPLOYED.** The door is `balance:X-f3c-2b-2a`,
-commit `59b485df`, and it is on `dev` only; production has no `budget.account_openings` table until
-a release carries it.
+**This document is kept, not deleted, because its INSTRUMENTS and its measurements are still
+true**: the door census, the flash-refusal trap, the stop-rule reasoning, the archive round trip
+and the "what you will and will not see move" table were all measured and all survive. The ACTS
+and their figures are what changed. Read it as evidence, never as instructions.
+
+**The rewrite is owed by `balance:X-f3c-2b-2c`** and has not been done: its rehearsal must run
+after `pay_calendar:C18` ships, so rewriting the acts now would rehearse them twice.
+**Five things the rewrite owes, found by the neutral review of 2026-09-05 and recorded here so
+they are not lost with this document:**
+
+1. **The "what you will and will not see move" table below is FALSE for the new acts.** Under
+   R-BAL3 Checking's own daily balance moves on four days -- 2026-03-26 by `+$2,493.43`, 04-29
+   and 04-30 by `+$1,500.00`, 07-23 by `+$2,000.00` -- and where the bank can grade them they are
+   IMPROVEMENTS: SECU states `$3,409.57` for 04/29 and the app then matches it to the cent. An
+   operator reading today's table would call the `+$2,000.00` jump an error.
+2. **A stop rule is missing for a window the new order opens.** Between the restatements and the
+   dividends, account 10's income statement carries **`+$29.05` of interest income that never
+   happened** -- ruling **R-FO** sends an interest-bearing account's true-up counter leg to
+   `interest_income`. It is the harm R-HL's order exists to prevent, with the opposite sign.
+3. **Transfer 102's re-date needs BOTH openings already at 2026-03-25**, not just its own
+   account's: `settle_day.record_settle_day` asks the books boundary per row, and that one edit
+   touches Checking and account 10. A per-account "restate, then re-date" reads as safe and is
+   one click from a refusal mid-act.
+4. **The `-$108.87` line's CATEGORY is unruled.** The rehearsal booked it to `Family:
+   Subscriptions` (category 17, Audible's) as a placeholder; SECU files it `Shopping/Online` and
+   the owner has no shopping category. The developer names it, not the runbook.
+5. **The opening-day corroboration arm cannot fail in a REHEARSAL** -- both sides come from the
+   same export -- so it grades the human's typing and nothing else. Today's document says this;
+   the rewrite must keep saying it.
+
+---
+
+## THE SUPERSEDED PROCEDURE FOLLOWS. It is a record of what was rehearsed on 2026-09-01, and it
+## is NOT a set of instructions.
 
 ---
 
