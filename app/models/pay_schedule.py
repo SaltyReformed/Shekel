@@ -33,13 +33,26 @@ the paydays are, and this says where counting them backward stops.  The
 app knows the cadence and cannot know when the job began, which is why
 the second one is asked rather than inferred.
 
-The anchor start date is deliberately NOT stored here -- it equals
-``min(pay_periods.start_date)`` and has no consumer, so persisting it
-would only invite drift.  ``history_opens_on`` is NOT that value under
-another name: the first RECORDED payday is where the app's record opens,
-and this is where the owner's pay history opens, which is the whole
-distinction ledger row **N-390** measured at ``$14,103.84`` against a
-true ``$31,733.64``.
+**Since plan step pay_calendar:C14-e-2 it holds a THIRD non-derivable
+fact** (developer direction **R-PC61**): ``nominal_anchor``, a day the
+owner's NOMINAL pay grid passes through.  *This paragraph said the
+opposite until that step -- "the anchor start date is deliberately NOT
+stored here; it equals ``min(pay_periods.start_date)`` and has no
+consumer, so persisting it would only invite drift" -- and BOTH halves of
+that sentence expire at C14-e.*  It acquires a consumer: the extend and
+top-up paths continue the grid from it rather than from their own last
+output.  And it stops equalling ``min(start_date)``: under a displacing
+convention the recorded paydays are CASH days, so the nominal grid is not
+observable in ``budget.pay_periods`` at all, and the two are different
+facts -- what payroll INTENDS against what the bank DID -- rather than one
+value in two homes.
+
+``history_opens_on`` is NOT that value under another name, and neither is
+``nominal_anchor``: the first RECORDED payday is where the app's record
+opens, ``history_opens_on`` is where the owner's pay HISTORY opens, and
+``nominal_anchor`` is where the arithmetic GRID passes -- which is the
+whole distinction ledger row **N-390** measured at ``$14,103.84`` against
+a true ``$31,733.64``.
 """
 
 from app.config import BaseConfig
@@ -283,6 +296,48 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=False,
     )
+    # A day the owner's NOMINAL pay grid passes through (plan step
+    # pay_calendar:C14-e-2, developer direction R-PC61).  It is the phase of
+    # the arithmetic progression the paydays are generated on -- NOT a payday
+    # and not a record.  Three of the five columns R-PC58 specifies for C17's
+    # era row now live here (cadence, convention, phase); C17 adds
+    # ``effective_from`` and the cadence KIND and turns one row per owner into
+    # one row per era, which is a move this column makes with the other two
+    # rather than a scaffold C17 tears down.
+    #
+    # WHY IT IS NOT DERIVED, which is the objection this column has to answer.
+    # While every owner's convention is ``none`` it equals
+    # ``MIN(budget.pay_periods.start_date)`` exactly, and a value equal to
+    # something the database already holds is rule 14's stored-derived defect.
+    # It stops being equal the moment a convention displaces: from C14-e-3 a
+    # recorded payday is a CASH day, so the nominal grid has no representation
+    # in that table -- the grid is what payroll INTENDS and the rows are what
+    # the bank DID, and R-PC47 says outright that a recorded payday may fall
+    # off the cadence.  Neither value determines the other, so this is one home
+    # for a second fact rather than a second home for one.
+    #
+    # WHAT IT DELETES, measured rather than asserted (this step's probe, over
+    # production's cadence 14 and opening payday 2026-03-26 against the real
+    # federal holiday set): the extend path stepped its grid from the LAST
+    # RECORDED payday, so under a displacing convention each batch re-anchored
+    # on the previous batch's cash day and the rhythm walked away from payroll's
+    # -- 178 of 301 recorded paydays wrong under ``prior`` with 8 days of final
+    # drift at a batch of ONE, which is the rolling top-up's steady state.  One
+    # Thanksgiving, the nominal 2030-11-28, re-phased everything after it.
+    # Anchored here instead the same simulation records 0 of 301 wrong.  That
+    # is ledger row PC-497 fault 2, and it is why R-PC54's "one bounded gap"
+    # premise was measured FALSE and then made true again.
+    #
+    # NULLABLE, and the null means one thing: this row states no phase.  The
+    # migration backfills ``MIN(start_date)`` per owner, which is exact for
+    # every row today, so the only nulls it can leave are schedule rows holding
+    # ZERO paydays -- reachable, since ``pay_period_admin.reset_pay_periods``
+    # passes through that state.  No consumer reaches one: the extend door
+    # refuses an owner with no recorded paydays before it reads this, and
+    # ``pay_period_write.record_paydays`` writes it on every batch that records
+    # a payday.  It is NOT NULL-able only because that owner exists, not
+    # because anything defaults it.
+    nominal_anchor = db.Column(db.Date, nullable=True)
     # user_id (UserScopedMixin) and created_at (CreatedAtMixin) render
     # at the table tail; see the mixin docstrings for the DDL contract.
 

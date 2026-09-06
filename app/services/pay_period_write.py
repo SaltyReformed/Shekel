@@ -360,6 +360,7 @@ def record_paydays(
             retiring=retiring,
             recording=new_paydays,
             rhythm=rhythm,
+            nominal_anchor=first_payday,
         ),
     )
     log_event(
@@ -451,6 +452,7 @@ def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
             retiring=retiring,
             recording=[],
             rhythm=None,
+            nominal_anchor=None,
         ),
     )
     return len(retiring)
@@ -489,12 +491,25 @@ class _PaydayChange:
             the two carry a joint rule and a row written through two
             statements passes through a state neither statement means (see
             :func:`~app.services.pay_schedule_service.upsert_schedule`).
+        nominal_anchor: The day this batch's grid passes through -- its own
+            ``first_payday``, persisted beside the rhythm on the same terms
+            (plan step ``pay_calendar:C14-e-2``).  **DERIVED here rather than
+            accepted from a door**, which is what makes a phase off the
+            batch's own grid unrepresentable instead of refused: every caller
+            spaces its batch from ``first_payday``, so that day is a point on
+            the grid the batch is written on, whether the door STATED it (the
+            four form doors, where it is the day the owner typed) or COMPUTED
+            it (extend, where it is one cadence past the stored phase and
+            therefore the same grid).  ``None`` when nothing is recorded, on
+            exactly the terms *rhythm* above states: a batch that writes no
+            payday states no phase, and the stored one stands.
     """
 
     user_id: int
     retiring: "list[int]"
     recording: "list[date]"
     rhythm: "pay_rhythm.Rhythm | None"
+    nominal_anchor: "date | None"
 
 
 def _apply(change: _PaydayChange) -> "list[PayPeriod]":
@@ -515,8 +530,9 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
        payday being retired and re-recorded in the same operation -- which is
        what regenerate and reset do -- cannot collide on
        ``uq_pay_periods_user_start``.
-    2. Persist the rhythm -- the cadence and the payday convention, in one
-       statement (the rule: only a batch that RECORDS a payday).
+    2. Persist the rhythm -- the cadence, the payday convention and the
+       grid's phase, in one statement (the rule: only a batch that RECORDS a
+       payday).
     3. INSERT one row per recorded payday.
 
     ``expire_all`` runs LAST, and only when something was deleted: the bulk
@@ -542,7 +558,9 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
             PayPeriod.id.in_(change.retiring),
         ).delete(synchronize_session=False)
     if change.recording:
-        pay_schedule_service.upsert_schedule(change.user_id, change.rhythm)
+        pay_schedule_service.upsert_schedule(
+            change.user_id, change.rhythm, change.nominal_anchor,
+        )
     created = _create_periods(change.user_id, change.recording)
     if change.retiring:
         db.session.expire_all()

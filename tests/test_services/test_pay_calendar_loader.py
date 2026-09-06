@@ -242,7 +242,7 @@ class TestItLoadsTheOwnersWholeSchedule:
                 synchronize_session=False,
             )
             db.session.commit()
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7))
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7), None)
             db.session.commit()
 
             calendar = calendar_for(user_id)
@@ -335,7 +335,7 @@ class TestTheCadenceComesFromTheScheduleService:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7))
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7), None)
             db.session.commit()
 
             assert calendar_for(user_id).rhythm.cadence_days == CADENCE + 7
@@ -366,7 +366,7 @@ class TestTheCadenceComesFromTheScheduleService:
             user_id = seed_user["user"].id
             before = calendar_for(user_id)
 
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7))
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7), None)
             db.session.commit()
             after = calendar_for(user_id)
 
@@ -443,7 +443,7 @@ class TestTheDerivedCalendarDivergesFromTheStoredColumns:
 
             # LENGTHENED: the derived horizon runs a week further out, so
             # generation places rows in days it did not reach before.
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7))
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7), None)
             db.session.commit()
             assert calendar_for(user_id).horizon() == (
                 baseline + timedelta(days=7)
@@ -452,7 +452,7 @@ class TestTheDerivedCalendarDivergesFromTheStoredColumns:
             # SHORTENED: eleven days of the last paycheck stop being covered by
             # any period at all, and the day that was the horizon is now past
             # the end of the schedule.
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(3))
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(3), None)
             db.session.commit()
             shorter = calendar_for(user_id)
             assert shorter.horizon() == baseline - timedelta(days=11)
@@ -562,11 +562,11 @@ class TestCalendarAtSchedule:
 
             stored = calendar_at_schedule(
                 user_id,
-                pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE), None),
+                pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE), None, None),
             )
             supplied = calendar_at_schedule(
                 user_id,
-                pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE + 7), None),
+                pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE + 7), None, None),
             )
 
             assert supplied != stored
@@ -597,7 +597,7 @@ class TestCalendarAtSchedule:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            cadence_less = pay_schedule_service.ScheduleFacts(rhythm_of(None), None)
+            cadence_less = pay_schedule_service.ScheduleFacts(rhythm_of(None), None, None)
 
             with pytest.raises(PayCalendarError, match="must be a plain int"):
                 calendar_at_schedule(user_id, cadence_less)
@@ -627,10 +627,10 @@ class TestCalendarAtSchedule:
             stated = date(2020, 6, 1)
 
             bounded = calendar_at_schedule(
-                user_id, pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE), stated),
+                user_id, pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE), stated, None),
             )
             unbounded = calendar_at_schedule(
-                user_id, pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE), None),
+                user_id, pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE), None, None),
             )
 
             assert bounded.history_opens_on == stated

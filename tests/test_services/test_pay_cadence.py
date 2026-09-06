@@ -524,7 +524,7 @@ class TestBothDoorsReachOneDerivation:
             user_id = seed_user["user"].id
             assert cadence_for(user_id).periods_per_year == Decimal("26")
 
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(7))
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(7), None)
             db.session.flush()
 
             assert cadence_for(user_id).periods_per_year == Decimal("52")

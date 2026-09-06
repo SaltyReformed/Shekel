@@ -1022,11 +1022,11 @@ class TestTheBadgeReadsTheOWNERSStoredCadence:
                     if entry.name == "Every 2nd"
                 ]
 
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
             db.session.commit()
             assert _badges() == [False]
 
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(30))
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(30), None)
             db.session.commit()
             assert _badges() == [True]
 

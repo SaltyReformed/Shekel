@@ -130,10 +130,23 @@ class ScheduleFacts:
             fallback for it: an owner with no schedule row has stated nothing,
             and the first recorded payday is a record boundary rather than an
             answer.
+        nominal_anchor: A day the owner's NOMINAL pay grid passes through, or
+            ``None`` for a schedule row holding no paydays (plan step
+            ``pay_calendar:C14-e-2``).  **The GRID's phase, which is not the
+            record's**: from ``C14-e-3`` a recorded payday is a CASH day, so
+            the two part company on every displaced payday and neither can be
+            read off the other.  ``pay_period_admin.extend_pay_periods`` is
+            its one reader -- it continues the rhythm from HERE rather than
+            from its own last output, which is what stops each batch
+            re-phasing the grid by the previous batch's displacement.
+            Optional for the same reason ``history_opens_on`` is: the column
+            is, and the state it stands for is an owner holding a schedule row
+            and zero paydays.
     """
 
     rhythm: Rhythm
     history_opens_on: date | None
+    nominal_anchor: date | None
 
     @classmethod
     def of(cls, schedule: PaySchedule) -> "ScheduleFacts":
@@ -174,6 +187,7 @@ class ScheduleFacts:
         return cls(
             rhythm=Rhythm(cadence_days=schedule.cadence_days, shift=shift),
             history_opens_on=schedule.history_opens_on,
+            nominal_anchor=schedule.nominal_anchor,
         )
 
 
@@ -531,7 +545,9 @@ def set_history_opening(
     return schedule
 
 
-def upsert_schedule(user_id: int, rhythm: Rhythm) -> PaySchedule:
+def upsert_schedule(
+    user_id: int, rhythm: Rhythm, nominal_anchor: "date | None",
+) -> PaySchedule:
     """Create or update the user's persisted RHYTHM, race-safe.
 
     Called when a schedule's rhythm is established (first generation)
@@ -584,6 +600,21 @@ def upsert_schedule(user_id: int, rhythm: Rhythm) -> PaySchedule:
             ``C14-e-1`` put the convention on the calendar and deleted the
             function -- the disposition that function's own docstring
             scheduled.*
+        nominal_anchor: A day the owner's NOMINAL grid passes through, or
+            ``None`` for a schedule that states no phase (plan step
+            ``C14-e-2``).  Written in the SAME statement as the pair above,
+            for the pair's own reason: the three describe one rhythm, and a
+            row written through two statements passes through a state neither
+            means.  **Its one producer is**
+            ``pay_period_write.record_paydays``, which derives it from the
+            batch's own first payday rather than accepting it from a door --
+            so a phase that is not on the batch's grid is UNREPRESENTABLE
+            rather than refused, which is what doctrine asks of a fence.
+            **Required and not defaulted**: this is an UPSERT, so a forgetful
+            caller would not leave the stored phase alone, it would overwrite
+            it with ``None`` and silently un-phase the owner's grid.  A
+            ``TypeError`` at the call site is the cheap failure; a cleared
+            phase is a wrong payday nobody sees.
 
     Returns:
         The created or updated :class:`PaySchedule` row.
@@ -603,14 +634,16 @@ def upsert_schedule(user_id: int, rhythm: Rhythm) -> PaySchedule:
     # boundary and nowhere else -- ``recurrence._authoring`` resolves the same
     # vocabulary at the same moment for the same reason.
     shift_id = ref_cache.business_day_shift_id(rhythm.shift)
+    written = {
+        "cadence_days": rhythm.cadence_days,
+        "shift_id": shift_id,
+        "nominal_anchor": nominal_anchor,
+    }
     insert_stmt = pg_insert(PaySchedule.__table__).values(
-        user_id=user_id,
-        cadence_days=rhythm.cadence_days,
-        shift_id=shift_id,
+        user_id=user_id, **written,
     )
     upsert_stmt = insert_stmt.on_conflict_do_update(
-        constraint="uq_pay_schedule_user",
-        set_={"cadence_days": rhythm.cadence_days, "shift_id": shift_id},
+        constraint="uq_pay_schedule_user", set_=written,
     )
     db.session.execute(upsert_stmt)
     # Reload through the ORM with populate_existing so any instance the
