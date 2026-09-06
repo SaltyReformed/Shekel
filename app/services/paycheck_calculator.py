@@ -152,6 +152,7 @@ schedule -- is what survives that flip unchanged; only the input improves.
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
@@ -240,16 +241,27 @@ class PeriodInfo:
     """Pay-period identity and per-paycheck event flags.
 
     Attributes:
-        period_id: ``budget.pay_periods.id``.  **Never ``None`` structurally**
-            -- three consumers KEY on it.  Its three producers are safe two
-            ways: ``saved`` / ``period_containing`` FILTER to materialised
-            periods; ``period_by_id`` keys on a non-``None`` int.
+        payday: The day this paycheck arrives, the period's ``start_date``.
+            **The TOTAL identity, added at plan step salary:S3-d**: every
+            paycheck has a payday where only a MATERIALISED one has an id.  It
+            retired ``projection_inputs``' ``payday_by_period_id`` table,
+            which existed only to recover this fact from the id.
+        period_id: ``budget.pay_periods.id``, or ``None`` for a paycheck on a
+            PROJECTED payday -- one the owner's cadence reaches past their
+            saved schedule.  **Typed ``int`` and documented "never ``None``
+            structurally" until plan step salary:S3-d**, which held only while
+            nothing priced a payday past the horizon; the pricer does, so the
+            nullable :class:`~app.services.pay_calendar.DerivedPeriod` has
+            always carried reaches here, for its reason -- a projected payday
+            is not a row a foreign key can name.  REQUIRED with no default, so
+            widening the type did not also make it forgettable.
         is_third_paycheck: Whether this is the third paycheck starting in its
             calendar month, which is what a 24-per-year deduction skips.
         raise_event: The raise taking effect in this period, as the label
             :func:`get_raise_event` composes, or ``""``.
     """
-    period_id: int
+    payday: date
+    period_id: "int | None"
     is_third_paycheck: bool = False
     raise_event: str = ""
 
@@ -400,7 +412,8 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
 
     return PaycheckBreakdown(
         period=PeriodInfo(
-            period.period_id, _is_third_paycheck(ded_ctx.month_ordinal),
+            period.start_date, period.period_id,
+            _is_third_paycheck(ded_ctx.month_ordinal),
             get_raise_event(profile, period),
         ),
         earnings=Earnings(annual_salary, gross_biweekly, taxable_biweekly, net_pay),
@@ -425,7 +438,7 @@ def project_salary(basis: PayrollBasis, periods: Sequence[DerivedPeriod],
       than one tax year, so each period must use its own year's brackets
       and FICA wage base/cap, matching the recurrence engine that generates
       the stored grid amounts (DH-#30).  Callers resolve the mapping via
-      :func:`app.services.tax_config_service.load_tax_configs_for_periods`
+      :func:`app.services.tax_config_service.configs_by_year`
       and pass it in -- this module performs no DB access (purity contract).
 
     Args:

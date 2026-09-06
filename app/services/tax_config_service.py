@@ -297,8 +297,8 @@ def _configs_from_series(series: ProfileTaxSeries, tax_year: int) -> dict:
     """Resolve each kind in *series* independently for ``tax_year``.
 
     The shared body of :func:`load_tax_configs_for_year` and
-    :func:`load_tax_configs_for_periods`, so the multi-year caller loads the
-    series ONCE and every year after the first is pure computation.
+    :func:`configs_by_year`, so the multi-year caller loads the series ONCE
+    and every year after the first is pure computation.
 
     A substitution is logged at DEBUG rather than INFO because it is the
     STEADY STATE, not an event: every projected period beyond the last
@@ -362,45 +362,42 @@ def load_tax_configs_for_year(user_id, profile, tax_year):
     )
 
 
-def load_tax_configs_for_periods(user_id, profile, periods):
-    """Resolve tax configs for every distinct tax year present in ``periods``.
+def configs_by_year(series: ProfileTaxSeries, tax_years) -> dict:
+    """Resolve a LOADED series for each of *tax_years*, issuing no query.
 
-    Returns a ``{tax_year: configs}`` mapping so a multi-year salary
-    projection can apply each period's OWN year's rules -- the per-year
-    resolution the recurrence engine already performs when generating the
-    stored grid amounts (DH-#30).  The series load is THREE queries whatever the
-    horizon, and each distinct year is then resolved in memory, so a full ~2-year
-    span costs the same as a single-year read.
+    The MULTI-YEAR resolving door, so a projection spanning more than one tax
+    year applies each period's OWN year's rules -- the per-year resolution the
+    recurrence engine already performs when generating the stored grid amounts
+    (DH-#30).  Its answer is a function of the stored series alone: asking for
+    2027 beside 2026 gives the same answer as asking for it alone, on every
+    date, because :func:`resolve_tax_year` consults no clock.
 
-    **It took a ``fallback_year`` until 2026-08-11, and deleting that parameter
-    is part of the fix rather than tidying.**  It existed so a call straddling
-    New Year's could not pick two different fallbacks -- a real hazard under a
-    rule that consulted the clock.  :func:`resolve_tax_year` consults no clock,
-    so there is nothing left to pin: the same periods resolve the same way on
-    every date, which is the stronger form of that guarantee.
+    **It takes the SERIES rather than an owner and a period list, and plan
+    step salary:S3-d is why.**  It was ``load_tax_configs_for_periods(user_id,
+    profile, periods)``, which loaded the series itself -- three queries -- on
+    every call.  That is right for a caller that knows its whole domain up
+    front and wrong for one that does not:
+    :class:`~app.services.income_service.ProfilePaychecks` prices a payday
+    when it is asked for one, so a self-loading door would have cost three
+    queries per payday.  Loading the series ONCE and resolving years against
+    it is what makes pricing on demand free, and it is the split that already
+    existed inside that function rather than a new rule.
+
+    **A caller holding periods rather than years** writes
+    ``configs_by_year(series, {p.start_date.year for p in periods})``.  Only
+    ``start_date.year`` was ever read, so this never depended on the two
+    derived columns pay-calendar plan step C4-c dropped.
 
     Args:
-        user_id (int): The owning user's ID.
-        profile (SalaryProfile): Supplies ``filing_status_id`` and
-            ``state_code``.
-        periods (Sequence): The pay periods to resolve for -- a
-            :class:`~app.services.pay_calendar.PeriodWindow`, or any sequence
-            of :class:`~app.services.pay_calendar.DerivedPeriod`.  Only
-            ``start_date.year`` is read, so this never depended on the two
-            derived columns pay-calendar plan step C4-c dropped.
+        series: The profile's :class:`ProfileTaxSeries`, from
+            :func:`profile_tax_series`.  THREE queries whatever the horizon.
+        tax_years: The tax years wanted -- any iterable; duplicates collapse.
 
     Returns:
-        dict: ``{tax_year: {bracket_set, state_config, fica_config}}`` for
-            each distinct year in ``periods`` (empty when ``periods`` is
-            empty).
+        dict: ``{tax_year: {bracket_set, state_config, fica_config}}``, one
+            entry per distinct year asked for, empty for an empty ask.
     """
-    if not periods:
-        return {}
-    series = profile_tax_series(user_id, profile)
-    return {
-        year: _configs_from_series(series, year)
-        for year in {period.start_date.year for period in periods}
-    }
+    return {year: _configs_from_series(series, year) for year in set(tax_years)}
 
 
 def load_state_child_deductions(user_id, state_code, tax_year, filing_status_id):

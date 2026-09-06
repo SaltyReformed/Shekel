@@ -527,15 +527,14 @@ def _load_projection_context(
     # in for a series.  The feed answers per payday, so nothing here computes
     # a dollar and the ``if deductions`` guard that fed the adapter has
     # nothing left to guard.
+    # The PASS's paycheck pricer, which this render's balance-seam reads fill
+    # and read too.  Without it this page ran the engine over the owner's
+    # whole saved window twice -- once here and once through the seam --
+    # which is the shape an adversarial review measured at ``salary:R14-b``
+    # and which this argument exists to close.
     feed = load_payroll_feeds(
-        user_id, balance_ctx.calendar(), [account.id],
+        balance_ctx.paychecks(), [account.id],
         {account.id: params} if params is not None else {},
-        # The PASS's projection memo, which this render's balance-seam reads
-        # fill and read too.  Without it this page ran the engine over the
-        # owner's whole saved window twice -- once here and once through the
-        # seam -- which is the shape an adversarial review measured at
-        # ``salary:R14-b`` and which this argument exists to close.
-        balance_ctx.payroll_breakdowns,
     ).get(account.id, AccountPayrollFeed.absent())
     acct_contributions = load_shadow_income_contributions_for_account(
         balance_ctx.amounts(),
