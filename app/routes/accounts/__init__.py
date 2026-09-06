@@ -109,9 +109,17 @@ Module map:
   receipt (plan step ``bank_import:X-gj-1c``), opening none of its own.  Its
   two SETTLED tabs came with that step, and with them the register's whole job:
   the acts it listed, the bound it applied, the link past that bound and the
-  Undo on each.  The three pages it replaces stay alive beside it until
-  ``bank_import:X-gi``'s census deletes them, which is ruling **R-HU**'s
-  sequencing: nothing is removed on the way in.
+  Undo on each.  **What its URL asks for is read by
+  :mod:`app.routes.accounts._reconcile_query`** -- the tab, the lifted bound and
+  the card whose MATCH pane renders in the document -- and every one of those is
+  read by a ROUTE, before its door, which plan step ``bank_import:X-gi-1`` made
+  structural after one of them answered a 404 over a committed money pass.
+  The three pages it replaces are still ROUTED and are no longer LINKED: plan
+  step ``bank_import:X-gi-1`` repointed or deleted every inbound link, and
+  ``bank_import:X-gi-2`` deletes the endpoints.  *That is a narrower claim than
+  the one this map carried until then* -- "they stay alive beside it, nothing
+  removed on the way in", which was ruling **R-HU**'s sequencing and stopped
+  being true of the LINKS the moment X-gi-1 landed.
 * :mod:`app.routes.accounts.bank_agreement` -- The two records SIDE BY SIDE
   (plan step ``bank_import:X-f6e-2``, ruling R-GF): a per-day comparison of
   what the app's own rows moved against what the bank's lines did, and of the

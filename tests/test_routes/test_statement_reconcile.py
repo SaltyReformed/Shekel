@@ -47,6 +47,7 @@ from tests.test_routes._statement_forms import (
     reconcile_form_fields,
     reconcile_offerable,
 )
+from tests._test_helpers import open_owner_calendar
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     an_account_whose_books_hide_a_line,
@@ -584,8 +585,8 @@ class TestEveryTabTheServiceBuildsIsServed:
         the same way.
 
         A crafted body naming no tab must not redirect somewhere the reader
-        cannot follow; ``_requested_tab`` is one function and this is what
-        holds the door to it.
+        cannot follow; ``_reconcile_query.requested_tab`` is one function
+        and this holds the door to it.
         """
         assert auth_client.post(
             f"{_release_url(seed_user['account'].id)}?tab=nonsense",
@@ -3158,3 +3159,631 @@ class TestTheSKIPVerbIsPressableFromTheRenderedPage:
             "the skipped line is still being asked about on the inbox"
         )
         assert _skipped_tab_count(inbox) == 1
+
+
+class TestTheMatchPaneIsReachableWithNoScript:
+    """Plan step ``bank_import:X-gi-1``, ruling **bank_import:R-KA**.
+
+    The MATCH pane is a fragment fetched on ``intersect once``, which never
+    fires with scripting off -- so the tab was a permanent spinner, and a
+    parked card payment (ADD barred by **R-GJ**, TRANSFER doorless, SKIP shut
+    by **R-JI**) had no reachable act at all once
+    ``bank_import:X-gi-2`` deletes the workbench its ``<noscript>`` pointed
+    at.  ``?open=<line_id>`` puts that one card's rows in the document.
+
+    **Every case here reads the rendered PAGE**, because what this step moved
+    is which bytes a browser with no JavaScript receives, and no service test
+    one tier down can see that.
+    """
+
+    def _a_card_payment_and_a_payback_another_period_holds(
+        self, seed_user, db,
+    ):
+        """Stage the class ruling **R-KA** exists for.
+
+        A parked card payment, one unexplained row in the line's own pay
+        period and one in an EARLIER period -- which is the shape
+        :mod:`~app.services.statement_match._panel` measures on the
+        developer's own Checking: all 9 of his 9 card payments have payback
+        rows their own period does not hold.  The two paybacks come to the
+        payment exactly, which is the group a scriptless owner has to be able
+        to build.
+
+        **A SECOND recorded line is staged and it is load-bearing.**  The
+        pass's ``unmatched_rows`` is already bounded to the span the recorded
+        lines cover (``_reads._could_have_been_shown``), so without a line in
+        the earlier period the row there is not offered by ANY surface and
+        this class would be grading the bound rather than the reach.
+
+        Returns:
+            ``(line, the_earlier_row_name)``.
+        """
+        later = open_owner_calendar(
+            seed_user["user"].id,
+            seed_user["bootstrap_period"].start_date + timedelta(days=14),
+            num_periods=2,
+        )[1]
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="-793.23",
+            posted_on=later.start_date,
+            description="POINT OF SALE DEBIT L340 THING (Capital One)",
+            merchant="Capital One Credit Card",
+            source_category=_CARD_PAYMENT,
+        )
+        a_bank_line(
+            seed_user, statement, amount="-57.96",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="POINT OF SALE DEBIT L340 THING (Amazon)",
+            merchant="Amazon", sequence_in_group=1,
+        )
+        a_transaction(
+            seed_user, name="Payback in this period", amount="93.23",
+            period=later,
+        )
+        a_transaction(seed_user, name="Payback an earlier period",
+                      amount="700.00")
+        db.session.commit()
+        return line, "Payback an earlier period"
+
+    def test_the_noscript_names_this_page_this_tab_and_this_card(
+        self, auth_client, db, seed_user,
+    ):
+        """The link that replaced the workbench's.
+
+        **The TAB travels with it**, and that is not decoration: a parked card
+        payment is on Transfers, so a link carrying only the line would open
+        the inbox -- a page its own card is not on.
+        """
+        line, _ = self._a_card_payment_and_a_payback_another_period_holds(
+            seed_user, db,
+        )
+
+        page = _page(auth_client, seed_user, "transfers")
+
+        account_id = seed_user["account"].id
+        assert (
+            f'href="/accounts/{account_id}/statements/reconcile'
+            f'?tab=transfers&amp;open={line.id}#rec-card-{line.id}"'
+        ) in page, "the scriptless way into the MATCH pane is not on the card"
+        assert f"/accounts/{account_id}/statements/match" not in page, (
+            "the card still sends a scriptless owner to the workbench, which "
+            "bank_import:X-gi-2 deletes"
+        )
+
+    def test_open_puts_the_rows_in_the_document_and_no_spinner(
+        self, auth_client, db, seed_user,
+    ):
+        """What ``?open=`` renders instead of the placeholder."""
+        line, _ = self._a_card_payment_and_a_payback_another_period_holds(
+            seed_user, db,
+        )
+
+        page = _open(auth_client, seed_user, line.id, tab="transfers")
+
+        assert f'id="rec-match-{line.id}"' in page, (
+            "the pane itself is not in the document"
+        )
+        assert "Payback in this period" in page
+        # **Scoped to THIS card's own markup**, not asserted page-wide: a
+        # second card on the tab renders a placeholder legitimately, and a
+        # page-wide absence would fail for a reason unrelated to what this
+        # grades (adversarial review 2026-09-05).
+        card = _card_markup(page, line.id)
+        assert "rec-match-waiting" not in card, (
+            "the opened card still renders the spinner placeholder"
+        )
+
+    def test_it_reaches_a_row_the_lines_own_period_does_not_hold(
+        self, auth_client, db, seed_user,
+    ):
+        """The developer's ruling of 2026-09-05, and the whole of it.
+
+        The live fragment opens on the line's own pay period because the
+        SEARCH widens it.  This render has no search -- nothing re-fetches
+        with scripting off -- so a period-bounded list would be a bound the
+        owner cannot widen, which is the cap finding **N-374** refused, and it
+        would strand exactly the class **R-KA** exists to give an act back.
+
+        **The fragment's own answer is asserted FIRST**, because without it
+        this case cannot tell "the page reaches further" from "the fixture put
+        both rows in one period" -- and the second reads as a pass.
+        """
+        line, later_row = self._a_card_payment_and_a_payback_another_period_holds(
+            seed_user, db,
+        )
+
+        fragment = auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data={"csrf_token": "x"},
+        ).get_data(as_text=True)
+
+        assert "Payback in this period" in fragment
+        assert later_row not in fragment, (
+            "the fixture did not put the second row outside the line's own "
+            "pay period, so this case cannot grade the widening"
+        )
+
+        page = _open(auth_client, seed_user, line.id, tab="transfers")
+
+        assert later_row in page, (
+            "the scriptless render is bounded to the line's own pay period, "
+            "which is the bound the owner has no way to widen"
+        )
+
+    def test_the_placeholder_and_the_pane_never_coexist(
+        self, auth_client, db, seed_user,
+    ):
+        """One ``rows-<line>`` copy in the form at every moment.
+
+        The placeholder carries a proposal's rows as HIDDEN inputs and the
+        pane carries them as tickboxes.  Rendering both would submit each row
+        TWICE, which the accept door reads as one group naming a row it does
+        not hold -- so the two arms are exclusive rather than merely tidy.
+        """
+        line = self._a_proposed_card(seed_user, db)
+
+        page = _open(auth_client, seed_user, line.id)
+
+        tokens = re.findall(rf'name="rows-{line.id}" value="([^"]+)"', page)
+        assert tokens, "the opened card offered no rows at all"
+        assert len(tokens) == len(set(tokens)), (
+            f"a row is in the form twice: {tokens}"
+        )
+        assert f'type="hidden" name="rows-{line.id}"' not in page, (
+            "the placeholder's hidden rows render beside the pane's tickboxes"
+        )
+
+    def _a_proposed_card(self, seed_user, db):
+        """Stage one bank line a tier proposes an exact match for.
+
+        Returns:
+            The staged bank line.
+        """
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="2573.42",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="ACH DEPOSIT TOWN OF CLAYTON PAYROLL",
+        )
+        a_transaction(
+            seed_user, name="Data Manager", amount="2573.42", income=True,
+        )
+        db.session.commit()
+        return line
+
+    def test_an_opened_proposal_still_states_the_difference_it_offers(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-IA**: every match states the figure it was reviewed at.
+
+        The unopened card carries that figure as a hidden ``residual-<line>``;
+        the pane carries it as the consent control.  Opening the card replaces
+        one with the other, so a card opened this way has to be priced against
+        the proposal's OWN rows -- a pane that opened empty would report
+        `$0.00` for a proposal the card is offering to apply, and the door
+        would then refuse the press.
+        """
+        line = self._a_proposed_card(seed_user, db)
+
+        page = _open(auth_client, seed_user, line.id)
+
+        assert f'name="residual-{line.id}"' in page, (
+            "the opened card submits no reviewed difference at all"
+        )
+        assert "These add up. Nothing is left over." in page, (
+            "an exact proposal was not priced when its card was opened"
+        )
+        assert page.count(f'name="residual-{line.id}"') == 1, (
+            "the figure travels twice, so which one the door reads is the "
+            "browser's choice"
+        )
+
+    def test_a_stale_open_renders_the_page_with_no_pane(
+        self, auth_client, db, seed_user,
+    ):
+        """A line the pass renders no card for is not an error.
+
+        The owner applies the card and the door answers with the query string
+        it was pressed under, so ``?open=`` naming nothing is the ordinary end
+        of the flow rather than a forged request.
+        """
+        an_unexplained_outflow(seed_user, merchant="Amazon")
+        a_transaction(seed_user, name="Electricity bill", amount="57.96")
+        db.session.commit()
+
+        page = _open(auth_client, seed_user, 999_999)
+
+        assert "rec-match-waiting" in page, (
+            "the page did not fall back to the ordinary placeholder"
+        )
+        assert 'id="rec-match-999999"' not in page
+
+    def test_open_naming_ANOTHER_OWNERS_line_renders_no_pane_and_leaks_nothing(
+        self, auth_client, db, seed_user, second_user,
+    ):
+        """The ownership control, PAIRED with the URL still routing.
+
+        ``card_subject``'s own docstring cites
+        ``feedback_a_moved_door_disarms_its_ownership_control`` about exactly
+        this: "not found" and "not yours" are one answer here, so nothing
+        distinguishes a control that holds from a route that moved.  Both
+        reviews of 2026-09-05 said the new query argument had no such case.
+        """
+        an_unexplained_outflow(seed_user, merchant="Amazon")
+        # **Its figure matches no line**, so no tier proposes a match for it
+        # and it stays in ``unmatched_rows`` -- which is what keeps the MATCH
+        # verb OPEN on every card here.  At the seeded `-57.96` the Amazon
+        # line's own proposal claimed it, and the pane this case is about was
+        # never offered at all.
+        a_transaction(seed_user, name="Electricity bill", amount="500.00")
+        theirs = an_unexplained_outflow(
+            second_user, merchant="Someone Else Ltd", amount="-4321.00",
+        )
+        db.session.commit()
+
+        page = _open(auth_client, seed_user, theirs.id)
+
+        assert f'id="rec-match-{theirs.id}"' not in page, (
+            "another owner's line opened a pane on this account's page"
+        )
+        assert "Someone Else Ltd" not in page, (
+            "another owner's merchant leaked through ?open="
+        )
+        # ...and the URL still routes for the owner's OWN line, so the two
+        # absences above cannot both be a dead route.
+        mine = an_unexplained_outflow(
+            seed_user, merchant="Kroger", amount="-12.34",
+        )
+        db.session.commit()
+        assert f'id="rec-match-{mine.id}"' in _open(
+            auth_client, seed_user, mine.id,
+        ), "?open= renders no pane for the owner's own line either"
+
+    def test_open_on_a_tab_that_holds_no_bank_lines_renders_no_pane(
+        self, auth_client, db, seed_user,
+    ):
+        """A settled tab has no card to render a pane inside.
+
+        Asking ``card_subject`` alone answered a live pane here -- two
+        database reads and a full price for a value the template rendered
+        nowhere (adversarial review 2026-09-05).
+        """
+        line = an_unexplained_outflow(seed_user, merchant="Amazon")
+        a_transaction(seed_user, name="Electricity bill", amount="57.96")
+        db.session.commit()
+
+        page = _open(auth_client, seed_user, line.id, tab="explained")
+
+        assert f'id="rec-match-{line.id}"' not in page
+        assert "rec-match-waiting" not in page, (
+            "a settled tab rendered a bank line's MATCH placeholder"
+        )
+
+    def test_an_open_that_could_not_be_a_line_id_is_404(
+        self, auth_client, db, seed_user,
+    ):
+        """The answer ``_reconcile_query.requested_tab`` gives for the same shape."""
+        an_unexplained_outflow(seed_user, merchant="Amazon")
+        db.session.commit()
+
+        response = auth_client.get(
+            f"/accounts/{seed_user['account'].id}"
+            f"/statements/reconcile?open=nonsense"
+        )
+
+        assert response.status_code == 404
+
+    def test_the_apply_form_keeps_the_card_open(
+        self, auth_client, db, seed_user,
+    ):
+        """A refused press must not collapse the pane the owner is working in.
+
+        With scripting off, re-opening it is a second navigation -- so the
+        open card travels in the ACTION's query string, which is the shape the
+        settled tabs' bound already uses on their Undo forms.
+        """
+        line, _ = self._a_card_payment_and_a_payback_another_period_holds(
+            seed_user, db,
+        )
+
+        opened = _open(auth_client, seed_user, line.id, tab="transfers")
+        shut = _page(auth_client, seed_user, "transfers")
+
+        account_id = seed_user["account"].id
+        assert (
+            f'action="/accounts/{account_id}/statements/reconcile'
+            f'?open={line.id}"'
+        ) in opened, "an Apply from the opened card forgets which card it was"
+        assert f'action="/accounts/{account_id}/statements/reconcile"' in shut, (
+            "the ordinary render posts a URL carrying an open card anyway"
+        )
+
+
+class TestTheScriptlessPathRECORDSTheMatch:
+    """The ACT plan step ``bank_import:X-gi-1`` exists to restore.
+
+    **Every other case in this file reads BYTES.**  Both adversarial reviews
+    of 2026-09-05 said the same thing about that: nothing asserted the parked
+    card payment could actually be explained again, and a page that renders
+    the right markup while the door records nothing is precisely the failure
+    this package has shipped before -- a primary arm dead in a browser with
+    the suite green.
+
+    **The verb is the trap.**  ``parked_card`` sets ``suggested=Verb.TRANSFER``,
+    so a card scraped and posted verbatim submits ``verb-<line>=transfer`` -- a
+    verb with no door -- and the pass records NOTHING while answering "you
+    pressed OK without choosing what to do with them".  The page now opens the
+    named card on MATCH for exactly that reason, and this case asserts the
+    recorded act rather than the markup.
+    """
+
+    def test_open_tick_ok_apply_records_the_group(
+        self, auth_client, db, seed_user,
+    ):
+        """`-$793.23` explained by `-$93.23` + `-$700.00`, from the page alone."""
+        line, _ = TestTheMatchPaneIsReachableWithNoScript(
+        )._a_card_payment_and_a_payback_another_period_holds(seed_user, db)
+
+        page = _open(auth_client, seed_user, line.id, tab="transfers")
+        tokens = _row_tokens(page, line.id)
+        assert len(tokens) == 2, (
+            f"the opened card offered {len(tokens)} rows, not the two paybacks"
+        )
+
+        # **THE PAGE'S OWN BYTES, not a hand-built body.**  Everything except
+        # the two ticks and the OK is scraped, so the verb this card submits
+        # is whichever one the PAGE checked -- which is the whole finding:
+        # hand-writing ``verb=match`` grades the door and not the screen, and
+        # a parked card's own suggestion is TRANSFER, a verb with no door.
+        applied = _post(
+            auth_client, seed_user,
+            reconcile_form_fields(page)
+            + [(f"rows-{line.id}", token) for token in tokens]
+            + [("ok", str(line.id))],
+            page,
+        )
+
+        assert applied.status_code == 200, (
+            f"the pass was refused: {applied.status_code}"
+        )
+        recorded = StatementMatch.query.filter_by(
+            user_id=seed_user["user"].id,
+        ).all()
+        assert len(recorded) == 1, (
+            f"the scriptless pass recorded {len(recorded)} matches, not one; "
+            f"the page says: "
+            f"{'no act named' if 'without choosing what to do' in applied.get_data(as_text=True) else 'nothing'}"
+        )
+
+    def test_the_named_card_opens_on_MATCH_and_the_others_do_not(
+        self, auth_client, db, seed_user,
+    ):
+        """The verb the card is OK'd with IS the tab CSS shows.
+
+        A parked payment's own suggestion is TRANSFER, which has no door, so
+        leaving the radio there rendered the rows and hid them -- and recorded
+        nothing when the owner pressed OK.  **The second assertion is the
+        control**: without it this passes against a page that opens EVERY card
+        on MATCH, which would change what an untouched card submits.
+        """
+        line, _ = TestTheMatchPaneIsReachableWithNoScript(
+        )._a_card_payment_and_a_payback_another_period_holds(seed_user, db)
+
+        opened = _open(auth_client, seed_user, line.id, tab="transfers")
+        shut = _page(auth_client, seed_user, "transfers")
+
+        assert re.search(
+            rf'id="verb-{line.id}-match"[^>]*\schecked', opened,
+        ), "the card the link named did not open on its MATCH tab"
+        assert re.search(
+            rf'id="verb-{line.id}-transfer"[^>]*\schecked', shut,
+        ), (
+            "an unopened parked card no longer opens on the verb its own "
+            "suggestion names, so this case cannot tell the two apart"
+        )
+
+
+class TestAMalformedOpenNeverOutLIVESTheDoor:
+    """A reader of the request runs BEFORE the door, or it grades a write.
+
+    Found by adversarial review 2026-09-05.  ``?open=`` was read inside the
+    page's context builder, and
+    :func:`~app.routes.accounts._statement_doors.run_statement_fragment_door`
+    calls that builder AFTER ``db.session.commit()`` -- so a POST carrying a
+    malformed ``open`` APPLIED the pass, COMMITTED it, and answered a bare 404
+    with no receipt and no way for the owner to know their money had moved.
+    """
+
+    def _a_pass_that_really_writes(self, auth_client, seed_user, db):
+        """Return the body a browser would submit for one applying card.
+
+        **A faithful scrape**, for the reason :func:`_post` refuses anything
+        else: a hand-picked payload is written by the same person as the
+        template, so the two agree about a mistake as readily as the truth.
+
+        Returns:
+            ``(fields, line)``.
+        """
+        _envelope, line = _a_swipe_a_rule_files(seed_user, db)
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page) + [("ok", str(line.id))]
+        assert any(
+            name == f"destination-{line.id}" for name, _ in fields
+        ), "the page rendered no destination, so this body writes nothing"
+        return fields, line
+
+    def test_a_bad_open_on_the_APPLY_door_writes_nothing(
+        self, auth_client, db, seed_user,
+    ):
+        """The refusal must precede the write, not follow it."""
+        fields, _line = self._a_pass_that_really_writes(
+            auth_client, seed_user, db,
+        )
+        before = db.session.query(TransactionEntry).count()
+
+        refused = auth_client.post(
+            _url(seed_user["account"].id) + "?open=nonsense",
+            data=MultiDict(fields),
+        )
+
+        assert refused.status_code == 404
+        assert db.session.query(TransactionEntry).count() == before, (
+            "a request answered 404 committed a money pass anyway -- the "
+            "owner is told nothing and their records moved"
+        )
+
+    def test_the_same_body_WITHOUT_the_bad_open_really_writes(
+        self, auth_client, db, seed_user,
+    ):
+        """The control, without which the case above grades a dead payload.
+
+        A 404 over a body that could never have written anything grades the
+        404 and not the ORDER, which is the whole finding.
+        """
+        fields, _line = self._a_pass_that_really_writes(
+            auth_client, seed_user, db,
+        )
+        before = db.session.query(TransactionEntry).count()
+
+        applied = auth_client.post(
+            _url(seed_user["account"].id), data=MultiDict(fields),
+        )
+
+        assert applied.status_code == 200
+        assert db.session.query(TransactionEntry).count() == before + 1, (
+            "this payload records nothing even on the happy path, so the "
+            "ordering case beside it is quantified over a dead body"
+        )
+
+
+class TestATickedRowStillOfferedIsRenderedWhateverListIsShowing:
+    """Plan step ``bank_import:X-gi-1``, second clause.
+
+    **A checkbox that is not in the document is not submitted.**  The pane
+    renders one list at a time -- a pay period, or a search -- and a row the
+    owner has ticked can fall outside the next one.  Without this rule,
+    ticking a payback found by one search and then searching for the second
+    takes the first silently out of the act, which is the very group a card
+    payment needs; and it is what would make the scriptless render's wider
+    list unsafe on a browser that DOES have scripting, where the first
+    re-price swaps the period's rows back in.
+    """
+
+    def test_a_ticked_row_survives_a_search_that_does_not_match_it(
+        self, auth_client, db, seed_user,
+    ):
+        """Tick one row, then search for another; the first must still be there."""
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="2573.42",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="ACH DEPOSIT TOWN OF CLAYTON PAYROLL",
+        )
+        a_transaction(
+            seed_user, name="Data Manager", amount="2473.38", income=True,
+        )
+        a_transaction(
+            seed_user, name="Health Insurance Allowance", amount="100.00",
+            income=True,
+        )
+        db.session.commit()
+
+        first = auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data={"csrf_token": "x"},
+        ).get_data(as_text=True)
+        tokens = _row_tokens(first, line.id)
+        assert len(tokens) == 2, (
+            f"the pane offered {len(tokens)} rows, not the two staged"
+        )
+        # The row the owner ticks FIRST is the one the search below excludes.
+        held = _token_for(first, line.id, "Health Insurance Allowance")
+
+        # THE CONTROL, and without it this case cannot tell the union from
+        # the search: the same query with NOTHING ticked must not offer the
+        # held row, or its presence below would prove nothing.
+        control = auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data=MultiDict([("csrf_token", "x"), (f"q-{line.id}", "Data")]),
+        ).get_data(as_text=True)
+
+        assert "Data Manager" in control, "the search returned nothing"
+        assert "Health Insurance Allowance" not in control, (
+            "the search matched the row this case was written to exclude"
+        )
+
+        narrowed = auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data=MultiDict([
+                ("csrf_token", "x"),
+                (f"rows-{line.id}", held),
+                (f"q-{line.id}", "Data"),
+            ]),
+        ).get_data(as_text=True)
+
+        assert re.search(
+            rf'value="{re.escape(held)}"\s+checked>', narrowed,
+        ), (
+            "the row the owner had ticked is missing from the narrowed pane, "
+            "or is rendered unticked -- either way a browser drops it from "
+            "the act without saying so"
+        )
+
+
+def _token_for(pane, line_id, label):
+    """Return the reviewed-row token the pane rendered for one row LABEL.
+
+    Args:
+        pane: The rendered MATCH pane.
+        line_id: The bank line it is about.
+        label: The row's on-screen name.
+
+    Returns:
+        Its token.
+    """
+    block = re.search(
+        rf'name="rows-{line_id}" value="([^"]+)"'
+        rf'(?:(?!name="rows-).)*?<span class="rec-row-name">{re.escape(label)}<',
+        pane,
+        re.S,
+    )
+    assert block is not None, f"the pane rendered no row called {label!r}"
+    return block.group(1)
+
+
+def _open(auth_client, seed_user, line_id, tab=None):
+    """Return the Reconcile page with one card's MATCH pane in the document.
+
+    Args:
+        auth_client: The logged-in client.
+        seed_user: The seeded user bundle.
+        line_id: The bank line to open.
+        tab: Which tab, or ``None`` for the inbox.
+
+    Returns:
+        The rendered page, as text.
+    """
+    query = f"?open={line_id}" if tab is None else f"?tab={tab}&open={line_id}"
+    response = auth_client.get(
+        f"/accounts/{seed_user['account'].id}/statements/reconcile{query}"
+    )
+    assert response.status_code == 200, (
+        f"the page did not render: {response.status_code}"
+    )
+    return response.get_data(as_text=True)
+
+
+def _card_markup(page, line_id):
+    """Return one card's own markup, from its element to the next card's.
+
+    Args:
+        page: The rendered Reconcile page.
+        line_id: The bank line whose card to cut out.
+
+    Returns:
+        That card's markup, as text.
+    """
+    opened = page.index(f'id="rec-card-{line_id}"')
+    nxt = page.find('id="rec-card-', opened + 1)
+    return page[opened:] if nxt == -1 else page[opened:nxt]
