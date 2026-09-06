@@ -323,7 +323,7 @@ class TestResolveSchedule:
 
             facts = pay_schedule_service.resolve_schedule(user_id)
 
-            assert facts.cadence_days == 10
+            assert facts.rhythm.cadence_days == 10
             assert facts.history_opens_on == date(2024, 3, 1)
 
     def test_resolve_cadence_is_its_HALF_and_not_a_second_answer(
@@ -341,7 +341,7 @@ class TestResolveSchedule:
 
             assert (
                 pay_schedule_service.resolve_cadence(user_id)
-                == pay_schedule_service.resolve_schedule(user_id).cadence_days
+                == pay_schedule_service.resolve_schedule(user_id).rhythm.cadence_days
                 == 7
             )
 
@@ -379,7 +379,7 @@ class TestResolveSchedule:
 
             facts = pay_schedule_service.resolve_schedule(user_id)
 
-            assert facts.cadence_days == 9
+            assert facts.rhythm.cadence_days == 9
             assert facts.history_opens_on is None
 
     def test_no_row_answers_NO_FACTS_rather_than_a_pair_of_nones(
@@ -426,13 +426,13 @@ class TestResolveSchedule:
         preconditions used to stand in for.
         """
         impossible = pay_schedule_service.ScheduleFacts(
-            cadence_days=None, history_opens_on=date(2020, 6, 1),
+            rhythm=rhythm_of(None), history_opens_on=date(2020, 6, 1),
         )
 
         with pytest.raises(PayCalendarError, match="must be a plain int"):
             PayCalendar.from_paydays(
                 paydays=[(1, date(2026, 1, 2))],
-                cadence_days=impossible.cadence_days,
+                rhythm=impossible.rhythm,
                 user_id=1,
                 history_opens_on=impossible.history_opens_on,
             )
@@ -455,7 +455,7 @@ class TestResolveSchedule:
 
             facts = pay_schedule_service.ScheduleFacts.of(row)
 
-            assert facts == pay_schedule_service.ScheduleFacts(14, None)
+            assert facts == pay_schedule_service.ScheduleFacts(rhythm_of(14), None)
             assert not hasattr(facts, "rolling_enabled")
 
 
@@ -955,8 +955,17 @@ class TestTheRhythmIsAPairAndIsJudgedAsOne:
             assert "got 2" in message
 
 
-class TestResolveShift:
-    """``resolve_shift`` answers the stored convention as its enum member."""
+class TestTheStoredConventionReachesTheCalendar:
+    """The stored ``shift_id`` becomes a member on :class:`ScheduleFacts`.
+
+    **This class replaced ``TestResolveShift`` at plan step ``C14-e-1``**,
+    which deleted that function.  The three properties it graded are the three
+    graded here, each through the door that now owns it: a stored id round
+    trips to its member, an id the application does not model is REFUSED
+    rather than read as ``none``, and an owner with no schedule row reaches a
+    refusal on the way to a calendar.  Re-pointed rather than deleted --
+    coverage that stops having a subject is coverage that stops being read.
+    """
 
     @pytest.mark.parametrize(
         "shift",
@@ -980,16 +989,63 @@ class TestResolveShift:
             )
             db.session.flush()
 
-            assert pay_schedule_service.resolve_shift(user_id) is shift
+            facts = pay_schedule_service.resolve_schedule(user_id)
 
-    def test_it_refuses_an_owner_with_no_schedule_row(self, app, bare_user):
+            assert facts.rhythm.shift is shift
+            # The property plan step ``C14-e-1`` actually adds, and asserting
+            # only the line above would leave it ungraded: the pair reaches
+            # the PAY CALENDAR, which is what ``C14-e-3``'s producer reads and
+            # what ``extend_pay_periods`` takes its rhythm from now that
+            # ``resolve_shift`` is gone.  One read answers both, so this is
+            # also the reconciler for the two doors.
+            assert calendar_for(user_id).rhythm == facts.rhythm
+
+    def test_an_UNMODELLED_id_is_refused_rather_than_read_as_none(
+        self, app, db, bare_user,
+    ):
+        """A convention this application cannot name is an error, not ``none``.
+
+        ``fk_pay_schedule_shift_id`` admits only seeded ids, so the row is
+        built through the writer and then the COLUMN is moved underneath it --
+        the state a change to ``ref.business_day_shifts`` outside the
+        application would leave.  Reading it as ``none`` would silently
+        un-displace every projected payday for that owner, which is a wrong
+        date rather than an error; the refusal names the schedule.
+
+        **It is the one behaviour of ``resolve_shift`` that had nowhere else
+        to go**, so ``C14-e-1`` moved it into
+        :meth:`~app.services.pay_schedule_service.ScheduleFacts.of` -- the one
+        place a stored id becomes a member -- and this case follows it.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+            db.session.flush()
+            schedule = pay_schedule_service.get_schedule(user_id)
+            # Past every seeded id, so ``business_day_shift_member`` answers
+            # ``None``.  Set on the instance rather than through the writer,
+            # which is the point: no door can produce this.
+            schedule.shift_id = 9999
+
+            with pytest.raises(ValidationError, match="does not model"):
+                pay_schedule_service.ScheduleFacts.of(schedule)
+
+    def test_an_owner_with_no_schedule_row_reaches_a_refusal(
+        self, app, bare_user,
+    ):
         """No fallback, because a fallback would INVENT a convention.
 
-        Its one caller has already built a calendar for this owner, which
-        refuses an owner without a schedule, so reaching this means the row
-        was removed outside the application.  Answering ``none`` there would
-        quietly re-state a rhythm rather than report a broken one.
+        ``resolve_shift`` raised here for its one caller, the extend door.
+        That caller reads the convention off the
+        :class:`~app.services.pay_calendar.PayCalendar` it already built since
+        ``C14-e-1``, and ``calendar_for`` refuses an owner with no schedule row
+        -- so the refusal did not disappear, it moved to the HARD door, and
+        this SOFT one keeps answering ``None`` as it always has.  Both halves
+        are asserted, because "the refusal moved" is only true if it arrived.
         """
+        user_id = bare_user["user"].id
         with app.app_context():
-            with pytest.raises(ValidationError, match="no budget.pay_schedule"):
-                pay_schedule_service.resolve_shift(bare_user["user"].id)
+            assert pay_schedule_service.resolve_schedule(user_id) is None
+
+            with pytest.raises(PayCalendarError, match="has no pay calendar"):
+                calendar_for(user_id)

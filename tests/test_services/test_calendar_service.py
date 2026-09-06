@@ -1127,7 +1127,7 @@ class TestThirdPaycheckDetection:
         """
         with app.app_context():
             calendar = PayCalendar.from_paydays(
-                [], 14, user_id=1, history_opens_on=None,
+                [], rhythm_of(14), user_id=1, history_opens_on=None,
             )
             assert self._three_paycheck_months(calendar, 2026) == set()
 

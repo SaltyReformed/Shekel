@@ -432,7 +432,7 @@ class TestTheTopUpCountsOnTheOwnersDay:
             db.session.commit()
 
             # pylint: disable=protected-access
-            facts = pay_schedule_service.ScheduleFacts(cadence_days, None)
+            facts = pay_schedule_service.ScheduleFacts(rhythm_of(cadence_days), None)
             on_process = pay_period_rolling._future_period_count(
                 user_id, facts, date(2026, 7, 31),
             )
@@ -513,11 +513,11 @@ class TestTheCadenceThreadedIsTheOWNERSStoredOne:
             # pylint: disable=protected-access
             assert pay_period_rolling._future_period_count(
                 user_id,
-                pay_schedule_service.ScheduleFacts(self._STORED_CADENCE, None),
+                pay_schedule_service.ScheduleFacts(rhythm_of(self._STORED_CADENCE), None),
                 self._PROBE_DAY,
             ) == 0
             assert pay_period_rolling._future_period_count(
-                user_id, pay_schedule_service.ScheduleFacts(14, None),
+                user_id, pay_schedule_service.ScheduleFacts(rhythm_of(14), None),
                 self._PROBE_DAY,
             ) == 1
 

@@ -89,7 +89,7 @@ def paychecks_from(
 
     Args:
         calendar: The owner's schedule.  Taken whole rather than as
-            ``(periods, cadence_days)`` because this module sits after
+            ``(periods, rhythm)`` because this module sits after
             :mod:`._calendar` in the chain and can: a caller holding the value
             object should not have to open it to ask a question of it.
         day: The first day the sequence covers.  A paycheck qualifies when it
@@ -117,7 +117,7 @@ def paychecks_from(
     yield from current_and_future_window(calendar.periods, day)
     yield from (
         period
-        for period in projected_paychecks(calendar.periods, calendar.cadence_days)
+        for period in projected_paychecks(calendar.periods, calendar.rhythm)
         if period.end_date >= day
     )
 

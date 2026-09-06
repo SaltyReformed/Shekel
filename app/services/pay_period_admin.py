@@ -100,7 +100,6 @@ from app.services import (
     account_posting_service,
     loan_posting_service,
     pay_period_write,
-    pay_schedule_service,
     user_write_lock,
 )
 from app.services._recurrence_common import log_resource_access_denied
@@ -214,8 +213,8 @@ def extend_pay_periods(user_id, num_periods):
     user_write_lock.lock_user_writes(user_id)
 
     # ONE read answers both questions this door asks -- where the schedule ends
-    # and how often the owner is paid.  ``calendar_for`` resolves the cadence
-    # itself, so ``calendar.cadence_days`` is the same value
+    # and how the owner is paid.  ``calendar_for`` resolves the schedule row
+    # itself, so ``calendar.rhythm.cadence_days`` is the same value
     # ``pay_schedule_service.resolve_cadence`` answered here before plan step
     # C2-f3b, from that same call, rather than a second query of the same row.
     calendar = calendar_for(user_id)
@@ -225,21 +224,21 @@ def extend_pay_periods(user_id, num_periods):
             "Generate your first pay-period schedule before extending it."
         )
 
-    # An ``int``, since plan step pay_calendar:C4-d (ruling R-PC45): a calendar
-    # carries a cadence or it is not built.  This comment used to argue the
-    # value was not ``None`` HERE because the refusal above excluded the only
-    # calendar that could carry one, which was true and was not a property.
-    cadence_days = calendar.cadence_days
-    # The convention those paydays land under, which the calendar does NOT
-    # carry: nothing in that pure package uses it until plan step C14-e, so
-    # widening it would be a value the derivation held for nobody.  Extend
-    # CONTINUES a rhythm rather than stating one -- the same reading that
-    # denies this door a cadence question (finding P29 above) -- so it reads
-    # the stored answer and hands it straight back.
-    rhythm = pay_schedule_service.Rhythm(
-        cadence_days=cadence_days,
-        shift=pay_schedule_service.resolve_shift(user_id),
-    )
+    # The owner's stored rhythm, off the calendar that was just built rather
+    # than out of a second query.  Its cadence is an ``int``, since plan step
+    # pay_calendar:C4-d (ruling R-PC45): a calendar carries a cadence or it is
+    # not built.  This comment used to argue the value was not ``None`` HERE
+    # because the refusal above excluded the only calendar that could carry
+    # one, which was true and was not a property.
+    #
+    # The CONVENTION arrives with it since plan step C14-e-1.  Until then the
+    # calendar did not carry one -- nothing in that pure package read a
+    # convention -- so this door paid for a second scalar query
+    # (``pay_schedule_service.resolve_shift``, now deleted) against the row
+    # ``calendar_for`` had already resolved.  Extend CONTINUES a rhythm rather
+    # than stating one, the same reading that denies this door a cadence
+    # question (finding P29 above), so it hands the stored pair straight back.
+    rhythm = calendar.rhythm
     # The NOMINAL grid day one cadence past the owner's last recorded payday,
     # and reading it off the GRID rather than off the calendar is plan step
     # C14-d.  ``record_paydays`` spaces the batch it is handed by flat cadence
@@ -261,7 +260,9 @@ def extend_pay_periods(user_id, num_periods):
     # row **N-496** records that no live path supplies an unsaved candidate --
     # but this door writes ``budget.pay_periods``, so it takes the accessor
     # that cannot name one.
-    next_payday = nominal_payday(saved[-1].start_date, cadence_days, 1)
+    next_payday = nominal_payday(
+        saved[-1].start_date, rhythm.cadence_days, 1,
+    )
     return pay_period_write.record_paydays(
         user_id, next_payday, num_periods, rhythm,
     )
@@ -591,7 +592,7 @@ def regenerate_pay_periods(
         num_periods: How many periods to generate.
         rhythm: How often the rebuilt tail is paid and what payroll does
             when one of its paydays lands on a closed day
-            (:class:`~app.services.pay_schedule_service.Rhythm`); also
+            (:class:`~app.services.pay_rhythm.Rhythm`); also
             persisted as the user's forecast rhythm, by the writer.  A PAIR
             rather than a bare cadence since plan step **C14-b**, because the
             two carry a joint rule the writer judges together.
@@ -778,7 +779,7 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
         num_periods: How many periods to generate.
         rhythm: How often the new schedule is paid and what payroll does
             when one of its paydays lands on a closed day
-            (:class:`~app.services.pay_schedule_service.Rhythm`); also
+            (:class:`~app.services.pay_rhythm.Rhythm`); also
             persisted as the user's rhythm, by the writer.  See
             :func:`regenerate_pay_periods` for why it is a pair.
 

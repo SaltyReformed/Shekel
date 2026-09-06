@@ -36,8 +36,15 @@ from tests._test_helpers import (
 
 
 def _stored_shift(user_id):
-    """Return the convention ``budget.pay_schedule`` holds for *user_id*."""
-    return pay_schedule_service.resolve_shift(user_id)
+    """Return the convention ``budget.pay_schedule`` holds for *user_id*.
+
+    Read through :func:`~app.services.pay_schedule_service.resolve_schedule`
+    since plan step ``pay_calendar:C14-e-1``, which deleted the scalar
+    ``resolve_shift`` and its duplicate query once the pay CALENDAR acquired a
+    reader for the convention.  Same column, same row, one read -- and the
+    pair rather than the half, which is what the doors below persist.
+    """
+    return pay_schedule_service.resolve_schedule(user_id).rhythm.shift
 
 
 class TestTheControlIsRenderedOnAllFourDoors:

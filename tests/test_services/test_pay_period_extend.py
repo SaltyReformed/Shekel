@@ -136,9 +136,13 @@ class TestTheExtendAnchorIsTheNOMINALGrid:
 
         The convention is STORED and not merely simulated, which an adversarial
         review of this step required: ``extend_pay_periods`` builds its rhythm
-        from ``pay_schedule_service.resolve_shift``, and the producer ``C14-e``
-        ships reads that same row.  A case that displaced globally while the
-        row said ``none`` would pin a world the shipped step cannot reproduce.
+        from the owner's stored row, and the producer ``C14-e`` ships reads
+        that same row.  A case that displaced globally while the row said
+        ``none`` would pin a world the shipped step cannot reproduce.
+        *It read the convention through* ``pay_schedule_service.resolve_shift``
+        *until plan step* ``C14-e-1``, *which put the pair on the*
+        :class:`~app.services.pay_calendar.PayCalendar` *the door already
+        builds and deleted that function with its duplicate query.*
         The recorded rows are identical either way -- ``_requested_paydays`` is
         shift-blind -- so this costs nothing and removes the discrepancy.
         """
@@ -226,7 +230,7 @@ class TestTheExtendAnchorIsTheNOMINALGrid:
             )
             displace_paydays_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
             assert pay_calendar.projected_payday(
-                _ON_GRID_PAYDAY, 14, 1,
+                _ON_GRID_PAYDAY, rhythm_of(14), 1,
             ) == date(2030, 11, 27), (
                 "the projection must have MOVED here, or these offsets are the "
                 "nominal path and grade nothing"

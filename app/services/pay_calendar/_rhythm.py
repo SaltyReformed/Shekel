@@ -330,7 +330,7 @@ def _paydays_between(
             period.start_date
             for period in takewhile(
                 lambda paycheck: paycheck.start_date <= last_day,
-                projected_paychecks(periods, calendar.cadence_days, first_day),
+                projected_paychecks(periods, calendar.rhythm, first_day),
             )
             if period.start_date >= first_day
         )
@@ -419,7 +419,7 @@ def _backdated_paydays(
     upper = min(last_day, opening - timedelta(days=1))
     if upper < lower:
         return ()
-    cadence = calendar.cadence_days
+    cadence = calendar.rhythm.cadence_days
     # Negative, since ``upper`` is strictly below the anchor: the count of
     # whole cadences from the record's opening payday back to the last rhythm
     # day at or before ``upper``.

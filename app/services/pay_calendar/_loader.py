@@ -236,7 +236,12 @@ def calendar_at_schedule(
 
     **It took a bare ``cadence_days`` and was named ``calendar_at_cadence``
     until plan step balance:X-bh-2**, which gave the calendar a second fact off
-    the same row.  A door named for one of the two facts it needs is the drift
+    the same row -- and a THIRD at plan step ``C14-e-1``, the payday
+    convention, which joined the cadence inside
+    :class:`~app.services.pay_rhythm.Rhythm` rather than arriving as a field of its own.  The
+    door did not move for it, which is the property
+    :class:`~app.services.pay_schedule_service.ScheduleFacts` was shaped to
+    have.  A door named for one of the two facts it needs is the drift
     this package spends its docstrings preventing, so the parameter became the
     pair :class:`~app.services.pay_schedule_service.ScheduleFacts` and the name
     followed it.  Passing the pair rather than two arguments is what stops a
@@ -263,7 +268,7 @@ def calendar_at_schedule(
         facts: The owner's ``budget.pay_schedule`` calendar facts, as the
             caller already resolved them.  **Their existence is the argument**
             since plan step C4-d: a caller holds these only by holding the row,
-            so ``cadence_days`` is an ``int`` and there is no absent-cadence
+            so ``rhythm.cadence_days`` is an ``int`` and there is no absent-cadence
             pairing for this door to admit or for
             :func:`~._derive.derive_periods` to refuse.
             ``history_opens_on`` is ``None`` for the owner who has stated
@@ -276,7 +281,7 @@ def calendar_at_schedule(
     Raises:
         PayCalendarError: The rows cannot define a calendar -- a duplicate
             payday, which ``uq_pay_periods_user_start`` already prevents, or a
-            *cadence_days* outside 1..365, which
+            a *rhythm* cadence outside 1..365, which
             ``ck_pay_schedule_cadence_range`` already prevents for a stored
             one.  Both name a caller rather than a page.
     """
@@ -288,7 +293,7 @@ def calendar_at_schedule(
     )
     return PayCalendar.from_paydays(
         paydays=paydays,
-        cadence_days=facts.cadence_days,
+        rhythm=facts.rhythm,
         user_id=user_id,
         history_opens_on=facts.history_opens_on,
     )
@@ -313,7 +318,7 @@ def cadence_for(user_id: int) -> PayCadence:
     **Through :func:`_require_schedule` rather than
     ``pay_schedule_service.resolve_cadence``, since plan step C4-d**, and it
     costs the same one query: that function IS ``resolve_schedule`` plus a
-    ``.cadence_days``, and ``resolve_schedule`` is the one read.  What changed
+    ``.rhythm.cadence_days``, and ``resolve_schedule`` is the one read.  What changed
     is that the refusal for a row-less owner is written once, here and for
     :func:`calendar_for`, instead of once per door with two messages to keep in
     step.  ``resolve_cadence`` survives for the callers that want the SOFT
@@ -359,4 +364,6 @@ def cadence_for(user_id: int) -> PayCadence:
             :func:`~._derive.validate_cadence` can no longer refuse what this
             resolves.
     """
-    return PayCadence(cadence_days=_require_schedule(user_id).cadence_days)
+    return PayCadence(
+        cadence_days=_require_schedule(user_id).rhythm.cadence_days,
+    )

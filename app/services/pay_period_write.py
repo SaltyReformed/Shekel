@@ -135,7 +135,7 @@ from datetime import date, datetime
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.services import pay_calendar, pay_schedule_service
+from app.services import pay_calendar, pay_rhythm, pay_schedule_service
 from app.utils.log_events import (
     BUSINESS,
     EVT_PAY_PERIODS_GENERATED,
@@ -209,7 +209,7 @@ def record_paydays(
     user_id: int,
     first_payday: date,
     num_periods: int,
-    rhythm: pay_schedule_service.Rhythm,
+    rhythm: pay_rhythm.Rhythm,
     retiring_ids: "set[int] | None" = None,
 ) -> "list[PayPeriod]":
     """Record a batch of paydays.
@@ -269,14 +269,16 @@ def record_paydays(
             already exist.
         rhythm: How often this owner is paid and what payroll does when a
             payday lands on a closed day
-            (:class:`~app.services.pay_schedule_service.Rhythm`).  The batch's
+            (:class:`~app.services.pay_rhythm.Rhythm`).  The batch's
             paydays are spaced by its cadence, and the whole pair is persisted
             in one statement when the batch records at least one new payday;
             ignored otherwise.  It arrives as a PAIR rather than two arguments
             because the two carry a joint rule -- plan step **C14-b**, rulings
             **R-PC54** and **R-PC56**.  Four of this door's five callers are
-            forms that state a rhythm; the fifth continues the stored one
-            (``pay_schedule_service.resolve_shift``).
+            forms that state a rhythm; the fifth continues the stored one,
+            which since plan step ``C14-e-1`` it reads off the
+            :class:`~app.services.pay_calendar.PayCalendar` it already built
+            rather than through a scalar query of its own.
         retiring_ids: ``budget.pay_periods.id`` values to DELETE as part of the
             same operation, for the two doors that replace a span rather than
             extend one.  The caller has already run whatever gates decide they
@@ -331,15 +333,25 @@ def record_paydays(
         )
         if payday not in surviving_paydays
     ]
-    # The floor reads the cadence the owner's LAST SURVIVING PAYCHECK currently
+    # The floor reads the RHYTHM the owner's LAST SURVIVING PAYCHECK currently
     # runs at, which is the one stored BEFORE this batch -- the question it asks
     # is how far that paycheck already reaches, not how far the next one will.
     # An owner moving from fortnightly to weekly is therefore bounded at a
     # fortnight and then continues at a week, which is what "correct my cadence
     # going forward" means and what it cannot mean retroactively.
+    #
+    # **Both halves are the STORED ones, and the convention half is plan step
+    # C14-e-1 discharging an obligation C14-d wrote down.**  ``rhythm`` is what
+    # this operation LEAVES BEHIND; a batch that CHANGES the convention would
+    # compute its floor under the new one while ``derive_periods`` still closes
+    # the existing calendar under the old, which is the disagreement between
+    # fence and boundary C14-d exists to end, re-entering through the argument
+    # list.  One read answers both halves (``resolve_schedule``), where the
+    # cadence half alone used to.
+    stored = pay_schedule_service.resolve_schedule(user_id)
     _reject_backward_payday(
         surviving_paydays, new_paydays,
-        pay_schedule_service.resolve_cadence(user_id),
+        None if stored is None else stored.rhythm,
     )
 
     created = _apply(
@@ -482,7 +494,7 @@ class _PaydayChange:
     user_id: int
     retiring: "list[int]"
     recording: "list[date]"
-    rhythm: "pay_schedule_service.Rhythm | None"
+    rhythm: "pay_rhythm.Rhythm | None"
 
 
 def _apply(change: _PaydayChange) -> "list[PayPeriod]":
@@ -664,7 +676,7 @@ def _requested_paydays(
 def _reject_backward_payday(
     surviving_paydays: "set[date]",
     new_paydays: "list[date]",
-    cadence_days: "int | None",
+    stored_rhythm: "pay_rhythm.Rhythm | None",
 ) -> None:
     """Refuse a batch whose earliest new payday would land inside a paycheck.
 
@@ -724,15 +736,28 @@ def _reject_backward_payday(
     floor on the nominal day and refuses the real one -- and the producer call
     refuses **0**.
 
-    **What ``C14-e`` must not get wrong here** (adversarial review of this
-    step).  When the producer starts taking a convention, this floor must read
-    the STORED one and not :attr:`rhythm.shift
-    <app.services.pay_schedule_service.Rhythm.shift>`.  The rhythm is what the
-    operation LEAVES BEHIND, and a batch that changes the convention would
-    otherwise compute its floor under the new one while
-    :func:`~app.services.pay_calendar.derive_periods` still closes the existing
-    calendar under the old -- which is the disagreement between fence and
-    boundary this step exists to end, reintroduced through the argument list.
+    **What ``C14-e`` must not get wrong here was written down by an
+    adversarial review of ``C14-d``, and plan step ``C14-e-1`` MOVED the floor
+    to it without being able to grade it.**  The floor reads the STORED rhythm
+    and not the batch's own
+    :attr:`Rhythm.shift <app.services.pay_rhythm.Rhythm.shift>`.  The
+    argument's rhythm is what the operation LEAVES BEHIND, and a batch that
+    changes the convention would otherwise compute its floor under the new one
+    while :func:`~app.services.pay_calendar.derive_periods` still closes the
+    existing calendar under the old -- the disagreement between fence and
+    boundary ``C14-d`` exists to end, reintroduced through the argument list.
+    The stored CADENCE was already read this way and the paragraph above says
+    why; the convention now arrives from the same read rather than from a
+    second one.
+
+    **The obligation is NOT discharged here, and saying so is the point.**
+    While :func:`~app.services.pay_calendar.projected_payday` returns the
+    nominal grid day, the stored convention and the batch's own select the
+    SAME floor, so no test can tell this function from the one that reads the
+    wrong half -- an obligation marked discharged with nothing grading it is
+    worse than one left open, because the next reader stops looking.
+    ``C14-e-3`` switches the displacement on and lands the case that
+    distinguishes them, and that is the step that may tick it.
 
     **Under ``next`` it still refuses those 58, and that is ledger row N-495
     rather than a half-fix.**  Those refusals are the ones whose ANCHOR was
@@ -762,10 +787,16 @@ def _reject_backward_payday(
         new_paydays: The paydays this batch would create -- already filtered of
             any that exist, so a re-run naming existing days is bounded on what
             it would actually add.
-        cadence_days: The owner's stored cadence, which sets how far the last
-            paycheck reaches.  ``None`` only beside an empty payday set, where
-            there is no floor to apply -- the early return below is what makes
-            that safe, and it has to be, because the producer takes an ``int``.
+        stored_rhythm: The owner's STORED cadence and payday convention
+            (:class:`~app.services.pay_rhythm.Rhythm`), which together set
+            how far the last paycheck reaches.  **Stored rather than the
+            batch's own**, which is the whole of the paragraph above: the
+            question is how far the existing calendar already reaches.
+            ``None`` only beside an empty payday set -- an owner with no
+            ``budget.pay_schedule`` row, who by ``fk_pay_periods_schedule``
+            has no paydays either -- where there is no floor to apply.  The
+            early return below is what makes that safe, and it has to be,
+            because the producer takes a rhythm.
 
     Raises:
         ValidationError: The earliest new payday falls before the floor.
@@ -773,13 +804,14 @@ def _reject_backward_payday(
     if not surviving_paydays or not new_paydays:
         return
     latest_payday = max(surviving_paydays)
-    floor = pay_calendar.projected_payday(latest_payday, cadence_days, 1)
+    floor = pay_calendar.projected_payday(latest_payday, stored_rhythm, 1)
     earliest_new = min(new_paydays)
     if earliest_new < floor:
         raise ValidationError(
             f"A new payday must fall on or after {floor.isoformat()} -- the "
             f"day the next paycheck opens after your latest recorded payday "
-            f"({latest_payday.isoformat()}, at a {cadence_days}-day cycle); "
+            f"({latest_payday.isoformat()}, at a "
+            f"{stored_rhythm.cadence_days}-day cycle); "
             f"got {earliest_new.isoformat()}.  An earlier date lands inside a "
             f"paycheck you already have and would split it in half, which this "
             f"app cannot yet do safely.  Choose a later date, or rebuild the "

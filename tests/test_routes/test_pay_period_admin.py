@@ -235,9 +235,9 @@ class TestTruncateRoute:
 
             assert resp.status_code == 302
             db.session.expire_all()
-            assert pay_schedule_service.resolve_shift(
+            assert pay_schedule_service.resolve_schedule(
                 seed_user["user"].id,
-            ) is BusinessDayShiftEnum.PRIOR
+            ).rhythm.shift is BusinessDayShiftEnum.PRIOR
 
     def test_confirm_discard_proceeds(self, app, db, auth_client, seed_user):
         """Re-posting what the confirm PANEL rendered completes the truncate.
