@@ -1028,8 +1028,11 @@ section 4, under their unchanged ids.*
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
   future paychecks and destroying the raise and bonus schedule: **-$9,677.29** of projected income,
   measured by diffing a downgraded clone against a pristine one, 1028 rows compared and 43 not
-  round-tripping. Until it lands, `flask db downgrade` is NOT a rollback path for a release crossing
-  these revisions and the pre-deploy dump is.
+  round-tripping. **The cost is GATE INTEGRITY, not rollback**: `shekel-deploy` never invokes
+  `flask db downgrade` -- it re-pins and REFUSES rather than making a second dead container, and a
+  genuine rollback is the automatic pre-deploy dump. What the broken arm actually breaks is
+  `CLAUDE.md` item 7, *migrations tested in both upgrade and downgrade directions*, which passes
+  over a round trip that loses data.
 * [ ] **X-bx** `refactor(balance): the contribution accessor goes the same way` -- owns **BAL-465**,
   after **X-bu**. `owned_contribution` is `owned_amount`'s sibling shape with SEVEN live call sites
   (`cash_ledger/_cash_leg.py:203`, `loan_ledger/_events.py:170`,
