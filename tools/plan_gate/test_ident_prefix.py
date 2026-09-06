@@ -60,29 +60,13 @@ class TestANewLedgerIdCarriesItsArcsPrefix:
                 return other, prefix
         raise AssertionError("ARC_PREFIXES holds fewer than two arcs")
 
-    def test_no_prefixed_id_exists_yet_so_the_next_arm_is_vacuous(self):
-        """State the premise the arm cannot: green means nothing is graded YET.
-
-        Every id in the corpus is still of a family that predates the ruling,
-        so :func:`ledger_id_prefix_violations` returns clean because it
-        inspected NOTHING -- not because the corpus complies.  Asserted rather
-        than left in prose, so the day it stops being true this arm says so and
-        its sibling starts meaning something.
-        """
-        minted = [
-            row.key for row in registry.ledger_rows()
-            if (m := ident_prefix.PREFIXED_ID_RX.match(row.bare_ident))
-            and m["prefix"] not in ident_prefix.LEGACY_HYPHENATED_FAMILIES
-        ]
-        assert not minted, (
-            f"ids now carry arc prefixes ({minted}); delete this arm, because "
-            "the one below is no longer vacuous"
-        )
-
     def test_every_prefixed_id_names_its_own_arc(self):
         """The live corpus obeys the rule.
 
-        Vacuous today -- the arm above is what says so.
+        **No longer vacuous, and the arm that said so has been DELETED.**  It
+        asserted that no prefixed id existed yet and instructed its own removal
+        on the day one did; ``pay_calendar:PC-497`` and ``recurrence:REC-515``
+        were the first, filed 2026-09-05 in the same commit that took it out.
         """
         problems = ident_prefix.ledger_id_prefix_violations()
         assert not problems, problems[0]

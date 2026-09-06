@@ -286,12 +286,17 @@ their only live specimen from them, which both `_staging` docstrings predict and
       constraint (**R-PC59**): the floor is derived from a holiday set that MOVES and a CHECK
       expression must be immutable, so the pair is refused at the column's one write door. Opened
       **N-493** and **N-494**.
-- [ ] **C14-c -- the boundary arithmetic.** A projected period ends the day before the NEXT payday,
-      deleting the `start + cadence - 1` special case; `project_period_after` probes the
-      neighbouring nominal index so a moved boundary cannot escape its O(1) jump. `$0.00`.
-- [ ] **C14-d -- the writer paths.** `_reject_backward_payday`'s floor stops refusing the payday a
-      backward convention produces at a year boundary, and `extend_pay_periods` stops handing
-      `record_paydays` a day read off a shifted calendar. `$0.00`.
+- [x] **C14-c** `659260c0` -- ONE end rule: a projected period ends the day before the NEXT payday,
+      and `project_period_after` keeps its O(1) jump by probing the estimate's two NEIGHBOURS
+      (**R-PC57**). Opened **N-495**, **N-496**. **A LATER STEP MUST OBEY**: `projected_payday` is
+      the SINGLE body `C14-e` displaces, and the probe window's second premise is that the estimate
+      and its candidates share ONE anchor.
+- [x] **C14-d** `c1ce08b5` -- the floor asks `projected_payday` rather than restating
+      `latest + cadence` (**58** of 1,951 future paydays refused before, 0 after) and
+      `extend_pay_periods` hands the NOMINAL grid day; the grid became `_grid.py` (**R-PC60**).
+      Opened **PC-497**. **TWO OBLIGATIONS FOR `C14-e`**: the floor must read the STORED convention
+      and not the incoming `Rhythm.shift`, or a convention-changing batch closes the calendar under
+      the other; and the WRITER must record each element DISPLACED, or the extend is refused.
 - [ ] **C14-e -- the shift goes live.** Every projected and backdated payday becomes the nominal day
       displaced onto a business day. **MOVES MONEY**, so it takes its own adversarial review pass
       and its own PR. Closes **N-398**.
