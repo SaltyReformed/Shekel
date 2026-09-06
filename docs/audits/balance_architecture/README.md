@@ -1028,9 +1028,9 @@ section 4, under their unchanged ids.*
 * [x] **X-bu** `142f64cb` -- closed **BAL-462**: deleted `row_valuation.owned_amount` and folded
   its body into `_amount_source._own_answer`, the spelling the transfer arm has always used. **It
   grew by one reader under R-BAL4**: the ACTUAL half's fall-through refused an unsettled DERIVED
-  row while the estimate half resolved, so it asks the resolver now. **A LATER STEP MUST OBEY**:
-  `X-bx` inherits the last copy of `own_figure(txn.estimated_amount, "transaction", txn.id)`, in
-  `owned_contribution`'s fall-through.
+  row while the estimate half resolved, so it asks the resolver now. Its obligation on `X-bx` --
+  inherit the last copy of `own_figure(txn.estimated_amount, ...)` -- was DISCHARGED there
+  (`f7b9e094`) by deleting that copy rather than routing it.
 * [ ] **X-bv** `fix(migrations): a per-kind cutover cannot ship a bare declare` -- owns **BAL-463**.
   `c8f3a5d2e714` refuses to declare unless `rows_the_declare_would_strand` is empty;
   `d7b2e6c1a483` defines the equivalent `settled_rows_whose_plan_is_not_recoverable` and calls it
@@ -1048,14 +1048,12 @@ section 4, under their unchanged ids.*
   genuine rollback is the automatic pre-deploy dump. What the broken arm actually breaks is
   `CLAUDE.md` item 7, *migrations tested in both upgrade and downgrade directions*, which passes
   over a round trip that loses data.
-* [ ] **X-bx** `refactor(balance): the contribution accessor goes the same way` -- owns **BAL-465**,
-  after **X-bu**. `owned_contribution` is `owned_amount`'s sibling shape with SEVEN live call sites
-  (`cash_ledger/_cash_leg.py:203`, `loan_ledger/_events.py:170`,
-  `loan_posting_service/_display.py:217` and `_sync.py:249`,
-  `savings_dashboard_service/_metrics.py:430`, `spending_report_service/_breakdown.py:66` and
-  `_window.py:371`). **It was never exposed the way `owned_amount` was because it answers a settled
-  row from `settled_figure` FIRST** -- a head start, not a guarantee -- so no drift has been
-  measured on it, which is not the same as none existing.
+* [x] **X-bx** `f7b9e094` -- closed **BAL-465**: deleted the fall-through by which
+  `owned_contribution` read `estimated_amount` by hand, renamed it `settled_contribution`, and moved
+  `own_figure` into `_amount_source` as the private `_own_figure`. **Ruling R-BAL5 superseded this
+  entry's own remedy** -- the fall-through is DELETED, not routed to the resolver, because these
+  readers ask what a row's money DID. **A LATER STEP MUST OBEY**: `_amount_source.py` is at 971 of
+  pylint's 1000-line cap, and three modules sit exactly ON it with two more at 999.
 * [ ] **X-bs** `fix(test): a failure must fail, and the last two ports go` -- owns **N-460** and
   **N-459**, two defects in the same files that HIDE EACH OTHER. Seven `pytest.skip` calls in
   `test_proxy_trust_and_headers.py` fire on something that RAN AND FAILED rather than on something
