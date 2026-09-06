@@ -336,8 +336,8 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             plan step ``bank_import:X-gj-4c``*, when ``answered_never`` became
             a third: those lines were inside ``parked`` and therefore already
             counted, so naming two lists after the split would have narrowed
-            this control silently.  An ANSWERED merchant is on the register
-            instead (ruling **bank_import:R-GX**).
+            this control silently.  An ANSWERED merchant is on the merchants
+            list instead (rulings **bank_import:R-GX** and **R-IC**).
         bounds: What this pass did NOT look at (:class:`ReviewBounds`).
         account_payments: The merchant row ids this account's sources file as a
             payment to an account the owner holds, carried up from
@@ -436,8 +436,8 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         of their MATCH panes answered 404 and its spinner never resolved.
 
         **It is a membership test and never a second ownership check**, which
-        is the distinction :func:`~app.routes.accounts.statement_workbench
-        ._preselected` states: the pass is already scoped to one owner's one
+        is the distinction the retired workbench's own preselection drew: the
+        pass is already scoped to one owner's one
         account, so a line it does not hold has no card here whatever the
         reason.  What the measurement above shows is the hazard in that --
         a 404 from the URL map, a 404 from ownership and a 404 from asking the

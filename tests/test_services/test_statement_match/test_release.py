@@ -640,8 +640,11 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         What the SCREEN does with that is ruling **bank_import:R-GY**'s and it
         changed at plan step ``bank_import:X-gf-2``: the press still confirms,
         because it still destroys the record of the correspondence, and the
-        dialog's wording is what varies (``test_statement_register
-        .TestEveryUndoPressConfirms``).  What is asserted here is the
+        dialog's wording is what varies (``test_statement_reconcile
+        .TestTheSettledTabsAreWhereAnActIsFoundAndUndone
+        .test_an_undo_the_door_would_REFUSE_says_so_and_offers_no_dialog``,
+        where that coverage sits now that plan step ``bank_import:X-gi-2`` has
+        deleted the register).  What is asserted here is the
         DERIVATION under it -- this undo would take back no row and move no
         money -- which is what that wording is chosen from.
         """

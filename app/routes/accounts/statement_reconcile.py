@@ -1,9 +1,10 @@
 """
 Shekel Budget App -- The RECONCILE page, and the three doors it posts to
 
-"What is each of these bank lines?" -- one page on four verbs, replacing the
-review queue, the register and the hand-build workbench.  Plan step
-``bank_import:X-gj-1b``; the direction was locked at Loop A round 4 on
+"What is each of these bank lines?" -- one page on four verbs, and since plan
+step ``bank_import:X-gi-2`` the ONLY one: it replaced the review queue, the
+register and the hand-build workbench, and that step deleted all three.  Plan
+step ``bank_import:X-gj-1b``; the direction was locked at Loop A round 4 on
 2026-08-29 and is ``docs/design/bank_import_audit.md``.  Its rulings are
 **bank_import:R-HP** through **R-HX** in ``docs/plans/rulings.md``, plus
 **bank_import:R-IA** (the accept door exempts no shape) and
@@ -12,11 +13,12 @@ receipt).  **Both ids were minted in the ``balance`` arc the same day**, so
 every citation of them here names its arc.
 
 **IT MOVES MONEY, through doors that already exist.**  Apply posts the OK'd
-cards through :func:`~app.services.statement_match.apply_reviewed` -- the same
-door the review queue and the workbench use, with the same savepoint-per-item
+cards through :func:`~app.services.statement_match.apply_reviewed` -- the door
+the review queue and the workbench posted through until plan step
+``bank_import:X-gi-2`` deleted them, with the same savepoint-per-item
 policy (**R-FZ(a)**) and the same receipt; UNDO posts through
-:func:`~._statement_release.release_and_return`, the same door the register
-and the import receipt use (plan step ``bank_import:X-gj-1c``); and the
+:func:`~._statement_release.release_and_return`, the same door the import
+receipt uses (plan step ``bank_import:X-gj-1c``); and the
 RECEIPT's per-merchant standing-rule offer posts through
 :func:`~._statement_rules.record_submitted_rules`, which moves none.  **This
 module opens no door of its own**, which is what lets a whole screen ship
@@ -36,12 +38,12 @@ into once.
 *(This paragraph said "three routes, and the third is a READ" until
 **bank_import:R-IB** added the rule door, at which point the third route in
 file order was the one that WRITES -- a reader counting routes would have
-mapped the sentence onto the wrong one.)*  It is a POST for the reason
-:func:`~.statement_workbench.statement_match_totals` is: it carries a list of
-ids and a CSRF token, not because it changes anything.  **The alternative was
-measured and refused**: rendering every card's candidate rows with the page is
-67 rows in 18 cards at the workbench's own 991 bytes a row, ~1.2 MB, which is
-finding **N-374** rebuilt one surface later.
+mapped the sentence onto the wrong one.)*  It is a POST because it carries a
+list of ids and a CSRF token, not because it changes anything -- the reason
+the retired workbench's own live-totals endpoint was one.  **The alternative
+was measured and refused**: rendering every card's candidate rows with the
+page is 67 rows in 18 cards at that surface's measured 991 bytes a row,
+~1.2 MB, which is finding **N-374** rebuilt one surface later.
 
 **ONE card's rows DO render with the page, behind ``?open=<line_id>``** (plan
 step ``bank_import:X-gi-1``, ruling **bank_import:R-KA**), and that is not the
@@ -59,13 +61,13 @@ step ``bank_import:X-gj-4c-2`` added the recorded SKIP, which is neither a bank
 line nor a match -- and both an act's Undo and a skip's are a `form`, so those
 two tabs render OUTSIDE the Apply form rather than inside it.
 
-**The old routes stay alive beside this page** until ``bank_import:X-gi``'s
-census deletes them, which is ruling **R-HU**'s own sequencing: every door
-this screen posts to is one that is already tested, and nothing is removed on
-the way in.  What ``X-gj-1c`` did remove is the register's REASON to exist --
-the acts it listed are these two tabs, with the same bound, the same
-*show the other N* link and the same Undo -- so no surface this page controls
-points at it any more.
+**The old routes stayed alive beside this page** until plan step
+``bank_import:X-gi-2`` deleted them, which is ruling **R-HU**'s own
+sequencing: every door this screen posts to was one already tested, nothing
+was removed on the way in, and the deletion came only once ``X-gi-1`` had
+repointed the last inbound link.  What ``X-gj-1c`` had already removed is the
+register's REASON to exist -- the acts it listed are these two tabs, with the
+same bound, the same *show the other N* link and the same Undo.
 
 Services boundary: this module owns the HTTP-shaped concerns -- ownership,
 form parsing, fragment rendering, URLs -- and delegates every read and write
@@ -318,8 +320,8 @@ def _reconcile_context(account, scope, tab, answer: _Answer, opened_line) -> dic
         "page": page,
         # **The view, so every link on the page can keep it.**  The *show the
         # other N* link and the Undo form each have to say whether this render
-        # is the unbounded one, which is the discipline the register's own
-        # body keeps for the same flag: without it an Undo pressed while
+        # is the unbounded one, which is the discipline the retired register's
+        # own body kept for the same flag: without it an Undo pressed while
         # showing everything answers with the bounded list, and the record
         # collapses under the owner mid-read.
         "show_all": show_all,
@@ -526,9 +528,9 @@ def apply_statement_reconcile(account_id):
                 # validates against, so the offer cannot render a press that
                 # can never succeed.
                 RuleDoorAccepts(
-                    # **The pass already holds the template set**, because the
-                    # review queue's own merchant control renders it -- so
-                    # this is ``offerable_templates``' answer without a second
+                    # **The pass already holds the template set**, because
+                    # ``review_set`` derives the merchant section every pass --
+                    # so this is ``offerable_templates``' answer without a second
                     # call to it, which is the DRY rule this package applies
                     # to producer calls inside one request.
                     template_ids=frozenset(
@@ -582,21 +584,24 @@ def state_reconcile_merchant_rules(account_id):
     records a purchase is an explicit destination on one specific line.
 
     **It opens NO door of its own.**  The act is
-    :func:`~._statement_rules.record_submitted_rules`, which the review queue
-    and the register already post to, reading the same
+    :func:`~._statement_rules.record_submitted_rules`, which
+    :mod:`.statement_merchants` also posts to, reading the same
     :class:`~app.schemas.validation.merchant_rules.MerchantRuleBatchSchema` off
-    the same field names.  Three surfaces, one grader, one writer -- so a rule
+    the same field names.  Two surfaces, one grader, one writer -- so a rule
     stated from the Reconcile receipt cannot be validated differently from the
-    identical rule stated from the register, which is what a second door here
-    would have made possible.  What differs is only the SURFACE each answers
-    with, which is exactly the split that module exists for.
+    identical rule stated from the merchants list, which is what a second door
+    here would have made possible.  What differs is only the SURFACE each
+    answers with, which is exactly the split that module exists for.
+    *It said THREE surfaces -- the review queue and the register were the
+    other two -- until plan step ``bank_import:X-gi-2`` deleted them.*
 
     **The offer this answers was earned by a money pass** and named only
     merchants that pass actually filed spending for
     (:func:`~app.services.statement_match.rules_worth_offering`).  Nothing
     holds the two requests together, and nothing needs to: a merchant answer is
     a preference about the FUTURE, so stating one for a purchase recorded a
-    minute ago is the same act as stating it a week later from the register.
+    minute ago is the same act as stating it a week later from the merchants
+    list.
 
     Args:
         account_id: The account being reconciled.
@@ -609,9 +614,9 @@ def state_reconcile_merchant_rules(account_id):
     account = load_cash_account_or_404(account_id)
     tab = requested_tab()
 
-    # ONE derivation, built BEFORE the write and still valid after it, for the
-    # reason :func:`~.statement_matches.state_merchant_rules` states at its
-    # own: this door writes exactly one table, ``budget.merchant_rules``,
+    # ONE derivation, built BEFORE the write and still valid after it, and the
+    # argument is CLOSED rather than an enumeration of writers:
+    # this door writes exactly one table, ``budget.merchant_rules``,
     # through the ORM and calls no service -- so nothing it can do touches the
     # calendar, the candidates or their prices, and ``review_set`` re-reads the
     # rules themselves.  That is a closed argument over one table rather than
@@ -675,7 +680,7 @@ def statement_reconcile_match(account_id, line_id):
     # ``line_id`` naming someone else's line, one another match already
     # claims, or one this pass never offered has no card here and gets a 404.
     # It is a membership test rather than a second ownership check, for the
-    # reason :func:`~.statement_workbench._preselected` gives: a check written
+    # reason the retired workbench's own preselection gave: a check written
     # here would be a second statement of the one ``review_set`` applies.
     #
     # **Asked of ``card_subject`` and never of ``unmatched``**, which is what
@@ -740,14 +745,15 @@ def release_from_reconcile(account_id):
     **R-GY**.  **IT MOVES MONEY** -- releasing an act removes the rows that act
     CREATED (**R-GG**) -- and it opens no door of its own: the act, its three
     refusals and its receipt are
-    :func:`~._statement_release.release_and_return`'s, which the register and
-    the import receipt already post to.  Three surfaces, one door, one
+    :func:`~._statement_release.release_and_return`'s, which the import
+    receipt also posts to.  Two surfaces, one door, one
     derivation of what the press destroys, so the confirmation a card shows
-    cannot promise what the button will not do.
+    cannot promise what the button will not do.  *It said THREE until plan
+    step ``bank_import:X-gi-2`` deleted the register.*
 
     **A plain POST-redirect-GET where everything else on this page swaps.**
     That is the subject rather than an inconsistency, and it is the shape the
-    other two surfaces already use: this names ONE act and either does it or
+    import receipt already uses: this names ONE act and either does it or
     refuses it, so a flash carries the whole answer -- where Apply reports
     per-item outcomes no flash can hold.  It also keeps the Undo a `form`,
     which is why an act card is not rendered inside the Apply form: a form

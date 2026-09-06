@@ -8,8 +8,10 @@ was already done and does it still say what it said*.
 
 **They are read by two different SCREENS since plan step
 ``bank_import:X-gf-2``** (ruling **bank_import:R-GX**), which is the same
-boundary made visible: the review screen is the exception queue, and every act
-already accepted is on the register, where it is found and undone.  So this
+boundary made visible: the review screen was the exception queue, and every
+act already accepted is settled -- on the register then, and on the Reconcile
+page's two settled tabs since plan step ``bank_import:X-gj-1c`` retired it --
+where it is found and undone.  So this
 module no longer runs inside the review pass at all -- it was valuing 221 acts
 on the developer's own account on every render of a page whose panel for them
 he was not reading -- and it needs no :class:`~._scope.ReviewScope`, no

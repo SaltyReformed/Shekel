@@ -1,10 +1,8 @@
-"""What a BROWSER would submit from a statement form: read off it, or built.
+"""What a BROWSER would submit from a statement form, read off the page itself.
 
 Plan step ``bank_import:X-gf-2`` moved this out of
-``test_statement_matches.py``: the merchant-rule control is rendered on two
-surfaces now (ruling **bank_import:R-GX**) -- the review QUEUE for a merchant
-with no answer, and the REGISTER for one already answered -- and both test
-modules have to read what their own page emits.
+``test_statement_matches.py`` so the merchant-rule control's two surfaces could
+share one reader.
 
 **A browser submits every control it renders, at the value it renders**, and
 that is the fact a hand-written payload cannot check: it is written by the same
@@ -13,28 +11,17 @@ the truth.  This arc has paid for that twice -- a hand-picked subset shipped a
 destination arm that was DEAD in a browser at plan step X-f6a-3b, found by
 three adversarial reviews.
 
-**The payload BUILDERS are here for the same reason as the readers.**  A
-register test needs an accepted act to exist and a queue test needs one not to,
-and both make one through the review screen's own APPLY form -- so the field
-names that form emits are stated once rather than copied into the second
-module.
+**IT IS ALL READERS NOW.**  It carried payload BUILDERS too -- ``match_item``,
+``hand_match``, ``record_line``, ``rule_item`` and ``one_pass`` -- which spelled
+the field names the review queue's and the workbench's forms emitted.  Plan
+step ``bank_import:X-gi-2`` deleted both pages and the three test modules that
+called them, leaving every one of those five with no caller, so they went in
+the same commit rather than being left as a shape a later author would copy.
+The Reconcile page is scraped rather than spelled
+(:class:`ReconcileFormReader`), which is the stronger form of the same rule.
 """
 
 from html.parser import HTMLParser
-
-from app.services.statement_match import RowKind
-from app.services.statement_match._sides import MatchSides
-from app.services.statement_match._submission import ReviewedRow, spell_figure
-from tests.test_services.test_statement_match._builders import (
-    a_reviewed_token,
-)
-
-#: What :func:`match_item` uses when a caller says nothing about the consent:
-#: derive the figure the proposal card renders.  **A sentinel and not
-#: ``None``**, because ``None`` is a real thing a body can say -- the field
-#: absent altogether -- and a case modelling a crafted or stale submission has
-#: to be able to say it.  Plan step ``bank_import:X-gj-1b``.
-DERIVE_THE_STATED_FIGURE = object()
 
 
 class RuleFormReader(HTMLParser):
@@ -47,8 +34,8 @@ class RuleFormReader(HTMLParser):
 
     A ``<select>`` submits the option carrying ``selected``, and its FIRST
     option when none does; an ``<input>`` submits its ``value``.  Only controls
-    whose name begins with ``rule`` are collected, because the review body
-    holds three forms and a browser posts one at a time.
+    whose name begins with ``rule`` are collected, because a page carrying this
+    control carries other forms beside it and a browser posts one at a time.
     """
 
     def __init__(self, prefixes=("rule",)):
@@ -95,214 +82,6 @@ def rule_form_controls(page):
     reader = RuleFormReader()
     reader.feed(page)
     return reader.controls
-
-
-def match_item(
-    index=0, lines=(), transactions=(), entries=(),
-    residual=DERIVE_THE_STATED_FIGURE, scope=None,
-):
-    """Return the form fields a TICKED match item submits.
-
-    The FIELD NAMES ``_statement_review_body.html`` emits: the tick names the
-    item's rendered position, one hidden input carries each bank line, and one
-    carries each ROW as the screen showed it -- kind, id, figure and revision
-    (plan step ``bank_import:X-f6d-3``).  **The row VALUES are built through
-    the service, not scraped**, so this helper cannot show that the template
-    renders them; :class:`TestWhatTheTEMPLATEEmittedIsWhatTheDOORAccepts` is
-    what does, by posting the page's own bytes back.  That last is what makes *what commits
-    is what was reviewed* (ruling **R-FP**) checkable rather than intended:
-    the door refuses an item whose row moved since the render.
-
-    **Every index it emits is a rendered POSITION**, and until plan step
-    ``bank_import:X-gf-3b`` one was not: the hand-build form shared the review
-    screen and submitted the reserved index ``"hand"``.  That form is a surface
-    of its own now and posts through :func:`hand_match`, which carries no index
-    at all.
-
-    Args:
-        index: The item's rendered position.
-        lines: Bank line rows it explains.
-        transactions: Transaction rows that explain them.
-        entries: Purchase rows that explain them.
-        residual: What this item states as the difference it was reviewed
-            against (plan step ``bank_import:X-f6d-4``).  **Left alone it is
-            DERIVED**, exactly as the template derives it: since plan step
-            ``bank_import:X-gj-1b`` a proposal card renders
-            ``match-<i>-residual`` as a HIDDEN input carrying
-            the ``stated_difference`` filter, so a browser submits it on
-            every ticked item and there is no state in which that field is
-            absent from this surface.  A default of ``None`` modelled the form
-            as it stood BEFORE that step, and would make every caller here
-            post a body no page emits -- which is the defect this module
-            exists to prevent.
-
-            Pass a value to model a STALE or crafted body (a screen that
-            summed wrong, or one whose rows moved after it was drawn), and
-            pass ``None`` to model the field absent outright, which the door
-            refuses whenever there is a difference to write.
-        scope: The pass whose render this item is standing in for, or ``None``
-            for one derived per row.  **A page renders ONE scope and emits
-            every item off it**, so a case building several items for a single
-            Apply passes the same one -- which is both faithful to what the
-            screen does and the difference between one derivation and one per
-            row.  :func:`~tests.test_services.test_statement_match._builders
-            .a_reviewed_token` carries the freshness contract: the scope must
-            be derived after every row it will be asked about is staged.
-
-    Returns:
-        The form fields, as a plain ``dict`` for the test client.
-    """
-    fields = {
-        "apply": [str(index)],
-        f"match-{index}-line_ids": [str(line.id) for line in lines],
-        f"match-{index}-rows": (
-            [a_reviewed_token(txn, RowKind.TRANSACTION, scope)
-             for txn in transactions]
-            + [a_reviewed_token(entry, RowKind.PURCHASE, scope)
-               for entry in entries]
-        ),
-    }
-    if residual is DERIVE_THE_STATED_FIGURE:
-        # **Through the service, over the very tokens this item submits.**
-        # The template computes the same subtraction from the same priced
-        # rows (the ``stated_difference`` filter), so the two cannot
-        # disagree about what the card disclosed -- which is the reason this
-        # helper builds its row values through ``as_reviewed`` rather than
-        # spelling them.
-        residual = spell_figure(MatchSides.of(
-            lines,
-            [ReviewedRow.from_token(one)
-             for one in fields[f"match-{index}-rows"]],
-        ).difference)
-    if residual is not None:
-        fields[f"match-{index}-residual"] = [str(residual)]
-    return fields
-
-
-def hand_match(lines=(), transactions=(), entries=(), residual=None):
-    """Return the form fields the WORKBENCH's hand-build form submits.
-
-    Plan step ``bank_import:X-gf-3b``, ruling **bank_import:R-HC**.  The FIELD
-    NAMES ``_statement_workbench_body.html`` emits, which are
-    :func:`match_item`'s without an index: that form's whole submission IS one
-    group, so there is nothing to tick that is not already a member and nothing
-    for a name to be qualified by.
-
-    **The absent index is why this helper exists rather than a keyword on
-    :func:`match_item`.**  The two are not one payload with a flag: they reach
-    two doors, are graded by two payload readers
-    (``batch_payload`` and ``hand_match_payload``), and the whole point of the
-    step that split them is that no submission can carry both shapes at once.
-    A helper that emitted either from one call would be the shared namespace
-    the split deleted, rebuilt in the tests.
-
-    **The row VALUES are built through the service, not scraped**, so this
-    helper cannot show that the template renders them;
-    ``test_the_HAND_BUILD_form_s_own_token_is_graded_too`` is what does, by
-    posting the page's own bytes back.
-
-    Args:
-        lines: Bank line rows the group explains.
-        transactions: Transaction rows that explain them.
-        entries: Purchase rows that explain them.
-        residual: What the consent box carries when the owner ticked it -- the
-            difference the screen showed (plan step ``bank_import:X-f6d-4``).
-            ``None`` leaves the field off entirely, which is what an unticked
-            checkbox submits.
-
-    Returns:
-        The form fields, as a plain ``dict`` for the test client.
-    """
-    fields = {
-        "line_ids": [str(line.id) for line in lines],
-        "rows": (
-            [a_reviewed_token(txn, RowKind.TRANSACTION)
-             for txn in transactions]
-            + [a_reviewed_token(entry, RowKind.PURCHASE) for entry in entries]
-        ),
-    }
-    if residual is not None:
-        fields["residual"] = [str(residual)]
-    return fields
-
-
-def one_pass(*parts):
-    """Merge several items' fields into ONE submitted form.
-
-    **``apply`` is a REPEATED key, so merging is a union rather than an
-    update.**  A plain ``dict.update`` overwrites it, which silently leaves one
-    item ticked out of however many were meant -- and every assertion about
-    what landed then grades a pass that was never submitted.  Found by writing
-    exactly that and watching four items become two.
-
-    Args:
-        *parts: The per-item field dicts from :func:`match_item` /
-            :func:`record_line`.
-
-    Returns:
-        The merged form, list values concatenated.
-    """
-    merged = {}
-    for part in parts:
-        for key, value in part.items():
-            if isinstance(value, list):
-                merged.setdefault(key, []).extend(value)
-            else:
-                merged[key] = value
-    return merged
-
-
-def record_line(line, *, destination, name="Walmart", category_id=""):
-    """Return the form fields ONE creatable line submits.
-
-    **The name and the category are always submitted**, whichever destination
-    was picked, because a browser submits every control it renders -- which is
-    the fact a hand-picked payload hid at plan step X-f6a-3b.  The SELECT is
-    what says which arm was chosen.
-
-    Args:
-        line: The bank line row.
-        destination: ``"new"``, an envelope id, or ``""`` to leave it alone --
-            which is the select's own default.
-        name: What the name box carries.
-        category_id: What the category select carries; ``""`` is its default,
-            because the category is a decision rather than a default.
-
-    Returns:
-        The form fields, as a plain ``dict`` for the test client.
-    """
-    return {
-        f"destination-{line.id}": str(destination),
-        f"envelope_name-{line.id}": name,
-        f"category_id-{line.id}": str(category_id),
-    }
-
-
-def rule_item(index, merchant_id, *, answer, name="", category_id=""):
-    """Return the form fields ONE merchant row of the rule section submits.
-
-    **Every control the row renders**, whichever answer was picked, because a
-    browser submits every control it renders -- the fact a hand-picked payload
-    hid at plan step X-f6a-3b, applied to the section this leaf adds.
-
-    Args:
-        index: The row's rendered position, which is what keys its fields.
-        merchant_id: The merchant ROW the hidden input carries (plan step
-            ``bank_import:X-gd-1``); it was the bank's own string until then.
-        answer: ``"unset"`` (I have not said), ``"never"``, ``"ask"``,
-            ``"new"``, or ``"t:<template_id>"``.
-        name: What the envelope-name box carries.
-        category_id: What the category select carries; ``""`` is its default.
-
-    Returns:
-        The form fields, as a plain ``dict`` for the test client.
-    """
-    return {
-        f"rule-{index}": str(answer),
-        f"rule_merchant-{index}": str(merchant_id),
-        f"rule_name-{index}": name,
-        f"rule_category-{index}": str(category_id),
-    }
 
 
 class ReconcileFormReader(HTMLParser):

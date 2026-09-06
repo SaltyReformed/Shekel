@@ -59,53 +59,25 @@ Module map:
   outstanding set and ``history``'s record of past assertions -- and the only
   one of them sourced from outside the app.  It RECORDS and does not
   reconcile.
-* :mod:`app.routes.accounts.statement_matches` -- What the app DOES about it
-  (plan step ``bank_import:X-f6a-2``, ruling R-FS): the review screen that
-  proposes which of this account's rows each recorded line IS, and the two
-  write doors that apply a reviewed pass and answer for a merchant nobody has
-  answered for yet.  **The door that RELEASES one is no longer here**: it went
-  with the accepted acts at ``bank_import:X-gf-2``, to
-  ``_statement_release`` and the two surfaces that render it.  Its boundary against ``statements``
-  is the one ``reconcile`` cuts against ``anchor``: a read of an outside record
-  against the door that acts on it.  **It MOVES MONEY** -- an accepted match
-  writes the bank's posted day onto every row it names.
-* :mod:`app.routes.accounts.statement_register` -- What has already been
-  DECIDED (plan step ``bank_import:X-gf-2``, ruling **bank_import:R-GX**): the
-  merchant answers already given and the matches already accepted, each with
-  its undo.  Its boundary against ``statement_matches`` is the one that step
-  exists for -- a QUEUE holds what is still being decided and a REGISTER holds
-  what is not, and the two were one 578,523-byte page of which 76% was the
-  register half.  **RETIRED AS A PAGE at ``bank_import:X-gj-1c``** (ruling
-  **R-HU**): its accepted list is the Reconcile screen's two settled tabs and
-  its merchant answers are ``statement_merchants``, so nothing it does is
-  reachable only here.  **It is still LINKED, three times, from the review
-  QUEUE** (``_statement_review_body.html``), which ``X-gi`` retires beside it
-  -- so that census must take the two together or the queue's own header
-  button lands on a deleted route.  The route stays alive until then.
 * :mod:`app.routes.accounts.statement_merchants` -- WHERE YOUR MERCHANTS GO
   (plan step ``bank_import:X-gk``, ruling **bank_import:R-IC**): one row per
   merchant this account has ever seen, carrying its standing answer or *You
   have not said*, edited ONE merchant at a time.  Its boundary against
-  ``statement_register`` is the one R-IC draws: that page shows only the
-  merchants already ANSWERED for, and measured on a clone of the developer's
-  own database 2026-08-31 that left 32 of his 62 merchants on no surface at
-  all.  **It MOVES NO MONEY** and posts to the rule door three other surfaces
-  already use.
-* :mod:`app.routes.accounts.statement_workbench` -- The TOOL, not the queue
-  (plan step ``bank_import:X-gf-3b``, ruling **bank_import:R-HC**): the
-  hand-build match form, where the owner asserts a correspondence the matcher
-  would not guess.  **It MOVES MONEY** -- recording a group writes the bank's
-  posted day onto every row it names, which makes it the SECOND door here that
-  does, beside ``statement_matches``.  Its boundary against that one is that a
-  queue holds exceptions and this holds the tool three of them send the owner
-  to; its two pick lists were 59% of the review page.
+  ``statement_reconcile`` is the one R-IC draws: that page's receipt offers a
+  rule only for a merchant the pass just filed spending for, and measured on a
+  clone of the developer's own database 2026-08-31 the three partial surfaces
+  of the day left 32 of his 62 merchants on no surface at all.  **It MOVES NO
+  MONEY** and posts to the rule door ``statement_reconcile`` also uses.
 * :mod:`app.routes.accounts.statement_reconcile` -- ONE PAGE ON FOUR VERBS
   (plan step ``bank_import:X-gj-1b``, rulings **bank_import:R-HP**..**R-HX**):
-  the Reconcile screen that replaces the three above.  Every bank line ends on
-  MATCH, ADD, TRANSFER or SKIP, and the inbox is the lines with none yet.
+  the Reconcile screen, and since plan step ``bank_import:X-gi-2`` the ONLY
+  statement-reconciling screen there is: it replaced a review QUEUE, a REGISTER
+  and a hand-build WORKBENCH, and that step deleted all three.  Every bank line
+  ends on MATCH, ADD, TRANSFER or SKIP, and the inbox is the lines with none
+  yet.
   **It MOVES MONEY through doors that already exist** -- it applies through
-  ``apply_reviewed`` like ``statement_matches`` and ``statement_workbench``,
-  and releases through ``_statement_release`` like the register and the import
+  ``apply_reviewed``, which the three deleted pages posted to before it, and
+  releases through ``_statement_release`` alongside the import
   receipt (plan step ``bank_import:X-gj-1c``), opening none of its own.  Its
   two SETTLED tabs came with that step, and with them the register's whole job:
   the acts it listed, the bound it applied, the link past that bound and the
@@ -114,12 +86,11 @@ Module map:
   the card whose MATCH pane renders in the document -- and every one of those is
   read by a ROUTE, before its door, which plan step ``bank_import:X-gi-1`` made
   structural after one of them answered a 404 over a committed money pass.
-  The three pages it replaces are still ROUTED and are no longer LINKED: plan
-  step ``bank_import:X-gi-1`` repointed or deleted every inbound link, and
-  ``bank_import:X-gi-2`` deletes the endpoints.  *That is a narrower claim than
-  the one this map carried until then* -- "they stay alive beside it, nothing
-  removed on the way in", which was ruling **R-HU**'s sequencing and stopped
-  being true of the LINKS the moment X-gi-1 landed.
+  The three pages it replaced are GONE, in that order and for that reason:
+  ruling **R-HU** sequenced it as "they stay alive beside it, nothing removed
+  on the way in", plan step ``bank_import:X-gi-1`` repointed or deleted every
+  inbound link, and ``bank_import:X-gi-2`` deleted the nine endpoints, their
+  seven templates, ``statement_review.js`` and the three route test modules.
 * :mod:`app.routes.accounts.bank_agreement` -- The two records SIDE BY SIDE
   (plan step ``bank_import:X-f6e-2``, ruling R-GF): a per-day comparison of
   what the app's own rows moved against what the bank's lines did, and of the
@@ -167,9 +138,6 @@ from app.routes.accounts import opening  # noqa: F401, E402
 from app.routes.accounts import types  # noqa: F401, E402
 from app.routes.accounts import detail  # noqa: F401, E402
 from app.routes.accounts import statements  # noqa: F401, E402
-from app.routes.accounts import statement_matches  # noqa: F401, E402
-from app.routes.accounts import statement_register  # noqa: F401, E402
-from app.routes.accounts import statement_workbench  # noqa: F401, E402
 from app.routes.accounts import statement_reconcile  # noqa: F401, E402
 from app.routes.accounts import statement_merchants  # noqa: F401, E402
 from app.routes.accounts import bank_agreement  # noqa: F401, E402
