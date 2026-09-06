@@ -1056,7 +1056,7 @@ section 4, under their unchanged ids.*
   `test-db` service are gone; the private cluster is the only path. Closed **N-457**, whose failure
   mode is now unrepresentable. **Its own sentence was WRONG about one of the five fences**: the
   slot's CONTENTION hazard survives a per-run cluster, so the LOCK went and a NOTE replaced it
-  (**R-KE**); the bake port became caller-chosen (**R-KF**). **A LATER STEP MUST OBEY**: N-459's
+  (**R-BAL1**); the bake port became caller-chosen (**R-BAL2**). **A LATER STEP MUST OBEY**: N-459's
   remaining site, the deploy fixtures' `-p 0:443`, stays with **X-bs**.
 * [ ] **X-bt** `refactor(test): one producer answers whether a daemon is safe to spawn on` --
   `scripts/test.sh` ASKS the daemon (`docker info`) while `tests/test_deploy/conftest.py` matches a
@@ -1072,6 +1072,15 @@ section 4, under their unchanged ids.*
   Six `shekel-test-db` images, 489 MB each, oldest 17 h, so it has recurred since `X-br-1`; the
   bake CONTAINERS were cleaned up and the IMAGES were not, and nothing prunes them. **The session
   that did it had read the finding an hour earlier.**
+* [ ] **X-by** `fix(test): a worktree's suite runs its own interpreter` -- owns **BAL-469**, the
+  half `X-br-4` did not reach: the per-run cluster made a DATABASE unshareable and the INTERPRETER
+  is still shared. Four of the seven worktrees hold no `.venv`, so `scripts/test.sh:114` falls
+  through to `command -v python3` and their pytest resolves to the main checkout's -- measured with
+  three full suites live at once, each correctly in its own cluster. **The comment is already
+  wrong**: `:259` states every worktree shares one venv, and `shekel-reg2` and `shekel-r7dd` do not,
+  so the step owes that line a correction as well as a fix. **The fence this deletes** is the
+  convention that `requirements.txt` is pinned; peer detection does not depend on the sharing, since
+  it reads `/proc/<pid>/cwd` precisely because argv would name the main checkout.
 * [ ] **X-bg** `feat(transfers): an occurrence that did not happen is not an archive` --
   closes **N-386**, whose row carries the measurement. **The door derives its own
   destructiveness from a link rather than from what the owner said**:

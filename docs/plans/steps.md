@@ -44,7 +44,7 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 75 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 76 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 
@@ -61,7 +61,7 @@ the coordinator could cite it.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**303 steps, 175 open.** The dependency graph holds 113 edges over 93 rows.
+**304 steps, 176 open.** The dependency graph holds 113 edges over 93 rows.
 
 ## The order
 
@@ -212,7 +212,8 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-bg | -- | Tell *this occurrence did not happen* apart from *archive this row*, which the transfer delete door conflates into one `is_deleted` flag read off the template link, so a settled instance the owner removes stays restorable by the recurrence conflict chooser with no control between it and the books. Closes **N-386**. | #143 | -- | NOW |
 | balance | X-bt | -- | Make ONE producer answer whether a docker daemon is safe to spawn containers on: `test.sh` ASKS it (`docker info`), `conftest.py` matches a PATH ALLOWLIST, neither knows the other, and `CI=false` is truthy in both so it sanctions the production daemon -- `X-br-3` fixed that in one home only. The allowlist is DELETED. Closes **N-461**. | #144 | -- | NOW / balance:X-br-3 (shipped) |
 | balance | X-bs | -- | Make a test infrastructure failure FAIL rather than skip -- seven `pytest.skip` calls in `test_proxy_trust_and_headers.py` fire on something that RAN AND FAILED, not on something missing -- and delete the last two published ports, in THAT ORDER, because the three tests now skipping are the collision's only witnesses. Closes **N-459**, **N-460**. | #145 | -- | NOW |
-| balance | X-br-4 | -- | Deleted what the shared postmaster needed -- the slot, the probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX`, `TEST_TEMPLATE_DATABASE` and the `test-db` service -- making the private cluster the only path, 867 wrapper lines to 522. **Its own sentence was WRONG about the slot**, so a re-measurement replaced the lock with a note (**R-KE**); the bake port became caller-chosen (**R-KF**). Closed **N-457**. | SHIPPED | `6a3eb135` | -- |
+| balance | X-by | -- | Give each worktree its OWN virtualenv and correct the comment claiming they already share one: four of the seven hold no `.venv`, so `scripts/test.sh:114` falls through to `command -v python3` and their pytest is the MAIN checkout's, while `:259` states that sharing is universal and two worktrees falsify it. `X-br-4` isolated the DATABASE and stopped there. Closes **BAL-469**. | #146 | -- | NOW |
+| balance | X-br-4 | -- | Deleted what the shared postmaster needed -- the slot, the probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX`, `TEST_TEMPLATE_DATABASE` and the `test-db` service -- making the private cluster the only path, 867 wrapper lines to 522. **Its own sentence was WRONG about the slot**, so re-measurement swapped the lock for a note (**R-BAL1**); the bake port became caller-chosen (**R-BAL2**). Closed **N-457**. | SHIPPED | `6a3eb135` | -- |
 | salary | S3 | -- | The DECOMPOSED parent of pricing every payday of the projected horizon, split 2026-09-05 into FIVE leaves once the RAISE MODEL fork was ruled (**R-SAL11**): the per-raise termination, the additive column, the cutover, the horizon on `project_profile`, and the deletion of `AccountPayrollFeed`'s hold. | container | -- | ticks with #13 |
 | salary | S3-a | -- | Made the merit horizon a per-raise TERMINATION rather than a split, so `_terminate_after_horizon` stops being the only thing that knows when a recurring raise stops. | SHIPPED | `e4491ee6` | -- |
 | salary | S3-b | -- | Added `salary.salary_raises.terminal_year` and THREE CHECKs, migration `c9a4e17b53d8`, writing no value and adding no reader (**R-SAL11**): the column is LIVE to the engine the moment it exists, since `apply_raises` has probed it by `getattr` since S3-a, and what keeps figures unmoved is that it is all-NULL -- which is why this step deliberately does NOT backfill. | SHIPPED | `8a8dd51e` | -- |
