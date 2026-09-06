@@ -72,8 +72,9 @@ from tests._test_helpers import (
     settle_day_columns,
     settlement_columns,
 )
-from app.services.cash_ledger import resolve_transfer_amount
-from app.services.row_valuation import owned_contribution
+from app.services.cash_ledger import resolve_transfer_amount, settled_cash_leg
+from app.utils.balance_predicates import is_balance_contributing
+from app.services.row_valuation import settled_contribution
 
 _MIGRATION = load_migration_module("b3f7c2a9d514_amount_ownership.py")
 _SHADOW_CUTOVER = load_migration_module(
@@ -620,7 +621,7 @@ class TestAmountSourceReferentialIntegrity:
             db.session.rollback()
 
 
-class TestTheCheapAccessorRefusesADerivedRow:
+class TestTheCheapAccessorRefusesAnUnsettledRow:
     """The producer-free accessors refuse a row whose amount they cannot resolve.
 
     They read the row and nothing else, and the SALARY rule's producer needs the
@@ -633,11 +634,20 @@ class TestTheCheapAccessorRefusesADerivedRow:
     **The subject moved at plan step X-au-c2 and the rule did not.**  These
     cases graded ``Transaction.effective_amount`` and
     ``Transfer.effective_amount``, both now deleted; they grade
-    ``row_valuation.owned_contribution`` and
+    ``row_valuation.settled_contribution`` and
     ``cash_ledger.resolve_transfer_amount``, which is where the refusal lives.
     Keeping them is the point: the refusal is what makes the per-kind cutovers
     (X-au-d..X-au-i) safe to ship one at a time, because a reader they have not
     routed fails LOUDLY rather than publishing a wrong number.
+
+    **THE TRANSACTION HALF'S REFUSAL WIDENED AT PLAN STEP X-bx, and the class
+    is renamed for it** (finding **BAL-465**).  It was "refuses a DERIVED row",
+    and that was the accidental half of the guarantee: the accessor fell
+    through to ``estimated_amount``, so a row was refused only when the column
+    happened to be empty.  A Projected row that OWNS its figure was priced
+    silently -- and the accessor's every reader asks what a row's money DID, so
+    that answer reported a movement which had not happened.  It refuses on the
+    STATUS now, so both cases below refuse and neither depends on the column.
     """
 
     def test_a_derived_transaction_refuses(
@@ -655,9 +665,72 @@ class TestTheCheapAccessorRefusesADerivedRow:
             db.session.flush()
 
             with pytest.raises(
-                AmountUnresolvable, match="owns its amount and carries none",
+                AmountUnresolvable, match="has not settled",
             ):
-                _ = owned_contribution(txn)
+                _ = settled_contribution(txn)
+
+    def test_a_projected_row_that_OWNS_its_figure_refuses_too(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The case plan step X-bx added, and the one that was silently WRONG.
+
+        This row carries ``estimated_amount`` of ``$100.00``, so the deleted
+        fall-through answered ``$100.00`` here -- a figure this accessor's
+        readers would have booked as CONFIRMED cash, for a row whose money has
+        not moved.  Nothing about the column decides it: the row has not
+        SETTLED, so it recorded nothing and there is nothing to report.
+
+        The refusal names the producer that DOES answer, because the next
+        caller to trip this needs to be told what to call instead.
+        """
+        with app.app_context():
+            txn = _make_transaction(
+                seed_user, seed_periods,
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            # The column IS populated -- this is not the derived shape above.
+            assert txn.estimated_amount == Decimal("100.00")
+
+            with pytest.raises(
+                AmountUnresolvable, match="cash_ledger.contribution_of",
+            ):
+                _ = settled_contribution(txn)
+
+    def test_the_CASH_LEDGER_reader_refuses_the_same_row(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The refusal reaches a real READER, not just the accessor.
+
+        A guard nobody has watched fire is ungraded, and the case above drives
+        the accessor directly.  This drives
+        :func:`~app.services.cash_ledger.settled_cash_leg` -- the "confirmed
+        cash effect" reader the posting writer and the cash walk both book from
+        -- with the same Projected, plan-owning row.
+
+        **What it pins is the money.**  ``settled_cash_leg`` guards only on
+        ``is_balance_contributing``, which does NOT test status, so before plan
+        step X-bx this returned ``-$100.00``: a confirmed outflow, booked onto
+        the account's ledger, for a bill that has not been paid.  The row still
+        carries that ``$100.00``, so nothing about the column stops it -- the
+        refusal one call down is the whole of what does.
+        """
+        with app.app_context():
+            txn = _make_transaction(
+                seed_user, seed_periods,
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            # The row CONTRIBUTES, so the reader's own guard lets it through.
+            assert is_balance_contributing(txn) is True
+            assert txn.estimated_amount == Decimal("100.00")
+
+            with pytest.raises(AmountUnresolvable, match="has not settled"):
+                _ = settled_cash_leg(txn)
 
     def test_a_derived_transfer_refuses(self, app, db, seed_full_user_data):
         """The transfer twin refuses on the same shape.
@@ -725,7 +798,7 @@ class TestTheCheapAccessorRefusesADerivedRow:
             db.session.add(txn)
             db.session.flush()
 
-            assert owned_contribution(txn) == Decimal("412.55")
+            assert settled_contribution(txn) == Decimal("412.55")
 
     def test_an_excluded_status_answers_zero_for_a_derived_row(
         self, app, db, seed_user, seed_periods
@@ -747,7 +820,7 @@ class TestTheCheapAccessorRefusesADerivedRow:
             db.session.add(txn)
             db.session.flush()
 
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
     def test_a_soft_deleted_derived_row_answers_zero(
         self, app, db, seed_user, seed_periods
@@ -764,7 +837,7 @@ class TestTheCheapAccessorRefusesADerivedRow:
             db.session.add(txn)
             db.session.flush()
 
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
 
 class TestTheDowngradeRefusesToInventAFigure:

@@ -36,7 +36,7 @@ from tests._test_helpers import (
 )
 from app.services.cash_ledger import _resolve_loan_basis
 from app.services.cash_ledger import amount_basis
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.services.loan_payment_service import (
     compute_contractual_pi,
     get_payment_history,
@@ -632,8 +632,9 @@ class TestTheFeedPricesADerivedRow:
 
     **The whole point of plan step balance:X-au-g-2c's first leaf**, and the
     thing finding **N-266**(a) was.  ``get_payment_history`` priced every row
-    through :func:`~app.services.row_valuation.owned_contribution` -- the
-    accessor whose NAME asserts the row owns its figure, and which REFUSES a row
+    through :func:`~app.services.row_valuation.settled_contribution` -- then
+    named ``owned_contribution`` for the assertion that the row owned its
+    figure, and REFUSING a row
     whose plan is DERIVED.  So the loan-side INCOME leg of a loan payment could
     not be declared derived while that call stood: emptying
     ``estimated_amount`` broke the feed the amortization engine replays.  Not a
@@ -688,7 +689,7 @@ class TestTheFeedPricesADerivedRow:
     def test_the_accessor_it_used_to_call_still_refuses_that_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """``owned_contribution`` refuses the row the feed above prices.
+        """``settled_contribution`` refuses the row the feed above prices.
 
         The other half of the pair, and it is what makes the pair a measurement.
         Same fixture, same declaration: the accessor
@@ -697,6 +698,16 @@ class TestTheFeedPricesADerivedRow:
         state that made the loan-side leg undeclarable.  If a future change
         reverted the route, this test would still pass and its sibling would
         fail -- which is the direction that matters.
+
+        **The ``match`` is load-bearing since plan step X-bx, and without it
+        this case stopped being the measurement it claims to be.**  That step
+        widened the accessor to refuse ANY unsettled row, so a bare
+        ``pytest.raises`` would now pass on the row's Projected STATUS alone --
+        and deleting ``declare_derived`` above, the whole subject of the
+        fixture, would leave it green.  Pinning the message keeps the assertion
+        attached to the declaration.  *The shadow is Projected here, so the
+        status arm is what fires; the DERIVED half is what makes the sibling's
+        route necessary, and it is graded there.*
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -712,8 +723,8 @@ class TestTheFeedPricesADerivedRow:
             declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
             db.session.commit()
 
-            with pytest.raises(AmountUnresolvable):
-                owned_contribution(shadow)
+            with pytest.raises(AmountUnresolvable, match="has not settled"):
+                settled_contribution(shadow)
 
 
 # ── Tests for compute_contractual_pi ─────────────────────────────

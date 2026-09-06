@@ -122,7 +122,7 @@ def query_settled_expenses(
     ``compute_spending_report`` found no read of ``txn.pay_period`` anywhere.
     The period IS the window on this path, so its identity is already resolved
     (:func:`._window._resolve_window`), and neither the breakdown, the hero nor
-    ``owned_contribution`` asks a row which paycheck it sits in.  The load's
+    ``settled_contribution`` asks a row which paycheck it sits in.  The load's
     stated reason was that a caller "attributes by period", which no caller
     does.
 

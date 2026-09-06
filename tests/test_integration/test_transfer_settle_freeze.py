@@ -76,7 +76,7 @@ from tests._test_helpers import (
 from tests.test_integration.test_loan_transfer_live_amount import (
     _build_derived_loan_transfer,
 )
-from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.row_valuation import settled_contribution, settled_figure
 
 #: P&I 1,199.10 + escrow 300.00, the figure the freeze captures.
 _LIVE_PITI = Decimal("1499.10")
@@ -188,7 +188,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
                 # What it BOOKS -- the ledger figure, and the whole point.
-                assert owned_contribution(shadow) == _LIVE_PITI
+                assert settled_contribution(shadow) == _LIVE_PITI
                 # Where the freeze lands today (N-241 is the open question
                 # about which column that should be; X-au-c owns it).
                 assert shadow.settled_amount == _LIVE_PITI
@@ -225,7 +225,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
                 assert shadow.settled_amount == Decimal("1512.44")
-                assert owned_contribution(shadow) == Decimal("1512.44")
+                assert settled_contribution(shadow) == Decimal("1512.44")
 
     def test_an_ECHOED_prefill_is_not_written(
         self, app, db, seed_user, seed_periods,
@@ -263,7 +263,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
                     SettlementBasisEnum.DERIVED,
                 )
                 assert settled_figure(shadow) == Decimal("250.00")
-                assert owned_contribution(shadow) == Decimal("250.00")
+                assert settled_contribution(shadow) == Decimal("250.00")
 
     # ``test_an_explicit_None_still_CLEARS_a_typed_actual`` lived here until
     # plan step X-au-c3, and BOTH halves of its premise are gone.  It wrote
@@ -320,7 +320,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
                 # that no human had typed one; the basis carries that now, so
                 # the record can state the figure AND stay distinguishable.
                 assert settled_figure(shadow) == Decimal("1325.00")
-                assert owned_contribution(shadow) == Decimal("1325.00")
+                assert settled_contribution(shadow) == Decimal("1325.00")
 
     def test_a_re_settle_does_not_rewrite_the_frozen_figure(
         self, app, db, seed_user, seed_periods,
@@ -353,7 +353,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
                 assert shadow.settled_amount == _LIVE_PITI
-                assert owned_contribution(shadow) == _LIVE_PITI
+                assert settled_contribution(shadow) == _LIVE_PITI
 
     def test_settle_amount_publishes_what_a_tick_WILL_book(
         self, app, db, seed_user, seed_periods,
@@ -378,7 +378,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             db.session.commit()
 
             db.session.expire_all()
-            assert owned_contribution(_shadows(xfer.id)[0]) == offered
+            assert settled_contribution(_shadows(xfer.id)[0]) == offered
             assert _shadows(xfer.id)[0].settled_amount == offered
 
 
@@ -403,7 +403,7 @@ class TestEveryDoorReachesTheSameFigure:
 
         with app.app_context():
             for shadow in _shadows(xfer_id):
-                assert owned_contribution(shadow) == _LIVE_PITI
+                assert settled_contribution(shadow) == _LIVE_PITI
                 assert shadow.settled_amount == _LIVE_PITI
 
     def test_the_grid_shadow_mark_done_still_freezes(
@@ -423,7 +423,7 @@ class TestEveryDoorReachesTheSameFigure:
 
         with app.app_context():
             for row in _shadows(xfer_id):
-                assert owned_contribution(row) == _LIVE_PITI
+                assert settled_contribution(row) == _LIVE_PITI
                 assert row.settled_amount == _LIVE_PITI
 
     def test_the_transfer_full_edit_status_dropdown_freezes(
@@ -486,7 +486,7 @@ class TestEveryDoorReachesTheSameFigure:
 
         with app.app_context():
             for row in _shadows(xfer_id):
-                assert owned_contribution(row) == _LIVE_PITI
+                assert settled_contribution(row) == _LIVE_PITI
                 assert row.settled_amount == _LIVE_PITI
 
     def test_a_transaction_PATCH_landing_on_a_shadow_freezes(
@@ -525,7 +525,7 @@ class TestEveryDoorReachesTheSameFigure:
 
         with app.app_context():
             for row in _shadows(xfer_id):
-                assert owned_contribution(row) == _LIVE_PITI
+                assert settled_contribution(row) == _LIVE_PITI
                 assert row.settled_amount == _LIVE_PITI
 
     def test_the_reconcile_panels_tick_freezes_and_dates_by_the_STATEMENT(
@@ -568,7 +568,7 @@ class TestEveryDoorReachesTheSameFigure:
 
         with app.app_context():
             for row in _shadows(xfer_id):
-                assert owned_contribution(row) == _LIVE_PITI
+                assert settled_contribution(row) == _LIVE_PITI
                 assert row.settled_amount == _LIVE_PITI
                 assert row.settled_on == observed
 
@@ -678,7 +678,7 @@ class TestTheNamedVerbItself:
                     SettlementBasisEnum.DERIVED,
                 )
                 assert settled_figure(shadow) == Decimal("250.00")
-                assert owned_contribution(shadow) == Decimal("250.00")
+                assert settled_contribution(shadow) == Decimal("250.00")
                 # ... and the day the money moved was not moved.
                 assert shadow.settled_on == first_day
 

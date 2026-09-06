@@ -58,7 +58,7 @@ class LoanPaymentSplit:
     Attributes:
         income_shadow: The settled loan-side income :class:`Transaction` (the
             ``to``-account leg of the payment transfer).  Its
-            :func:`~app.services.row_valuation.owned_contribution` is the cash
+            :func:`~app.services.row_valuation.settled_contribution` is the cash
             ``principal`` falls out of; its ``transaction_id`` keys the
             correction.
         interest: The interest CHARGE this payment cleared -- an Expense leg

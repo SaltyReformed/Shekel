@@ -20,7 +20,7 @@ from decimal import Decimal
 
 from app.models.transaction import Transaction
 from app.services import spending_analysis
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.utils.money import ZERO
 
 from ._types import (
@@ -366,6 +366,6 @@ def _spent_total(txns: list[Transaction]) -> Decimal:
         txns: Settled expense transactions.
 
     Returns:
-        The sum of ``owned_contribution(txn)`` over ``txns``.
+        The sum of ``settled_contribution(txn)`` over ``txns``.
     """
-    return sum((owned_contribution(txn) for txn in txns), ZERO)
+    return sum((settled_contribution(txn) for txn in txns), ZERO)

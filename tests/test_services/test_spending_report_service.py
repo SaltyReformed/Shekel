@@ -35,7 +35,7 @@ from app.services import (
 )
 from app.services.pay_calendar import PayCalendar
 from app.services.cash_ledger import amount_basis
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.services.spending_report_service import (
     Comparison,
     SpendingWindow,
@@ -1427,10 +1427,10 @@ class TestARefundReducesSpendRatherThanAddingToIt:
             )
             db.session.commit()
 
-            assert owned_contribution(ordinary) == Decimal("100.00")
-            assert owned_contribution(partly) == Decimal("70.00")
+            assert settled_contribution(ordinary) == Decimal("100.00")
+            assert settled_contribution(partly) == Decimal("70.00")
             # The one the ``abs()`` inverted.
-            assert owned_contribution(dominated) == Decimal("-86.67")
+            assert settled_contribution(dominated) == Decimal("-86.67")
 
             # 100.00 + 70.00 - 86.67.  Under the defect this read 256.67.
             assert _spent_total(

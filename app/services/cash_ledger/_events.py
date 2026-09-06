@@ -298,7 +298,7 @@ class CashSourceFact:
 
     A transaction's delta is the SHARED
     :func:`app.services.cash_ledger.settled_cash_leg` -- the same
-    ``owned_contribution - Sigma(credit entries) - Sigma(posted purchases)`` the
+    ``settled_contribution - Sigma(credit entries) - Sigma(posted purchases)`` the
     posting writer books -- so for an ORDINARY transaction the walk and the
     posted ledger value one row identically by construction, not by two rules
     that happen to agree.  A purchase's is its own amount, negated: a purchase

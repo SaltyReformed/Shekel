@@ -33,7 +33,7 @@ from sqlalchemy import event
 
 from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum
-from app.exceptions import ValidationError
+from app.exceptions import AmountUnresolvable, ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -42,6 +42,7 @@ from app.services import (
     entry_service,
     posting_service,
     statement_match,
+    status_seam,
     transaction_service,
 )
 from app.services.balance_at import BalanceContext
@@ -1264,3 +1265,116 @@ class TestTheDeleteRemovesTheRowItWasHANDED:
         )
 
         assert first == replace(first, subject=other)
+
+
+class TestAnUnpriceableSubjectSaysWhyItIsUnpriceable:
+    """The three readers that CATCH the valuation's refusal, graded.
+
+    **Plan step balance:X-bx made these paths live, and nothing entered them
+    before it.**  That step widened
+    :func:`~app.services.row_valuation.settled_contribution` -- and through it
+    ``cash_ledger.settled_cash_leg`` -- to REFUSE a row that has not settled,
+    where it used to price the row's plan column.  Three readers in this
+    package admit a row of any status and catch that refusal, because they
+    render the review page and a raise there would strand the account with no
+    in-app repair (finding **N-302**).
+
+    So on those three the refusal changes an ANSWER rather than failing a test,
+    and a green suite cannot tell "never reached" from "reached and
+    re-answered".  Two adversarial reviews of X-bx made that point
+    independently, and `grep -rn AmountUnresolvable tests/test_services
+    /test_statement_match/` returned NOTHING before this class: the step's own
+    full-suite mutation probe could not have seen a defect here.  It had one.
+
+    The reachable shape is an ordinary REVERT.  A subject a match minted is
+    settled when the act records it, so reverting that row to Projected both
+    bumps ``version_id`` (the owner has edited it) and takes it out of the
+    settled band (it can no longer be priced).
+    """
+
+    def test_a_REVERTED_subject_is_refused_for_the_EDIT_not_for_the_price(
+        self, app, db, seed_user,
+    ):
+        """The message defect X-bx introduced, as its own control.
+
+        Both refusals are honest about refusing, so no money moves either way
+        and a test asserting "the undo refuses" would pass on the defect.  What
+        separates them is what the owner is TOLD: the price sentence says the
+        app cannot work out what the row is worth and offers no repair, which
+        is false here -- the row was reverted, and the edit sentence names that
+        and tells them what to do about it.
+
+        ``_subject_removal`` prices BEFORE it compares revisions, so once the
+        price started refusing, the price sentence won a race the edit sentence
+        used to win.  The fix states the revision test in the refusal path too.
+        """
+        subject = a_transaction(
+            seed_user, name="Residual", amount="41.00", template=False,
+            status=StatusEnum.DONE,
+            settled_on=seed_user["bootstrap_period"].start_date,
+        )
+        db.session.flush()
+        creation = StatementMatchCreation(
+            match_id=0, account_id=seed_user["account"].id,
+            transaction_id=subject.id, transaction_entry_id=None,
+            # The revision this act left the row at.
+            created_version_id=subject.version_id,
+        )
+
+        # The owner REVERTS it: out of the settled band, and a revision later.
+        status_seam.apply_status_change(
+            subject, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
+        db.session.flush()
+        assert subject.version_id != creation.created_version_id
+        # The precondition the whole case rests on: the valuation now refuses.
+        with pytest.raises(AmountUnresolvable):
+            settled_cash_leg(subject)
+
+        row, refusal = statement_match._release._subject_removal(  # pylint: disable=protected-access
+            creation, subject,
+        )
+
+        assert refusal is not None
+        assert "you have edited that row since" in refusal
+        assert "can no longer work out what that row is worth" not in refusal
+        # A refused act reports nothing to remove, on this arm as on the other.
+        assert row.cash_amount == Decimal("0.00")
+
+    def test_an_UNEDITED_subject_the_model_cannot_price_still_says_so(
+        self, app, db, seed_user,
+    ):
+        """The other arm, so the fix above is a BRANCH and not a replacement.
+
+        A subject at its creation revision that the amount model cannot price
+        keeps the price sentence -- there is no edit to report, and the honest
+        answer is that the app cannot say what removing it would take out of
+        the books.  Without this case the fix could have replaced one sentence
+        with the other and stayed green.
+        """
+        subject = a_transaction(
+            seed_user, name="Residual", amount="41.00", template=False,
+            status=StatusEnum.DONE,
+            settled_on=seed_user["bootstrap_period"].start_date,
+        )
+        db.session.flush()
+        status_seam.apply_status_change(
+            subject, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
+        db.session.flush()
+        # The creation record is written AFTER the revert, so the act's
+        # revision is the row's current one: unpriceable, and NOT edited.
+        creation = StatementMatchCreation(
+            match_id=0, account_id=seed_user["account"].id,
+            transaction_id=subject.id, transaction_entry_id=None,
+            created_version_id=subject.version_id,
+        )
+
+        row, refusal = statement_match._release._subject_removal(  # pylint: disable=protected-access
+            creation, subject,
+        )
+
+        assert refusal is not None
+        assert "can no longer work out what that row is worth" in refusal
+        assert "you have edited that row since" not in refusal
+        assert row.cash_amount == Decimal("0.00")

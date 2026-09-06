@@ -43,7 +43,7 @@ from datetime import date
 from app.models.transaction import Transaction
 from app.services import loan_loaders
 from app.services.loan_loaders import LoanAnchorFact
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 
 from ._charges import charges_for_due_dates
 from ._replay import LoanCashEvent, LoanEventStream, LoanResetEvent
@@ -147,11 +147,14 @@ def loan_event_stream(
             ``(pay_period.start_date, id)``
             (:func:`~app.services.loan_loaders.settled_income_shadows`).  Each
             row's cash is read through
-            :func:`~app.services.row_valuation.owned_contribution` -- the accessor
-            whose NAME asserts the row owns its figure -- rather than a resolver,
-            because every row here has SETTLED, so it answers from the settlement
-            it RECORDED (plan step X-au-c3) and never reaches the plan; a row that
-            recorded nothing REFUSES rather than falling back to a forecast.
+            :func:`~app.services.row_valuation.settled_contribution` -- the accessor
+            whose NAME asserts the row has SETTLED -- rather than a resolver,
+            because every row here has, so it answers from the settlement it
+            RECORDED (plan step X-au-c3) and there is no plan to reach; a row
+            that recorded nothing REFUSES rather than falling back to a
+            forecast, and since plan step X-bx so does a row that has not
+            settled at all, which is what makes the loader's status filter a
+            precondition this replay states rather than merely relies on.
         payment_day: The loan's contractual due day (the fallback coordinate for a
             shadow carrying no stored ``due_date``).
         periods: The loan's rate periods
@@ -167,7 +170,7 @@ def loan_event_stream(
     payments = [
         LoanCashEvent(
             on_date=loan_loaders.loan_payment_due_date(shadow, payment_day),
-            cash=owned_contribution(shadow),
+            cash=settled_contribution(shadow),
             source=shadow,
         )
         for shadow in shadows

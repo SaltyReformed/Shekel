@@ -54,8 +54,23 @@ from tests._test_helpers import (
     settlement_basis_id,
 )
 from app.services import status_seam, transaction_service
-from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.cash_ledger import contribution_of
+from app.services.row_valuation import settled_contribution, settled_figure
 from app.models.amount_ownership import AmountOwnership
+
+
+def _plan_worth(txn):
+    """What a REVERTED (Projected) row contributes -- its plan, resolved.
+
+    Asked of :func:`~app.services.cash_ledger.contribution_of` because the row
+    is out of the settled band: the two revert cases below assert that a row
+    which has been reverted is worth its PLAN again, and since plan step X-bx
+    ``row_valuation.settled_contribution`` refuses exactly that row rather than
+    pricing its plan column by hand (finding **BAL-465**).  The figures those
+    cases assert are unchanged, and so is the rule -- the STATUS decides which
+    figure governs, not the columns.
+    """
+    return contribution_of(txn, amount_basis_for(txn))
 
 
 def _gas_envelope(seed_user, period):
@@ -183,7 +198,7 @@ class TestTheDropdownBooksWhatTheRowCost:
             # and the row's PLAN is untouched beside it.
             assert settled_figure(reloaded) == Decimal("48.98")
             assert reloaded.estimated_amount == Decimal("80.00")
-            assert owned_contribution(reloaded) == Decimal("48.98")
+            assert settled_contribution(reloaded) == Decimal("48.98")
             assert reloaded.settled_on == display_today()
             # The ledger books what the row cost, not what it budgeted.
             assert _cash_leg(txn_id, seed_user["account"].id) == Decimal(
@@ -217,7 +232,7 @@ class TestTheDropdownBooksWhatTheRowCost:
             db.session.expire_all()
             dropdown_row = db.session.get(Transaction, dropdown_id)
             button_row = db.session.get(Transaction, button_id)
-            assert owned_contribution(dropdown_row) == owned_contribution(button_row)
+            assert settled_contribution(dropdown_row) == settled_contribution(button_row)
             assert dropdown_row.settled_amount == button_row.settled_amount
             assert dropdown_row.status_id == button_row.status_id
             assert _cash_leg(
@@ -250,7 +265,7 @@ class TestTheDropdownBooksWhatTheRowCost:
 
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
-            assert owned_contribution(reloaded) == Decimal("100.00")
+            assert settled_contribution(reloaded) == Decimal("100.00")
             assert _cash_leg(txn_id, seed_user["account"].id) == Decimal(
                 "-100.00",
             )
@@ -436,7 +451,7 @@ class TestARevertTakesBackWhatTheSettleDerived:
             reverted = db.session.get(Transaction, txn_id)
             assert reverted.settled_amount is None
             assert reverted.settled_on is None
-            assert owned_contribution(reverted) == Decimal("80.00")
+            assert _plan_worth(reverted) == Decimal("80.00")
             # The settle's postings reverse with it: nothing is left booked.
             assert _cash_leg(txn_id, seed_user["account"].id) == Decimal("0.00")
 
@@ -502,7 +517,7 @@ class TestARevertTakesBackWhatTheSettleDerived:
             # ... and the row is nonetheless worth its PLAN again, because the
             # STATUS decides which figure governs, not the columns.
             assert settled_figure(reverted) is None
-            assert owned_contribution(reverted) == Decimal("500.00")
+            assert _plan_worth(reverted) == Decimal("500.00")
 
             # THE RETURN LEG: settling again books the human's figure rather
             # than re-deriving the plan over it. Without this the retention

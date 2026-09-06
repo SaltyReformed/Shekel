@@ -78,7 +78,7 @@ from tests._test_helpers import (
     make_salary_profile,
 )
 from app.services.balance_at import BalanceContext
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.services.transfer_service import _settle as transfer_settle
 
 
@@ -374,7 +374,7 @@ def _declare_loan_payment_derived(xfer):
     once stopped it is twice gone.**  It read: the loan-side income leg cannot
     be declared at all, because ``loan_payment_service.get_payment_history``
     prices every shadow income row on the loan account through
-    ``row_valuation.owned_contribution``, which REFUSES a row whose plan is
+    ``row_valuation.settled_contribution``, which REFUSES a row whose plan is
     derived.  Plan step **X-au-g-2c-1** routed that reader through
     ``cash_ledger.contributions_by_id``, closing finding **N-266**(a) and making
     the scope a CHOICE; **X-au-g-2c-2** then made it not a choice either, by
@@ -676,7 +676,7 @@ class TestWhatEachRuleAnswers:
             db.session, seed_user, seed_periods[0], "Groceries", "500.00",
             status_enum=StatusEnum.DONE, settled_amount="462.34",
         )
-        assert owned_contribution(txn) == Decimal("462.34")
+        assert settled_contribution(txn) == Decimal("462.34")
         assert _resolve(seed_user, txn) == Decimal("500.00")
 
     def test_an_excluded_row_answers_its_amount_not_zero(
@@ -692,7 +692,7 @@ class TestWhatEachRuleAnswers:
             db.session, seed_user, seed_periods[0], "Gym", "40.00",
             status_enum=StatusEnum.CANCELLED,
         )
-        assert owned_contribution(txn) == Decimal("0")
+        assert settled_contribution(txn) == Decimal("0")
         assert _resolve(seed_user, txn) == Decimal("40.00")
 
     def test_a_template_row_answers_the_price_in_effect_on_its_due_date(
@@ -1725,7 +1725,7 @@ class TestABudgetIsNotAContribution:
         basis = _basis_for(seed_user)
 
         assert resolve_transaction_amount(txn, basis) == Decimal("60.00")
-        assert owned_contribution(txn) == Decimal("81.40")
+        assert settled_contribution(txn) == Decimal("81.40")
         assert amounts_by_id([txn], basis) == {txn.id: Decimal("60.00")}
 
     def test_a_derived_rows_budget_is_ANSWERED_rather_than_refused(
@@ -1744,9 +1744,13 @@ class TestABudgetIsNotAContribution:
         part exactly here: on a row an amount-source cutover has declared
         DERIVED.  What the deletion removed is the ACCESSOR -- a public,
         one-token answer to the plan question a reader could take instead of
-        asking the amount model -- and NOT the refusal, which survives in
-        ``own_figure`` and is still reachable by a caller that spells the column
-        read itself.  So the surviving claim is the positive one below.
+        asking the amount model -- and NOT the refusal, which survives inside
+        the amount model's own arms.  *Plan step X-bx moved that refusal into
+        ``cash_ledger._amount_source`` as the private ``_own_figure``, so it is
+        no longer reachable by a caller that spells the column read itself:
+        ``shekel-private-module-import`` blocks the spelling and the module
+        defines no public one.  This paragraph said it WAS reachable, which was
+        true when written.*  So the surviving claim is the positive one below.
 
         **The two assertions guard DIFFERENT things, and an adversarial review
         corrected this paragraph's account of the first.**  It said the second

@@ -60,7 +60,7 @@ from app.services import (
     status_seam,
 )
 from app.services.auth_service import hash_password
-from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.settle_day import record_settle_day
 from app.models.amount_ownership import AmountOwnership
 
@@ -3625,7 +3625,7 @@ class TestTheTransferArmThroughItsROUTE:
             )
             for leg in legs:
                 assert leg.settled_amount == Decimal("80.25")
-                assert owned_contribution(leg) == Decimal("80.25")
+                assert settled_contribution(leg) == Decimal("80.25")
 
     def test_an_ECHOED_prefill_on_a_transfer_records_no_correction(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3667,7 +3667,7 @@ class TestTheTransferArmThroughItsROUTE:
                     SettlementBasisEnum.DERIVED,
                 )
                 assert settled_figure(leg) == Decimal("75.00")
-                assert owned_contribution(leg) == Decimal("75.00")
+                assert settled_contribution(leg) == Decimal("75.00")
 
 
 class TestTheCashFigureRendersBesideTheBookedOne:

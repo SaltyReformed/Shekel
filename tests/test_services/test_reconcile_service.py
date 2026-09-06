@@ -58,7 +58,7 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from tests._test_helpers import create_transfer
-from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.settle_day import record_settle_day
 from app.models.amount_ownership import AmountOwnership
 
@@ -2111,7 +2111,7 @@ class TestWhatATickBooks:
                 SettlementBasisEnum.DERIVED,
             )
             assert settled_figure(reloaded) == Decimal("180.00")
-            assert owned_contribution(reloaded) == Decimal("180.00")
+            assert settled_contribution(reloaded) == Decimal("180.00")
 
     def test_a_bill_ticked_with_a_different_figure_books_it(
         self, app, db, seed_user, seed_periods, seed_entry_template,

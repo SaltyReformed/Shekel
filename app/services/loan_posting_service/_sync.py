@@ -33,7 +33,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import loan_loaders
 from app.services._posting_reconcile import account_owner_id
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.services.posting_service import (
     PostingError,
     _ledger_account_for,
@@ -238,15 +238,17 @@ def _reconcile_lineage_transfer_entries(
     # split -- two valuations of one row, which is the shape that lets a filter
     # and the figure it admits come to disagree.  Every shadow here comes from
     # ``loan_loaders.settled_income_shadows`` (the walk's own loader, filtered
-    # ``status_id.in_(settled_status_ids())``), so it owns its figure and
-    # ``owned_contribution`` REFUSES rather than pricing a derived row from a
-    # column it does not carry.
+    # ``status_id.in_(settled_status_ids())``), so it RECORDED what moved and
+    # ``settled_contribution`` answers from that record.  Since plan step X-bx
+    # that accessor REFUSES a row which has not settled rather than pricing its
+    # plan, so this loop's precondition is stated by the call it makes and not
+    # only by the loader above it.
     expected: dict[int, dict[date, Decimal]] = {}
     for split in walk.payment_splits:
         shadow = split.income_shadow
         if shadow.transfer_id is None:
             continue
-        cash = round_money(owned_contribution(shadow))
+        cash = round_money(settled_contribution(shadow))
         if cash == 0:
             continue
         expected[shadow.transfer_id] = {payment_visible_on(shadow): cash}
