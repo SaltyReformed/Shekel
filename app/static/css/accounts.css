@@ -757,6 +757,43 @@ a.acct-cell__link:focus-visible {
   background: var(--bs-body-bg);
 }
 
+/* The merchants page's search box.  Written at plan step bank_import:X-gk,
+   corrected at bank_import:X-gi, finding bank_import:N-405.  It sits in a flex
+   row beside its Find button, so at full width it pushes the button to the far
+   edge of a wide screen and the pair stops reading as one control.
+
+   A class rather than an inline style for the reason `.stmt-file-name` above
+   is one.  It shipped as `style="max-width: 22rem;"`, so the box had never had
+   this width in a browser: `style-src 'self'` refused the attribute and the
+   search rendered full width from the day it was written.
+
+   THIS IS THE ONE SITE IN THE FILE djlint's H021 CANNOT SEE, and the reason is
+   worth stating precisely, because a first version of this comment claimed the
+   rule was blind to the whole codebase and that is false.  Measured 2026-09-04
+   on the pinned djlint 1.39.2 under this repo's `jinja` profile: H021 refuses
+   an inline style UNLESS a Jinja expression sits between `style=` and the
+   tag's own `>`.  Reconstruct the inline form of `.reconcile-amount`,
+   `.stmt-file-name`, `.stmt-pick-list` or `.stmt-agreement-scroll` and H021
+   fires on all four -- none of those tags carries Jinja after the attribute.
+   This input does, twice (`maxlength` and `value`), which is why it alone
+   passed pre-commit AND CI's own `djlint app/templates/ --lint` over all 159
+   files.  Roughly 20% of this codebase's tags hold a Jinja expression at all,
+   and that is an UPPER bound on the blind set.
+
+   `SHK01` in `.djlint_rules.yaml` closes the gap and `tests/test_arch/` proves
+   it still fires.  H021 stays: it catches the unquoted `style=color:red` form
+   SHK01 does not.
+
+   NOT the first instance, and the earlier one is the better record: the
+   recurrence form's free-interval box shipped the identical shape 19 days
+   before this and is written up at `recurring.css`'s `.interval-box` and
+   `tests/manual/verify_recurrence_form.py`.  It was found by driving the form
+   in a real browser -- no gate saw it either -- and that comment claims no
+   linter, which is the honest model this one now follows. */
+.stmt-merchant-search {
+  max-width: 22rem;
+}
+
 /* ── The merchant-rule control's new-envelope fields ──────────────────
    Finding bank_import:N-403, plan step bank_import:X-gj-1c.  The name and the
    category are PARAMETERS OF ONE OPTION of the answer select, not an answer of

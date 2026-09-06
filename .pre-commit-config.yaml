@@ -188,7 +188,9 @@ repos:
       # ── Polyglot-cleanup Phase 5 floors ─────────────────────────────
       # Non-Python linters adopted in docs/audits/polyglot-cleanup. Each
       # tool's config lives in its own file (.shellcheckrc, biome.jsonc,
-      # .yamllint, .djlintrc, .gitleaks.toml, _typos.toml, .hadolint.yaml).
+      # .yamllint, .djlintrc, .gitleaks.toml, _typos.toml, .hadolint.yaml),
+      # plus .djlint_rules.yaml, which carries this project's own djlint
+      # rule SHK01 (inline styles; bank_import:N-405).
       # All run language:system, so they use the host binaries (shellcheck,
       # shfmt, biome, actionlint, typos, gitleaks, hadolint) and the venv
       # pip tools (yamllint, zizmor, djlint, rumdl). These mirror the ci.yml

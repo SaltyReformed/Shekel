@@ -117,12 +117,9 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 
 ## 4. Step sequence
 
-- [x] **S2 -- the `-$19.28` was a DELETED calibration, not the engine.** `08638f61`.
-      `calibration_overrides` id 2 was deleted 2026-08-28 in the act that inserted id 3
-      (`system.audit_log` 4212/4213). Eleven settled paychecks re-derive `$0.00` under it and the
-      twelfth only under the live one, so none alone reproduces the record; `balance:X-aw` refuted.
-      Closed **N-442**, opened **N-535**, ruled **R-SAL9**. As-built:
-      `historical/salary_s2_as_built_2026-09-04.md`.
+- [x] **S2** `08638f61` -- the `-$19.28` was a DELETED calibration, not the engine; no single
+      calibration reproduces the record. Closed **N-442**, opened **N-535**, ruled **R-SAL9**.
+      As-built: `historical/salary_s2_as_built_2026-09-04.md`.
 - [ ] **S1 -- a calibration is a DATED OBSERVATION and is never destroyed** (**R-SAL9**, amending
       **R-SAL4**; findings **N-441**, **N-535**, and **N-530**'s calibration kind).
       `salary.calibration_overrides` carries effective rates derived from ONE stub on ONE date and
@@ -154,7 +151,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         `+$452.42` of modelled employer money, reproduced on two independent bases. Closed **D45**,
         **N-532**. **A later step must obey**: it ships an INTERIM tail rule past the saved calendar
         whose two residues are measured (**N-541**, **R-SAL10**).
-- [ ] **S3 -- the engine prices the WHOLE horizon** (**R-SAL10**; closes **N-541**, carries
+- [ ] **S3 -- the engine prices the WHOLE horizon** (the DECOMPOSED parent, split into five leaves
+      2026-09-05 once **R-SAL11** ruled the raise model) (**R-SAL10**; closes **N-541**, carries
       **N-540**). `AccountPayrollFeed` holds a figure past the saved calendar because nothing prices
       a payday past it, and six rules over that fold were each measured wrong, so the remedy is to
       DELETE the extrapolation rather than to find a seventh (**R-SAL10**).
@@ -170,6 +168,23 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       diverge to `2.81x`, worth `$303,121.02` on a 5%-of-gross employer contribution. The deletion
       census is AMENDED onto this entry once he rules the model; the sentence above holds under
       every candidate. **MOVES MONEY**; own review pass, own harness.
+- [x] **S3-a** `e4491ee6` -- the merit horizon is a per-raise TERMINATION, not a split.
+- [x] **S3-b** `8a8dd51e` -- `terminal_year` and three CHECKs, migration `c9a4e17b53d8`, no backfill
+      and no reader. **A LATER LEAF MUST OBEY**: the column is LIVE to the engine the moment it
+      exists, `apply_raises` having probed it by `getattr` since S3-a, so what keeps figures unmoved
+      is that it is all-NULL.
+- [ ] **S3-c -- THE CUTOVER.** The stored end year becomes a raise's only source of termination;
+      `_terminate_after_horizon` and `merit_raise_horizon_years` go. **MOVES MONEY**, and
+      **IT OPENS ON A STOP**: the developer deferred the `/retirement` lever fork to this step's own
+      session. The worked option space is `~/projects/shekel-r14-handoff/s3b_shipped_s3c_handoff.md`
+      section 1, including its *Also unruled inside A* subsection. Two inherited obligations: delete
+      `_terminate_after_horizon` in the SAME change that opens the write door, or a stored end year
+      is overwritten by the global cutoff; and `get_raise_event` badges a raise in years after its
+      end.
+- [ ] **S3-d** -- `income_service.project_profile` takes a HORIZON and prices to it. Carries
+      **N-540**.
+- [ ] **S3-e** -- delete `AccountPayrollFeed`'s hold and `salary_basis(beyond=)`; `employee_at`
+      becomes a lookup that RAISES past the horizon. Closes **N-541**.
 - [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (**R-SAL3**; findings **F-21**,
       **N-395**). `salary.paycheck_deductions.deductions_per_year` server-defaults to 26 and the
       form offers 26 / 24 / 12; it is never multiplied or divided, only compared, so it is a
