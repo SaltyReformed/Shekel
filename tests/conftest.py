@@ -79,26 +79,22 @@ os.environ.setdefault(
 
 
 # Name of the PostgreSQL template database the bootstrap clones from.
-# Built by ``scripts/build_test_template.py``, which honors the same
-# ``TEST_TEMPLATE_DATABASE`` override read here -- the two MUST resolve
-# the same name or the suite clones a stale template.  The override
-# exists for parallel checkouts (e.g. a feature-branch worktree whose
-# migration head differs from another live checkout's): each checkout
-# builds and clones its OWN template, so neither suite sees the other's
-# ref rows or schema.
-_TEST_TEMPLATE_DATABASE = os.environ.get(
-    "TEST_TEMPLATE_DATABASE", "shekel_test_template",
-)
-# Prefix of the PER-WORKER database names.  The other half of the
-# parallel-checkout story above, and it was missing: the template could be
-# isolated but the worker databases could not, so two checkouts on one cluster
-# both claimed ``shekel_test_gw0``..``gw11`` (both default to ``-n 12``) and
-# the second invocation's CREATE DATABASE failed.  That is fail-loud by design
-# -- see the orphan-cleanup note in :func:`_bootstrap_worker_database` -- but
-# "loud" arrives as hundreds of setup errors spread across BOTH runs, which
-# reads as a code regression rather than as a collision.  Set
-# ``TEST_DB_PREFIX`` per checkout and the two never meet.
-_TEST_DATABASE_PREFIX = os.environ.get("TEST_DB_PREFIX", "shekel_test")
+# Built by ``scripts/build_test_template.py`` and verified by
+# ``scripts/build_test_db_image.py`` (``_TEMPLATE_DATABASE``); all THREE must
+# resolve the same name or the suite clones a stale template.
+#
+# A LITERAL, NOT AN OVERRIDE (plan step ``balance:X-br-4``).  Both this and
+# the prefix below were once read from ``TEST_TEMPLATE_DATABASE`` /
+# ``TEST_DB_PREFIX`` so that two checkouts sharing ONE postmaster could name
+# their template and their worker databases apart.  ``scripts/test.sh`` now
+# gives every run a private cluster, which holds exactly one template and one
+# run's worker databases, so there is nothing left to rename them away from
+# and the overrides were deleted rather than kept as a second spelling of a
+# constant.
+_TEST_TEMPLATE_DATABASE = "shekel_test_template"
+# Prefix of the PER-WORKER database names.  See the note above: one cluster
+# per run, so one prefix.
+_TEST_DATABASE_PREFIX = "shekel_test"
 # Default admin DSN (peer auth) -- overridable via env so CI and
 # developer laptops that need TCP + password can point at their own
 # admin DB without code change.  Must NOT be the template DB itself:
@@ -521,8 +517,11 @@ def _bootstrap_worker_database():
             if cur.fetchone() is None:
                 raise RuntimeError(
                     f"Test template database "
-                    f"{_TEST_TEMPLATE_DATABASE!r} not found.  "
-                    "Run: python scripts/build_test_template.py"
+                    f"{_TEST_TEMPLATE_DATABASE!r} not found.  Under "
+                    "./scripts/test.sh this is unreachable -- the image is "
+                    "verified before pytest starts -- so something else "
+                    "supplied this cluster.  On a cluster you control: "
+                    "python scripts/build_test_template.py"
                 )
 
             # STRATEGY WAL_LOG, not FILE_COPY -- see the measurement
@@ -557,9 +556,13 @@ def _bootstrap_worker_database():
                 raise RuntimeError(
                     f"Per-session DB {db_name!r} appears corrupted "
                     f"(ref.account_types count={account_type_count}, "
-                    f"expected {_EXPECTED_ACCOUNT_TYPE_COUNT}).  "
-                    "Rebuild the template: "
-                    "python scripts/build_test_template.py"
+                    f"expected {_EXPECTED_ACCOUNT_TYPE_COUNT}).  Under "
+                    "./scripts/test.sh the template is baked into an image "
+                    "verified before pytest starts, so reaching this means "
+                    "the image is stale in a way its own verification missed "
+                    "-- rebuild it with "
+                    "'python scripts/build_test_db_image.py --force'.  On a "
+                    "cluster you supplied: python scripts/build_test_template.py"
                 )
     finally:
         verify_conn.close()
@@ -853,18 +856,15 @@ _MAX_IDENTIFIER_BYTES = 63
 
 # **The guard measures the LONGEST name the scheme can produce, not this
 # process's.**  Measuring the running worker's name makes the check
-# environment-dependent in both directions: a name that fits under a short
-# ``TEST_DB_PREFIX`` like ``xgf3b`` can be refused in CI under the default
-# ``shekel_test`` with a two-digit worker id, which is an import error that
-# only appears on another machine -- and on the xdist CONTROLLER, which
-# imports test modules but runs no test, ``_WORKER_DB_NAME`` is ``None`` and
-# the probe would measure the string ``"None"``.  The bound below is the
-# default prefix or the configured one, whichever is longer, plus the widest
-# worker id xdist can hand out.
+# environment-dependent: on the xdist CONTROLLER, which imports test modules
+# but runs no test, ``_WORKER_DB_NAME`` is ``None`` and the probe would
+# measure the string ``"None"``.  The bound below is the prefix plus the
+# widest worker id xdist can hand out.  It used to take the longer of the
+# configured prefix and the default, because ``TEST_DB_PREFIX`` could make
+# them differ and a name that fitted locally could be refused in CI; that
+# variable is gone (``balance:X-br-4``) and there is one prefix again.
 _WIDEST_WORKER_ID = "gw999"
-_WIDEST_WORKER_DB = (
-    f"{max(_TEST_DATABASE_PREFIX, 'shekel_test', key=len)}_{_WIDEST_WORKER_ID}"
-)
+_WIDEST_WORKER_DB = f"{_TEST_DATABASE_PREFIX}_{_WIDEST_WORKER_ID}"
 
 
 def register_seeded_state(name, builder):
@@ -3762,10 +3762,15 @@ def pytest_sessionfinish(session, exitstatus):  # pylint: disable=unused-argumen
         Phase 3 for the broader context.
 
     Survives SIGKILL imperfectly: a process killed before this hook
-    runs leaves an orphan DB.  The next session's bootstrap drops it
-    via the ``shekel_test_{worker_id}_*`` cleanup pass (see
-    :func:`_bootstrap_worker_database`), so the orphan is at worst
-    a temporary disk-space cost between runs.
+    runs leaves an orphan DB.  Where a NEXT session reaches the same
+    cluster, its bootstrap drops it via the
+    ``shekel_test_{worker_id}_*`` cleanup pass (see
+    :func:`_bootstrap_worker_database`), so the orphan is at worst a
+    temporary disk-space cost between runs.  Under ``./scripts/test.sh``
+    since ``balance:X-br-4`` there IS no next session on this cluster --
+    it is removed with the container -- so the sweep's remaining live
+    caller is CI, which runs more than one pytest invocation against one
+    service container.
 
     Profile aggregation:
         When ``SHEKEL_TEST_FIXTURE_PROFILE`` is set, the harness

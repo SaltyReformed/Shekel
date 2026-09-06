@@ -26,6 +26,7 @@ them now if this session has not. Then hold the work to this brief:
    it grades the fix's own claims about itself hardest. Findings are fixed or reported, never waved
    through.
 6. **Coordinate.** When peer sessions are active: PRs and merges go through the coordinator
-   session; pushing a branch to back up work is fine. Take the suite slot before a gating run.
+   session; pushing a branch to back up work is fine. Suite runs need no slot -- each gets its own
+   cluster -- but the wrapper names any peer run it can see, and a gating run of yours slows theirs.
 7. **Ask.** An unanswered design question is a STOP, not a fork to take unilaterally. Ask questions
    if anything is unclear.

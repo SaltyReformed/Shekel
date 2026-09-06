@@ -474,9 +474,48 @@ class TestBundledNginxConfigForReadOnlyRoot:
         )
 
 
-class TestDevComposeLoopbackBind:
-    """Verify the dev-mode compose binds postgres ports to
-    127.0.0.1 only, closing the F-057 LAN exposure.
+def _dev_compose_services_publishing_ports() -> list[str]:
+    """Return every dev-compose service that publishes a host port.
+
+    **DERIVED, not hand-listed.**  This was a two-entry literal naming ``db``
+    and ``test-db``; ``balance:X-br-4`` deleted the second, and a hand list of
+    ONE is maximally likely to rot -- a service added later with a published
+    port would simply not be swept, and nothing would say so.  Reading the
+    file the assertion is about means a new publisher is covered the day it
+    lands.
+
+    Returns:
+        Service names, sorted, whose definition carries a non-empty ``ports``.
+    """
+    with DEV_COMPOSE.open(encoding="utf-8") as fh:
+        parsed = yaml.safe_load(fh)
+    return sorted(
+        name
+        for name, service in (parsed.get("services") or {}).items()
+        if (service or {}).get("ports")
+    )
+
+
+class TestDevComposeNoImplicitAllInterfaceBind:
+    """No dev-compose service publishes a port on ALL interfaces.
+
+    **The asserted property is an EXPLICIT host IP, not loopback specifically,
+    and the difference is load-bearing.**  Both findings behind this class are
+    about the IMPLICIT bind: F-057 caught ``ports: ["5432:5432"]``, which
+    Docker expands to ``0.0.0.0:5432`` and which put the dev database -- with
+    the public credentials committed into that file -- on every LAN device
+    that could route to the host; D09 (parity audit 2026-06-12) caught the
+    same shape on the app service, exposing the Werkzeug debugger.
+
+    The class used to hand-list ``db`` and ``test-db`` and demand
+    ``127.0.0.1`` of both.  ``balance:X-br-4`` deleted ``test-db``, and
+    deriving the list rather than shortening it to one entry immediately
+    turned up why the narrower predicate was wrong: the app service publishes
+    ``172.32.0.1:5000:5000`` DELIBERATELY, an explicit bind on the
+    shekel-frontend bridge gateway so the operator's LAN-allowlisted nginx
+    vhost can proxy to it (D09's own remedy, documented at that mapping).  A
+    loopback-only rule calls that a defect. An explicit-host-IP rule does not,
+    and still fails the exact shape both findings were written about.
     """
 
     @pytest.fixture(scope="class")
@@ -489,23 +528,35 @@ class TestDevComposeLoopbackBind:
         with DEV_COMPOSE.open(encoding="utf-8") as fh:
             return yaml.safe_load(fh)
 
+    def test_the_sweep_found_something_to_sweep(self) -> None:
+        """Discovery ran, so the parametrized sweep is not vacuous.
+
+        A parametrized sweep over an EMPTY list reports nothing at all rather
+        than failing, so a rename of the ``ports`` key or a broken parse would
+        silently retire this guard. ``db`` is pinned by name because it is the
+        service F-057 was written about.
+        """
+        discovered = _dev_compose_services_publishing_ports()
+
+        assert "db" in discovered, (
+            f"the dev compose's published-port sweep found {discovered}, "
+            "which does not include the dev database -- the guard below "
+            "would pass while measuring nothing"
+        )
+
     @pytest.mark.parametrize(
-        ("service_name", "expected_prefix"),
-        [
-            ("db", "127.0.0.1:5432:5432"),
-            ("test-db", "127.0.0.1:5433:5432"),
-        ],
+        "service_name", _dev_compose_services_publishing_ports()
     )
-    def test_db_ports_bind_loopback_only(
+    def test_every_published_port_names_its_host_address(
         self,
         parsed: dict,
         service_name: str,
-        expected_prefix: str,
     ) -> None:
-        """``ports: ["5432:5432"]`` (the previous shape) implicitly
-        binds 0.0.0.0:5432, exposing the dev DB to every LAN device
-        with the public credentials baked into this file.  The fix
-        is the explicit ``127.0.0.1:`` prefix on each mapping.
+        """Each mapping carries a host IP, and it is not ``0.0.0.0``.
+
+        Args:
+            parsed: The parsed dev compose document.
+            service_name: A service that publishes at least one host port.
         """
         service = parsed["services"][service_name]
         ports = service.get("ports") or []
@@ -514,15 +565,26 @@ class TestDevComposeLoopbackBind:
         # explicit ``host_ip``.  Normalise both shapes.
         for entry in ports:
             if isinstance(entry, str):
-                assert entry == expected_prefix, (
-                    f"{service_name} port {entry!r} not loopback-only "
-                    f"(audit F-057); expected {expected_prefix!r}"
-                )
+                # ``host_ip:host_port:container_port`` is three parts;
+                # ``host_port:container_port`` is two and is the defect.
+                host_ip = entry.split(":")[0] if entry.count(":") >= 2 else ""
             elif isinstance(entry, dict):
-                assert entry.get("host_ip") == "127.0.0.1", (
-                    f"{service_name} port {entry!r} missing "
-                    f"host_ip=127.0.0.1 (audit F-057)"
+                host_ip = entry.get("host_ip") or ""
+            else:
+                raise AssertionError(
+                    f"{service_name} port {entry!r} is neither the short "
+                    "string form nor the long mapping; this sweep cannot "
+                    "read it, so it is ungraded rather than safe"
                 )
+            assert host_ip and host_ip != "0.0.0.0", (
+                f"{service_name} port {entry!r} does not name a host address, "
+                "so Docker binds it on ALL interfaces and every LAN device "
+                "that can route here reaches it with this file's committed "
+                "credentials (audit F-057; parity finding D09 for the app "
+                "service and its Werkzeug debugger). Prefix the mapping with "
+                "an explicit address -- 127.0.0.1 unless something off-host "
+                "genuinely needs it."
+            )
 
 
 class TestProdComposeOverrideInheritsHardening:

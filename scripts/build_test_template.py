@@ -53,10 +53,6 @@ Environment variables (read at module load before app import):
   DSN with permission to ``CREATE DATABASE`` / ``DROP DATABASE``.
   Must point at a database OTHER THAN the template -- DROP DATABASE
   cannot run against the connection's own database.
-* ``TEST_TEMPLATE_DATABASE`` (default ``shekel_test_template``):
-  Name of the template database.  Used for the DROP/CREATE and as
-  the path of the application's ``TEST_DATABASE_URL`` for the
-  migration + seed phase.
 * ``SECRET_KEY``: Used by ``create_app('testing')``.  Defaults to a
   non-production sentinel value if unset; the template database is
   never reachable through Gunicorn so the value is purely a
@@ -76,7 +72,6 @@ Usage::
 """
 
 import os
-import pathlib
 import sys
 from urllib.parse import urlparse, urlunparse
 
@@ -84,7 +79,6 @@ from urllib.parse import urlparse, urlunparse
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-_DEFAULT_TEMPLATE_DATABASE: str = "shekel_test_template"
 _DEFAULT_ADMIN_URL: str = "postgresql:///postgres"
 # Non-production placeholder.  The template database is never reachable
 # through Gunicorn, so the value is purely scaffolding to satisfy the
@@ -113,44 +107,17 @@ _EXPECTED_ACCOUNT_TYPE_COUNT: int = 19
 # environment when the module was first loaded -- which is never the
 # template DB this script just created.
 # ---------------------------------------------------------------------------
-def _env_file_value(key: str) -> str | None:
-    """Return *key*'s value from the repo ``.env``, or ``None`` when absent.
-
-    The same one-key extraction contract ``scripts/test.sh`` applies (first
-    matching line, value after the first ``=``): the whole dotenv is never
-    shell-sourced or bulk-loaded because it may carry values with unquoted
-    spaces.  Needed so a bare ``python scripts/build_test_template.py`` in a
-    parallel checkout resolves the SAME template name the checkout's test
-    runs will clone (``tests/conftest.py`` reads the variable from the
-    environment, which ``test.sh`` populates from this same ``.env`` line) --
-    without it the builder would silently rebuild the DEFAULT shared
-    template at this checkout's migration head, breaking the other live
-    checkout's exact enum<->DB ref-parity tests.
-
-    Args:
-        key: The dotenv key to extract.
-
-    Returns:
-        The raw value string, or ``None`` when the file or key is absent.
-    """
-    env_path = pathlib.Path(__file__).resolve().parents[1] / ".env"
-    if not env_path.is_file():
-        return None
-    prefix = f"{key}="
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        if line.startswith(prefix):
-            return line[len(prefix):]
-    return None
-
-
 ADMIN_URL: str = os.environ.get("TEST_ADMIN_DATABASE_URL", _DEFAULT_ADMIN_URL)
-# Environment wins; then the repo .env (the parallel-checkout override the
-# test runner also reads); then the shared default.
-TEMPLATE_DB: str = (
-    os.environ.get("TEST_TEMPLATE_DATABASE")
-    or _env_file_value("TEST_TEMPLATE_DATABASE")
-    or _DEFAULT_TEMPLATE_DATABASE
-)
+# THE TEMPLATE'S NAME IS A CONSTANT, NOT A KNOB (plan step
+# ``balance:X-br-4``).  It was resolved from ``TEST_TEMPLATE_DATABASE`` --
+# environment, then the repo ``.env`` -- so that two checkouts sharing ONE
+# postmaster could each build a template at their own migration head without
+# overwriting the other's.  ``scripts/test.sh`` now gives every run a private
+# cluster, so there is one template per cluster and nothing to name it apart
+# from.  ``tests/conftest.py`` and ``scripts/build_test_db_image.py``
+# (``_TEMPLATE_DATABASE``, which its verifier reads) spell the same constant;
+# all THREE must agree or the suite clones a template nobody built.
+TEMPLATE_DB: str = "shekel_test_template"
 
 # Build the template DSN by replacing the database name (the URL's
 # path component) in the admin DSN.  Preserves scheme, host, port,
