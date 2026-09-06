@@ -1006,6 +1006,41 @@ section 4, under their unchanged ids.*
   entry's pre-ship clauses were refuted by the ship -- the install is an AUR `yay -S`, it shipped as
   `feat(test):`, and `slirp4netns` is absent AND unnecessary under `--network=none`; the corrections
   are in `docs/test-harness-isolation.md`, which says "Do not restore them here."
+* [ ] **X-bu** `refactor(balance): a settled row's plan has ONE producer` -- owns **BAL-462**, and
+  it is the first of the FOUR steps the production release of 2026-09-05 produced. DELETE the public
+  `row_valuation.owned_amount` and fold its body into `cash_ledger._amount_source`'s own arm, which
+  is the one producer answering a row that owns its figure. **The obligation was written in PROSE
+  and tracked nowhere**: `owned_amount`'s own docstring said the readers wanting a settled row's
+  BUDGET *owe an amount basis from the cutover that declares their rows onward*, agreed and never
+  filed, until `/analytics/spending` 500'd on production-shaped data. Census after the release fix:
+  THREE live call sites, of which the only external one (`spending_analysis:310`, the ACTUAL half's
+  fall-through for a NON-settled row) is correct and stays -- so the remedy is *delete the accessor*,
+  never *and every reader*.
+* [ ] **X-bv** `fix(migrations): a per-kind cutover cannot ship a bare declare` -- owns **BAL-463**.
+  `c8f3a5d2e714` refuses to declare unless `rows_the_declare_would_strand` is empty;
+  `d7b2e6c1a483` defines the equivalent `settled_rows_whose_plan_is_not_recoverable` and calls it
+  ONLY from `downgrade()`, its `upgrade()` running `_DECLARE_SQL` bare. **Both patterns are in the
+  tree, so the next per-kind cutover inherits whichever it copies** -- and `X-au-f` and `X-au-m` are
+  the two that remain, which is why this ranks ahead of them. A guard wired only to the downgrade
+  looks like a control in every reading except the one that matters.
+* [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
+  `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
+  so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
+  future paychecks and destroying the raise and bonus schedule: **-$9,677.29** of projected income,
+  measured by diffing a downgraded clone against a pristine one, 1028 rows compared and 43 not
+  round-tripping. **The cost is GATE INTEGRITY, not rollback**: `shekel-deploy` never invokes
+  `flask db downgrade` -- it re-pins and REFUSES rather than making a second dead container, and a
+  genuine rollback is the automatic pre-deploy dump. What the broken arm actually breaks is
+  `CLAUDE.md` item 7, *migrations tested in both upgrade and downgrade directions*, which passes
+  over a round trip that loses data.
+* [ ] **X-bx** `refactor(balance): the contribution accessor goes the same way` -- owns **BAL-465**,
+  after **X-bu**. `owned_contribution` is `owned_amount`'s sibling shape with SEVEN live call sites
+  (`cash_ledger/_cash_leg.py:203`, `loan_ledger/_events.py:170`,
+  `loan_posting_service/_display.py:217` and `_sync.py:249`,
+  `savings_dashboard_service/_metrics.py:430`, `spending_report_service/_breakdown.py:66` and
+  `_window.py:371`). **It was never exposed the way `owned_amount` was because it answers a settled
+  row from `settled_figure` FIRST** -- a head start, not a guarantee -- so no drift has been
+  measured on it, which is not the same as none existing.
 * [ ] **X-bs** `fix(test): a failure must fail, and the last two ports go` -- owns **N-460** and
   **N-459**, two defects in the same files that HIDE EACH OTHER. Seven `pytest.skip` calls in
   `test_proxy_trust_and_headers.py` fire on something that RAN AND FAILED rather than on something
