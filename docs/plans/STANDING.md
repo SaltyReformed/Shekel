@@ -17,7 +17,3 @@ a `.claude/rules/` file, which are loaded rather than printed.
 the moment it stops. A file that is usually empty gets read; one that accumulates gets skimmed, and
 then it is a message again. Date every line, so a stale one is visible as stale rather than as
 current.
-
-- 2026-09-05: `shekel-dev-app` bind-mounts `/home/josh/projects/Shekel`, which is pinned to a
-  release branch, so NO lane can run the dev app or a browser pass
-  (`tests/manual/verify_recurrence_form.py`) until PR #263 lands. Owed by `recurrence:R7d-f-1`.
