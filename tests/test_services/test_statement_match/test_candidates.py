@@ -40,6 +40,7 @@ from ._builders import (
 )
 from tests._test_helpers import (
     last_covered_day,
+    rhythm_of,
 )
 
 
@@ -657,7 +658,7 @@ class TestTheCalendarIsTheOwnershipSCOPE:
                     for period in whole.periods
                     if period.period_id != later.id
                 ],
-                whole.cadence_days,
+                whole.rhythm,
                 seed_user["user"].id,
                 history_opens_on=None,
             )

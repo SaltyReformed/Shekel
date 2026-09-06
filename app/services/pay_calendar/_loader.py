@@ -64,11 +64,12 @@ from ._calendar import PayCalendar
 from ._derive import PayCalendarError
 
 
-def _require_schedule(user_id: int) -> pay_schedule_service.ScheduleFacts:
+def schedule_for(user_id: int) -> pay_schedule_service.ScheduleFacts:
     """Return *user_id*'s schedule facts, REFUSING an owner who has none.
 
-    Plan step **C4-d**, ruling **R-PC45**.  **The one refusal both public doors
-    below make**, written once because it is one state with one consequence:
+    Plan step **C4-d**, ruling **R-PC45**.  **The one refusal every public
+    door here makes**, written once because it is one state with one
+    consequence:
     the owner holds no ``budget.pay_schedule`` row, so nothing states how often
     they are paid, so every per-paycheck figure in the application is
     unanswerable for them.
@@ -121,6 +122,17 @@ def _require_schedule(user_id: int) -> pay_schedule_service.ScheduleFacts:
     would 500 here**, where the pre-C4-d loader degraded to an empty calendar;
     the decorator would not stop it, because on these routes the decorator is
     not there.
+
+    **PUBLIC since plan step ``C14-e-2``; it was ``_require_schedule``.**
+    That step gave ``budget.pay_schedule`` a third calendar fact -- the
+    NOMINAL grid's phase -- which the derivation does not read and
+    ``pay_period_admin.extend_pay_periods`` does.  A door that holds the
+    facts and the calendar together is what lets that caller take BOTH from
+    one read; the alternative was a second scalar query of a row the same
+    request had just resolved, which is precisely the duplicate ``C14-e-1``
+    deleted (``resolve_shift``).  Exporting the door that already existed
+    keeps the refusal below in one place rather than restating its message at
+    a second caller.
 
     Args:
         user_id: The owning user's id.
@@ -191,7 +203,7 @@ def calendar_for(user_id: int) -> PayCalendar:
 
     Raises:
         PayCalendarError: The owner holds no ``budget.pay_schedule`` row
-            (:func:`_require_schedule`, since plan step C4-d); or the owner has
+            (:func:`schedule_for`, since plan step C4-d); or the owner has
             paydays and no resolvable cadence -- reachable only inside a
             COMMAND, and only if a concurrent truncate lands between the two
             reads below (see the comment there); or the rows cannot define a
@@ -218,10 +230,10 @@ def calendar_for(user_id: int) -> PayCalendar:
     # paydays, which derives a shorter calendar, while the other order sees
     # paydays and no cadence, which REFUSES.  Narrowing toward the answerable
     # state is the right way to lose a race a lock would otherwise have to
-    # prevent.  Since plan step C4-d the schedule read is ``_require_schedule``
+    # prevent.  Since plan step C4-d the schedule read is ``schedule_for``
     # rather than the bare resolve, which is what makes "no schedule row" a
     # refusal here instead of an empty calendar carrying no cadence.
-    return calendar_at_schedule(user_id, _require_schedule(user_id))
+    return calendar_at_schedule(user_id, schedule_for(user_id))
 
 
 def calendar_at_schedule(
@@ -236,7 +248,12 @@ def calendar_at_schedule(
 
     **It took a bare ``cadence_days`` and was named ``calendar_at_cadence``
     until plan step balance:X-bh-2**, which gave the calendar a second fact off
-    the same row.  A door named for one of the two facts it needs is the drift
+    the same row -- and a THIRD at plan step ``C14-e-1``, the payday
+    convention, which joined the cadence inside
+    :class:`~app.services.pay_rhythm.Rhythm` rather than arriving as a field of its own.  The
+    door did not move for it, which is the property
+    :class:`~app.services.pay_schedule_service.ScheduleFacts` was shaped to
+    have.  A door named for one of the two facts it needs is the drift
     this package spends its docstrings preventing, so the parameter became the
     pair :class:`~app.services.pay_schedule_service.ScheduleFacts` and the name
     followed it.  Passing the pair rather than two arguments is what stops a
@@ -263,7 +280,7 @@ def calendar_at_schedule(
         facts: The owner's ``budget.pay_schedule`` calendar facts, as the
             caller already resolved them.  **Their existence is the argument**
             since plan step C4-d: a caller holds these only by holding the row,
-            so ``cadence_days`` is an ``int`` and there is no absent-cadence
+            so ``rhythm.cadence_days`` is an ``int`` and there is no absent-cadence
             pairing for this door to admit or for
             :func:`~._derive.derive_periods` to refuse.
             ``history_opens_on`` is ``None`` for the owner who has stated
@@ -276,7 +293,7 @@ def calendar_at_schedule(
     Raises:
         PayCalendarError: The rows cannot define a calendar -- a duplicate
             payday, which ``uq_pay_periods_user_start`` already prevents, or a
-            *cadence_days* outside 1..365, which
+            a *rhythm* cadence outside 1..365, which
             ``ck_pay_schedule_cadence_range`` already prevents for a stored
             one.  Both name a caller rather than a page.
     """
@@ -288,7 +305,7 @@ def calendar_at_schedule(
     )
     return PayCalendar.from_paydays(
         paydays=paydays,
-        cadence_days=facts.cadence_days,
+        rhythm=facts.rhythm,
         user_id=user_id,
         history_opens_on=facts.history_opens_on,
     )
@@ -310,10 +327,10 @@ def cadence_for(user_id: int) -> PayCadence:
     (:class:`~._cadence.PayCadence`), so the two doors cannot disagree; what
     they differ in is how much of the schedule the caller needed anyway.
 
-    **Through :func:`_require_schedule` rather than
+    **Through :func:`schedule_for` rather than
     ``pay_schedule_service.resolve_cadence``, since plan step C4-d**, and it
     costs the same one query: that function IS ``resolve_schedule`` plus a
-    ``.cadence_days``, and ``resolve_schedule`` is the one read.  What changed
+    ``.rhythm.cadence_days``, and ``resolve_schedule`` is the one read.  What changed
     is that the refusal for a row-less owner is written once, here and for
     :func:`calendar_for`, instead of once per door with two messages to keep in
     step.  ``resolve_cadence`` survives for the callers that want the SOFT
@@ -344,7 +361,7 @@ def cadence_for(user_id: int) -> PayCadence:
         PayCalendarError: The owner has no ``budget.pay_schedule`` row, which
             since plan step C4-b-2 IMPLIES no pay periods
             (``fk_pay_periods_schedule``).  **Refused from
-            :func:`_require_schedule` since plan step C4-d** (ruling
+            :func:`schedule_for` since plan step C4-d** (ruling
             **R-PC45**), which is the same refusal this door has made since
             plan step R7a-2a with the message and the argument moved to the one
             place :func:`calendar_for` shares it from.  Refused rather than
@@ -359,4 +376,6 @@ def cadence_for(user_id: int) -> PayCadence:
             :func:`~._derive.validate_cadence` can no longer refuse what this
             resolves.
     """
-    return PayCadence(cadence_days=_require_schedule(user_id).cadence_days)
+    return PayCadence(
+        cadence_days=schedule_for(user_id).rhythm.cadence_days,
+    )

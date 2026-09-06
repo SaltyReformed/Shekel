@@ -494,7 +494,7 @@ class TestBothDoorsReachOneDerivation:
     def test_the_calendar_answers_its_own_cadence(self):
         """``PayCalendar.cadence`` is built from the calendar's own days."""
         calendar = PayCalendar.from_paydays(
-            paydays=(), cadence_days=7, user_id=1,
+            paydays=(), rhythm=rhythm_of(7), user_id=1,
             history_opens_on=None,
         )
         assert calendar.cadence == PayCadence(cadence_days=7)
@@ -524,7 +524,7 @@ class TestBothDoorsReachOneDerivation:
             user_id = seed_user["user"].id
             assert cadence_for(user_id).periods_per_year == Decimal("26")
 
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(7))
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(7), None)
             db.session.flush()
 
             assert cadence_for(user_id).periods_per_year == Decimal("52")
@@ -563,7 +563,7 @@ class TestAnAbsentCadenceIsRefusedRatherThanDefaulted:
         against a producer reading somebody else's schedule.
         """
         empty = PayCalendar.from_paydays(
-            paydays=(), cadence_days=7, user_id=42,
+            paydays=(), rhythm=rhythm_of(7), user_id=42,
             history_opens_on=None,
         )
 
