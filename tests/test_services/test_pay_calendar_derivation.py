@@ -68,6 +68,7 @@ from app.services.pay_calendar import (
     PayCalendarError,
     PeriodWindow,
     derive_periods,
+    nominal_payday_after,
     projected_payday,
 )
 
@@ -156,7 +157,7 @@ class TestDerivationRefusals:
         could have produced.
         """
         with pytest.raises(PayCalendarError, match="at least 1 day and at most 365"):
-            derive_periods([(1, date(2026, 1, 2))], cadence_days)
+            derive_periods([(1, date(2026, 1, 2))], rhythm_of(cadence_days))
 
     @pytest.mark.parametrize(
         "cadence_days", [True, False, 14.0, 14.9, "14"],
@@ -176,7 +177,7 @@ class TestDerivationRefusals:
         both directions of that rule.
         """
         with pytest.raises(PayCalendarError, match="must be a plain int"):
-            derive_periods([(1, date(2026, 1, 2))], cadence_days)
+            derive_periods([(1, date(2026, 1, 2))], rhythm_of(cadence_days))
 
     def test_the_cadence_is_validated_before_the_paydays_are_read(self):
         """An unusable cadence is refused even for an empty payday set.
@@ -187,7 +188,7 @@ class TestDerivationRefusals:
         until the day the user records their first payday.
         """
         with pytest.raises(PayCalendarError, match="at least 1 day and at most 365"):
-            derive_periods([], 0)
+            derive_periods([], rhythm_of(0))
 
     def test_a_repeated_payday_is_refused(self):
         """Two periods cannot share an opening day.
@@ -205,7 +206,7 @@ class TestDerivationRefusals:
                     (2, date(2026, 1, 16)),
                     (3, date(2026, 1, 2)),
                 ],
-                14,
+                rhythm_of(14),
             )
 
     def test_a_datetime_is_refused(self):
@@ -216,13 +217,13 @@ class TestDerivationRefusals:
         process timezone rather than the app's civil day.
         """
         with pytest.raises(PayCalendarError, match="must be a datetime.date"):
-            derive_periods([(1, datetime(2026, 1, 2, 9, 30))], 14)
+            derive_periods([(1, datetime(2026, 1, 2, 9, 30))], rhythm_of(14))
 
     @pytest.mark.parametrize("payday", ["2026-01-02", 20260102, None])
     def test_a_value_that_is_not_a_date_is_refused(self, payday):
         """An ISO string, an integer and ``None`` are all refused by type."""
         with pytest.raises(PayCalendarError, match="must be a datetime.date"):
-            derive_periods([(1, payday)], 14)
+            derive_periods([(1, payday)], rhythm_of(14))
 
     @pytest.mark.parametrize("period_id", ["41", 41.0, True, date(2026, 1, 2)])
     def test_a_period_id_that_is_not_an_int_or_none_is_refused(
@@ -237,7 +238,7 @@ class TestDerivationRefusals:
         would pass as row 1.
         """
         with pytest.raises(PayCalendarError, match="must be an int or None"):
-            derive_periods([(period_id, date(2026, 1, 2))], 14)
+            derive_periods([(period_id, date(2026, 1, 2))], rhythm_of(14))
 
     def test_a_period_id_of_none_is_accepted(self):
         """``None`` is how a period that is not materialised says so.
@@ -245,7 +246,7 @@ class TestDerivationRefusals:
         A projection past the owner's horizon has no row for a foreign key to
         point at, and plan step C2 has to be able to build one.
         """
-        derived = derive_periods([(None, date(2026, 1, 2))], 14)
+        derived = derive_periods([(None, date(2026, 1, 2))], rhythm_of(14))
         assert derived[0].period_id is None
 
 
@@ -283,7 +284,7 @@ class TestTheCadenceIsRequired:
         owner with no periods so the Recurring surface still renders; raising
         here would take that page to a 500 for the one owner it is written for.
         """
-        assert derive_periods([], 14) == ()
+        assert derive_periods([], rhythm_of(14)) == ()
 
     def test_an_absent_cadence_is_refused_beside_a_payday(self):
         """P8's state: a payday exists and its period's end cannot be derived.
@@ -295,7 +296,7 @@ class TestTheCadenceIsRequired:
         refusal of its own.
         """
         with pytest.raises(PayCalendarError, match="must be a plain int") as excinfo:
-            derive_periods([(1, date(2026, 1, 2))], None)
+            derive_periods([(1, date(2026, 1, 2))], rhythm_of(None))
 
         # The message NAMES what it refused, which is this project's
         # error-message rule and which the deleted refusal used to carry (it
@@ -307,14 +308,14 @@ class TestTheCadenceIsRequired:
     def test_an_absent_cadence_is_refused_with_NO_paydays_TOO(self):
         """The refusal stopped depending on the payday set, which IS the step.
 
-        ``derive_periods([], None)`` was LEGAL before plan step C4-d, and it is
+        ``derive_periods([], rhythm_of(None))`` was LEGAL before plan step C4-d, and it is
         the exact pair that made ``cadence_days`` optional at five tiers.
         Asserted beside the case above rather than instead of it: what changed
         is that one rule now covers both payday shapes, and a test of only the
         non-empty shape would pass identically against the old conditional.
         """
         with pytest.raises(PayCalendarError, match="must be a plain int"):
-            derive_periods([], None)
+            derive_periods([], rhythm_of(None))
 
     def test_the_cadence_is_graded_BEFORE_the_payday_set(self):
         """Order of refusals, INVERTED by plan step C4-d and pinned as such.
@@ -330,7 +331,7 @@ class TestTheCadenceIsRequired:
         """
         with pytest.raises(PayCalendarError, match="must be a plain int"):
             derive_periods(
-                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], None,
+                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], rhythm_of(None),
             )
 
     def test_a_duplicate_payday_is_still_refused_beside_a_GOOD_cadence(self):
@@ -343,7 +344,7 @@ class TestTheCadenceIsRequired:
         """
         with pytest.raises(PayCalendarError, match="appears twice"):
             derive_periods(
-                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], 14,
+                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], rhythm_of(14),
             )
 
     def test_a_present_cadence_is_still_graded_beside_an_empty_set(self):
@@ -354,7 +355,7 @@ class TestTheCadenceIsRequired:
         no excuse for it.
         """
         with pytest.raises(PayCalendarError, match="at least 1 day and at most 365"):
-            derive_periods([], 0)
+            derive_periods([], rhythm_of(0))
 
     def test_an_empty_calendar_answers_every_question_it_has_an_answer_for(self):
         """An empty calendar is ordinary, and every search still answers ``None``.
@@ -372,7 +373,7 @@ class TestTheCadenceIsRequired:
         ``PayCalendar.cadence`` having become total.
         """
         calendar = PayCalendar.from_paydays(
-            paydays=[], cadence_days=14, user_id=1,
+            paydays=[], rhythm=rhythm_of(14), user_id=1,
             history_opens_on=None,
         )
         day = date(2026, 1, 2)
@@ -414,7 +415,7 @@ class TestIrregularShapeSweep:
         than agreeing with whatever the code produced.
         """
         assert derive_periods(
-            irregular.paydays, irregular.cadence_days,
+            irregular.paydays, rhythm_of(irregular.cadence_days),
         ) == irregular.expected
 
     @pytest.mark.parametrize(
@@ -432,7 +433,7 @@ class TestIrregularShapeSweep:
         anomalies and the four ``_pp_assert_structure`` invariants that
         policed those states: none of them is expressible.
         """
-        derived = derive_periods(irregular.paydays, irregular.cadence_days)
+        derived = derive_periods(irregular.paydays, rhythm_of(irregular.cadence_days))
         for earlier, later in zip(derived, derived[1:]):
             assert earlier.end_date + timedelta(days=1) == later.start_date
             assert earlier.period_index + 1 == later.period_index
@@ -448,7 +449,7 @@ class TestIrregularShapeSweep:
         period of a non-empty calendar and for no other -- and for none at all
         when the calendar is empty.
         """
-        derived = derive_periods(irregular.paydays, irregular.cadence_days)
+        derived = derive_periods(irregular.paydays, rhythm_of(irregular.cadence_days))
         projected = [
             period for period in derived if period.end_is_projected
         ]
@@ -467,8 +468,8 @@ class TestIrregularShapeSweep:
             (2, date(2026, 1, 16)),
             (3, date(2026, 1, 30)),
         ]
-        assert derive_periods(reversed(paydays), 14) == derive_periods(
-            paydays, 14,
+        assert derive_periods(reversed(paydays), rhythm_of(14)) == derive_periods(
+            paydays, rhythm_of(14),
         )
 
     def test_a_single_payday_derives_one_wholly_projected_period(self):
@@ -478,7 +479,7 @@ class TestIrregularShapeSweep:
         every new account's first calendar: one period, its end projected off
         the cadence because there is no second payday to close it.
         """
-        assert derive_periods([(7, date(2026, 3, 26))], 14) == (
+        assert derive_periods([(7, date(2026, 3, 26))], rhythm_of(14)) == (
             # 2026-03-26 + (14 - 1) days = 2026-04-08.
             DerivedPeriod(
                 period_id=7,
@@ -495,7 +496,7 @@ class TestIrregularShapeSweep:
         Measured on production 2026-08-08: user 2 is a companion with zero
         paydays, so no step may assume every user row has a schedule.
         """
-        assert derive_periods([], 14) == ()
+        assert derive_periods([], rhythm_of(14)) == ()
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +531,7 @@ class TestReDerivationStability:
         Returns:
             The derived ``end_date``.
         """
-        derived = derive_periods(paydays, 14)
+        derived = derive_periods(paydays, rhythm_of(14))
         return next(
             period.end_date for period in derived
             if period.start_date == payday
@@ -546,11 +547,11 @@ class TestReDerivationStability:
         is then ``lead - 1``, the same day the projection gave it -- so nothing
         moves and only the FLAG changes.
         """
-        before = derive_periods(self._PAYDAYS, 14)
+        before = derive_periods(self._PAYDAYS, rhythm_of(14))
         assert before[-1].end_date == date(2026, 1, 29)
         assert before[-1].end_is_projected is True
 
-        after = derive_periods([*self._PAYDAYS, (3, date(2026, 1, 30))], 14)
+        after = derive_periods([*self._PAYDAYS, (3, date(2026, 1, 30))], rhythm_of(14))
         assert after[1].start_date == date(2026, 1, 16)
         # lead - 1 = 2026-01-30 - 1 = 2026-01-29, the day the projection gave.
         assert after[1].end_date == date(2026, 1, 29)
@@ -644,7 +645,7 @@ class TestTheWritersOwnScheduleDerives:
 
             derived = derive_periods(
                 [(period.id, period.start_date) for period in periods],
-                _LIVE_CADENCE_DAYS,
+                rhythm_of(_LIVE_CADENCE_DAYS),
             )
             assert len(derived) == _LIVE_PERIOD_COUNT
             assert derived[-1].end_date == _LIVE_LAST_END
@@ -687,7 +688,7 @@ class TestTheWritersOwnScheduleDerives:
 
             derived = derive_periods(
                 [(period.id, period.start_date) for period in periods],
-                cadence_days,
+                rhythm_of(cadence_days),
             )
             assert derived[0].end_date == first_end
             assert derived[0].end_is_projected is False
@@ -728,7 +729,7 @@ class TestTheWritersOwnScheduleDerives:
                     (period.id, period.start_date)
                     for period in all_periods(user_id)
                 ],
-                14,
+                rhythm_of(14),
             )
             assert [period.start_date for period in derived] == [
                 date(2026, 1, 2) + timedelta(days=14 * step)
@@ -829,7 +830,7 @@ def _saved(anchor: date, cadence_days: int) -> "tuple[DerivedPeriod, ...]":
     Returns:
         The derived periods, as ``project_period_after`` takes them.
     """
-    return derive_periods([(1, anchor)], cadence_days)
+    return derive_periods([(1, anchor)], rhythm_of(cadence_days))
 
 
 def _displace_under(monkeypatch, shift: BusinessDayShiftEnum) -> None:
@@ -867,9 +868,9 @@ class TestTheProjectedPaydayHasOneProducer:
 
     def test_it_steps_whole_cadences_from_the_anchor(self):
         """Hand-computed: 2028-08-10 at a 14-day cadence."""
-        assert projected_payday(_HORIZON, 14, 0) == date(2028, 8, 10)
-        assert projected_payday(_HORIZON, 14, 1) == date(2028, 8, 24)
-        assert projected_payday(_HORIZON, 14, 2) == date(2028, 9, 7)
+        assert projected_payday(_HORIZON, rhythm_of(14), 0) == date(2028, 8, 10)
+        assert projected_payday(_HORIZON, rhythm_of(14), 1) == date(2028, 8, 24)
+        assert projected_payday(_HORIZON, rhythm_of(14), 2) == date(2028, 9, 7)
 
     def test_it_reads_the_rhythm_backwards_too(self):
         """A negative step is the rhythm below the anchor, and it is REACHED.
@@ -883,7 +884,7 @@ class TestTheProjectedPaydayHasOneProducer:
         ``C14-c`` struck that, and ``projected_payday`` now names the
         duplication rather than claiming a monopoly it does not have.*
         """
-        assert projected_payday(_HORIZON, 14, -1) == date(2028, 7, 27)
+        assert projected_payday(_HORIZON, rhythm_of(14), -1) == date(2028, 7, 27)
 
     def test_it_does_not_COMPOUND(self):
         """Every step is measured from ONE anchor, never from the last answer.
@@ -895,9 +896,9 @@ class TestTheProjectedPaydayHasOneProducer:
         cadences -- so plan step ``C14-e`` can displace the RESULT here without
         the progression drifting.
         """
-        assert projected_payday(_HORIZON, 14, 60) == _THANKSGIVING_NOMINAL
-        assert projected_payday(_HORIZON, 14, 60) == projected_payday(
-            projected_payday(_HORIZON, 14, 59), 14, 1,
+        assert projected_payday(_HORIZON, rhythm_of(14), 60) == _THANKSGIVING_NOMINAL
+        assert projected_payday(_HORIZON, rhythm_of(14), 60) == projected_payday(
+            projected_payday(_HORIZON, rhythm_of(14), 59), rhythm_of(14), 1,
         )
 
     @pytest.mark.parametrize(
@@ -923,7 +924,7 @@ class TestTheProjectedPaydayHasOneProducer:
         """
         nominal = {
             irregular.label: derive_periods(
-                irregular.paydays, irregular.cadence_days,
+                irregular.paydays, rhythm_of(irregular.cadence_days),
             )
             for irregular in IRREGULAR_SHAPES
         }
@@ -932,7 +933,7 @@ class TestTheProjectedPaydayHasOneProducer:
 
         for irregular in IRREGULAR_SHAPES:
             derived = derive_periods(
-                irregular.paydays, irregular.cadence_days,
+                irregular.paydays, rhythm_of(irregular.cadence_days),
             )
             if not derived:
                 continue
@@ -983,17 +984,28 @@ class TestTheGridIsNotTheProjection:
         What is asserted now is the pair of bindings the two doors actually
         call: ``pay_period_write._reject_backward_payday`` reaches
         ``pay_calendar.projected_payday`` and ``extend_pay_periods`` reaches
-        ``pay_period_admin.nominal_payday``.  If ``C14-e`` displaces the second
-        of those, the extend door starts recording cash dates again and this
-        fails.
+        ``pay_period_admin.nominal_payday_after``.  If ``C14-e`` displaces the
+        second of those, the extend door starts recording cash dates again and
+        this fails.
+
+        *It named ``pay_period_admin.nominal_payday`` until ``C14-e-2`` moved
+        the grid-index search into the package; the binding moved with it and
+        the case follows the door rather than the old name.*
         """
         anchor, thanksgiving = date(2030, 11, 14), date(2030, 11, 28)
-        assert pay_period_admin.nominal_payday(anchor, 14, 1) == thanksgiving
+        rhythm = rhythm_of(14)
+        # The horizon the door asks against: the day before the next payday.
+        assert pay_period_admin.nominal_payday_after(
+            anchor, rhythm, date(2030, 11, 27),
+        ) == thanksgiving
 
         _displace_under(monkeypatch, shift)
 
-        assert pay_period_admin.nominal_payday(anchor, 14, 1) == thanksgiving
-        assert pay_calendar.projected_payday(anchor, 14, 1) != thanksgiving
+        assert pay_period_admin.nominal_payday_after(
+            anchor, rhythm, pay_calendar.projected_payday(anchor, rhythm, 1)
+            - timedelta(days=1),
+        ) == thanksgiving, "the extend door must still hand over a GRID day"
+        assert pay_calendar.projected_payday(anchor, rhythm, 1) != thanksgiving
 
 
 class TestTheCoveringProbeToleratesAMovedBoundary:
@@ -1016,7 +1028,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         step 2 is the answer, running to the day before 2028-09-21.
         """
         found = _derive.project_period_after(
-            _saved(_HORIZON, 14), 14, date(2028, 9, 10),
+            _saved(_HORIZON, 14), rhythm_of(14), date(2028, 9, 10),
         )
 
         assert found.start_date == date(2028, 9, 7)
@@ -1041,7 +1053,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         _displace_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
         day = date(2030, 11, 27)
 
-        found = _derive.project_period_after(_saved(_HORIZON, 14), 14, day)
+        found = _derive.project_period_after(_saved(_HORIZON, 14), rhythm_of(14), day)
 
         assert (day - _HORIZON).days // 14 == _THANKSGIVING_STEPS - 1
         assert found.period_index == _THANKSGIVING_STEPS
@@ -1063,7 +1075,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         _displace_under(monkeypatch, BusinessDayShiftEnum.NEXT)
         day = _THANKSGIVING_NOMINAL
 
-        found = _derive.project_period_after(_saved(_HORIZON, 14), 14, day)
+        found = _derive.project_period_after(_saved(_HORIZON, 14), rhythm_of(14), day)
 
         assert (day - _HORIZON).days // 14 == _THANKSGIVING_STEPS
         assert found.period_index == _THANKSGIVING_STEPS - 1
@@ -1086,7 +1098,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
             saved = _saved(_HORIZON, 14)
             walked, opens_at = [], saved[-1].end_date + timedelta(days=1)
             while len(walked) < 80:
-                period = _derive.project_period_after(saved, 14, opens_at)
+                period = _derive.project_period_after(saved, rhythm_of(14), opens_at)
                 walked.append(period)
                 opens_at = period.end_date + timedelta(days=1)
 
@@ -1129,8 +1141,8 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         """
         _displace_under(monkeypatch, shift)
         saved = _saved(_HORIZON, 14)
-        opening = _derive.project_period_after(saved, 14, date(2030, 11, 14))
-        following = _derive.project_period_after(saved, 14, date(2030, 11, 30))
+        opening = _derive.project_period_after(saved, rhythm_of(14), date(2030, 11, 14))
+        following = _derive.project_period_after(saved, rhythm_of(14), date(2030, 11, 30))
         old_rule_end = opening.start_date + timedelta(days=13)
 
         assert opening.start_date == date(2030, 11, 14)
@@ -1165,7 +1177,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         """
         _displace_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
 
-        derived = derive_periods([(1, date(2030, 11, 14))], 14)
+        derived = derive_periods([(1, date(2030, 11, 14))], rhythm_of(14))
 
         assert derived[-1].end_is_projected is True
         assert derived[-1].end_date == date(2030, 11, 26)
@@ -1250,7 +1262,7 @@ class TestOneNeighbourEitherSideIsEnough:
                         for day in (opens, opens + (closes - opens) // 2,
                                     closes - timedelta(days=1)):
                             found = _derive.project_period_after(
-                                saved, cadence, day,
+                                saved, rhythm_of(cadence), day,
                             )
                             where = (shift, anchor, cadence, steps, day)
                             assert found.covers(day), where
@@ -1295,3 +1307,99 @@ class TestTheShapeCatalogueRefusesAnUnknownLabel:
         """A renamed shape must not silently drop the test that used it."""
         with pytest.raises(KeyError, match="no IrregularShape labelled"):
             shape("no_such_shape")
+
+
+class TestTheGridDayAfterAHorizonIsTotal:
+    """Plan step **C14-e-2**: :func:`nominal_payday_after` over EVERY residue.
+
+    **The axis this producer lives on is
+    ``(horizon - nominal_anchor) % cadence_days``, and no case varied it until
+    an adversarial review of ``C14-e-2`` said so.**  Every other case anchors
+    an owner on their own single recorded payday, which is residue 0 by
+    construction -- the one value that cannot fail.  The defect the review
+    found was exactly there: asked against the last recorded PAYDAY rather than
+    against the paycheck's END, the producer answered a grid day BELOW
+    ``pay_period_write._reject_backward_payday``'s floor on 13 of the 14
+    residues, and the extend door refused its own answer permanently, on a read
+    path with no handler.
+
+    A stored phase off the horizon's own grid is ordinary rather than exotic:
+    it is a PIECEWISE owner (ledger row **N-492**), and a truncate back across
+    a cadence change produces one through shipped doors.
+    """
+
+    @pytest.mark.parametrize("cadence", [1, 2, 3, 7, 14, 15, 30, 31, 365])
+    def test_the_answer_is_never_below_the_floor(self, cadence):
+        """EVERY residue at EVERY cadence, against the floor the writer applies.
+
+        The floor is ``projected_payday(latest, rhythm, 1)`` -- the day the
+        last paycheck opens after the last recorded one -- and it is read from
+        that producer rather than restated, so the case cannot drift from the
+        fence it grades.
+
+        **Both axes are varied**, because the theorem is cadence-independent
+        and a sweep at one cadence cannot say so: the estimate satisfies
+        ``nominal(estimate) <= horizon < nominal(estimate + 1)`` whatever the
+        cadence, which is what bounds the search at three candidates.
+        """
+        rhythm = rhythm_of(cadence)
+        latest = date(2026, 5, 11)
+        for residue in range(cadence):
+            anchor = latest - timedelta(days=residue)
+            horizon = projected_payday(latest, rhythm, 1) - timedelta(days=1)
+
+            answer = nominal_payday_after(anchor, rhythm, horizon)
+
+            assert answer > horizon, (
+                f"cadence {cadence}, residue {residue}: {answer} lands inside "
+                f"the paycheck ending {horizon}, which the floor refuses"
+            )
+            assert (answer - anchor).days % cadence == 0, (
+                f"cadence {cadence}, residue {residue}: {answer} is not on the "
+                f"owner's stored grid"
+            )
+
+    def test_the_HORIZON_a_caller_passes_IS_the_floor_minus_one_day(self):
+        """The seam the whole pairing rests on, pinned so a split would fire.
+
+        ``extend_pay_periods`` asks against the last paycheck's END and
+        ``pay_period_write._reject_backward_payday`` bounds the batch at
+        ``projected_payday(latest, rhythm, 1)``.  Those are the same value one
+        day apart ONLY because :func:`derive_periods` closes the last saved
+        period with that same producer -- so if ``C14-e-3`` ever moved one side
+        and not the other, every other case here would stay green and only one
+        door case would notice.  An adversarial review of ``C14-e-2`` named
+        that hole; this is the assertion that fills it.
+        """
+        rhythm = rhythm_of(14)
+        latest = date(2026, 5, 11)
+
+        derived = derive_periods([(1, date(2026, 4, 27)), (2, latest)], rhythm)
+
+        assert derived[-1].end_date == projected_payday(
+            latest, rhythm, 1,
+        ) - timedelta(days=1)
+
+    @pytest.mark.parametrize("residue", range(14))
+    def test_it_answers_the_SAME_day_the_deleted_expression_did_at_residue_0(
+        self, residue,
+    ):
+        """`$0.00` where the phase and the record share a grid, and only there.
+
+        At residue 0 the answer must equal ``latest + cadence`` -- the
+        expression ``C14-e-2`` replaced -- which is what makes that step
+        `$0.00` for every owner the migration backfills.  Off residue 0 the
+        two differ BY DESIGN, and asserting only the first would hide that the
+        producer had stopped moving at all.
+        """
+        rhythm = rhythm_of(14)
+        latest = date(2026, 5, 11)
+        anchor = latest - timedelta(days=residue)
+        horizon = projected_payday(latest, rhythm, 1) - timedelta(days=1)
+
+        answer = nominal_payday_after(anchor, rhythm, horizon)
+
+        if residue == 0:
+            assert answer == latest + timedelta(days=14)
+        else:
+            assert answer != latest + timedelta(days=14)

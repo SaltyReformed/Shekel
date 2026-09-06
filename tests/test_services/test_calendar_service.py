@@ -1022,11 +1022,11 @@ class TestTheBadgeReadsTheOWNERSStoredCadence:
                     if entry.name == "Every 2nd"
                 ]
 
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
             db.session.commit()
             assert _badges() == [False]
 
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(30))
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(30), None)
             db.session.commit()
             assert _badges() == [True]
 
@@ -1127,7 +1127,7 @@ class TestThirdPaycheckDetection:
         """
         with app.app_context():
             calendar = PayCalendar.from_paydays(
-                [], 14, user_id=1, history_opens_on=None,
+                [], rhythm_of(14), user_id=1, history_opens_on=None,
             )
             assert self._three_paycheck_months(calendar, 2026) == set()
 

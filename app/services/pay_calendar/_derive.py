@@ -78,6 +78,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from app.exceptions import ShekelError
+from app.services.pay_rhythm import Rhythm
 from app.utils.dates import pay_period_label, pay_period_range_label
 
 from ._grid import cadence_steps_to, nominal_payday
@@ -401,9 +402,9 @@ class DerivedPeriod:
 
 
 def derive_periods(
-    paydays: "Iterable[tuple[int | None, date]]", cadence_days: int,
+    paydays: "Iterable[tuple[int | None, date]]", rhythm: Rhythm,
 ) -> tuple[DerivedPeriod, ...]:
-    """Derive an owner's whole pay calendar from their paydays and cadence.
+    """Derive an owner's whole pay calendar from their paydays and rhythm.
 
     **Takes the owner's COMPLETE payday set, never a window.**  A period's end
     is its successor's payday, so the LAST payday in whatever list arrives here
@@ -471,15 +472,23 @@ def derive_periods(
             :attr:`DerivedPeriod.period_id`.  Empty is a legal input and yields
             an empty calendar -- a user who has never generated a schedule, and
             the companion role, which by design holds no paydays of its own.
-        cadence_days: Days between paydays, from ``budget.pay_schedule``.  Read
-            only for the LAST period's end; every other end is dictated by the
-            next payday, so a wrong cadence can move exactly one day in the
-            result.  Validated EAGERLY, before the paydays are looked at: a bad
-            one is a bad caller whether or not this particular owner has
-            paydays yet, and refusing it only when the data reaches the
-            projection branch would hide it until the day a user records their
-            first payday.
-            **Not optional, since plan step C4-d** (ruling **R-PC45**).  It was
+        rhythm: How often this owner is paid and what payroll does when a
+            payday lands on a closed day, from ``budget.pay_schedule``
+            (:class:`~app.services.pay_rhythm.Rhythm`).  Read only for the LAST period's end;
+            every other end is dictated by the next payday, so a wrong rhythm
+            can move exactly one day in the result.  The cadence is validated
+            EAGERLY, before the paydays are looked at: a bad one is a bad
+            caller whether or not this particular owner has paydays yet, and
+            refusing it only when the data reaches the projection branch would
+            hide it until the day a user records their first payday.
+            **It was a bare ``cadence_days`` until ``C14-e-1``**, which
+            threaded the pair ahead of ``C14-e-3`` making
+            :func:`projected_payday` the nominal day displaced under the
+            owner's convention -- not live yet, and that function says so.
+            The two are one rhythm with one reader; passing them apart would
+            pair one owner's cadence with another's convention.
+            **The cadence is not optional, since plan step C4-d** (ruling
+            **R-PC45**).  It was
             ``int | None``, ``None`` being legal beside an empty payday set and
             REFUSED beside a non-empty one -- a pairing this function policed at
             runtime for every caller, in twenty lines, because the type would
@@ -497,14 +506,15 @@ def derive_periods(
         0..n-1 in that order.  Empty for an empty payday set.
 
     Raises:
-        PayCalendarError: ``cadence_days`` is not an ``int`` (``None``
-            included) or falls outside 1..365; a ``period_id`` is neither an
+        PayCalendarError: ``rhythm.cadence_days`` is not an ``int``
+            (``None`` included) or falls outside 1..365; a ``period_id`` is
+            neither an
             ``int`` nor ``None``; a payday is not a ``datetime.date``, or is a
             ``datetime.datetime`` (which is a ``date`` subclass and would
             silently give every derived end a time component); or a payday
             appears twice.
     """
-    validate_cadence(cadence_days)
+    validate_cadence(rhythm.cadence_days)
     # Sorted on the PAYDAY alone.  Sorting the pairs would break on a ``None``
     # id the moment two paydays tied -- and they cannot tie, which is checked
     # next, so keying the sort on the id would only hide that check.
@@ -535,7 +545,7 @@ def derive_periods(
         # record -- which is what ``end_is_projected`` says.
         is_last = position == last_position
         next_payday = (
-            projected_payday(payday, cadence_days, 1)
+            projected_payday(payday, rhythm, 1)
             if is_last
             else ordered[position + 1][1]
         )
@@ -551,7 +561,7 @@ def derive_periods(
     return tuple(derived)
 
 
-def projected_payday(anchor: date, cadence_days: int, steps: int) -> date:
+def projected_payday(anchor: date, rhythm: Rhythm, steps: int) -> date:
     """Return the payday *steps* whole cadences after *anchor*.
 
     **The FORWARD projection's one producer**, made a function at plan step
@@ -562,9 +572,13 @@ def projected_payday(anchor: date, cadence_days: int, steps: int) -> date:
     value with three homes, agreeing only because nothing can move a payday
     yet.  **It is where the shift convention lands** (**R-PC54**: applied at
     the PRODUCER, because the payday a COUNT uses and the payday a PERIOD opens
-    on are one value).  The answer is the NOMINAL grid day today
-    (:func:`~._grid.nominal_payday`, which this returns unchanged); ``C14-e``
-    wraps that call in the displacement and nothing else here moves.
+    on are one value).  **The convention has ARRIVED and the body has not**:
+    ``C14-e-1`` gave every producer in this chain the
+    :class:`~app.services.pay_rhythm.Rhythm` rather than a bare cadence, which
+    moves no date, and ``C14-e-3`` wraps the call below in
+    :func:`~app.utils.business_days.shift_to_business_day` -- which is what
+    makes the money-moving diff one expression.  Until then the answer is the
+    NOMINAL grid day and ``rhythm.shift`` is read by nothing here.
 
     **The grid is a MODULE below this one since ``C14-d``**, and the split is
     the point rather than a place to put a function: from ``C14-e`` the
@@ -636,9 +650,10 @@ def projected_payday(anchor: date, cadence_days: int, steps: int) -> date:
 
     Args:
         anchor: A payday the owner's rhythm passes through.
-        cadence_days: Days between paydays, a positive ``int`` already
-            validated by :func:`validate_cadence` at the caller; re-validating
-            per call would put the bound in a second place.
+        rhythm: The owner's cadence and payday convention
+            (:class:`~app.services.pay_rhythm.Rhythm`).  The cadence is a positive ``int``
+            already validated by :func:`validate_cadence` at the caller;
+            re-validating per call would put the bound in a second place.
         steps: How many whole cadences after *anchor*.  ``1`` is the next
             payday, ``0`` is *anchor*.  NEGATIVE is reachable and not a misuse:
             :meth:`~._calendar.PayCalendar.span_containing` asks
@@ -648,7 +663,7 @@ def projected_payday(anchor: date, cadence_days: int, steps: int) -> date:
     Returns:
         The projected payday.
     """
-    return nominal_payday(anchor, cadence_days, steps)
+    return nominal_payday(anchor, rhythm.cadence_days, steps)
 
 
 def covering_projection(
@@ -733,7 +748,7 @@ def covering_projection(
 
 
 def project_period_after(
-    periods: "tuple[DerivedPeriod, ...]", cadence_days: int, day: date,
+    periods: "tuple[DerivedPeriod, ...]", rhythm: Rhythm, day: date,
 ) -> DerivedPeriod:
     """Return the projected period covering *day*, past the last saved payday.
 
@@ -821,7 +836,8 @@ def project_period_after(
     Args:
         periods: The owner's SAVED periods, ``start_date`` ascending and
             non-empty.  Only the last one is read.
-        cadence_days: Days between paydays.  An ``int`` rather than
+        rhythm: The owner's cadence and payday convention
+            (:class:`~app.services.pay_rhythm.Rhythm`).  The cadence is an ``int`` rather than
             ``int | None``: a calendar holding a period cannot have been
             constructed without a cadence (:func:`derive_periods` refuses that
             pair), and every caller reaches here only after establishing that
@@ -844,17 +860,17 @@ def project_period_after(
             reported hole.
     """
     last = periods[-1]
-    estimate = cadence_steps_to(last.start_date, cadence_days, day)
+    estimate = cadence_steps_to(last.start_date, rhythm.cadence_days, day)
     return covering_projection(
         (
             DerivedPeriod(
                 period_id=None,
                 period_index=last.period_index + steps,
                 start_date=projected_payday(
-                    last.start_date, cadence_days, steps,
+                    last.start_date, rhythm, steps,
                 ),
                 end_date=projected_payday(
-                    last.start_date, cadence_days, steps + 1,
+                    last.start_date, rhythm, steps + 1,
                 ) - timedelta(days=1),
                 end_is_projected=True,
             )

@@ -27,7 +27,7 @@ idempotency under true parallel requests lives in
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -104,8 +104,21 @@ def _future_periods(db_session, seed_user, count, start=_FUTURE_START):
 
 
 def _enable_rolling(db_session, user_id, target):
-    """Give the user a schedule row with rolling on at ``target``."""
-    pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+    """Give the user a schedule row with rolling on at ``target``.
+
+    **It hands the STORED phase back rather than ``None``**, which the writer
+    would otherwise clear: ``upsert_schedule`` is an upsert of the whole
+    rhythm, deliberately with no "leave this half alone" argument, so a caller
+    changing one column states them all.  Clearing it here would leave the
+    owner unable to extend -- which is what the door refuses for a schedule
+    that states no phase -- and the top-up under test IS an extend.
+    """
+    pay_schedule_service.upsert_schedule(
+        user_id, rhythm=rhythm_of(14),
+        nominal_anchor=pay_schedule_service.resolve_schedule(
+            user_id,
+        ).nominal_anchor,
+    )
     pay_schedule_service.set_rolling(user_id, enabled=True, target_periods=target)
     db_session.commit()
 
@@ -170,7 +183,7 @@ class TestTopUpFastPaths:
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
             # Row exists but rolling is off (the column default).
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
             db.session.commit()
             before = _count_periods(db.session, user_id)
             result, statements = capture_sql_statements(
@@ -432,7 +445,7 @@ class TestTheTopUpCountsOnTheOwnersDay:
             db.session.commit()
 
             # pylint: disable=protected-access
-            facts = pay_schedule_service.ScheduleFacts(cadence_days, None)
+            facts = pay_schedule_service.ScheduleFacts(rhythm_of(cadence_days), None, None)
             on_process = pay_period_rolling._future_period_count(
                 user_id, facts, date(2026, 7, 31),
             )
@@ -494,6 +507,19 @@ class TestTheCadenceThreadedIsTheOWNERSStoredOne:
         pay_period_write.record_paydays(user_id, _FUTURE_START, 3, rhythm_of(14))
         pay_schedule_service.upsert_schedule(
             user_id, rhythm=rhythm_of(self._STORED_CADENCE),
+            # **A cadence change RE-ESTABLISHES the phase**, and handing back
+            # the anchor the 14-day batch wrote would state a grid that no
+            # longer describes this owner: the 3-day grid through 2026-07-03
+            # runs 07-30, 08-02, and 08-02 falls INSIDE the paycheck opened by
+            # the recorded 07-31, which ``_reject_backward_payday`` refuses.
+            # In ``app/`` the pair cannot come apart -- ``record_paydays`` is
+            # the only writer and co-writes the cadence with the batch's own
+            # first payday -- so this states what that writer would have
+            # stated for a batch recorded at the new cadence.  The stored
+            # cadence and the phase it belongs to are ONE fact that
+            # ``budget.pay_schedule`` holds as two columns, which is ledger
+            # row **N-492** and what **R-PC58** puts in ``C17``'s era row.
+            nominal_anchor=_FUTURE_START + timedelta(days=28),
         )
         db_session.commit()
         return user_id
@@ -513,11 +539,11 @@ class TestTheCadenceThreadedIsTheOWNERSStoredOne:
             # pylint: disable=protected-access
             assert pay_period_rolling._future_period_count(
                 user_id,
-                pay_schedule_service.ScheduleFacts(self._STORED_CADENCE, None),
+                pay_schedule_service.ScheduleFacts(rhythm_of(self._STORED_CADENCE), None, None),
                 self._PROBE_DAY,
             ) == 0
             assert pay_period_rolling._future_period_count(
-                user_id, pay_schedule_service.ScheduleFacts(14, None),
+                user_id, pay_schedule_service.ScheduleFacts(rhythm_of(14), None, None),
                 self._PROBE_DAY,
             ) == 1
 

@@ -18,6 +18,8 @@ from app.services.investment_projection import (
 )
 from app.services.pay_calendar import PayCalendar
 
+from tests._test_helpers import rhythm_of
+
 #: The read pass's clock for every timeline case here.  It is an ARGUMENT since
 #: plan step C2-f2c -- ``build_contribution_timeline`` read ``date.today()``
 #: until then -- so the confirmed / projected split below is decided by a
@@ -67,7 +69,7 @@ def _periods(*paydays, cadence=14):
     """
     return PayCalendar.from_paydays(
         [(index, payday) for index, payday in enumerate(paydays, start=1)],
-        cadence, user_id=1,
+        rhythm_of(cadence), user_id=1,
         history_opens_on=None,
     ).saved()
 

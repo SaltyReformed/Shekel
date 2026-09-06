@@ -35,7 +35,12 @@ from app.schemas.validation import (
     PayScheduleSchema,
 )
 from app import ref_cache
-from app.services import pay_period_admin, pay_period_write, pay_schedule_service
+from app.services import (
+    pay_period_admin,
+    pay_period_write,
+    pay_rhythm,
+    pay_schedule_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +99,7 @@ def generate():
             user_id=current_user.id,
             first_payday=data["start_date"],
             num_periods=data["num_periods"],
-            rhythm=pay_schedule_service.Rhythm(
+            rhythm=pay_rhythm.Rhythm(
                 cadence_days=data["cadence_days"], shift=data["shift"],
             ),
         )
@@ -288,7 +293,7 @@ def regenerate():
     try:
         new_periods = pay_period_admin.regenerate_pay_periods(
             current_user.id, data["new_start_date"], data["num_periods"],
-            pay_schedule_service.Rhythm(
+            pay_rhythm.Rhythm(
                 cadence_days=data["cadence_days"], shift=data["shift"],
             ),
             confirm_discard=data["confirm_discard"],
@@ -361,7 +366,7 @@ def reset():
     try:
         new_periods = pay_period_admin.reset_pay_periods(
             current_user.id, data["new_start_date"], data["num_periods"],
-            pay_schedule_service.Rhythm(
+            pay_rhythm.Rhythm(
                 cadence_days=data["cadence_days"], shift=data["shift"],
             ),
         )
