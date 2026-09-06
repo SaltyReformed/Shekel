@@ -290,7 +290,12 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
           asserted on that the bank never names.
           **`account_10_repair_runbook.md` beside this file is SUPERSEDED and carries a banner
           saying so**; its rewrite is this step's own work and waits on C18, because the
-          rehearsal must run against the calendar the repair is performed on.
+          rehearsal must run against the calendar the repair is performed on. **Start the rewrite
+          from that banner and the section under it, *What the rewrite must encode*** -- the
+          ordered 36-act sequence as actually driven, the row ids (781, 865, 1069, transfers 1 and
+          102), the two points where the books boundary FORCES the order, the five obligations the
+          neutral review left, and the post-state to reproduce. Everything below that section is
+          the old design and is evidence, never instructions.
         * [x] **X-f3c-2b-2d** `1f0c1cd7` -- the archived drawer card carries the live cell's own **Edit** link, ungated and carrying no `#books-opening` fragment (**R-JT**), so the door **R-IE** gave two entrances has a click path once an account is archived. Closed **N-430**; opened **N-453**, **N-454**.
       * [ ] **X-f3c-2b-3** `feat(cash): a balance is not declared for a day the books
         did not exist on` -- the ASSERTION side of the books boundary, which is
