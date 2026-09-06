@@ -35,6 +35,9 @@ from tests.test_services.test_statement_match._builders import (
     a_rule,
     a_submission,
     a_transaction,
+    an_envelope,
+    an_unexplained_outflow,
+    filed_by,
 )
 
 _ENTRIES = [
@@ -1607,3 +1610,100 @@ class TestTheDeletePost:
 
         assert db.session.query(AccountExternalIdentity).count() == 1
         assert db.session.query(BankStatementLine).count() == 2
+
+
+class TestNoLinkHereReachesTheRetiringQueue:
+    """Plan step ``bank_import:X-gi-1``.
+
+    Three links on this page opened ``accounts.review_statements``, and plan
+    step ``bank_import:X-gi-2`` deletes that endpoint.  **The URL is what is
+    asserted and not the link TEXT**, because a repoint that left one
+    ``url_for`` behind would raise ``BuildError`` at render time on the day
+    that step lands -- a 500 on the import screen, found by a person rather
+    than by this suite.
+
+    **Asserted over a page with acts staged on it**, because two of the three
+    links are inside sections that render only where the account has something
+    to show: an absence assertion over a bare page is satisfied by rendering
+    neither the link nor the section it lives in, which is why the first case
+    here grades the staging.
+    """
+
+    def _a_page_with_the_filed_section_rendered(
+        self, auth_client, db, seed_user,
+    ):
+        """Return the statements page with its rule-filed section populated.
+
+        Returns:
+            The rendered page, as text.
+        """
+        envelope = an_envelope(seed_user)
+        line = an_unexplained_outflow(seed_user, merchant="Amazon")
+        db.session.commit()
+        filed_by(seed_user, line, envelope, by_rule=True)
+        db.session.commit()
+
+        response = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        )
+        assert response.status_code == 200
+        return response.get_data(as_text=True)
+
+    def test_the_rule_filed_section_really_rendered(
+        self, auth_client, db, seed_user,
+    ):
+        """The staging the absence assertions below are quantified over."""
+        page = self._a_page_with_the_filed_section_rendered(
+            auth_client, db, seed_user,
+        )
+
+        assert "Undoing one removes the" in page, (
+            "the rule-filed footer did not render, so this class's absence "
+            "assertions would be quantified over a page without it"
+        )
+
+    def test_no_url_on_the_page_names_the_review_queue(
+        self, auth_client, db, seed_user,
+    ):
+        """The repoint, read off the URLs the page actually emits."""
+        page = self._a_page_with_the_filed_section_rendered(
+            auth_client, db, seed_user,
+        )
+        queue = f"/accounts/{seed_user['account'].id}/statements/review"
+
+        assert f'href="{queue}"' not in page, (
+            "a link on the statements page still opens the review queue, "
+            "which bank_import:X-gi-2 deletes"
+        )
+
+    def test_the_three_of_them_lead_to_the_reconcile_page(
+        self, auth_client, db, seed_user,
+    ):
+        """Where they go now, and how many there are.
+
+        The header's *Review matches* button was DELETED rather than
+        repointed: the queue's job is this page's inbox tab, which the primary
+        button beside it already opened, so a repoint would have put two
+        controls on one header leading to one URL.  The banner's *waits on ...
+        for you to accept it* and the rule-filed footer's *puts the bank line
+        back among the unexplained on ...* are the two that were repointed.
+        **A COUNT and not three presence checks**, because a presence check
+        passes just as well against the duplicate button the deletion exists
+        to prevent.
+        """
+        page = self._a_page_with_the_filed_section_rendered(
+            auth_client, db, seed_user,
+        )
+        reconcile = f"/accounts/{seed_user['account'].id}/statements/reconcile"
+        bare = page.count(f'href="{reconcile}"')
+
+        assert bare == 3, (
+            f"expected the Reconcile button and the two repointed sentences "
+            f"pointing at the untabbed page; found {bare}"
+        )
+        assert re.search(
+            r"Reconcile\s+page</a> for you to accept it", page,
+        ), "the import banner's sentence does not lead to Reconcile"
+        assert re.search(
+            r"Reconcile\s+page</a>; the Undo itself leaves you here", page,
+        ), "the rule-filed footer's sentence does not lead to Reconcile"

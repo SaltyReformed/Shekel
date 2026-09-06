@@ -120,19 +120,32 @@ except ImportError:  # pragma: no cover - taken only on the HEAD side
 # midnight names its own cause instead of reading as a defect.
 _CAPTURED_ON = date.today()
 
-# The what-if the readiness fragment is exercised at.  A merit horizon is used
-# rather than an SWR or a return rate because it moves the SALARY PATH, so the
-# override arm recomputes the pension, the income target and the projection --
-# the widest of the three what-ifs, and the one whose second read pass this
-# leaf collapses.
-_MERIT_HORIZON_WHATIF = 7
+# The what-if the readiness fragment is exercised at.
+#
+# **It was a merit horizon until plan step salary:S3-c**, chosen because that
+# axis moved the SALARY PATH and so made the override arm recompute the
+# pension, the income target and the projection -- the widest of the three
+# what-ifs.  Ruling **R-SAL11** deleted the setting behind it, and the axis
+# with it, so this harness would name a keyword neither tree accepts.  The SWR
+# is the widest of what remains AND, unlike the return rate, it exists on
+# every tree this instrument still has to run on -- which is the property that
+# matters here, because a harness that compiles on only one side of a cutover
+# proves nothing.
+#
+# **What this costs, stated rather than left to be discovered**: the override
+# arm no longer recomputes the salary path, so a diff taken across a step that
+# moves a salary figure will show it in the BASELINE block and not in the
+# what-if delta.  Plan step salary:S3-f restores a salary-path what-if (a
+# per-raise end-year probe on the plan point), and this constant should move
+# back onto it then.
+_SWR_WHATIF = Decimal("0.0300")
 
 # The pre-C2-f2d-2 ``compute_readiness_whatif`` took its what-ifs as keyword
 # arguments; the tree that leaf ships takes ONE ``PlanPoint``.  Held as a dict
 # for the same reason :func:`_before` resolves entry points by name: naming a
 # keyword the current signature does not have would make this file read as
 # broken on the tree it is running on, over a branch that cannot execute there.
-_HEAD_WHATIF_KWARGS = {"merit_horizon_override": _MERIT_HORIZON_WHATIF}
+_HEAD_WHATIF_KWARGS = {"swr_override": _SWR_WHATIF}
 
 
 def _money(value):
@@ -387,7 +400,7 @@ def _figures_after(source):
 
 
 def _whatif_at(inputs):
-    """The merit-horizon what-if point, on whichever tree is in front of us.
+    """The what-if point, on whichever tree is in front of us.
 
     The C2-f2d-2 tree took three keyword overrides; C2-f2d-4 resolves them
     against the owner's settings through ``plan_with``, so the point is built
@@ -402,7 +415,7 @@ def _whatif_at(inputs):
     builder = getattr(inputs, "plan_with", None)
     if builder is None:
         return None
-    return builder(merit_horizon_override=_MERIT_HORIZON_WHATIF)
+    return builder(swr_override=_SWR_WHATIF)
 
 
 def _whatif_override(inputs):

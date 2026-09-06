@@ -1001,7 +1001,7 @@ section 4, under their unchanged ids.*
   collapsed twelve sites in `routes/transactions/forms.py` into four; `url_converters.py`,
   `routes/transfers/_helpers.py` (which counts its own `request.form` site, so it says 35) and
   `steps.md` state the same number and were moved with it.
-* [ ] **X-br** `container` -- THE FRESH CONTAINER PER RUN (ruled 2026-09-04).
+* [x] **X-br** `6a3eb135` -- THE FRESH CONTAINER PER RUN (ruled 2026-09-04): all four leaves shipped.
   Every fence the suite carries -- the slot, `RESTART_TEST_DB`, the
   live-backend probe, `TEST_DB_PREFIX`, `TEST_TEMPLATE_DATABASE` -- exists
   because ONE postmaster serves every worktree. A cluster per run makes each
@@ -1066,11 +1066,12 @@ section 4, under their unchanged ids.*
   **THE ORDER IS LOAD-BEARING -- unmask FIRST, then the ports**: the three tests now skipping ARE
   the collision and the only witnesses that the laundering arms are wrong, so fixing the ports first
   leaves the laundering untested with its witnesses gone, which is strictly worse than today.
-* [ ] **X-br-4** `refactor(test): delete what the shared postmaster needed` --
-  the payoff: the slot, the probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX`,
-  `TEST_TEMPLATE_DATABASE` and the catalog-fragmentation section all go.
-  Closes **N-457**, whose remedy was always deletion. After **X-br-2** AND
-  **X-br-3**.
+* [x] **X-br-4** `6a3eb135` -- the slot, the probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX` and the
+  `test-db` service are gone; the private cluster is the only path. Closed **N-457**, whose failure
+  mode is now unrepresentable. **Its own sentence was WRONG about one of the five fences**: the
+  slot's CONTENTION hazard survives a per-run cluster, so the LOCK went and a NOTE replaced it
+  (**R-BAL1**); the bake port became caller-chosen (**R-BAL2**). **A LATER STEP MUST OBEY**: N-459's
+  remaining site, the deploy fixtures' `-p 0:443`, stays with **X-bs**.
 * [ ] **X-bt** `refactor(test): one producer answers whether a daemon is safe to spawn on` --
   `scripts/test.sh` ASKS the daemon (`docker info`) while `tests/test_deploy/conftest.py` matches a
   PATH ALLOWLIST, and the conftest cannot read the wrapper's answer because in every case it exists
@@ -1079,6 +1080,21 @@ section 4, under their unchanged ids.*
   `conftest.py:69` still carries it. Build ONE predicate both reach and DELETE the allowlist; it must
   separate UNREACHABLE from NOT-ISOLATED (**X-br-3**'s M6) and read `CI` through a vocabulary.
   **Its rank risk**: on GitHub `docker info` says NOT ROOTLESS, throwing 28 tests onto the `CI` arm.
+  **N-461 OCCURRED 2026-09-05, during `X-br-4`**, which is this row's strongest evidence because
+  it is not hypothetical drift: `build_test_db_image.py --force` run BY HAND built and committed
+  its image on the SYSTEM daemon, the script reading no `DOCKER_HOST` while the wrapper sets one.
+  Six `shekel-test-db` images, 489 MB each, oldest 17 h, so it has recurred since `X-br-1`; the
+  bake CONTAINERS were cleaned up and the IMAGES were not, and nothing prunes them. **The session
+  that did it had read the finding an hour earlier.**
+* [ ] **X-by** `fix(test): a worktree's suite runs its own interpreter` -- owns **BAL-469**, the
+  half `X-br-4` did not reach: the per-run cluster made a DATABASE unshareable and the INTERPRETER
+  is still shared. Four of the seven worktrees hold no `.venv`, so `scripts/test.sh:114` falls
+  through to `command -v python3` and their pytest resolves to the main checkout's -- measured with
+  three full suites live at once, each correctly in its own cluster. **The comment is already
+  wrong**: `:259` states every worktree shares one venv, and `shekel-reg2` and `shekel-r7dd` do not,
+  so the step owes that line a correction as well as a fix. **The fence this deletes** is the
+  convention that `requirements.txt` is pinned; peer detection does not depend on the sharing, since
+  it reads `/proc/<pid>/cwd` precisely because argv would name the main checkout.
 * [ ] **X-bg** `feat(transfers): an occurrence that did not happen is not an archive` --
   closes **N-386**, whose row carries the measurement. **The door derives its own
   destructiveness from a link rather than from what the owner said**:

@@ -142,7 +142,7 @@ def _asked() -> DirectoryAsk:
             control that produces it can send
             (:data:`SEARCH_MAX_LENGTH`).  **A 404 rather than a rendered
             apology**, which is the answer
-            :func:`~.statement_reconcile._requested_tab` already gives for the
+            :func:`~._reconcile_query.requested_tab` already gives for the
             same shape: nothing composes this URL by hand, so a value that does
             not resolve is a tampered or stale request rather than a person
             mid-edit.  A well-formed id this account has never seen 404s one

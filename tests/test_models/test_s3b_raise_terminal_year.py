@@ -315,6 +315,10 @@ class TestTheColumnIsLiveAndNullIsTheIdentity:
         a class with fixed fields rather than a ``SalaryRaise`` with the
         attribute deleted, because deleting a mapped attribute on an ORM
         instance triggers a lazy reload and puts the field back.
+
+        **It is now a REFUSED input rather than an equivalent one**, which
+        is what ``test_a_shape_without_an_end_year_is_refused_not_defaulted``
+        below pins -- see that test for the re-derivation.
         """
 
         effective_year = 2027
@@ -339,32 +343,67 @@ class TestTheColumnIsLiveAndNullIsTheIdentity:
         db.session.commit()
         return row
 
-    def test_a_null_end_year_walks_identically_to_no_attribute(
+    def test_a_null_end_year_is_believed_indefinitely(
         self, app, seed_user,
     ):
-        """An all-NULL column is the identity the migration claims it is.
+        """A stored ``NULL`` means the raise carries no end.
 
-        The developer's own merit raise, walked to 2040 both ways.  The
-        engine passes ORM rows straight to :func:`apply_raises`, so this is
-        the production shape and not a fabricated one.
+        The developer's own merit raise as a committed row, walked to 2040.
+        The engine passes ORM rows straight to :func:`apply_raises`, so this
+        is the production shape and not a fabricated one.
 
-        **Both sides name an absolute figure**, and an adversarial review of
-        this step is why: an equality whose two sides run ONE producer
-        passes when that producer is wrong identically on both, so a
+        **It names an ABSOLUTE figure**, and an adversarial review of plan
+        step salary:S3-b is why: this case was written as an equality
+        against a second walk, and an equality whose two sides run ONE
+        producer passes when that producer is wrong identically on both -- a
         regression returning ``base_salary`` unchanged would have satisfied
-        the bare comparison.
+        it.
+
+        *It compared against a shape with NO ``terminal_year`` attribute
+        until plan step salary:S3-c, because that identity was S3-b's whole
+        claim to be additive.  S3-c deleted the attribute-less shape from
+        the codebase, so the comparison has no second side left; what it
+        asserted about THIS side is kept, and the refusal that replaced the
+        other side is the next test.*
         """
         with app.app_context():
             profile = _make_profile(seed_user)
             row = self._row(profile.id, None)
             assert row.terminal_year is None
-
-            as_of = date(2040, 12, 1)
-            assert apply_raises(BASE, [row], as_of) == UNTERMINATED_AT_2040
             assert (
-                apply_raises(BASE, [self._NoSuchAttribute()], as_of)
+                apply_raises(BASE, [row], date(2040, 12, 1))
                 == UNTERMINATED_AT_2040
             )
+
+    def test_a_shape_without_an_end_year_is_refused_not_defaulted(
+        self, app, seed_user,
+    ):
+        """The walk has no silent default for a missing end year (salary:S3-c).
+
+        **The re-derivation of what the identity above used to assert.**
+        :func:`apply_raises` read ``getattr(raise_obj, "terminal_year",
+        None)`` while the pension projector fabricated ``TerminatedRaise``
+        values that predated the column; plan step salary:S3-c deleted that
+        fabrication, every caller passes a row, and the read is now plain
+        attribute access.
+
+        The direction that matters is the money one.  A default of ``None``
+        means "believed indefinitely", so a malformed or half-built raise
+        would compound FOREVER and read as a larger salary rather than
+        failing -- ``UNTERMINATED_AT_2040`` instead of an error, on a
+        pension that reads the projection's last years.  Re-adding the
+        ``getattr`` default would restore exactly that, and this is what
+        fails if someone does.
+
+        It is written against the walk rather than the reader because the
+        reader is private; the failure is what a caller would see.
+        """
+        with app.app_context():
+            _make_profile(seed_user)
+            with pytest.raises(AttributeError, match="terminal_year"):
+                apply_raises(
+                    BASE, [self._NoSuchAttribute()], date(2040, 12, 1),
+                )
 
     def test_a_stored_end_year_actually_terminates_the_raise(
         self, app, seed_user,

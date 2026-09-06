@@ -43,6 +43,13 @@ measured and refused**: rendering every card's candidate rows with the page is
 67 rows in 18 cards at the workbench's own 991 bytes a row, ~1.2 MB, which is
 finding **N-374** rebuilt one surface later.
 
+**ONE card's rows DO render with the page, behind ``?open=<line_id>``** (plan
+step ``bank_import:X-gi-1``, ruling **bank_import:R-KA**), and that is not the
+refused alternative: it is one card rather than eighteen, on a request that
+exists only because the owner asked for it.  Why that render reaches EVERY
+unexplained row where the fragment reaches one pay period is argued once, in
+:mod:`app.services.statement_match._opened`.
+
 **It serves every tab the service builds** (plan step ``bank_import:X-gj-1c``).
 The two whose cards are ACTS already applied -- Explained and Filed by rules --
 arrived with that step, and with them the ``_TABS_SERVED`` tuple that had 404'd
@@ -66,13 +73,18 @@ to :mod:`app.services.statement_match`.
 """
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from flask import abort, render_template, request, url_for
 from flask_login import current_user, login_required
 from app.exceptions import ValidationError
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
+from app.routes.accounts._reconcile_query import (
+    asked_for_everything,
+    asked_to_open,
+    requested_tab,
+)
 from app.routes.accounts._statement_doors import (
     StatementDoorContext,
     fragment_door,
@@ -99,14 +111,14 @@ from app.services import balance_at, bank_agreement
 from app.services.category_service import list_active_categories
 from app.services.statement_match import (
     REGISTER_LIMIT,
-    MatchCandidates,
-    MatchSubmission,
+    MatchAsk,
+    MatchReach,
     ReviewScope,
     RuleDoorAccepts,
-    Tab,
     apply_reviewed,
-    preview_hand_build,
+    opened_match,
     reconcile_page,
+    refused_match,
     review_set,
     rules_worth_offering,
     unskip_line,
@@ -159,76 +171,7 @@ _OK_WITH_NO_ACT = (
 )
 
 
-def _requested_tab() -> Tab:
-    """Return which tab the request is about.
 
-    **ONE reader for both methods**, over ``request.values``: the GET carries
-    the tab as a query argument and the POST as a hidden field, and two
-    readers would be two places for the answer to differ -- which is a page
-    that applies a pass and answers with another tab.
-
-    **Every tab the service builds is served, as of plan step
-    ``bank_import:X-gj-1c``.**  This route carried a ``_TABS_SERVED`` tuple and
-    404'd a tab outside it, because ``X-gj-1b`` shipped the three whose cards
-    are bank lines and the two whose cards are ACTS were not built yet --
-    offering one would have been a control that cannot succeed (**R-HW**).
-    Both are built now, so the tuple guarded nothing and is DELETED rather than
-    widened to hold every member of the enum: a subset constant equal to the
-    whole set is a fence a reader has to check against the enum to trust.
-
-    Returns:
-        The :class:`~app.services.statement_match.Tab`, defaulting to the
-        inbox.
-
-    Raises:
-        werkzeug.exceptions.NotFound: When the value names no tab at all.
-            **A 404 rather than a rendered apology**, which is the answer
-            :func:`~.bank_agreement._requested_day` already gives for the same
-            shape: nothing composes this URL by hand, so a value that does not
-            resolve is a tampered or stale request rather than a person
-            mid-edit.
-    """
-    asked = request.values.get("tab")
-    if asked is None:
-        return Tab.TO_EXPLAIN
-    try:
-        return Tab(asked)
-    except ValueError:
-        return abort(404)
-
-
-def _asked_for_everything() -> bool:
-    """Return whether the request asked for the whole settled record.
-
-    Plan steps ``bank_import:X-gj-1c`` and ``X-gj-4c-2``.  **The bound the
-    register offered to lift, carried onto the tabs that replace it**
-    (**R-HU**, **R-GX**): three tabs now render
-    :data:`~app.services.statement_match.REGISTER_LIMIT` rows and say how many
-    they withheld -- the two settled ones and the Skipped tab -- and this is
-    what each of their *show the other N* links asks.  On the developer's own
-    account it reaches 171 of 221 acts, so retiring the register without it
-    would put them out of reach.
-
-    A PRESENCE test and not a value one, exactly as the register's own reader
-    is: the link either carries the flag or it does not, so there is no
-    spelling of it to parse and no value to refuse.  What a crafted request
-    can ask for is the page it would get by following the link the page
-    already renders.
-
-    **Over ``request.args`` and not ``request.values``**, which is the register's
-    own reader and is the narrower of the two.  Nothing submits this in a form
-    BODY: the *show the other N* link carries it in a query string, and the
-    Undo form carries it in its own ACTION's query string -- which is
-    ``request.args`` on a POST as much as on a GET, and is why that form needs
-    no hidden field at all.  Reading ``values`` would let a body flip the bound
-    on a door, which is a widening nothing here asks for.  (:func:`_requested_tab`
-    does read ``values``, and must: the Apply form carries ``tab`` as a real
-    hidden field.)
-
-    Returns:
-        Whether the bound is lifted for this render.
-    """
-    return "all" in request.args
 
 
 def _chip_href(account_id: int, chip) -> "str | None":
@@ -324,7 +267,7 @@ class _Answer:
     rules: object = None
 
 
-def _reconcile_context(account, scope, tab, answer: _Answer) -> dict:
+def _reconcile_context(account, scope, tab, answer: _Answer, opened_line) -> dict:
     """Assemble what the Reconcile body renders, for the page and the POST.
 
     ONE builder, because the POST's answer IS the screen: a second assembly
@@ -340,11 +283,16 @@ def _reconcile_context(account, scope, tab, answer: _Answer) -> dict:
             before the pass, which is exactly what must not be shown after it.
         tab: Which tab is open (:class:`~app.services.statement_match.Tab`).
         answer: What this render has to say (:class:`_Answer`).
+        opened_line: The bank line whose MATCH pane renders in the document,
+            or ``None`` (:func:`~._reconcile_query.asked_to_open`).  **A parameter and not a
+            read**, for the reason ``tab`` is one: this builder runs after the
+            door has committed, so a reader here answers a malformed request
+            with a 404 over a pass that has already been applied.
 
     Returns:
         The template context.
     """
-    show_all = _asked_for_everything()
+    show_all = asked_for_everything()
     page = reconcile_page(
         scope,
         # **The route builds the balance pass**, which is the rule every read
@@ -361,6 +309,9 @@ def _reconcile_context(account, scope, tab, answer: _Answer) -> dict:
         # read it and the template never asks.  *It said "only the two settled
         # tabs" until that ruling.*
         None if show_all else REGISTER_LIMIT,
+        # **WHICH card renders its rows in the document** (plan step
+        # ``bank_import:X-gi-1``, rulings **R-KA** and **R-BI1**).
+        opened_line=opened_line,
     )
     return {
         "account": account,
@@ -389,7 +340,7 @@ def _reconcile_context(account, scope, tab, answer: _Answer) -> dict:
     }
 
 
-def _answering(account, tab, unacted):
+def _answering(account, tab, unacted, opened_line):
     """Return this door's own surface, as the callable every arm renders with.
 
     **A closure rather than a six-argument function**, which is the remedy a
@@ -414,6 +365,9 @@ def _answering(account, tab, unacted):
         tab: Which tab is open.
         unacted: The sentence naming cards OK'd with no act named, or
             ``None``.
+        opened_line: The bank line whose MATCH pane renders in the document,
+            or ``None``.  Bound here with the other three because it is read
+            BEFORE the door for the reason :func:`~._reconcile_query.asked_to_open` records.
 
     Returns:
         ``(scope, *, outcome=None, error=None) -> response``.
@@ -442,6 +396,7 @@ def _answering(account, tab, unacted):
                     outcome=outcome, error=error, unacted=unacted,
                     rules=rules,
                 ),
+                opened_line,
             ),
         )
         return body if error is None else designed_error(body, 400)
@@ -464,12 +419,13 @@ def statement_reconcile(account_id):
         "not yours".  There is no longer a tab this build declines to serve.
     """
     account = load_cash_account_or_404(account_id)
-    tab = _requested_tab()
+    tab = requested_tab()
+    opened_line = asked_to_open()
     return render_template(
         "accounts/statement_reconcile.html",
         **_reconcile_context(
             account, ReviewScope.build(current_user.id, account_id), tab,
-            _Answer(),
+            _Answer(), opened_line,
         ),
     )
 
@@ -509,7 +465,7 @@ def apply_statement_reconcile(account_id):
         htmx swaps it (:mod:`app.utils.error_fragments`).
     """
     account = load_cash_account_or_404(account_id)
-    tab = _requested_tab()
+    tab = requested_tab()
 
     # ONE derivation, built HERE.  Only a route builds a read pass -- the same
     # rule ``BalanceContext`` is held to -- and this one serves three
@@ -523,6 +479,7 @@ def apply_statement_reconcile(account_id):
         None if not silent else _OK_WITH_NO_ACT.format(
             count=len(silent), lines=", ".join(silent),
         ),
+        asked_to_open(),
     )
     # **The grader runs before the door**, so a malformed body has written
     # nothing at all.  A malformed body is a pass-level refusal on purpose --
@@ -650,7 +607,7 @@ def state_reconcile_merchant_rules(account_id):
         fragment so htmx swaps it.
     """
     account = load_cash_account_or_404(account_id)
-    tab = _requested_tab()
+    tab = requested_tab()
 
     # ONE derivation, built BEFORE the write and still valid after it, for the
     # reason :func:`~.statement_matches.state_merchant_rules` states at its
@@ -660,7 +617,7 @@ def state_reconcile_merchant_rules(account_id):
     # rules themselves.  That is a closed argument over one table rather than
     # an enumeration over an open set of writers.
     scope = ReviewScope.build(current_user.id, account_id)
-    render = _answering(account, tab, None)
+    render = _answering(account, tab, None, asked_to_open())
 
     outcome = record_submitted_rules(
         request.form, current_user.id, account_id, _logger,
@@ -730,92 +687,44 @@ def statement_reconcile_match(account_id, line_id):
     subject = review.card_subject(line_id)
     if subject is None:
         abort(404)
-    line = subject.line
 
+    query = request.form.get(f"q-{line_id}", "")
     payload = reconcile_match_payload(request.form, str(line_id))
     errors = _match_schema.validate(payload)
     if errors:
         return designed_error(
             render_template(
-                _MATCH_PANE, account=account, line=line,
-                proposal=subject.proposal, rows=(),
-                ticked=frozenset(), query="",
-                totals=None, refusal=refusal_sentence(errors),
+                _MATCH_PANE, account=account,
+                opened=refused_match(subject),
+                refusal=refusal_sentence(errors),
             ),
             400,
         )
     submitted = _match_schema.load(payload)
-    query = request.form.get(f"q-{line_id}", "")
-    candidates = MatchCandidates.of(scope, review)
     # NO event and NO commit.  Nothing was written, and a read pass that
     # logged would put a line in the audit trail for every checkbox on the
     # page.
     return render_template(
         _MATCH_PANE,
         account=account,
-        line=line,
-        # **The tier's own rows travel with the pane**, so unticking one
-        # re-prices like any other: they were rendered by the CARD until plan
-        # step ``bank_import:X-gj-1b`` -- a sibling of this fragment, outside
-        # the element whose change fires it -- so an untick reached no trigger
-        # and the panel went on stating a difference that was no longer true.
-        proposal=subject.proposal,
-        rows=(
-            candidates.matching(query) if query.strip()
-            else candidates.for_line(line)
+        # **ONE producer for a pane two surfaces render** (plan step
+        # ``bank_import:X-gi-1``).  The Reconcile PAGE builds the same value
+        # for the card ``?open=`` names, so a ticked row cannot be dropped on
+        # one path and kept on the other.  What differs is the REACH: this
+        # render has the search box, so it opens on the line's own pay period
+        # (**R-KA**'s byte argument), where the scriptless one cannot narrow
+        # and so is given everything.
+        opened=opened_match(
+            scope, review,
+            MatchAsk(
+                subject=subject,
+                submitted=submitted_match(submitted),
+                query=query,
+                reach=MatchReach.THE_PERIOD,
+            ),
         ),
-        # **Ticked by (kind, id) and re-rendered with the FRESH token.**  The
-        # token carries the figure and revision the row was reviewed at, and
-        # this fragment IS a fresh review of them: re-emitting the submitted
-        # token would show the owner a row that has moved while telling the
-        # door it had not.
-        ticked=frozenset(
-            (row.kind, row.row_id) for row in submitted["rows"]
-        ),
-        query=query,
-        totals=preview_hand_build(_still_ticked(submitted_match(submitted)), scope),
         refusal=None,
     )
-
-
-def _still_ticked(submission: MatchSubmission) -> MatchSubmission:
-    """Return *submission* with an attribution the owner has just unticked gone.
-
-    Plan step ``bank_import:X-gj-3a``, second pass.  **This is a TRANSIENT
-    BROWSER STATE and not a body the door will ever be asked to honour**, so
-    it is normalised here rather than refused.
-
-    The sequence is ordinary.  The owner names a member for the difference,
-    then unticks that member.  The change bubbles to ``.rec-match-picks`` and
-    fires this fragment -- and the select, which has not been re-rendered yet,
-    posts its now-stale value alongside a ``rows-<line>`` list that no longer
-    holds it.  :func:`~app.services.statement_match.resolve_rows` refuses
-    exactly that shape, correctly and by design, so without this the panel
-    would answer *"This match says its difference belongs to a row it does not
-    include.  Reload the page and try again"* -- a sentence written for a
-    crafted body, shown for a legal click, on the one screen whose whole job
-    is to say what the press would do.
-
-    **The swap that follows drops the option**, so the next body carries no
-    attribution and the state is self-correcting; what this removes is the one
-    render in between.  Doing it in the ROUTE and not in
-    :func:`~app.schemas.validation.statement_reconcile.reconcile_match_payload`
-    is deliberate: that reader is shared with APPLY, where dropping a
-    submitted attribution would silently change which of two money acts the
-    press performs.  Here nothing is written at all.
-
-    Args:
-        submission: What this fragment's body said.
-
-    Returns:
-        It unchanged, or without its ``attributed_to`` where that row is not
-        among the rows the same body ticked.
-    """
-    if submission.attributed_to is None:
-        return submission
-    if submission.attributed_to in submission.rows:
-        return submission
-    return replace(submission, attributed_to=None)
 
 
 @accounts_bp.route(
@@ -861,10 +770,10 @@ def release_from_reconcile(account_id):
     account = load_cash_account_or_404(account_id)
     return release_and_return(
         account, "accounts.statement_reconcile",
-        tab=_requested_tab().value,
+        tab=requested_tab().value,
         # ``url_for`` drops a ``None`` argument, so the ordinary render
         # redirects to the plain URL rather than to one carrying ``all=``.
-        all=1 if _asked_for_everything() else None,
+        all=1 if asked_for_everything() else None,
     )
 
 
@@ -969,10 +878,10 @@ def unskip_from_reconcile(account_id):
     account = load_cash_account_or_404(account_id)
     target = url_for(
         "accounts.statement_reconcile",
-        account_id=account.id, tab=_requested_tab().value,
+        account_id=account.id, tab=requested_tab().value,
         # ``url_for`` drops a ``None`` argument, so the ordinary render
         # redirects to the plain URL rather than to one carrying ``all=``.
-        all=1 if _asked_for_everything() else None,
+        all=1 if asked_for_everything() else None,
     )
 
     return run_one_id_door(

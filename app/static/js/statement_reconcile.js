@@ -11,8 +11,16 @@
 // and Apply is still a submit button.  What is lost is the bulk click, the
 // hidden new-envelope fields, the legend toggle, the running count and the
 // keyboard -- and the MATCH tab's live difference, whose absence leaves the
-// accept door refusing an unbalanced group and naming both sums, which is
-// what it does today.
+// accept door refusing an unbalanced group and naming both sums.
+//
+// **THE MATCH TAB ITSELF WAS NOT REACHABLE WITHOUT SCRIPT UNTIL PLAN STEP
+// bank_import:X-gi-1** (ruling R-KA), and this comment said the sentence above
+// was "what it does today" while the pane was a fragment fetched on
+// `intersect once` -- a trigger that never fires with scripting off, so the
+// tab was a permanent spinner and no group could be built at all.  The card's
+// scriptless link now opens `?open=<line_id>`, which renders that one card's
+// rows server-side; the sentence above is true from that step and was not
+// before it.
 //
 // **NO MONEY IS COMPUTED HERE**, which is the project's coding rule.  The
 // difference a group comes to is rendered by the server

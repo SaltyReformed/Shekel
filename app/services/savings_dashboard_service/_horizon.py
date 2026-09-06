@@ -370,9 +370,15 @@ def _retirement_investment_bands(
     salary:R14-b, the ENGINE-PRICED employer base rather than a constant one
     -- so the two ranges of one chart still meet where they touch, and they
     now meet by pricing the same paycheck rather than by both being flat.
-    The /retirement READINESS page still supplies the merit-horizon salary
-    path (its own fork F3 refinement) for paydays past the saved calendar,
-    which is the one place the two still differ.
+    The /retirement READINESS page still supplies a projected salary path
+    (its own fork F3 refinement) for paydays past the saved calendar, where
+    this band holds the last real paycheck -- the one place the two still
+    differ.  **They no longer differ about when a raise STOPS**: plan step
+    salary:S3-c gave both engines the same termination rule (ruling
+    **R-SAL11**, each raise's own stored ``terminal_year``).  What is left is
+    a difference in REACH, plus an AS-OF rule the two still spell
+    differently (payday-priced against December-of-year), and plan step
+    salary:S3 is the step that closes both.
 
     The engine is skipped entirely (returning zero bands) when the user has
     no retirement or investment account, so a loan- or cash-only user pays

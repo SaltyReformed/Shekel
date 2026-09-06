@@ -66,7 +66,7 @@ _PROFILE_UPDATE_FIELDS = {
 }
 _RAISE_UPDATE_FIELDS = {
     "raise_type_id", "effective_month", "effective_year",
-    "percentage", "flat_amount", "is_recurring", "notes",
+    "percentage", "flat_amount", "is_recurring", "terminal_year", "notes",
 }
 _DEDUCTION_UPDATE_FIELDS = {
     "name", "deduction_timing_id", "calc_method_id", "amount",

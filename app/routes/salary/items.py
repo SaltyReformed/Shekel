@@ -80,8 +80,6 @@ def add_raise(profile_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     data = _raise_schema.load(request.form)
-    # Handle checkbox -- form sends "on" or nothing
-    data["is_recurring"] = request.form.get("is_recurring") == "on"
 
     # Convert percentage input (e.g. 3 → 0.03) for storage.
     if data.get("percentage") is not None:
@@ -239,7 +237,6 @@ def update_raise(raise_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
     data = _raise_update_schema.load(request.form)
-    data["is_recurring"] = request.form.get("is_recurring") == "on"
 
     # Stale-form check (commit C-18 / F-010).
     submitted_version = data.pop("version_id", None)

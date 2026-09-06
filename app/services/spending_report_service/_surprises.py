@@ -37,6 +37,9 @@ def _build_surprises(
             built once by the caller.  It is REQUIRED rather than optional
             because a row whose plan is derived cannot be priced without one,
             and an optional basis would put the refusal back one branch later.
+            **BOTH terms take it since plan step X-bu** -- the actual half as
+            well as the estimate -- which is what makes an unsettled row's
+            delta zero by construction rather than by two producers agreeing.
 
     Returns:
         The :class:`Surprises` (capped rows + full net).
@@ -44,17 +47,37 @@ def _build_surprises(
     surprises: list[Surprise] = []
     net = ZERO
     for txn in txns:
-        actual = spending_analysis.resolved_actual_amount(txn)
+        actual = spending_analysis.resolved_actual_amount(txn, basis)
         # The ESTIMATE half, through the amount model's ONE plan producer.
-        # It read ``owned_amount``, the cheap accessor that answers a row's own
-        # ``estimated_amount`` column and REFUSES a row whose plan is derived --
+        # It read ``owned_amount``, the cheap accessor that answered a row's own
+        # ``estimated_amount`` column and REFUSED a row whose plan is derived --
         # chosen deliberately as a tripwire, so that the first cutover to point
         # a derived row at this list would fail loudly rather than subtract a
         # ``None``.  That tripwire FIRED: the amount-source cutovers declared
         # 934 rows derived, 116 of them settled, and this list met one on real
         # data.  Routing the reader to ``resolve_transaction_amount`` is what
-        # the tripwire was for; the refusal stays where it belongs, in
-        # ``owned_amount``, for the readers that genuinely own their rows.
+        # the tripwire was for.
+        #
+        # **THE ACCESSOR ITSELF IS GONE as of plan step X-bu**, and that is why
+        # this comment is the record of a fixed defect rather than a warning
+        # about a live one.  An earlier draft ended "the refusal stays where it
+        # belongs, in ``owned_amount``, for the readers that genuinely own their
+        # rows" -- true when written, and the reason finding **BAL-462** ruled
+        # the remedy DELETE THE ACCESSOR: a public spelling of "what is this
+        # row's plan" that answers from the column is a second producer whoever
+        # reaches for it next.  The refusal survives as
+        # ``row_valuation.own_figure``, which takes the column as an ARGUMENT,
+        # inside rule 1's own arm.
+        #
+        # **THE LINE ABOVE TOOK THE SAME ROUTE AT THAT STEP**, and it is the
+        # half this fix did not reach: ``resolved_actual_amount``'s fall-through
+        # still read the column, so an UNSETTLED derived row raised there while
+        # this line resolved -- BAL-462 on the other population, held off only
+        # by ``query_settled_expenses``' status filter.  Two adversarial reviews
+        # measured it and the developer superseded BAL-462's "that reader is
+        # correct and stays" clause.  Both terms are now one call on one row
+        # against one basis, so an unsettled row is skipped rather than
+        # compared.
         #
         # It reproduces what the cutovers emptied rather than re-pricing.
         # Measured against the pre-cutover figures in ``system.audit_log`` on a

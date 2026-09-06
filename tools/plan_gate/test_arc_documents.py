@@ -141,7 +141,17 @@ CAPS = {
     # census and a developer ruling, both instruction.  Section 2's evidence
     # table was the only archivable-looking span and is not one -- every row is
     # a dated measurement an OPEN finding still cites.
-    "salary": 280,
+    # **RAISED 280 -> 320 by the developer, 2026-09-05**, on rule 4's terms and
+    # by the same bank_import calibration the balance and recurrence raises
+    # used.  The cap BOUND while decomposing `S3` into five leaves once
+    # `R-SAL11` ruled the raise model: the document sat at 256 of an effective
+    # 260 and the leaves need 17 lines.  **Rule 5's escape was spent FIRST and
+    # found nearly empty** -- only TWO shipped entries exist, `S2` was
+    # condensed to rule 7's pointer form for 3 lines, and `R14` carries an "a
+    # later step must obey" clause rule 5 protects.  12 open steps x 3.4 =
+    # 41 of room, and 256 + 41 + 20 headroom = 317, rounded to 320; `S3-c`'s
+    # option space still has to be written here when the developer rules it.
+    "salary": 320,
 }
 
 #: The signpost's cap, per document.  The balance README's reached 1,019 lines
