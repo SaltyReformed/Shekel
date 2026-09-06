@@ -173,10 +173,13 @@ class MerchantSection:
     **An ANSWERED merchant is not here, and that is the ruling rather than a
     filter.**  The review screen shows what is still being decided; a merchant
     the owner has answered for is a decision already made, and it is rendered
-    -- and RESTATED -- on the register (:class:`MerchantRegister`).  Measured
+    -- and RESTATED -- on the merchants list (ruling **bank_import:R-IC**).
+    Measured
     on the developer's own data 2026-08-27: this control was 30 rows and
     225,472 bytes, of which 29 rows were answers he had already given, on a
-    review body of 578,523 bytes.
+    review body of 578,523 bytes.  *That home was the REGISTER until plan step
+    ``bank_import:X-gi-2`` deleted it, which is why R-IC ruled the merchants
+    list ships first.*
 
     **Stating a rule here MOVES NO MONEY**, which is why it is a separate
     control posting to a separate door: the placements it produces are
@@ -396,9 +399,9 @@ def merchant_section(
     Returns:
         The :class:`MerchantSection` -- every merchant this pass has an
         unexplained outflow for and the owner has NOT answered for, ascending
-        by name.  An answered merchant is on the register instead (ruling
-        **bank_import:R-GX**), where its answer is shown and restated whether
-        or not any of its lines are still waiting.
+        by name.  An answered merchant is on the merchants list instead
+        (rulings **bank_import:R-GX** and **R-IC**), where its answer is shown
+        and restated whether or not any of its lines are still waiting.
     """
     waiting: "dict[int, _Waiting]" = {}
     names: "dict[int, str]" = {}

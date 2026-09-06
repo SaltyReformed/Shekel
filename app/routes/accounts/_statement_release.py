@@ -1,13 +1,14 @@
-"""The UNDO's route half, stated once for the three surfaces that render it.
+"""The UNDO's route half, stated once for the two surfaces that render it.
 
 Plan step ``bank_import:X-gf-2``.  Releasing a match is ONE act with one
-refusal story, and it is offered from three places: the RECONCILE page's two
+refusal story, and it is offered from two places: the RECONCILE page's two
 settled tabs, where every applied act is listed (plan step
-``bank_import:X-gj-1c``, ruling **R-HU**); the register, which that step
-retires and ``X-gi`` deletes; and the bank-statements page, where the acts a
-standing rule filed at import are receipted (ruling **R-GH**).  What differs
-between them is only WHERE THE OWNER WAS -- so the target is the parameter and
-the door is written once.
+``bank_import:X-gj-1c``, ruling **R-HU**); and the bank-statements page, where
+the acts a standing rule filed at import are receipted (ruling **R-GH**).  What
+differs between them is only WHERE THE OWNER WAS -- so the target is the
+parameter and the door is written once.  *It said THREE until plan step
+``bank_import:X-gi-2`` deleted the register, and the count matters below rather
+than being decoration.*
 
 **A door returns the owner to the page they pressed it on**, which is why the
 target is a parameter at all rather than a constant.  Both surfaces used to
@@ -18,7 +19,12 @@ have made the redirect land nowhere near the act.
 
 **The URL is what says which surface**, and nothing on the wire does.  A hidden
 field naming a destination would be a client-chosen redirect and an allowlist
-to keep; three routes over one function make the routing table the closed set.
+to keep; the routes over this one function make the routing table the closed
+set, whatever their number.  **The ARGUMENT is the closure and not the
+count** -- it was written as *three routes* and survived the deletion that made
+it two only because no submitter can spell a target at all: every call site
+passes an endpoint as a literal.  A premise quoted for a SECURITY property is
+the one to state so it cannot go stale.
 What a caller may add is which VIEW of its own page to come back to
 (``**target_args``), and it hands those over already graded -- the Reconcile
 page's tab is a :class:`~app.services.statement_match.Tab` member or a 404,
@@ -83,7 +89,8 @@ def _release_report(released) -> "tuple[str, str]":
 def release_and_return(account, target_endpoint: str, **target_args):
     """Undo the submitted match and send the owner back to *target_endpoint*.
 
-    **It does NOT put the settle days back**, and both surfaces say so: the
+    **It does NOT put the settle days back**, and both surfaces say so -- the
+    Reconcile tabs and the import receipt: the
     bank is still the best evidence the app has about when that money moved, so
     reverting a correction in order to tidy a relation would throw away the
     fact and keep the bookkeeping.  What comes back is the QUESTION.
@@ -105,8 +112,8 @@ def release_and_return(account, target_endpoint: str, **target_args):
         **target_args: What else names the VIEW the owner was looking at, for
             a target that has more than one (plan step ``bank_import:X-gj-1c``).
             The Reconcile page passes which tab is open and whether the bound
-            on settled acts is lifted; the two older surfaces pass nothing and
-            get the URL they always got.  **Route-supplied and never read off
+            on settled acts is lifted; the import receipt passes nothing and
+            gets the URL it always got.  **Route-supplied and never read off
             the wire here**: the caller has already graded whatever it took
             from the request, so nothing a submitter can spell reaches
             ``url_for`` through this -- which is the property the module

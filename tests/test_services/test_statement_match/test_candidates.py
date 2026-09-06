@@ -165,10 +165,15 @@ class TestWhichRowsTheBankNeverShowsByThemselves:
     lump payment to the card, and an envelope holding purchases is what the
     bank showed the purchases of.
 
-    **The rows stay in the panel and only the CLAIM is withdrawn**, which the
-    render tests in ``tests/test_routes/test_statement_matches.py`` pin: that
-    panel is also the hand-build form's row-picker, and ruling **R-GJ** leaves
-    the group match as a parked card payment's only arm.
+    **The rows stay in the panel and only the CLAIM is withdrawn**, which
+    ``test_statement_reconcile
+    .TestThePaneTagsARowTheBankNeverShowsAloneOnItsOwn`` pins on the render:
+    the MATCH pane's candidate list is what the owner assembles a group from,
+    and ruling **R-GJ** leaves the group match as a parked card payment's only
+    arm.  *That citation named ``test_statement_matches.py`` and was wrong when
+    written -- the render cases were the workbench's -- and plan step
+    ``bank_import:X-gi-2`` then deleted both modules, so the pair was rewritten
+    against the surviving pane in that same step rather than left uncovered.*
 
     The class above grades ``states_own_figure`` itself; this grades that the
     caveat is derived from it and from nothing else, so the two cannot drift.

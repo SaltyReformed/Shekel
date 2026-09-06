@@ -716,25 +716,6 @@ a.acct-cell__link:focus-visible {
   max-width: 16rem;
 }
 
-/* The hand-build WORKBENCH's two pick-lists (plan step bank_import:X-f6a-2;
-   moved off the review page at X-gf-3b, ruling bank_import:R-HC, which is why
-   this no longer says "the REVIEW page's" or names its Accept button).
-   The form offers every unmatched bank line beside every unmatched
-   app row, and a first import produces hundreds of each -- measured at 121
-   lines and 112 rows on the developer's own account -- so each list scrolls
-   inside a bounded box rather than pushing the Match button below three
-   screens of table.
-
-   A class rather than an inline style for the reason `.stmt-file-name` above
-   is one, and this is the second time that reason has been paid for: the CSP
-   is `style-src 'self'` with no `unsafe-inline`, so a `style="..."` attribute
-   is BLOCKED and the box would silently not scroll at all.  The template
-   linter refused the inline version before it could ship. */
-.stmt-pick-list {
-  max-height: 22rem;
-  overflow-y: auto;
-}
-
 /* The books-vs-bank page's day table (plan step bank_import:X-f6e-2, ruling
    R-GF).  It shows EVERY day the statement covers -- 232 of them on the
    developer's own account -- because hiding a day the bank describes would be
@@ -742,7 +723,7 @@ a.acct-cell__link:focus-visible {
    box with its header pinned, or the column meanings leave the screen four
    rows in and every figure below reads as an unlabelled number.
 
-   A class rather than an inline style for the reason `.stmt-pick-list` above
+   A class rather than an inline style for the reason `.stmt-file-name` above
    is one: the CSP is `style-src 'self'` with no `unsafe-inline`, so a
    `style="..."` attribute is BLOCKED and the box would silently not scroll. */
 .stmt-agreement-scroll {
@@ -773,11 +754,14 @@ a.acct-cell__link:focus-visible {
    on the pinned djlint 1.39.2 under this repo's `jinja` profile: H021 refuses
    an inline style UNLESS a Jinja expression sits between `style=` and the
    tag's own `>`.  Reconstruct the inline form of `.reconcile-amount`,
-   `.stmt-file-name`, `.stmt-pick-list` or `.stmt-agreement-scroll` and H021
-   fires on all four -- none of those tags carries Jinja after the attribute.
+   `.stmt-file-name` or `.stmt-agreement-scroll` and H021
+   fires on all three -- none of those tags carries Jinja after the attribute.
+   *The 2026-09-04 measurement was over FOUR: `.stmt-pick-list` was the fourth
+   and went with the workbench at plan step bank_import:X-gi-2.*
    This input does, twice (`maxlength` and `value`), which is why it alone
    passed pre-commit AND CI's own `djlint app/templates/ --lint` over all 159
-   files.  Roughly 20% of this codebase's tags hold a Jinja expression at all,
+   files (152 since plan step bank_import:X-gi-2 deleted seven; re-measured,
+   still 0 errors).  Roughly 20% of this codebase's tags hold a Jinja expression at all,
    and that is an UPPER bound on the blind set.
 
    `SHK01` in `.djlint_rules.yaml` closes the gap and `tests/test_arch/` proves

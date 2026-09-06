@@ -1,10 +1,13 @@
 """One reading of the merchant-rule form, and one door behind both surfaces.
 
 Plan step ``bank_import:X-gf-2``.  Two surfaces render the rule control -- the
-review QUEUE, for a merchant with no answer yet, and the REGISTER, where an
-answer already given is changed (ruling **bank_import:R-GX**) -- and they
+RECONCILE receipt, which offers a rule for a merchant the pass just filed
+spending for (ruling **bank_import:R-IB**), and the MERCHANTS list, where any
+answer is given or changed (ruling **bank_import:R-IC**) -- and they
 submit the identical form to two doors that differ only in which screen they
-answer with.  What the wire means is therefore stated once, here, rather than
+answer with.  *The two were the review QUEUE and the REGISTER when this module
+was written; plan step ``bank_import:X-gi-2`` deleted both, and the count is
+still two.*  What the wire means is therefore stated once, here, rather than
 in whichever door was written first.
 
 **The DOOR is here too, and pylint's cross-file ``duplicate-code`` is what

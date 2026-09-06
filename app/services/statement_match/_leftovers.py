@@ -931,8 +931,8 @@ def leftovers(
         # and :func:`~._section.merchant_section` emits only merchants
         # ``not in view.rules`` -- so the term could not have produced a row on
         # any input a database can hold.  That is ruling **R-GX** holding
-        # structurally: an ANSWERED merchant is on the register, and *never a
-        # purchase* is an answer.  Stated rather than kept, because a term no
+        # structurally: an ANSWERED merchant is on the merchants list, and
+        # *never a purchase* is an answer.  Stated rather than kept, because a term no
         # input can reach is a fence, and one nothing grades is a fence that
         # reads as coverage.
         merchants=merchant_section(

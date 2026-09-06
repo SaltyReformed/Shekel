@@ -195,19 +195,24 @@ class ReviewScope:
             READ COMMITTED -- which since plan step balance:X-i3 is true of
             the POST doors that build a scope and not of the GET that renders
             a screen, whose whole request is one snapshot.
-            **FOUR POST doors build one** since plan step
-            ``bank_import:X-gf-3b`` split the workbench off:
-            ``statement_matches.apply_statement_review`` and
-            ``.state_merchant_rules``, and
-            ``statement_workbench.apply_hand_match`` and
-            ``.statement_match_totals``.  *This list said THREE and named
-            ``statement_review_totals``, a route that step DELETED* -- an
-            enumeration quoted as a reason decays invisibly, because nobody
-            re-counts a premise.  Named by adversarial money review 2026-08-28.
-            **The two APPLY doors build TWO apiece, and that is the one place
-            two scopes in one request is right**: the second is a FRESH one for
-            the ANSWER, taken only on the path that WROTE, because the pass it
-            was applied against describes a state that no longer exists.  It is
+            **FOUR POST doors build one**, re-censused at plan step
+            ``bank_import:X-gi-2`` off ``ReviewScope.build``'s own call sites:
+            ``statement_reconcile.apply_statement_reconcile``,
+            ``.state_reconcile_merchant_rules``, ``.statement_reconcile_match``
+            and ``statements.import_statement``.  *This list has now been wrong
+            twice in the SAME direction -- it said THREE and named
+            ``statement_review_totals``, a route ``X-gf-3b`` deleted, then FOUR
+            across the queue and the workbench while OMITTING the import door,
+            which has derived a pass since standing rules began filing on
+            upload.*  An enumeration quoted as a reason decays invisibly,
+            because nobody re-counts a premise -- so this one is now taken from
+            the call sites rather than from the surfaces a reader remembers.
+            Named by adversarial money review 2026-08-28.
+            **ONE of them builds TWO, and that is the one place
+            two scopes in one request is right**: ``apply_statement_reconcile``
+            takes a FRESH one for the ANSWER, only on the path that WROTE,
+            because the pass it was applied against describes a state that no
+            longer exists.  It is
             structural rather than remembered now --
             ``_statement_doors.run_statement_fragment_door`` owns which scope
             each arm renders from, so a door cannot report a pass against the
