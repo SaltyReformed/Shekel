@@ -153,13 +153,17 @@ def top_up_rolling_window(user_id, as_of=None):
     # once before; it is now checked by
     # ``test_a_PIECEWISE_owner_whose_tail_was_truncated_can_still_extend``
     # rather than by a reader.**
-    # **It stops being true at plan step ``pay_calendar:C14-e``** (ledger row
-    # **pay_calendar:PC-497**, opened by ``C14-d``).  From that step the floor
-    # is the last paycheck's DISPLACED end while ``extend_pay_periods`` offers
-    # the NOMINAL grid day, and under a forward convention the nominal day
-    # falls inside that paycheck -- so the floor refuses, here, with no
-    # handler, on both of the app's main screens.  Corrected in advance rather
-    # than left to be discovered: this sentence has been wrong once before.
+    # **It STAYED true through plan step ``pay_calendar:C14-e-3``, and the
+    # paragraph above predicted it would not** (ledger row
+    # **pay_calendar:PC-497** fault 1, opened by ``C14-d``).  The hazard was
+    # real: the floor is the last paycheck's DISPLACED end, and while
+    # ``record_paydays`` recorded the NOMINAL grid day it was handed, a
+    # forward convention put that day inside the paycheck the calendar derives
+    # -- a refusal HERE, with no handler, on both of the app's main screens.
+    # ``C14-e-3`` closed it at the writer instead: ``_requested_paydays``
+    # records each element displaced, so the day offered and the floor are one
+    # value again.  Graded by
+    # ``test_a_FORWARD_convention_is_ACCEPTED_and_that_CLOSES_PC_497``.
     # **The CADENCE refusal that used to reach this line is gone** (plan step
     # ``pay_calendar:C4-c``, closing ledger row **pay_calendar:P33**).  The
     # writer refused a stored cadence below 2 while a stored ``end_date`` had

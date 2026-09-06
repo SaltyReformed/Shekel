@@ -287,7 +287,7 @@ class RecurrenceResolutionError(ShekelError):
 
     A broken invariant rather than bad user input, which is why it is not a
     ``ValidationError`` a route flashes: every user has had at least one pay
-    period since registration bootstraps one (``auth_service.register_user``),
+    period since registration bootstraps one (``registration_service.register_user``),
     and both cadence axes are ``NOT NULL`` columns under ``RESTRICT`` foreign
     keys onto ``ref`` tables the enums mirror.  Raised loudly so a recurrence
     can never be READ with a fabricated cadence, and -- because

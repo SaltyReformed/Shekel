@@ -5378,7 +5378,7 @@ class TestNoBaselineIsAnsweredOnceForEveryKind:
     the same commit, so the seven fabrications are gone with the state that
     produced them.
 
-    Unreachable in production -- ``auth_service.register_user`` writes a
+    Unreachable in production -- ``registration_service.register_user`` writes a
     baseline for every owner, nothing deletes or un-baselines one, and no path
     promotes a companion to owner -- which is precisely why it needs tests:
     nothing else would ever execute it.  The end-to-end arms live in

@@ -12,7 +12,7 @@ Two things were wrong with that and both are properties, not opinions.
 **A hand-written period has no ``budget.pay_schedule`` row beside it.**  No
 application door can produce that state: ``pay_period_write.record_paydays``
 upserts the owner's cadence in the same call that records a payday (the cadence
-rule, plan step C3-b), and ``auth_service.register_user`` reaches the table only
+rule, plan step C3-b), and ``registration_service.register_user`` reaches the table only
 through it.  So the seeded owner was the one shape production does not have --
 paydays with no recorded cadence, pay-calendar finding **P8** -- and that shape
 is what plan step ``pay_calendar:C4-b`` makes unconstructible with a foreign

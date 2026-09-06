@@ -169,7 +169,7 @@ def render_settings_dashboard(section, extra=None, status=200):
     the same function serves commands where such a block is meaningless.
 
     Every door that creates a user writes the row -- registration
-    (``auth_service.register_user``), the companion invite below, and
+    (``registration_service.register_user``), the companion invite below, and
     ``scripts/seed_companion.py`` -- so a missing one means the data was
     changed outside the application.  The two POST handlers that also
     create-if-missing keep doing so: a write door may author what it writes,

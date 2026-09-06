@@ -11,12 +11,12 @@ maps a day back to a step count.
 filing decision** (plan step **C14-d**).  Until the pay schedule carried a
 shift convention there was one answer to "where does the next paycheck land",
 so the grid and the projection were the same arithmetic and lived together in
-:mod:`._derive`.  Ruling **R-PC54** ends that: ``C14-e`` makes
-:func:`~._derive.projected_payday` the nominal day DISPLACED onto a business
-day under the owner's convention, and from that step the two questions have
-different answers on roughly 3% of paydays (**64** of the production owner's
-own 1,951 out to ``CALENDAR_DATE_MAX``, under either displacing convention,
-measured 2026-09-05).
+:mod:`._derive`.  Ruling **R-PC54** ended that, and ``C14-e-3`` shipped it:
+:func:`~._derive.projected_payday` is the nominal day DISPLACED onto a business
+day under the owner's convention, so the two questions now answer differently
+on roughly 3% of paydays -- **64** of the production owner's 1,888 PROJECTED
+paydays out to ``CALENDAR_DATE_MAX`` and **22** of the 684 below their record,
+under either displacing convention, re-derived 2026-09-06.
 
 Both answers have real callers, which is what makes the split load-bearing
 rather than tidy:
@@ -31,19 +31,19 @@ rather than tidy:
   batch a displacement off the rhythm.  That is the drift **R-PC54** names as
   "a CASH date fed back into the rhythm".
 
-**What the split does NOT make unwritable, and an adversarial review of
-``C14-d`` struck a sentence claiming it did.**  The anchor
-``extend_pay_periods`` passes is a RECORDED payday, and from ``C14-e`` the
-writer records DISPLACED ones -- so each batch re-anchors the grid on the
-previous batch's last cash day, and this module cannot prevent that.  Measured
-against the true cash rhythm (production's cadence and opening payday, the
-C14-e writer simulated, 301 paydays, 2026-09-05): a batch of ONE -- which is
-the rolling top-up's steady state, since ``pay_period_rolling`` appends exactly
-the deficit -- records **178** of 301 paydays wrong under ``prior`` and drifts
-**8 days** by the end; a batch of 26 happens to record none wrong on this
-schedule, which is where the holidays fall rather than a property.  The remedy
-is a nominal PHASE the schedule stores, which **R-PC54** refuses here and
-**R-PC58** places at ``C17``; the finding is the ledger's.
+**What the split could NOT make unwritable was fixed one layer up, and an
+adversarial review of ``C14-d`` struck a sentence claiming this module did it.**
+``extend_pay_periods`` used to pass a RECORDED payday, and ``C14-e-3``'s writer
+records DISPLACED ones -- so each batch re-anchored the grid on the previous
+batch's last cash day, which nothing here can prevent.  Measured against the
+true cash rhythm (production's cadence and opening payday, 301 paydays,
+2026-09-05): a batch of ONE -- the rolling top-up's steady state, since
+``pay_period_rolling`` appends exactly the deficit -- recorded **178** of 301
+paydays wrong under ``prior`` and drifted **8 days** by the end.  The remedy
+was a nominal PHASE the schedule stores, which **R-PC54** refused and
+**R-PC61** directed: ``budget.pay_schedule.nominal_anchor`` shipped at
+``C14-e-2``, the door steps from it, and the count is **0 of 301**.  Ledger row
+**PC-497** fault 2, closed.
 
 Placed BELOW :mod:`._derive` in the package's one-way chain (ruling
 **R-PC60**, developer 2026-09-05, on a fork that costed a new module against
@@ -71,9 +71,9 @@ def nominal_payday(anchor: date, cadence_days: int, steps: int) -> date:
     its caller.  **It says nothing about the anchor**, and an adversarial
     review of ``C14-d`` struck a sentence that read as though it did: a caller
     passing an anchor it took from a previous answer compounds across calls,
-    and nothing here can see that.  ``extend_pay_periods`` is such a caller
-    from ``C14-e`` onward -- see this module's own docstring for the
-    measurement.
+    and nothing here can see that.  ``extend_pay_periods`` WAS such a caller
+    until ``C14-e-2`` gave it the stored phase to step from -- see this
+    module's own docstring for the measurement.
 
     Args:
         anchor: A day the owner's rhythm passes through.  A RECORDED payday at
@@ -124,10 +124,11 @@ def cadence_steps_to(anchor: date, cadence_days: int, day: date) -> int:
     **It is the NOMINAL grid's inverse and not the projection's**, which is
     what puts it here rather than beside
     :func:`~._derive.project_period_after` -- one of its two callers, the other
-    being :mod:`._rhythm` above.  Once ``C14-e``
+    being :mod:`._rhythm` above.  Since ``C14-e-3``
     displaces a payday the round trip stops being exact, and that is precisely
     why that function probes its answer's NEIGHBOURS instead of trusting the
-    count: the estimate is a grid question asked of a displaced world.
+    count: the estimate is a grid question asked of a displaced world.  Since
+    ``C14-e-3`` that world is the live one.
 
     Args:
         anchor: A day the owner is paid on.  The progression passes through it.

@@ -300,6 +300,59 @@ def shift_to_business_day(day: date, shift: BusinessDayShiftEnum) -> date:
     return landing
 
 
+def earliest_nominal_paid_after(day: date, shift: BusinessDayShiftEnum) -> date:
+    """Return the first NOMINAL day whose payday falls strictly after *day*.
+
+    :func:`shift_to_business_day`'s INVERSE in the one direction a caller needs
+    it, and it is here rather than at that caller because it reads the same
+    holiday set: computed anywhere else it would be a second reader of the
+    calendar this module exists to own.
+
+    **Its caller is a refusal that has to name a bound**
+    (``registration_service._reject_impossible_first_payday``, plan step
+    ``pay_calendar:C14-e-3``).  Registration accepts a stated payday whose
+    paycheck still covers today, which is
+    ``projected_payday(first_payday, rhythm, 1) > today`` -- and a form must
+    say what WOULD be accepted, not only that this was not.  The earliest such
+    day is ``earliest_nominal_paid_after(today, shift) - cadence_days``, and
+    under :attr:`~app.enums.BusinessDayShiftEnum.NONE` that collapses to the
+    ``today - cadence_days + 1`` the rule used to state outright.
+
+    **A SCAN rather than a formula, because the closed form is three formulas.**
+    Under ``NONE`` the answer is ``day + 1``; under ``NEXT`` it is one past the
+    last business day at or before *day*, which can be EARLIER than ``day +
+    1``; under ``PRIOR`` it is the first business day after *day*, which can be
+    later.  Branching on the member here would put the convention's meaning in
+    a second place, which is exactly what
+    :func:`shift_to_business_day`'s refusal of a non-member exists to prevent.
+    So this asks that function instead, and the scan is what makes it one
+    reader.
+
+    **It terminates in at most one closed run either side**, which is a
+    theorem about the same calendar :func:`shortest_collision_free_cadence`
+    measures: a displacement moves a day by at most the longest closed run, so
+    the first qualifying day cannot lie further than that from ``day + 1`` in
+    either direction.  The scan opens a run BELOW ``day`` for the ``NEXT``
+    case and is guaranteed to stop by ``day + 1 + run``.
+
+    Args:
+        day: The day the answer's payday must fall strictly after.
+        shift: The owner's convention.
+
+    Returns:
+        The nominal day.  Under ``NONE`` that is always ``day + 1``.
+
+    Raises:
+        ValueError: *shift* is not a :class:`BusinessDayShiftEnum` member,
+            raised by :func:`shift_to_business_day` on the first call rather
+            than defaulted here.
+    """
+    candidate = day - timedelta(days=shortest_collision_free_cadence() - 1)
+    while shift_to_business_day(candidate, shift) <= day:
+        candidate += timedelta(days=1)
+    return candidate
+
+
 @cache
 def shortest_collision_free_cadence() -> int:
     """Return the shortest cadence a displacing convention can be carried at.

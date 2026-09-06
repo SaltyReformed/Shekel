@@ -92,7 +92,7 @@ def generate():
         # One call, because recording the paydays and capturing the cadence
         # extend / the rolling top-up continue from is ONE operation -- the
         # pair was two lines here and would have been two more in
-        # ``auth_service.register_user`` at plan step X-ad-a.  Plan step C3-b
+        # ``registration_service.register_user`` at plan step X-ad-a.  Plan step C3-b
         # folded the pair INTO the writer as the cadence rule, so
         # ``establish_schedule`` had nothing left to compose.
         periods = pay_period_write.record_paydays(

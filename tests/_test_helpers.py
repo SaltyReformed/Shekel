@@ -6,7 +6,6 @@ test file.  Import functions from here in test modules that need them.
 """
 
 import importlib.util
-import inspect
 import os
 import pathlib
 import re
@@ -25,9 +24,6 @@ from decimal import Decimal
 from app.enums import BusinessDayShiftEnum
 from app.models.amount_ownership import AmountOwnership
 from app.services import pay_calendar, pay_rhythm, pay_schedule_service
-from app.services.pay_calendar import _derive as pay_calendar_derive
-from app.services.pay_calendar import _searches as pay_calendar_searches
-from app.utils.business_days import shift_to_business_day
 
 
 # The synthetic split-loan fixture shared verbatim by the three parallel
@@ -2754,99 +2750,11 @@ def rhythm_of(cadence_days, shift=BusinessDayShiftEnum.NONE):
     )
 
 
-def displace_paydays_under(monkeypatch, shift):
-    """Give the application plan step ``pay_calendar:C14-e``'s producer.
-
-    **The SIMULATION every pre-C14-e case is graded against, and it is a
-    substitution rather than a fixture.**  With the convention still at
-    ``none``, ``pay_calendar.projected_payday`` answers the nominal rhythm,
-    every payday sits exactly on the arithmetic grid, and the neighbouring
-    candidates ``project_period_after`` offers can never win -- so a test
-    driving the real function would grade the estimate and nothing else.  What
-    ``C14-e`` changes is that ONE body: the nominal day displaced onto a
-    business day under the owner's convention.  Substituting exactly that and
-    then calling the REAL derivation, writer and admin doors grades the window,
-    the end rule, the selector and the floor against the mechanism itself.
-
-    It replaces a COLLABORATOR, never the code under test:
-    :func:`~app.utils.business_days.shift_to_business_day` is the shipped
-    displacement from plan step ``C14-a``, not a stand-in for one.
-
-    **THREE bindings are patched, and that is the whole reason this helper is
-    shared rather than copied.**  ``from ._derive import projected_payday`` in
-    the package's ``__init__`` makes a SECOND name for one function, and
-    ``pay_calendar._searches``' own ``from ._derive import projected_payday`` a
-    THIRD, so patching any of them alone leaves half the application displaced
-    and half of it nominal -- a world no convention can produce, and one a
-    green assertion could not tell from the real thing.
-    ``pay_calendar._derive`` is what ``derive_periods`` and
-    ``project_period_after`` call; ``pay_calendar`` is what
-    ``pay_period_write._reject_backward_payday`` calls since ``C14-d``;
-    ``pay_calendar._searches`` is what ``nominal_payday_after`` calls, which is
-    the extend door's grid-index producer since ``C14-e-2``.
-
-    *The third was found by a case that FAILED rather than by reading, and the
-    failure is the argument: with the floor displaced and the search nominal,
-    the door refused a perfectly ordinary extend with a message no correct
-    implementation and no real convention can produce.  That is exactly the
-    half-displaced world this paragraph already warned about, reached through a
-    binding it had not enumerated.  It MOVED once inside the same step, when
-    the grid-index search left ``pay_period_admin`` for the package -- so the
-    census is a thing to re-take rather than a list to trust, and eleven cases
-    went red the moment it was stale.*
-
-    **It displaces under the shift it is HANDED and not under
-    ``rhythm.shift``**, which is what the shipped producer will read, and the
-    difference is deliberate while ``C14-e-3`` is unshipped: a case that
-    displaces globally without storing a convention passes a rhythm whose
-    shift is ``NONE``, and reading the rhythm would silently turn the
-    simulation off.  ``C14-e-3`` DELETES this helper rather than reconciling
-    the two -- a double that simulates a shipped producer is a fence with a
-    subject, and the subject goes when the producer lands.
-
-    Args:
-        monkeypatch: pytest's patcher.
-        shift: The :class:`~app.enums.BusinessDayShiftEnum` member to displace
-            under.  ``NONE`` is legal and is the identity, which is what makes
-            it usable as a case's own control.
-
-    Returns:
-        The substituted producer, so a caller can state the day it expects
-        without re-deriving the displacement by hand.
-    """
-    def _displaced(anchor, rhythm, steps):
-        """Displace the nominal rhythm day onto a business day."""
-        return shift_to_business_day(
-            anchor + _real_timedelta(days=steps * rhythm.cadence_days), shift,
-        )
-
-    # ``monkeypatch.setattr`` checks that the attribute EXISTS and never that
-    # the double matches it, so the day the real producer's shape moves, every
-    # case here would keep passing against a producer that never shipped.  It
-    # FIRED at plan step ``C14-e-1``, exactly as designed: the producer's
-    # second parameter became the ``Rhythm`` and this double still took a bare
-    # cadence.  Asserted rather than trusted, on
-    # an adversarial review's finding: this is the substitution's own
-    # expiry date, and it should be loud.
-    shipped = list(
-        inspect.signature(pay_calendar.projected_payday).parameters
-    )
-    assert shipped == list(inspect.signature(_displaced).parameters), (
-        f"pay_calendar.projected_payday now takes {shipped}; this double "
-        f"still takes {list(inspect.signature(_displaced).parameters)}, so it "
-        f"no longer simulates the producer C14-e ships.  Update the double "
-        f"and every caller of this helper together."
-    )
-    for module in (pay_calendar, pay_calendar_derive, pay_calendar_searches):
-        monkeypatch.setattr(module, "projected_payday", _displaced)
-    return _displaced
-
-
 def registration_spec(**overrides):
     """Return a complete, valid :class:`RegistrationSpec` for service tests.
 
     The service-tier twin of :func:`register_form_data`, and it exists for the
-    same reason: ``auth_service.register_user`` takes one value object whose
+    same reason: ``registration_service.register_user`` takes one value object whose
     pay-calendar half arrived at plan step X-ad-a, and the tests that call it
     directly should not each restate what a valid sign-up looks like.
 
@@ -2865,7 +2773,7 @@ def registration_spec(**overrides):
             the rhythm and may not be combined with an explicit ``rhythm``.
 
     Returns:
-        The :class:`~app.services.auth_service.RegistrationSpec`.
+        The :class:`~app.services.registration_service.RegistrationSpec`.
 
     Raises:
         TypeError: Both ``rhythm`` and one of its halves were given, which
@@ -2874,7 +2782,7 @@ def registration_spec(**overrides):
     """
     # pylint: disable=import-outside-toplevel
     from app.config import BaseConfig
-    from app.services.auth_service import RegistrationSpec
+    from app.services.registration_service import RegistrationSpec
     from app.utils.dates import display_today
     halves = {
         key: overrides.pop(key)
@@ -7439,7 +7347,7 @@ def open_owner_calendar(user_id, first_payday, num_periods=1, cadence_days=14):
 
     That pairing is one no application door can produce: ``record_paydays``
     upserts the owner's cadence in the same call that records a payday (the
-    cadence rule, plan step C3-b), and ``auth_service.register_user`` reaches
+    cadence rule, plan step C3-b), and ``registration_service.register_user`` reaches
     the table only through it.  So every one of those sites built the single
     owner shape production does not have -- pay-calendar finding **P8** -- and
     the derived columns they typed were free to disagree with the derivation

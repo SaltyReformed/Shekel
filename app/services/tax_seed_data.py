@@ -6,7 +6,7 @@ user is seeded with, plus the pure ``build_*`` helpers that map a defaults
 entry to an un-added SQLAlchemy row.  Extracted from ``auth_service`` (which
 had reached its module-size ceiling) so the seed data and the sign-up path
 live apart; the builders are shared verbatim by the sign-up path
-(``auth_service._seed_tax_data_for_user``) and the idempotent repair script
+(``registration_service._seed_tax_data_for_user``) and the idempotent repair script
 ``scripts/seed_tax_brackets.py`` so the two cannot drift on which keys feed
 which columns.
 
@@ -267,7 +267,7 @@ def build_tax_bracket_set(
     """Build (not add) a TaxBracketSet row from a DEFAULT_FEDERAL_BRACKETS entry.
 
     The single dict-to-row mapping shared by the sign-up path
-    (:func:`auth_service._seed_tax_data_for_user`) and the per-user repair
+    (:func:`registration_service._seed_tax_data_for_user`) and the per-user repair
     script ``scripts/seed_tax_brackets.py``, so the two cannot drift on which
     keys feed which columns.  Keys are indexed directly -- a missing key is a
     defect in the defaults dict and must fail loud, not silently seed a zero

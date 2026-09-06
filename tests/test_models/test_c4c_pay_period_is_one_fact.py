@@ -332,7 +332,7 @@ class TestTheDowngradeRebuildsTheDerivation:
     ):
         """One row is both the first and the last, and the branches meet on it.
 
-        The registration bootstrap's own shape: ``auth_service.register_user``
+        The registration bootstrap's own shape: ``registration_service.register_user``
         records a batch, and an owner can sit on one payday until they generate
         more.  ``lead(start_date)`` is NULL there, so the end is the projection
         and the ordinal is 0 -- the two arms of the rebuild landing on a single

@@ -178,7 +178,7 @@ class BaselineMissingError(ShekelError, ValueError):
     show (plan step X-v2's adversarial design review).
 
     **It is a state the application cannot produce**, measured 2026-07-28:
-    ``auth_service.register_user`` writes a baseline for every owner, nothing in
+    ``registration_service.register_user`` writes a baseline for every owner, nothing in
     ``app/`` or ``scripts/`` deletes a scenario or clears ``is_baseline``, no
     path promotes a companion to owner, and ``scripts/integrity_check`` asserts
     it as critical check DC-08.  The handler exists because "cannot be produced

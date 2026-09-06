@@ -67,8 +67,8 @@ part of it:
   head of that chain is C14-d's** (ruling **R-PC60**, developer 2026-09-05)
   and is the
   one split made for a DISTINCTION rather than for the ceiling: the nominal
-  rhythm and the rhythm displaced onto business days stop being the same
-  answer at ``C14-e``, and both have callers.  The last two take a
+  rhythm and the rhythm displaced onto business days stopped being the same
+  answer at ``C14-e-3``, and both have callers.  The last two take a
   whole calendar rather than a period tuple, which is what puts them after it:
   see :mod:`._walks` for the argument, and ledger row **P77** for the ceiling
   that keeps both of them out of the class itself.

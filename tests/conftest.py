@@ -1785,7 +1785,7 @@ def build_seed_user(db):
     # (``end_date``, ``period_index``) values the writer DERIVES -- and no
     # ``budget.pay_schedule`` row beside it, which is a state
     # ``pay_period_write.record_paydays`` cannot produce and
-    # ``auth_service.register_user`` therefore never produces either.  The
+    # ``registration_service.register_user`` therefore never produces either.  The
     # seeded owner was consequently the one shape production does not have:
     # paydays with no recorded cadence, pay-calendar finding **P8**, which
     # ``pay_schedule_service.resolve_schedule`` had to carry an inferring

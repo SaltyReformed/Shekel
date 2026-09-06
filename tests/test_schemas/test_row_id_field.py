@@ -287,6 +287,11 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({
     # and ``ck_pay_schedule_history_opens_range`` bound one window; it holds a
     # day, never an id.
     "history_opens_on_field",
+    # A DATE -- the day an owner was last paid, bounded to the application's
+    # own calendar (plan step pay_calendar:C14-e-3).  Shared by the four doors
+    # that state a payday, so one range holds them all; it holds a day, never
+    # an id.
+    "payday_field",
     # A money figure read through the statement package's own strict
     # reader (plan step bank_import:X-f6d-4), so the row-id question does
     # not arise: it holds a signed decimal, never an id.
@@ -816,6 +821,7 @@ class TestNoIdFieldWasMissed:
             "_auth_email_field": auth,
             "ReviewedFigureField": statements,
             "history_opens_on_field": pay_periods,
+            "payday_field": pay_periods,
         }
         for factory_name in _NON_INTEGER_FIELD_FACTORIES:
             module = modules.get(factory_name)

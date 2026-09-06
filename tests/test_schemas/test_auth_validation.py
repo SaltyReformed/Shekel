@@ -160,6 +160,27 @@ class TestRegisterSchema:
             "last_payday": "2026-08-05",
         }
 
+    @pytest.mark.parametrize("stated", ["9999-01-01", "1999-12-31"])
+    def test_a_payday_outside_the_APPS_CALENDAR_is_refused(self, stated):
+        """Plan step **pay_calendar:C14-e-3**: the stated payday carries a range.
+
+        It was a bare ``fields.Date`` -- the only persisted date in this
+        application without one, ``history_opens_on`` beside it included.  That
+        was survivable while a payday was compared and stored; it stopped being
+        survivable when a payday is DISPLACED, because the shift reads
+        :func:`~app.utils.business_days.federal_holidays`, which computes the
+        FOLLOWING year's New Year spillover.  A stated payday in year 9999
+        therefore left ``datetime``'s own domain and raised ``ValueError``, not
+        ``ValidationError``, out of the service tier -- a 500 on a public form
+        where the deleted arithmetic had returned a clean refusal.  Found by an
+        adversarial review of that step.
+
+        Both ends, because a bound asserted at one end is a bound half graded.
+        """
+        payload = dict(self._valid_payload(), last_payday=stated)
+
+        assert "last_payday" in RegisterSchema().validate(payload)
+
     def test_an_untouched_history_date_loads_as_None(self):
         """A browser posts ``""`` for the optional date, and it means NULL.
 

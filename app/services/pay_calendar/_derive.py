@@ -15,8 +15,8 @@ where ``next_payday`` is the following row's ``start_date``, or -- for the
 last period, which has none -- the projection one cadence on
 (:func:`projected_payday`).  **Plan step C14-c made those ONE rule.**  The last
 end read ``start_date + cadence_days - 1``, which agrees with the first only
-while every payday sits exactly one cadence from its neighbour; once ``C14-e``
-displaces one onto a business day the two part, and the day between falls in
+while every payday sits exactly one cadence from its neighbour; since
+``C14-e-3`` displaces one onto a business day the two part, and the day between falls in
 NO period or in two (**R-PC54**).
 
 **Its one caller is** :meth:`~._calendar.PayCalendar.__post_init__`, since plan
@@ -35,12 +35,18 @@ derivation is a function of two values, so the sweep drives it over a
 catalogue of schedule shapes without a database at all.  That is what let the
 same code be driven over a production clone while a stored column still
 existed to diff it against.
-**The only application imports are ``app.exceptions`` and ``app.utils.dates``,
-neither of which imports anything from this application**, so the module still
-loads with no app stack behind it.  *An earlier draft of this sentence said
-``app.utils.dates`` was the ONE non-standard-library import and did not count
-``app.exceptions``, which was already there -- a purity claim that miscounted
-its own imports* (adversarial review, 2026-08-14).
+**Every application import this module takes is a PURE LEAF** -- a module
+reaching no session, no request and no ORM -- and that is the rule rather than
+the four names it happens to admit today
+(``app.exceptions``, ``app.services.pay_rhythm``, ``app.utils.business_days``,
+``app.utils.dates``).  So the module still loads with no app stack behind it.
+*It was written as a LIST -- "the only application imports are
+``app.exceptions`` and ``app.utils.dates``" -- and a list decays: an
+adversarial review corrected it on 2026-08-14 when it counted one import and
+there were two, ``C14-e-1`` made it stale again by adding
+``app.services.pay_rhythm``, and ``C14-e-3`` adds
+``app.utils.business_days`` for the displacement.  Stated as a property, the
+next addition is GRADED rather than counted.*
 
 **That import WEAKENED the no-clock property, and the honest form says which
 property survives.**  Before plan step C2-f this module could not reach a clock
@@ -79,6 +85,7 @@ from datetime import date, datetime, timedelta
 
 from app.exceptions import ShekelError
 from app.services.pay_rhythm import Rhythm
+from app.utils.business_days import shift_to_business_day
 from app.utils.dates import pay_period_label, pay_period_range_label
 
 from ._grid import cadence_steps_to, nominal_payday
@@ -484,9 +491,9 @@ def derive_periods(
             **It was a bare ``cadence_days`` until ``C14-e-1``**, which
             threaded the pair ahead of ``C14-e-3`` making
             :func:`projected_payday` the nominal day displaced under the
-            owner's convention -- not live yet, and that function says so.
-            The two are one rhythm with one reader; passing them apart would
-            pair one owner's cadence with another's convention.
+            owner's convention.  The two are one rhythm with one reader;
+            passing them apart would pair one owner's cadence with another's
+            convention.
             **The cadence is not optional, since plan step C4-d** (ruling
             **R-PC45**).  It was
             ``int | None``, ``None`` being legal beside an empty payday set and
@@ -564,106 +571,90 @@ def derive_periods(
 def projected_payday(anchor: date, rhythm: Rhythm, steps: int) -> date:
     """Return the payday *steps* whole cadences after *anchor*.
 
-    **The FORWARD projection's one producer**, made a function at plan step
-    ``pay_calendar:C14-c`` from an expression written at three sites:
-    :func:`derive_periods` needs the next payday to close the last saved
-    period, and :func:`project_period_after` needs both the payday that OPENS a
-    period past the horizon and the one that CLOSES it.  Rule 14's tell -- one
-    value with three homes, agreeing only because nothing can move a payday
-    yet.  **It is where the shift convention lands** (**R-PC54**: applied at
-    the PRODUCER, because the payday a COUNT uses and the payday a PERIOD opens
-    on are one value).  **The convention has ARRIVED and the body has not**:
-    ``C14-e-1`` gave every producer in this chain the
-    :class:`~app.services.pay_rhythm.Rhythm` rather than a bare cadence, which
-    moves no date, and ``C14-e-3`` wraps the call below in
-    :func:`~app.utils.business_days.shift_to_business_day` -- which is what
-    makes the money-moving diff one expression.  Until then the answer is the
-    NOMINAL grid day and ``rhythm.shift`` is read by nothing here.
+    **The projection's ONE producer, and since plan step
+    ``pay_calendar:C14-e-3`` it is the nominal grid day DISPLACED onto a
+    business day under the owner's convention** (**R-PC54**: applied at the
+    PRODUCER, because the payday a COUNT uses and the payday a PERIOD opens on
+    are one value).  Every consumer inherits the shift from this one
+    expression: :func:`derive_periods` closes the last saved period with it,
+    :func:`project_period_after` opens and closes a projected one,
+    :func:`~._rhythm._backdated_paydays` walks the rhythm below the record,
+    ``pay_period_write._requested_paydays`` records the days a batch asks for,
+    and ``auth_service`` bounds the payday a sign-up may state.
 
-    **The grid is a MODULE below this one since ``C14-d``**, and the split is
-    the point rather than a place to put a function: from ``C14-e`` the
-    projection and the grid answer differently, and both answers have callers
-    -- a calendar shows the projection, a WRITER continues the grid.
-    :mod:`._grid` carries why.
+    **The GRID is a module below this one** (``C14-d``, **R-PC60**), and the
+    split is the point rather than a place to put a function:
+    :func:`~._grid.nominal_payday` answers what a WRITER continues a rhythm on,
+    this answers what a calendar SHOWS and what money is filed against, and
+    from this step the two differ on roughly 3% of paydays -- **64** of the
+    production owner's 1,888 PROJECTED paydays out to ``CALENDAR_DATE_MAX``,
+    and **22** of the 684 below their record, under either displacing
+    convention, re-derived 2026-09-06.
 
-    **THREE more spellings exist, and an adversarial review of ``C14-c``
-    struck the sentence claiming there were none.**  ``C14-e``'s census,
-    written down rather than re-derived, with ``C14-d``'s one deletion already
-    applied:
-
-    * :func:`~._rhythm._backdated_paydays` open-codes it twice --
-      ``opening + timedelta(days=steps * cadence)``, then
-      ``day -= timedelta(days=cadence)`` down the loop -- for the BACKDATED
-      half.  Routing it to THIS function was REFUSED at ``C14-c``: it would
-      make the backward rhythm displace the day ``C14-e`` changes this body,
-      and whether it should is unruled (**R-PC47** shapes the PROJECTED half
-      and says nothing about the FICA wage-base walk reading the other).
-      Answering that silently in a ``$0.00`` step is how a refactor comes to
-      silence a later step's alarm.  *That argument does NOT cover routing it
-      to* :func:`~._grid.nominal_payday`, *which ``C14-d`` created and which
-      ``C14-e`` does not change -- an adversarial review of ``C14-d`` noted
-      that its first term is a one-token substitution and provably ``$0.00``,
-      while its second is a walk needing an index.  Left alone as out of scope
-      rather than as refused, so ``C14-e`` inherits the narrower claim.*
-    * ``auth_service``'s registration window,
-      ``[first_payday, first_payday + cadence_days - 1]``.
-    * ``scripts/integrity_check.py``'s ``BA-06`` horizon,
-      ``MAX(start_date) + (cadence_days - 1)`` in SQL, which cannot call this.
-      It decides whether a settled transaction falls in no pay period, so a
-      live shift makes it misjudge the days between the two horizons.
-
-    **``pay_period_write`` held TWO of them and holds none** (``C14-d``).
-    ``_reject_backward_payday``'s ``latest_payday + cadence_days`` floor was
-    kept equal to the last saved period's derived end by a sentence in its own
-    docstring; it calls THIS function now, so the fence and the end it guards
-    are one value, and being that caller is why this one is EXPORTED.
-    ``_requested_paydays``' ``first_payday + cadence_days * step`` calls
-    :func:`~._grid.nominal_payday`, which is where the batch's own progression
-    belonged: it is the GRID, not the projection, and it stays nominal until
-    ``C14-e`` rules on whether the writer displaces (ledger row **PC-497**).
-    *An adversarial review of ``C14-d`` found that second spelling missing from
-    this census while the census claimed to be complete, which is the same
-    class of error the review of ``C14-c`` caught one revision earlier.*
+    **TWO spellings are left outside this function, NAMED rather than
+    counted** -- an adversarial review of ``C14-e-3`` found this census
+    claiming one and missing the other.  ``scripts/integrity_check.py``'s
+    ``BA-06`` horizon in SQL cannot call this (ledger row **PC-501**, whose
+    remedy is that check's DELETION), and
+    ``migrations/versions/b7a41e2c9d63``'s ``_REBUILD_DERIVED_COLUMNS_SQL``
+    restates the same end for a DOWNGRADE (**PC-506**).  ``C14-e-3`` deleted
+    the two it could reach by routing both HERE:
+    :func:`~._rhythm._backdated_paydays` open-coded the walk twice, and the
+    registration window restated the first paycheck's span as
+    ``first_payday + cadence_days - 1``.
 
     **The BOUND is the CALLER's** -- ``C14-a``'s stated obligation on the
-    displacement this becomes:
+    displacement:
     :func:`~app.utils.business_days.shift_to_business_day` may answer outside
     :data:`~app.utils.dates.CALENDAR_DATE_MIN` ..
-    :data:`~app.utils.dates.CALENDAR_DATE_MAX`.  Recorded here because
-    ``C14-e`` makes this that caller.
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX`, because both ends of that range
+    are themselves closed days.
 
     **What it does NOT compound, and what it cannot guarantee.**  *steps* is
-    counted from one fixed *anchor* rather than accumulated, so displacing the
-    answer at ``C14-e`` cannot move a later payday -- the hazard
-    :func:`~app.utils.business_days.shift_to_business_day`'s own docstring
-    hands to the caller.  What it cannot do is make the ANCHOR nominal:
-    :func:`project_period_after` anchors on the last RECORDED payday, so an
-    owner whose employer displaced that one is projected a rhythm off by the
-    displacement until a real payday is recorded again.  That is ledger row
-    **N-495**, owned by ``C14-e``, and it is why **R-PC54**'s own
-    ``2026-01-14`` example does not reproduce here.  Worked from the
-    developer's stated payroll fact, not from a stored row -- production's
-    recorded paydays run 2026-03-26 to 2028-08-10 and hold no 2025-12-31 -- an
-    owner whose last RECORDED payday were the 2025-12-31 that 2026-01-01 was
-    really paid on is projected 2026-01-14 where the true payday is
-    2026-01-15, and every payday after it a day early.
+    counted from one fixed *anchor* rather than accumulated, so a displaced
+    answer cannot move a later payday in the same call -- the hazard
+    :func:`~app.utils.business_days.shift_to_business_day` hands explicitly to
+    its caller.  What it cannot do is make the ANCHOR nominal:
+    :func:`project_period_after` anchors on the last RECORDED payday and
+    :func:`~._rhythm._backdated_paydays` on the first, and ``C14-e-3``'s writer
+    records DISPLACED days -- so an owner whose boundary payday payroll moved
+    is projected a rhythm off by that displacement until a real payday is
+    recorded again.  That is ledger rows **N-495** and **PC-502**, both owned
+    by ``C17``, and the reason neither is repaired here is STRUCTURAL rather
+    than sequencing: a phase is an ERA's fact, and one stored
+    ``budget.pay_schedule.nominal_anchor`` cannot describe a PIECEWISE owner
+    (**N-492** -- ``record_paydays`` permits *correct my cadence going
+    forward*), so anchoring on it would let :func:`derive_periods` compute a
+    last end BELOW its own start and refuse that owner's whole calendar.
 
     Args:
         anchor: A payday the owner's rhythm passes through.
         rhythm: The owner's cadence and payday convention
-            (:class:`~app.services.pay_rhythm.Rhythm`).  The cadence is a positive ``int``
-            already validated by :func:`validate_cadence` at the caller;
-            re-validating per call would put the bound in a second place.
+            (:class:`~app.services.pay_rhythm.Rhythm`).  The cadence is a
+            positive ``int`` already validated by :func:`validate_cadence` at
+            the caller; re-validating per call would put the bound in a second
+            place.  **The convention is read here and nowhere else in this
+            package**, which is what makes the money-moving diff one
+            expression.
         steps: How many whole cadences after *anchor*.  ``1`` is the next
-            payday, ``0`` is *anchor*.  NEGATIVE is reachable and not a misuse:
-            :meth:`~._calendar.PayCalendar.span_containing` asks
-            :func:`project_period_after` about days BELOW its anchor, where
-            :func:`~._grid.cadence_steps_to` answers with a negative count.
+            payday, ``0`` is *anchor* -- which is NOT the identity once a
+            convention displaces, and callers rely on that: it is how a nominal
+            grid day becomes the day money moves.  NEGATIVE is reachable and
+            not a misuse: :meth:`~._calendar.PayCalendar.span_containing` asks
+            :func:`project_period_after` about days BELOW its anchor, and
+            :func:`~._rhythm._backdated_paydays` walks the rhythm below the
+            record.
 
     Returns:
-        The projected payday.
+        The payday -- the grid day *steps* cadences after *anchor*, displaced
+        onto a business day under *rhythm*'s convention.  Under
+        :attr:`~app.enums.BusinessDayShiftEnum.NONE` that is the grid day
+        itself, which is why this step moves ``$0.00`` for an owner who has not
+        answered the question.
     """
-    return nominal_payday(anchor, rhythm.cadence_days, steps)
+    return shift_to_business_day(
+        nominal_payday(anchor, rhythm.cadence_days, steps), rhythm.shift,
+    )
 
 
 def covering_projection(
@@ -673,11 +664,11 @@ def covering_projection(
 
     **A function of its own so :func:`project_period_after` states the RULE and
     this states the REFUSAL**, which is fifteen lines of it.  *An earlier form
-    claimed the split was what let the probe be graded before the shift ships;
-    an adversarial review of ``C14-c`` refuted that from the suite -- what
-    grades the probe is the test module's ``_displace_under``, which
-    substitutes the producer ``C14-e`` will ship and drives the REAL*
-    :func:`project_period_after` *-- reaching this through its own caller.*
+    claimed the split was what let the probe be graded before the shift
+    shipped; an adversarial review of ``C14-c`` refuted that from the suite --
+    what grades the probe is a case that STATES a displacing convention and
+    drives the REAL* :func:`project_period_after`, *reaching this through its
+    own caller.  It substituted the producer until ``C14-e-3`` shipped one.*
 
     Consumed LAZILY, so the arithmetic estimate costs the one candidate it
     always did -- a property of the ORDER its caller offers them in, not of
@@ -773,7 +764,7 @@ def project_period_after(
     **"About" is plan step C14-c's word, and the PROBE is why the jump survives
     a payday that moves** (**R-PC57**: the containment probe tolerates a moved
     boundary).  The division is exact only while every payday sits on the
-    arithmetic grid; once ``C14-e`` displaces one, the count can name the
+    arithmetic grid; since ``C14-e-3`` displaces one, the count can name the
     period next door, so the estimate is checked against its NEIGHBOURS and
     whichever candidate covers *day* wins (:func:`covering_projection`).
 
@@ -803,17 +794,24 @@ def project_period_after(
     floor: recorded anchor 2030-01-01, cadence 4, ``prior``, projected from the
     nominal 2029-12-29, puts 2030-01-04's true index TWO above the estimate --
     and the consequence is :func:`covering_projection` REFUSING an ordinary
-    day.  ``C14-e`` may not re-anchor without widening this window.
+    day.  ``C14-e-3`` did NOT re-anchor, for the reason
+    :func:`projected_payday` gives, and no step may without widening this
+    window.
 
-    **The literal ``1`` and that floor are ONE value with two homes**
-    (adversarial review of ``C14-c``).  A general width is
-    ``(longest_closed_run - 1) // cadence_days + 1``, collapsing to ``1`` here
-    because the write door refuses a cadence at or below the run; deriving it
-    would make the refusal unreachable BY CONSTRUCTION rather than by another
-    door's promise, which is what doctrine asks of a fence.  Not done here
-    because it means reading the holiday set, and this module imports only
-    ``app.exceptions`` and ``app.utils.dates`` -- the purity that lets the
-    derivation run with no application stack.  ``C14-e``'s design question.
+    **The literal ``1`` was left as ``C14-e``'s design question, and
+    ``C14-e-3`` answers it: it STAYS, and what holds it up is the WRITE DOOR --
+    which is** :func:`covering_projection`'s **reported hole below, stated once
+    there and not restated here.**  An adversarial review of ``C14-c`` read the
+    ``1`` and the collision floor as one value with two homes, the general form
+    being ``(longest_closed_run - 1) // cadence_days + 1``, and named the
+    obstacle to deriving it as this module's import set -- an obstacle
+    ``C14-e-3`` removes, since :mod:`app.utils.business_days` arrives here for
+    the displacement.  Deriving it would still buy nothing a caller can reach.
+    *A first draft attributed the guarantee to* :func:`derive_periods` *and an
+    adversarial review measured that false: it refuses a repeated RECORDED
+    payday, which* ``uq_pay_periods_user_start`` *already makes impossible, and
+    never weighs a cadence against the closed run.  A sub-floor pairing passes
+    it and derives a REVERSED period -- ledger row **PC-505**.*
 
     **The precondition below is NOT structural, and a first cut of this step
     filtered on the belief that it was.**  Candidates at step ``0`` and below

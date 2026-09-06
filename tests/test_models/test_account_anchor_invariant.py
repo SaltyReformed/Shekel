@@ -42,7 +42,7 @@ The tests exercise three layers of the contract:
      ORIGINATION ASSERTION, graded by the creation-path cases below and by
      ``scripts/integrity_check.py``'s re-pointed BA-01.
 
-  3. **Creation paths** (C3-5) -- the ``auth_service.register_user``
+  3. **Creation paths** (C3-5) -- the ``registration_service.register_user``
      signup path and the ``/accounts`` POST route both write the
      origination ``AccountAnchorHistory`` row at the moment the account
      exists.  Locks the spec contract "always create the origination
@@ -86,6 +86,7 @@ from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.models.user import User, UserSettings
 from app.services import cash_ledger
+from app.services import registration_service
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today
 from tests._test_helpers import (
@@ -189,7 +190,7 @@ class TestCreationPathsWriteAnchor:
     """C3-5: register_user and POST /accounts always set anchor + history."""
 
     def test_register_user_creates_anchor_and_history(self, app, db):
-        """The auth_service.register_user signup path builds the owner's REAL
+        """The registration_service.register_user signup path builds the owner's REAL
         pay calendar, anchors the default Checking account with a
         Decimal("0.00") balance, and writes an origination
         AccountAnchorHistory row.
@@ -227,7 +228,7 @@ class TestCreationPathsWriteAnchor:
         signup_day = display_today()
         last_payday = signup_day - timedelta(days=6)
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="c3-5@example.com",
                 password="strong-pass-12345",
                 display_name="C3-5 Tester",

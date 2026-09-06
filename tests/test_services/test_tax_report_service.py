@@ -7,7 +7,7 @@ withholding-to-date into the refund, hero chips, hybrid W-2 preview, and
 Schedule A check the analytics Taxes tab (T-P4) renders.
 
 Configs are seeded through the canonical
-``auth_service._seed_tax_data_for_user`` path so every figure anchors on the
+``registration_service._seed_tax_data_for_user`` path so every figure anchors on the
 same 2026 DEFAULT_* seeds a registered user receives (single, NC, standard
 deduction 16,100; brackets 10/12/22/24/32/35/37; NC flat 3.99%, std ded
 12,750; FICA ss_wage_base 184,500).
@@ -37,7 +37,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import balance_at, paycheck_calculator
 from app.services.balance_at import _kernel as net_worth_kernel
-from app.services.auth_service import _seed_tax_data_for_user
+from app.services.registration_service import _seed_tax_data_for_user
 from app.services.pay_calendar import calendar_for
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_report_service import (
