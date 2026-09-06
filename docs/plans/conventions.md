@@ -142,6 +142,17 @@ end.
     RANGES, which encode the arc unreadably and run out -- balance's would have held about 24 of its
     88 open steps.
 
+    **A NEW RULING id CARRIES ITS ARC'S PREFIX TOO** (developer, 2026-09-05), extending the
+    paragraph above from `ledger.md` to `rulings.md` for the reason it already gives: a ruling id
+    travels into commit messages and code docstrings, where the `arc` COLUMN cannot follow it.
+    `pay_calendar`, `recurrence` and `salary` already spell ids this way and CONTINUE their runs
+    (`R-PC61`, `R-R62`, `R-SAL12`); `balance` and `bank_import` drew from the shared LETTER
+    sequence, which is no numeric run to continue, so theirs START at `R-BAL1` and `R-BI1`. Ruled
+    the night `R-KE` was drafted twice within the hour -- by `bank_import` for the scriptless match
+    pane and by `balance` for the test-slot pair, on two unmerged branches, which is the blindness
+    that minted `R-GW` twice on 2026-08-27. Nothing already filed is renamed, so the 13 ids two arcs
+    hold at once stand and a bare citation of one still owes its arc.
+
 11. **An identity class shares a tick state, and a fork binds both its remedies and its row.** `C2`,
     `X-l` and `R-F12` are ONE step under three names; ticking one without the others is a failure.
     Where two steps in different arcs are COMPETING remedies for one defect, the gate refuses a tick
