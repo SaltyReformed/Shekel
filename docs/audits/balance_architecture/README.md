@@ -1006,16 +1006,12 @@ section 4, under their unchanged ids.*
   entry's pre-ship clauses were refuted by the ship -- the install is an AUR `yay -S`, it shipped as
   `feat(test):`, and `slirp4netns` is absent AND unnecessary under `--network=none`; the corrections
   are in `docs/test-harness-isolation.md`, which says "Do not restore them here."
-* [ ] **X-bu** `refactor(balance): a settled row's plan has ONE producer` -- owns **BAL-462**, and
-  it is the first of the FOUR steps the production release of 2026-09-05 produced. DELETE the public
-  `row_valuation.owned_amount` and fold its body into `cash_ledger._amount_source`'s own arm, which
-  is the one producer answering a row that owns its figure. **The obligation was written in PROSE
-  and tracked nowhere**: `owned_amount`'s own docstring said the readers wanting a settled row's
-  BUDGET *owe an amount basis from the cutover that declares their rows onward*, agreed and never
-  filed, until `/analytics/spending` 500'd on production-shaped data. Census after the release fix:
-  THREE live call sites, of which the only external one (`spending_analysis:310`, the ACTUAL half's
-  fall-through for a NON-settled row) is correct and stays -- so the remedy is *delete the accessor*,
-  never *and every reader*.
+* [x] **X-bu** `142f64cb` -- closed **BAL-462**: deleted `row_valuation.owned_amount` and folded
+  its body into `_amount_source._own_answer`, the spelling the transfer arm has always used. **It
+  grew by one reader under R-BAL4**: the ACTUAL half's fall-through refused an unsettled DERIVED
+  row while the estimate half resolved, so it asks the resolver now. **A LATER STEP MUST OBEY**:
+  `X-bx` inherits the last copy of `own_figure(txn.estimated_amount, "transaction", txn.id)`, in
+  `owned_contribution`'s fall-through.
 * [ ] **X-bv** `fix(migrations): a per-kind cutover cannot ship a bare declare` -- owns **BAL-463**.
   `c8f3a5d2e714` refuses to declare unless `rows_the_declare_would_strand` is empty;
   `d7b2e6c1a483` defines the equivalent `settled_rows_whose_plan_is_not_recoverable` and calls it
