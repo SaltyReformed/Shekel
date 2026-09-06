@@ -349,11 +349,19 @@ def tax_type_id(member):
 def raise_type_id(member):
     """Return the integer primary key for a RaiseTypeEnum member.
 
-    Used by the retirement salary projection
-    (:func:`app.services.pension_calculator.project_salaries_by_year`) to
-    branch the merit horizon on ``salary.salary_raises.raise_type_id``
-    without ever reading the string ``name`` (Gate A ruling 3 / fork F4).
-    Matches the project-wide IDs-for-logic invariant.
+    The retirement salary projection
+    (:func:`app.services.pension_calculator.project_salaries_by_year`) used
+    this to branch its merit horizon on ``salary.salary_raises
+    .raise_type_id`` without ever reading the string ``name`` (Gate A ruling
+    3 / fork F4); plan step **salary:S3-c** deleted that branch with the
+    setting behind it (ruling **R-SAL11**).  **It has NO production caller
+    now** -- only tests -- and an adversarial review of that step named the
+    earlier wording here ("what any future reader must go through") as
+    exactly the speculative justification CLAUDE.md rule 13 forbids.  It is
+    retained rather than deleted because it is one member of a uniform
+    per-enum accessor set that ``tests/test_ref_cache.py`` grades as a set;
+    deleting one member alone is its own change, and it is named here so the
+    next reader does not have to rediscover that it is unused.
 
     Args:
         member: A ``RaiseTypeEnum`` member (e.g. ``RaiseTypeEnum.COLA``).

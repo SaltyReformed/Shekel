@@ -418,7 +418,23 @@ function _populateRaiseForm(editBtn) {
     if (flat) flat.value = editBtn.dataset.raiseFlat || '';
 
     var recur = form.querySelector('[name=is_recurring]');
-    if (recur) recur.checked = editBtn.dataset.raiseRecurring === 'true';
+    var isRecurring = editBtn.dataset.raiseRecurring === 'true';
+    if (recur) recur.checked = isRecurring;
+
+    // The end-year choice, restored from what is STORED: a recurring raise
+    // with a terminal year selects "ends after" and fills it, one without
+    // selects "no end year".  Editing therefore states the belief already
+    // recorded, while a NEW raise opens with neither picked -- the
+    // developer's 2026-09-05 ruling that a recurring raise is ASKED how
+    // long it is believed rather than given a default.
+    var storedEnd = editBtn.dataset.raiseTerminalYear || '';
+    var endYear = form.querySelector('[name=terminal_year]');
+    var modeYear = document.getElementById('raise-end-mode-year');
+    var modeNone = document.getElementById('raise-end-mode-none');
+    if (endYear) endYear.value = storedEnd;
+    if (modeYear) modeYear.checked = isRecurring && storedEnd !== '';
+    if (modeNone) modeNone.checked = isRecurring && storedEnd === '';
+    _syncRaiseEndYearVisibility();
 
     // Optimistic-locking pin (commit C-18 / F-010): submit the
     // raise's version_id so the route handler can detect a stale
@@ -464,10 +480,45 @@ function _resetForm(formId, buttonId, buttonHtml) {
     if (btn) btn.innerHTML = buttonHtml;
 }
 
-// Reset the raise form to add mode (clear fields, restore action).
+// Show the end-year choice only for a recurring raise.  A one-time raise
+// cannot carry one at all -- ck_salary_raises_terminal_year_only_on_a_
+// recurring_raise -- so offering the control there would be offering a
+// value the database refuses.
+function _syncRaiseEndYearVisibility() {
+    var recur = document.getElementById('raise-recurring');
+    var group = document.getElementById('raise-end-year-group');
+    var endYear;
+    if (!recur || !group) return;
+    group.hidden = !recur.checked;
+    if (group.hidden) {
+        // Clear what the group holds as it goes away.  A hidden input still
+        // SUBMITS, so leaving "ends after 2031" behind after unchecking
+        // Recur posts an end year on a one-time raise -- which the schema
+        // refuses, over a control the owner can no longer see.
+        group.querySelectorAll('input[name=raise_end_mode]').forEach(
+            function (radio) { radio.checked = false; }
+        );
+        endYear = group.querySelector('[name=terminal_year]');
+        if (endYear) endYear.value = '';
+    }
+}
+
+// Reset the raise form to add mode (clear fields, restore action).  The
+// reset returns both end-year radios to unchecked, because neither carries
+// a `checked` attribute for form.reset() to restore -- which is what keeps
+// "unanswered" distinguishable from "no end year" on the next add.
 function _resetRaiseForm() {
     _resetForm('raise-form', 'raise-submit-btn', '<i class="bi bi-plus"></i>');
+    _syncRaiseEndYearVisibility();
 }
+
+// The Recur checkbox reveals the end-year question.  A `change` listener
+// rather than the click delegation above: clicking the LABEL forwards a
+// second click to the input, and change fires once with the final state.
+document.addEventListener('change', function(e) {
+    if (!e.target.matches('#raise-recurring')) return;
+    _syncRaiseEndYearVisibility();
+});
 
 // Populate the deduction form fields from the edit button's data attributes
 // and switch the form action/hx-post to the update endpoint.

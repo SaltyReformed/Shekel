@@ -488,7 +488,7 @@ class TestOneReadPassPerRender:
         with counting_read_passes() as counter:
             resp = auth_client.get(
                 "/retirement/readiness"
-                "?merit_raise_horizon_years=7&months=24",
+                "?swr=3.5&months=24",
                 headers={"HX-Request": "true"},
             )
 

@@ -17,10 +17,9 @@ direction-D page:
 
 * **Retire-later lever (P2b).**  The smallest whole-month offset (binary
   search, capped at +180 months) at which a FULL recomputation of the
-  readiness picture -- the merit-horizon salary path, the pension years
-  of service and high-salary average, the growth horizon, and the
-  required target (BOTH sides of the gap move with the date) -- reaches
-  funded >= 100%.
+  readiness picture -- the salary path, the pension years of service and
+  high-salary average, the growth horizon, and the required target (BOTH
+  sides of the gap move with the date) -- reaches funded >= 100%.
 
 **This module SOLVES; it no longer computes the picture it solves against**
 (plan step C2-f2d-2, ledger row **P57**).  It held ``_ProbeInputs``, a second

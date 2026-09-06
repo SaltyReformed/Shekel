@@ -657,5 +657,9 @@ provenance only.
 - **F3 -- employer-base mechanism: RATIFIED** -- the engine accepts an optional per-period salary
   basis defaulting to the current constant; other consumers unchanged in this pass. (Alternative not
   taken: migrating every consumer to salary series at once.)
-- **F4 -- horizon column shape: RATIFIED** -- `merit_raise_horizon_years` NOT NULL default 5.
-  (Alternative not taken: nullable-means-extrapolate-forever.)
+- **F4 -- horizon column shape: RATIFIED, then REPEALED** -- `merit_raise_horizon_years` NOT NULL
+  default 5. (Alternative not taken: nullable-means-extrapolate-forever.)
+  **Ruling R-SAL11 (developer, 2026-09-05) repealed it**: the horizon a recurring raise decays over
+  is a fact on the RAISE, so plan step `salary:S3-c` moved each owner's value onto
+  `salary.salary_raises.terminal_year` and deleted the column. The alternative not taken above is
+  what `NULL` means there now, per raise rather than per owner.
