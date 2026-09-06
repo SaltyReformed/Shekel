@@ -2,24 +2,19 @@
 
 ## Where this stands
 
-**`C2` IS DONE, and with it `balance:X-l` and `recurrence:R-F12`** -- one step under three names,
-ticked at `C2-f3e` (`4f134bf4`). Built: **C1**, **C2** whole, **C3**. Section 4 carries each commit;
-what reached `main` is a MEASUREMENT (`git log --oneline origin/main..dev`).
+**JUST LANDED: `C14-e-1` (`f32c9d7a`) and `C14-e-2` (`ab5b26bc`)**, both `$0.00`. The pay rhythm
+became ONE value the derivation reads, and `budget.pay_schedule` gained the nominal grid's PHASE
+(**R-PC61**), which took the extend path's re-anchoring from 178 of 301 recorded paydays wrong under
+`prior` to 0. **IN FLIGHT: `C14-e-3`**, the leaf that MOVES MONEY -- the displacement goes live at
+the producer and the writer records the displaced day. It takes its own review pass and its own PR.
 
-**`C4` IS DONE.** Decomposed into seven leaves 2026-08-25 (developer) once its reader census was
-re-measured -- the leaves ARE that census, which row **P70**'s query-position count structurally
-could not see. All five `C4-a` reader leaves, both `C4-b` leaves, `C4-c` (the drop, `c703e1c7`) and
-`C4-d` have SHIPPED. `C4-b` was split in two on 2026-09-01 (developer, **R-PC40**) once its real
-prerequisite was measured: `C4-b-1` took the TEST CORPUS off hand-built pay periods, `C4-b-2` added
-the key, `C4-c` dropped the columns, and
-**`C4-d` took the same defect one tier up -- in the TYPE rather than in the schema** (**R-PC45**): a
-calendar HAS a cadence, and an owner with no `budget.pay_schedule` row has no calendar rather than
-an empty cadence-less one.
-
-**`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
-salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
-the current-paycheck merge (**P62** / **P63**). **A cold session starts at section 4**; the shared
-registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
+**BUILT AND TICKED**: `C1`; `C2` whole, which is one step under three names (`balance:X-l`,
+`recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` and its seven leaves, decomposed 2026-08-25
+because the leaves ARE the reader census row **P70**'s query-position count could not see; `C10` and
+`C11`, which came out of `C2-f3` for gating `C4` on work it does not depend on; `C13-a`, `C13-b`;
+and every `C14` leaf through `C14-e-2`. Section 4 carries each commit, and `steps.md` alone carries
+the ORDER. **A cold session starts at section 4**; the shared registries are `ledger.md`,
+`steps.md`, `conventions.md` and `verification.md`.
 
 ## The rulings
 
@@ -268,13 +263,13 @@ their only live specimen from them, which both `_staging` docstrings predict and
       at cadence 1-3 it produces duplicate paydays `derive_periods` refuses outright; and two writer
       paths feed a CASH date back into the rhythm, which would reintroduce the very drift the
       convention exists to remove. `C14-c` and `C14-d` land those repairs BEFORE `C14-e` switches
-      the shift on. **No phase is stored here, and `P78` is not this step's** (**R-PC54**,
-      **R-PC58**): a first form of R-PC54 added a nominal anchor column beside the cadence, and an
-      adversarial review measured that one (anchor, cadence) pair cannot describe a schedule whose
-      cadence CHANGED, which `record_paydays` deliberately permits, so a phase lands at `C17` with
-      the eras -- which is also the door `P78`'s eight fixtures need, so they move there too. Until
-      then the rhythm keeps its phase from the recorded paydays, whose one bounded gap is an owner
-      whose FIRST recorded payday was itself shifted.
+      the shift on. **`P78` is not this step's** (**R-PC58**): its eight fixtures need the door
+      `C17` builds. **A PHASE *IS* STORED HERE, at `C14-e-2`** (**R-PC61**), reversing R-PC54's
+      refusal of one: that ruling rested the refusal on the rhythm keeping its phase from the
+      recorded paydays "whose one bounded gap is an owner whose FIRST recorded payday was itself
+      shifted", and `PC-497` measured the gap COMPOUNDING instead once the writer records a
+      displaced day -- 178 of 301 recorded paydays wrong under `prior`. The stored phase is what
+      makes that sentence true again; the eras it belongs to still land at `C17`.
 - [x] **C14-a -- the shared business-day module.** `088339f5`. `app/utils/business_days.py`: the
       weekend rule, the computed federal holiday set of `5 U.S.C. 6103(a)` under `6103(b)` and E.O.
       11582, and ONE `shift_to_business_day` displacement, pure and reusing the
@@ -297,9 +292,21 @@ their only live specimen from them, which both `_staging` docstrings predict and
       Opened **PC-497**. **TWO OBLIGATIONS FOR `C14-e`**: the floor must read the STORED convention
       and not the incoming `Rhythm.shift`, or a convention-changing batch closes the calendar under
       the other; and the WRITER must record each element DISPLACED, or the extend is refused.
-- [ ] **C14-e -- the shift goes live.** Every projected and backdated payday becomes the nominal day
-      displaced onto a business day. **MOVES MONEY**, so it takes its own adversarial review pass
-      and its own PR. Closes **N-398**.
+- [x] **C14-e-1 -- the rhythm is ONE value.** `f32c9d7a`. `Rhythm` moved out of the session-holding
+      `pay_schedule_service` to the pure leaf `app/services/pay_rhythm.py`: pylint **R0401** refused
+      the package itself (`pay_calendar` -> `._loader` -> `pay_schedule_service`), and a second
+      identical pair inside it is rule 14's defect. Every producer takes the pair; `resolve_shift`
+      and its per-request duplicate query are DELETED. **A LATER STEP MUST OBEY**: the floor reads
+      the STORED convention, and nothing grades that until `C14-e-3`.
+- [x] **C14-e-2 -- the grid carries its own phase.** `ab5b26bc`, migration `a1c7e5d20f43`
+      (**R-PC61**). `budget.pay_schedule.nominal_anchor`, three of `C17`'s five era columns; extend
+      steps from it, not from its own last output. Closes **PC-497** fault 2 -- 178 of 301 recorded
+      paydays wrong under `prior` at a batch of ONE before, 0 after. **A LATER STEP MUST OBEY**:
+      `record_paydays` DERIVES the anchor from the batch's first payday, so a phase off that grid is
+      unrepresentable rather than refused, and the anchor is only valid for the cadence beside it.
+- [ ] **C14-e-3 -- the shift goes live.** Every projected and backdated payday becomes the nominal
+      day displaced onto a business day, and the WRITER records the displaced day (**PC-497** fault
+      1, whose pin inverts). **MOVES MONEY**, its own review pass and its own PR. Closes **N-398**.
 - [ ] **C14-f -- the two-clause check.** The sweep warns when a recorded payday is off its predicted
       day AND when consecutive recorded paydays are not one cadence apart (**R-PC55**); the second
       clause is the one that sees a MISSING payday, which is what **P80**'s own worked example turns
@@ -326,17 +333,16 @@ their only live specimen from them, which both `_staging` docstrings predict and
       (**R-PC48**); its first two shipped at `e2c325dc`. The DECOMPOSED parent, ruling **R-PC32**,
       split in two 2026-09-02 and ticked with `C13-b`. Closes **P75**.
 - [x] **C13-a -- the KEY.** `8e707c4c`. Migration `d4a92f6b13c8`: `user_id` backfilled from
-      `pay_periods.user_id`, then both composite FKs. The `auth.users` key is `ON DELETE RESTRICT`
-      and NOT `UserScopedMixin`'s CASCADE (developer, 2026-09-02) -- the only candidate shape that
-      changed what a user delete does. **What a later reader must obey**: the backfill reads the PAY
-      PERIOD, so `fk_transactions_owner_ACCOUNT` is the key that grades it and the period key grades
-      nothing; the migration's own docstring is the record.
-- [x] **C13-b -- the READERS.** `e2c325dc`. The nineteen retired per site, ruling **R-PC46**: the
-      ELEVEN that walk a row that EXISTS became `X.user_id`, the EIGHT that refetch a SUBMITTED id
-      went to the owner's CALENDAR, and the four route copies of `_get_owned_period` are gone.
-      Closed **P75**, **N-373**. **What a later step must obey**: the period-set SCOPES in
-      `statement_match._candidates` and `reconcile_service._rows` were weighed and REFUSED -- each
-      is also what makes its span lookup TOTAL. As-built: `historical/c13b_as_built_2026-09-03.md`.
+      `pay_periods.user_id`, then both composite FKs, the `auth.users` one `ON DELETE RESTRICT`
+      rather than CASCADE (developer, 2026-09-02); its docstring is the record.
+      **What a later reader must obey**: the backfill reads the PAY PERIOD, so
+      `fk_transactions_owner_ACCOUNT` grades it and the period key grades nothing.
+- [x] **C13-b -- the READERS.** `e2c325dc`. The nineteen retired per site (**R-PC46**): eleven walk
+      a row that EXISTS and became `X.user_id`, eight refetch a SUBMITTED id and went to the owner's
+      CALENDAR, and four route copies of `_get_owned_period` are gone. Closed **P75**, **N-373**.
+      **What a later step must obey**: the period-set SCOPES in `statement_match._candidates` and
+      `reconcile_service._rows` were weighed and REFUSED -- each is also what makes its span lookup
+      TOTAL. As-built: `historical/c13b_as_built_2026-09-03.md`.
 - [ ] **C13-c -- eight keys hold six more tables' rows to ONE owner** (ruling **R-PC48**; finding
       **P83**). `budget.transfers` carries `user_id`, `from_account_id`, `to_account_id` and
       `pay_period_id` with no key holding them to one owner, and the same shape stands on
@@ -364,15 +370,15 @@ rows **P62**, **P63** and **P64**'s engine half; its specification is
       **A later leaf obeys the PREDICATE, never a count**: a read of `end_date` or `period_index`
       reaching through a `budget.pay_periods` ROW. Reader census as built:
       `historical/c4_reader_census_2026-09-02.md`.
-- [x] **C4-a-1 -- the balance seam's attribution clamp.** `8962e073` + `2895f693`. Closed **P38**.
-- [x] **C4-a-2 -- the reconcile panel, and the clamp moves onto the value.** `82bd762c`.
-      `utils.dates.attribution_date` DELETED for `DerivedPeriod.attribution_day` (**R-PC31**).
-- [x] **C4-a-3 -- the purchase-date warning, and `DerivedPeriod.covers` lands.** `a0fb14ba`.
-      `check_purchase_date_in_period` DELETED (**R-PC34**, **R-PC35**). `$0.00` on production.
-- [x] **C4-a-4 -- the merchant-destination picker.** `f18a58af`. `destinations_for` takes the
-      CALENDAR and no `owner_id` (**R-PC36**-**R-PC38**). `$0.00`.
-- [x] **C4-a-5 -- the two LABEL readers, and the model accessor goes.** `95b2dc67` (+ `ce96887a`).
-      `PayPeriod.label` DELETED; the COLUMN is `C4-c`'s (**R-PC39**). Opened **N-413**.
+- [x] **C4-a-1** `8962e073` + `2895f693` -- the balance seam's clamp. Closed **P38**.
+- [x] **C4-a-2** `82bd762c` -- reconcile panel; `utils.dates.attribution_date` DELETED for
+      `DerivedPeriod.attribution_day` (**R-PC31**).
+- [x] **C4-a-3** `a0fb14ba` -- purchase-date warning; `check_purchase_date_in_period` DELETED,
+      `DerivedPeriod.covers` lands (**R-PC34**, **R-PC35**). `$0.00` on production.
+- [x] **C4-a-4** `f18a58af` -- destination picker; `destinations_for` takes the CALENDAR, no
+      `owner_id` (**R-PC36**-**R-PC38**). `$0.00`.
+- [x] **C4-a-5** `95b2dc67` (+ `ce96887a`) -- the two LABEL readers; `PayPeriod.label` DELETED (the
+      COLUMN is dropped one leaf later, **R-PC39**). Opened **N-413**.
 - [x] **C4-b -- an owner with paydays HAS a recorded cadence.** `5db9f8a0`. The DECOMPOSED parent,
       ticked with `C4-b-2`; what split it in two was that the key's prerequisite turned out to be
       the TEST CORPUS rather than any reader (**R-PC40**).
