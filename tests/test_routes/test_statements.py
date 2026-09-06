@@ -29,6 +29,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services import auth_service, entry_service, statement_match
+from app.services.statement_match import NEW_ENVELOPE, Verb
 from tests._test_helpers import create_settled_cash_transaction
 from tests.test_services.test_statement_import import _csv_builder as build
 from tests.test_services.test_statement_match._builders import (
@@ -134,6 +135,52 @@ def _upload(client, account_id, payload, source="secu_checking_csv",
         content_type="multipart/form-data",
         follow_redirects=True,
     )
+
+
+def _record_in_a_new_envelope(client, account_id, line, category_id,
+                              name="Coffee"):
+    """Record one bank line as a purchase in a new envelope, as a browser does.
+
+    **Through the RECONCILE door**, which since plan step
+    ``bank_import:X-gi-2`` is the only one there is: the review queue this
+    posted to until then was deleted with the register and the workbench.  The
+    body is the one that page's cards emit -- the OK checkbox consents to a
+    line, the verb radio names the act, and the three ADD controls carry the
+    destination -- rather than the queue's, which keyed everything off the
+    destination select alone.
+
+    **It is a SETUP step and it asserts its own success**, because both cases
+    using it are about what the import DELETE then destroys: a recording that
+    silently did not happen would leave them asserting a receipt over nothing.
+    The 200 is the whole check, the door answering a refusal with its own
+    designed 400.
+
+    Args:
+        client: The logged-in client.
+        account_id: The account being reconciled.
+        line: The bank line row to record.
+        category_id: The category the new envelope is filed under.
+        name: What to call the new envelope.
+
+    Returns:
+        The response.
+    """
+    response = client.post(
+        f"/accounts/{account_id}/statements/reconcile",
+        data={
+            "ok": str(line.id),
+            f"verb-{line.id}": Verb.ADD.value,
+            f"destination-{line.id}": NEW_ENVELOPE,
+            f"envelope_name-{line.id}": name,
+            f"category_id-{line.id}": str(category_id),
+        },
+    )
+    assert response.status_code == 200, (
+        f"the Reconcile door refused this recording ({response.status_code}), "
+        f"so nothing was created and the delete under test would have "
+        f"nothing to destroy"
+    )
+    return response
 
 
 class TestThePageReadsForItsOwner:
@@ -1338,15 +1385,9 @@ class TestTheDeletePost:
         line = db.session.query(BankStatementLine).filter(
             BankStatementLine.amount < 0,
         ).one()
-        auth_client.post(
-            f"/accounts/{seed_user['account'].id}/statements/review",
-            data={
-                f"destination-{line.id}": "new",
-                f"envelope_name-{line.id}": "Coffee",
-                f"category_id-{line.id}": str(
-                    seed_user["categories"]["Groceries"].id,
-                ),
-            },
+        _record_in_a_new_envelope(
+            auth_client, seed_user["account"].id, line,
+            seed_user["categories"]["Groceries"].id,
         )
         db.session.expire_all()
         assert db.session.query(TransactionEntry).count() == 1, (
@@ -1394,15 +1435,9 @@ class TestTheDeletePost:
             (inside, "-25.00", "POINT OF SALE DEBIT L340 COFFEE"),
         ]))
         line = db.session.query(BankStatementLine).one()
-        auth_client.post(
-            f"/accounts/{seed_user['account'].id}/statements/review",
-            data={
-                f"destination-{line.id}": "new",
-                f"envelope_name-{line.id}": "Coffee",
-                f"category_id-{line.id}": str(
-                    seed_user["categories"]["Groceries"].id,
-                ),
-            },
+        _record_in_a_new_envelope(
+            auth_client, seed_user["account"].id, line,
+            seed_user["categories"]["Groceries"].id,
         )
         db.session.expire_all()
         entry_service.update_entry(

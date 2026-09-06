@@ -16,13 +16,17 @@ here.
 card's sentence is laid out by a template that inks each part
 (:class:`~._sentence.Ink`), so a service that formatted one would be choosing
 presentation it cannot see.  A receipt item is quoted verbatim into a list by
-THREE surfaces -- the Reconcile page, the hand-build workbench and the review
-queue, which :func:`~app.routes.accounts._statement_doors.log_pass_applied`
-calls three ways of performing one act -- so what it needs is to read as one
-sentence wherever it lands.  *An earlier draft said two surfaces and claimed
-the sentence also reaches ``system.audit_log``; it does not -- what that door
+the Reconcile page, which since plan step ``bank_import:X-gi-2`` is the ONE
+surface applying a pass -- so what it needs is to read as one
+sentence wherever it lands.  *This count has now been wrong twice.  An earlier
+draft said two surfaces and claimed the sentence also reaches
+``system.audit_log``; it does not -- what that door
 logs is :func:`~app.routes.accounts._statement_doors.outcome_counts`' figures,
-and ``system.audit_log`` is written by row triggers.*
+and ``system.audit_log`` is written by row triggers.  It was then corrected to
+THREE, naming the hand-build workbench and the review queue, and X-gi-2 deleted
+both.  A count in prose is a derived value beside no reconciler:
+:func:`~app.routes.accounts._statement_doors.log_pass_applied` has ONE caller,
+and that is the fact to re-derive rather than to trust this sentence for.*
 
 **Each names its act's FIGURE and its DAY**, which is ruling **R-GD(a)**'s
 rule and the reason :attr:`~._batch.AppliedItem.line_ids` is documented as a

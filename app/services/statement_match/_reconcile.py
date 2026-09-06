@@ -162,13 +162,14 @@ _TAB_LABELS: "dict[Tab, str]" = {
 #: accepting changes, day effects before amount effects, and creating an
 #: envelope last because it is the one act an undo cannot fully reverse.
 #:
-#: **The review screen still counts these in JINJA**
-#: (``_statement_review_body.html``'s ``selectattr | length``) and stays live
-#: until ``X-gi`` retires it, which is the shape
+#: **The review screen counted these in JINJA** (its body's
+#: ``selectattr | length``) until plan step ``bank_import:X-gi-2`` deleted it,
+#: which is the shape
 #: :func:`~._queue._sweeps_for` exists to refuse: a caption may not promise a
-#: number a template counted.  This page counts them in the service; the two
-#: copies of the LABELS, here and in :data:`~._queue._SWEEP_LABELS`, go with
-#: that retirement and had already drifted by a word on arrival.
+#: number a template counted.  This page counts them in the service; the second
+#: copy of the LABELS, :data:`~._queue._SWEEP_LABELS`, outlived its only reader
+#: by that deletion and goes at ``bank_import:X-gi-3`` with the module holding
+#: it -- the two had already drifted by a word on arrival.
 SWEEP_LABELS: "tuple[tuple[str, str], ...]" = (
     ("confirm", "that only confirm a day you already had"),
     ("correct", "that move a day onto the bank's"),
@@ -501,7 +502,8 @@ def _chips(
     all three three lines later.  That is the clutter :func:`_unexamined` one
     function down says this rebuild removed.  It renders as
     :attr:`ReconcilePage.books_bound` instead -- once, with the act as a link,
-    the way the review body and the workbench already render the same value.
+    the way the review body and the workbench rendered the same value before
+    plan step ``bank_import:X-gi-2`` deleted them.
 
     **The two paragraphs above removed DIFFERENT chips and both removals
     stand** (merge of ``balance:X-f3c-2b-2b`` into ``bank_import:X-gj-1c``,

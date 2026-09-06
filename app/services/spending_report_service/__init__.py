@@ -48,7 +48,7 @@ read, and an arm that reads it owes that conversion whichever surface reaches it
 The Spending surface is MEASURED: settled-only, scoped to the user's active
 checking account (the audit's target-IA row).  It carries the account
 name / id and the settled-only flag so the template can label the scope on
-screen.  Settled-only is why figures price through ``owned_contribution`` (X-au-c2).
+screen.  Settled-only is why figures price through ``settled_contribution`` (X-au-c2).
 
 Boundary discipline: no Flask import.  The route resolves the window from
 query params and passes a :class:`SpendingWindow`; every figure is a
@@ -219,7 +219,7 @@ def compute_spending_report(
         # ONE basis for the pass.  The surprises list needs it to price a
         # row whose plan the amount-source cutovers declared derived;
         # every other consumer here values through
-        # ``row_valuation.owned_contribution``, which answers a settled
+        # ``row_valuation.settled_contribution``, which answers a settled
         # row from its SETTLEMENT record and never reaches the amount
         # model, so this is the package's only basis and costs no query
         # (both of its derivations are lazy).

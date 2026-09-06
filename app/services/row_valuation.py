@@ -10,14 +10,18 @@ producers, which is the whole reason it is a module of its own.
 step X-au-c3).  A row is a PLAN until its money moves and a RECORD of what moved
 once it has, and the two never share a column: :func:`settled_figure` answers
 from the record, the amount model answers from the plan, and a row is in
-exactly one of the two states.  *The plan half used to be named here too, as
-an ``owned_amount`` accessor reading the ``estimated_amount`` column.  Plan
-step X-bu DELETED it: it was a second spelling of what
-:func:`~app.services.cash_ledger.resolve_transaction_amount` answers, and
+exactly one of the two states.  *The plan half used to be named here too, and
+NOTHING of it survives.  It was an ``owned_amount`` accessor reading the
+``estimated_amount`` column, which plan step X-bu deleted as a second spelling
+of what :func:`~app.services.cash_ledger.resolve_transaction_amount` answers --
 the two parted on a row whose plan a cutover had declared DERIVED (finding
-BAL-462).  What survives here is :func:`own_figure`, the refusal itself,
-which takes the column as an ARGUMENT rather than reading it -- so a caller
-reaching for a row's own figure has to say so.*  Before that split a settled row's record was
+BAL-462).  Its leaf, ``own_figure``, outlived it by one step, because
+:func:`settled_contribution` below -- then named ``owned_contribution`` --
+spelled the same column read at its
+fall-through; plan step X-bx deleted that spelling too and moved the leaf into
+``cash_ledger._amount_source``, where its only two callers are, as the private
+``_own_figure`` (finding BAL-465).  This module states what a row RECORDED and
+never what it PLANS.*  Before that split a settled row's record was
 optional, so most settled rows fell through to the plan -- and since the plan is
 a derivation, the plan had to be frozen at settle to stop a later price change
 moving a figure the bank had already taken.
@@ -305,7 +309,7 @@ def settled_amounts_by_id(rows) -> "dict[int, Decimal | None]":
     producer to answer it, while a settlement RECORD is the row's own and needs
     none.  The producer-free half belongs in the producer-free module -- and
     ``cash_ledger`` re-exports it exactly as it re-exports
-    :func:`owned_contribution`, so no consumer names two modules.  It was
+    :func:`settled_contribution`, so no consumer names two modules.  It was
     written into ``_amounts`` and moved here in the same step, when that
     module's 1,000-line cap refused it: the cap did its job.
 
@@ -387,144 +391,125 @@ def fixed_contribution(txn) -> "Decimal | None":
     return settled_figure(txn)
 
 
-def own_figure(amount, kind: str, row_id: int) -> Decimal:
-    """Return a row's OWN stored figure, refusing a row that carries none.
+def settled_contribution(txn) -> Decimal:
+    """Return what a row that has SETTLED contributes, refusing one that has not.
 
-    The OWN rule's whole body, and the refusal in it is the amount model's
-    TOTALITY contract rather than defensive padding: a resolver that can answer
-    ``None`` for a row is not total, and every other rule beside it raises
-    rather than returning one.  It is unreachable on today's DATA -- no row's
-    amount column is NULL yet -- and what keeps it that way is
-    ``ck_transactions_amount_ownership`` (plan step X-au-c1): a row that owns
-    its amount must store one.  A row that reaches here with no figure has that
-    CHECK broken, and substituting a zero would remove real money from a
-    balance in silence.
+    The cheap accessor for a reader whose rows have ALL settled -- the settled
+    cash leg, the loan replay, the loan posting sync and its confirmed history,
+    the settled-spend metric and the spending report.  **SIX of the seven load
+    their rows with ``status_id.in_(settled_status_ids())`` in SQL**, so
+    building an amount basis for them would run the paycheck engine to
+    re-derive a figure the row already recorded.  The seventh is
+    :func:`~app.services.cash_ledger.settled_cash_leg`, which issues no query of
+    its own; of ITS six callers, three restrict the row set -- the walk loads
+    settled statuses in SQL, the posting writer reaches its settled target only
+    under ``settled=True`` (all fourteen ``sync_transaction_postings`` call
+    sites derive that flag from the row rather than asserting it), and
+    ``statement_match._candidates._price`` branches on ``txn.status.is_settled``.
 
-    Args:
-        amount: The row's stored amount column.
-        kind: ``"transaction"`` or ``"transfer"``, for the refusal message.
-        row_id: The row's id, named in the refusal.
+    **THE OTHER THREE DO NOT RESTRICT ANYTHING, AND THAT IS DELIBERATE.**
+    ``statement_match``'s ``_accepted_view._accepted_row``, ``_release
+    ._subject_removal`` and ``._container_removal`` admit a row of any status
+    and CATCH this refusal, because they render the review page and a raise
+    there would make the screen permanently unreachable for the account with no
+    in-app repair (finding **N-302**).  For them the refusal is an ANSWER, not a
+    failure, so a reader of this function must not read "every caller is
+    settled-only" into it: what is true is that nowhere does the refusal reach a
+    user as a 500.
 
-    Returns:
-        The stored figure.
+    **It is :func:`~app.services.cash_ledger.contribution_of`'s PARTIAL twin,
+    and the two share every line but the last** (plan step X-bx).  Both gate an
+    excluded row to ``0`` and answer a settled row from its SETTLEMENT, through
+    the one :func:`fixed_contribution` below.  Where a row has NOT settled, that
+    one resolves the row's plan and this REFUSES -- so the two can never
+    disagree about a figure, only about whether there is one to give.
 
-    Raises:
-        AmountUnresolvable: When the row owns its amount and stores none.
-    """
-    if amount is None:
-        raise AmountUnresolvable(
-            f"{kind.capitalize()} {row_id} owns its amount and carries none. "
-            "A row whose amount is its OWN must store it -- that pairing is "
-            "ck_transactions_amount_ownership -- so this row was written "
-            "around the CHECK. There is deliberately no substitute figure: "
-            "answering zero would take real money out of a balance without "
-            "saying so."
-        )
-    return amount
+    **The refusal is the step, and what it replaced was a SECOND SPELLING of
+    the plan** (finding **BAL-465**).  This fell through to
+    ``own_figure(txn.estimated_amount, ...)``: the plan column read by hand,
+    where ``cash_ledger.resolve_transaction_amount`` is the one producer of a
+    row's plan.  That is the defect ``CLAUDE.md`` rule 14 names, and the one
+    plan step X-bu deleted from the BUDGET side (``owned_amount``, finding
+    **BAL-462**); it was unexposed here only because :func:`fixed_contribution`
+    answers a settled row first, which is a head start and not a guarantee.
 
+    **Routing that fall-through to the RESOLVER was the other option, and it is
+    the wrong answer for these readers** (developer, 2026-09-06).  Their
+    question is what a row's money DID, and a row that has not settled has done
+    nothing: ``settled_cash_leg`` means CONFIRMED cash effect, so pricing a
+    projected row's forecast there would publish a plan as a fact.  That is the
+    substitution plan step X-au-c3 exists to remove, and :func:`settled_figure`
+    refuses to perform it for exactly the same reason.  Resolving would also
+    have made today's LOUD failure silent: a derived projected row raises here
+    now, and the amount model would have priced it.
 
-def owned_contribution(txn) -> Decimal:
-    """Return what a row that OWNS its figure contributes.
+    **THE SEVEN-CALLER CENSUS THIS DOCSTRING CARRIED IS DELETED, AND THAT IS THE
+    POINT OF THE STEP.**  It listed every call site and had to be RE-RUN at each
+    per-kind cutover that widened the derived class, because a wider derived
+    class widened what this accessor could be handed and the fall-through would
+    price it from a column that may not exist.  There is nothing left to widen
+    into: the precondition is stated by the call rather than asserted about it.
 
-    The cheap accessor for a reader that can only ever see SETTLED rows -- the
-    loan split, the loan posting sync and reconcile, the settled-spend metric and
-    the spending report.  Those readers filter to settled statuses in SQL, so
-    building an amount basis for them would run the paycheck engine to re-derive
-    a figure the row already recorded.
+    *A mutation probe measured the change before it was made (2026-09-06): with
+    this fall-through spliced to a refusal the full suite ran **13,338 passed,
+    9 failed**, and all nine were TESTS calling the accessor directly on a
+    Projected row, with no app frame in any traceback.  **That number bounds
+    LESS than it appears to, and two adversarial reviews said so
+    independently.**  Three ``statement_match`` readers catch
+    :class:`~app.exceptions.AmountUnresolvable` by name and answer around it, so
+    on those paths the refusal changes an ANSWER rather than failing a test --
+    a green suite cannot tell "never reached" from "reached and re-answered"
+    there.  What the probe does establish is the narrower claim: no path turns
+    this into a 500.  The three catchers are graded by cases added with this
+    step, because before it the suite entered none of them.*
 
-    **A settled row never reaches the second arm, and that is plan step
-    X-au-c3's doing rather than a caller convention.**  :func:`fixed_contribution`
-    answers every settled row from its SETTLEMENT, so the :func:`own_figure`
-    fall-through below is reached only by a row that has not settled --
-    i.e. by a reader that has been handed a row outside its stated scope.  Before
-    that step a settled row with no correction fell through to its plan, which is
-    why this function had to be about ownership at all.
+    **The NAME changed with the body** -- it was ``owned_contribution``, and it
+    asserted that the row owns its figure.  That is not what this function is
+    about and was never what its readers meant, and the stale assertion was
+    load-bearing rather than cosmetic: a :class:`~app.models.transfer.Transfer`
+    was handed to it (``tests/test_routes/test_transfers.py``), and a
+    ``Transfer`` defines no ``estimated_amount`` at all, so the Cancelled row's
+    ``0`` was the only thing between that call and an ``AttributeError``.
 
-    **The name is the assertion, and the refusal is what makes it one.**  A row
-    whose PLAN is derived stores no figure, and
-    ``ck_transactions_amount_ownership`` is what pairs the two -- so this raises
-    where ``effective_amount`` used to, rather than answering ``None`` into a
-    money path.  A settled-only reader handed an unsettled derived row fails
-    LOUDLY here instead of publishing a wrong number, which is what makes the
-    per-kind cutovers (X-au-d..X-au-i) safe to ship one at a time.
-
-    **TWO readers were not settled-only, and plan step X-au-g-2c-1 routed the
-    first of them.**  ``loan_payment_service.get_payment_history`` admits
-    Projected shadows and priced them here, so a derived loan-side income
-    shadow broke the feed the amortization engine replays -- which is why the
-    rule-4 controls declared only the checking-side EXPENSE leg, and which
-    finding **N-266**(a) recorded
-    (first as an irreducible CYCLE, then, once plan step X-au-g-1 deleted the
-    path it named, as ONE UNROUTED READER).  That reader takes
-    :func:`~app.services.cash_ledger.contributions_by_id` now, so nothing left
-    in ``app/`` asks this accessor about a row that might be derived.
-
-    **The SECOND is GONE TOO, and this paragraph is corrected rather than
-    deleted because it is a REASON a later step would otherwise cite.**  It
-    read: ``balance_at._plan._planned_from_shadows`` values PROJECTED loan-side
-    shadows at ``owned_contribution(shadow)`` where the live-cash map has no
-    entry, so one caller still asks this accessor about a row that might be
-    derived.  That was true when written and false from plan step
-    **X-au-g-2c-1**, which routed that reader through
-    ``cash_ledger.display_amounts_by_id`` (now ``amounts_by_id``: plan step
-    X-au-d deleted the live half of that composition) -- the census at that
-    step found TWO unrouted readers where the finding had named one, and moved
-    both.  Plan step
-    **X-au-g-2c-2** then declared every transfer shadow derived, so the state
-    this paragraph warned about is not merely unvisited but unreachable: the
-    accessor would refuse, and no caller reaches it.
-
-    *Both drafts of this paragraph were wrong in opposite directions -- the
-    first said "every caller is now settled-only" while a survivor stood, the
-    second kept naming that survivor after it had moved. An undated claim quoted
-    as a REASON decays invisibly, because nobody re-checks a premise; the
-    re-census that corrected it is recorded at the foot of this docstring.*
-
-    **RE-CENSUSED AT PLAN STEP X-au-d (2026-09-03), and the re-run is the
-    discipline rather than the result.**  Widening the derived class widens what
-    this accessor can be handed, so the census is re-run at every cutover that
-    widens it -- X-au-g-2c-2 for every transfer shadow, X-au-d for every
-    non-override salary row INCLUDING the settled ones.  An adversarial review
-    of X-au-d found this paragraph edited without the census being re-run, which
-    would have left the next widening reading a date that did not cover it.
-    *The merge of X-au-d with X-au-g-2c-3b-2 then proved the point a second time
-    and from the other direction: the two steps edited THIS paragraph
-    concurrently, and the list below was stale in the branch that had just
-    re-run the census -- because the seventh site MOVED under it rather than
-    changing count.  A census is re-run on the MERGED tree or it is not re-run.*
-    All seven live call sites are settled-only or guarded:
-    ``cash_ledger.settled_cash_leg``, ``loan_ledger._events.loan_event_stream``
-    (which was ``._split.split_one_payment`` until plan step X-au-g-2c-3b-2 moved
-    the cash read onto the event that carries it, and which reads SETTLED income
-    shadows either way),
-    ``loan_posting_service._sync`` and ``._display``,
-    ``savings_dashboard_service._metrics`` (settled statuses in SQL), and the
-    spending report's ``_window`` and ``_breakdown``.  ``statement_match`` and
-    ``_release`` catch :class:`~app.exceptions.AmountUnresolvable` explicitly.
-    **``cash_ledger._cash_leg`` guards only on ``is_balance_contributing``,
-    which does NOT exclude Projected**, and is safe today only because both of
-    its callers pre-filter -- a contract its own docstring already admits is
-    invisible.  Widening the derived class makes that the tripwire for the next
-    caller, and it is named here rather than left to be found.
-
-    **The refusal below is what makes routing them safe to defer**, and that is
-    worth keeping rather than treating as an accident: a reader handed a
-    derived row fails LOUDLY here instead of feeding a ``None`` into a money
-    path, so the per-kind cutovers ship one at a time and each reader they would
-    break announces itself.
+    **The history the deleted census recorded is kept in ONE sentence, because
+    it is a reason and not a list.**  Two readers were once not settled-only --
+    ``loan_payment_service.get_payment_history`` (finding **N-266**(a)) and
+    ``balance_at._plan._planned_from_shadows`` -- and plan step X-au-g-2c-1
+    routed both onto :func:`~app.services.cash_ledger.contributions_by_id`,
+    which is where a reader that may see a PROJECTED row still belongs.  The
+    two drafts of that paragraph were wrong in opposite directions, one claiming
+    every caller was settled-only while a survivor stood and the next still
+    naming the survivor after it had moved; a claim quoted as a REASON decays
+    invisibly, because nobody re-checks a premise.  Neither draft could be wrong
+    now: the refusal states the precondition instead of a docstring asserting it.
 
     Args:
-        txn: The row being valued, whose ``estimated_amount`` is its own.
+        txn: The row being valued.  Its caller's query has already restricted it
+            to a settled status; ``is_deleted`` and the ``status`` relationship
+            are read first (``status`` is ``lazy="joined"``), then the
+            settlement record.
 
     Returns:
-        ``0`` for a row that contributes nothing, the figure the row RECORDED
-        when its money has moved, else the row's stored ``estimated_amount``.
+        ``0`` for a row that contributes nothing -- soft-deleted, Credit or
+        Cancelled -- else the figure the row RECORDED as having moved.
 
     Raises:
-        AmountUnresolvable: When the row has not settled and its plan is
-            derived, so it stores no figure either way.
+        AmountUnresolvable: When the row has NOT settled, so it recorded
+            nothing and this reader was handed a row outside its own scope;
+            and from :func:`settled_figure`, when a settled row's record is
+            incomplete.
     """
     fixed = fixed_contribution(txn)
-    if fixed is not None:
-        return fixed
-    return own_figure(txn.estimated_amount, "transaction", txn.id)
+    if fixed is None:
+        raise AmountUnresolvable(
+            f"Transaction {txn.id} has not settled, so it recorded nothing as "
+            "having moved. This accessor answers what a row's money DID. "
+            "There is deliberately no fall back to the row's PLAN, in either "
+            "spelling: a plan is a forecast, and answering one here would "
+            "report money as having moved when it has not. A caller that means "
+            "the plan asks cash_ledger.contribution_of(txn, basis), which "
+            "resolves it. Three statement_match readers CATCH this on purpose "
+            "and answer around it (finding N-302); reaching it anywhere else "
+            "means a settled-only reader was handed a row outside its scope."
+        )
+    return fixed

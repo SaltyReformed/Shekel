@@ -165,7 +165,7 @@ def _clock_facts(user_id):
     covering = calendar.span_containing(ctx.as_of)
     return {
         "as_of": ctx.as_of.isoformat(),
-        "cadence_days": calendar.cadence_days,
+        "cadence_days": calendar.rhythm.cadence_days,
         "saved_paydays": len(calendar.periods),
         "opening_bound": _plain(calendar.opening_bound()),
         "horizon": _plain(calendar.horizon()),

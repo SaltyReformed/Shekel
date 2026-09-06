@@ -100,15 +100,17 @@ from app.services import (
     account_posting_service,
     loan_posting_service,
     pay_period_write,
-    pay_schedule_service,
     user_write_lock,
 )
 from app.services._recurrence_common import log_resource_access_denied
 from app.services.pay_calendar import (
     DerivedPeriod,
     PeriodWindow,
+    calendar_at_schedule,
     calendar_for,
-    nominal_payday,
+    final_covered_day,
+    nominal_payday_after,
+    schedule_for,
 )
 from app.services.pay_period_locks import PeriodLockReason, classify_schedule_locks
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
@@ -140,56 +142,49 @@ def extend_pay_periods(user_id, num_periods):
     **It takes no cadence, and that is finding P29's fix** (plan step C3-b).
     ``cadence_days`` was an accepted parameter, forwarded from a Marshmallow
     field the extend card renders NO control for, so a direct POST could
-    generate 7-day paychecks while ``budget.pay_schedule`` still said 14 --
-    after which ``resolve_cadence``, the derived horizon and the next rolling
-    top-up all used 14.  Extend CONTINUES an existing schedule, so the cadence
-    is not a question it gets to ask: it reads the stored one.  The finding
-    closes by the state becoming unreachable rather than by adding a write,
-    which is what finding **P30** objected to.
+    generate 7-day paychecks while ``budget.pay_schedule`` still said 14.
+    Extend CONTINUES an existing schedule, so the cadence is not a question it
+    gets to ask: it reads the stored one.  The finding closes by the state
+    becoming unreachable rather than by adding a write, which is what finding
+    **P30** objected to.
 
     **The next payday comes from a PRODUCER, not from this door's arithmetic**
     (plan step C2-f3b), **and since plan step C14-d it is the NOMINAL one**
-    (**R-PC54**).  It was ``latest payday + cadence``, computed here -- the
-    right rule in the wrong place, a second implementation of "where does the
-    next paycheck land" and so the class of duplicate ledger row **P6** counted
-    seven of.  C2-f3b replaced it by asking
+    (**R-PC54**).  It was ``latest payday + cadence``, computed here -- a
+    second implementation of "where does the next paycheck land", the class of
+    duplicate ledger row **P6** counted seven of.  C2-f3b replaced it by asking
     :meth:`~app.services.pay_calendar.PayCalendar.span_containing` for the
     first day past the horizon, which returned the same day by construction.
 
     That equality is what ``C14-e`` ends.  ``span_containing`` answers the
-    PROJECTION -- from that step the nominal day displaced onto a business day,
-    a CASH date.  This door does not display a paycheck, it CONTINUES a rhythm,
-    and :func:`~app.services.pay_period_write.record_paydays` spaces the batch
-    by flat cadence arithmetic, so a cash anchor puts every payday in the batch
-    off the grid: **26 of 26** on a 26-period extend whose next nominal payday
-    is closed, against **0 of 26** anchored on the grid (probe 2026-09-05,
-    production's cadence).  So it asks
-    :func:`~app.services.pay_calendar.nominal_payday`, the body
-    :func:`~app.services.pay_calendar.projected_payday` itself calls -- still
-    ONE implementation, not a return to local arithmetic.  It is a PAYDAY
-    either way, never ``end_date + 1``.
+    PROJECTION -- from ``C14-e-3`` the nominal day displaced onto a business
+    day, a CASH date.  This door does not display a paycheck, it CONTINUES a
+    rhythm, and :func:`~app.services.pay_period_write.record_paydays` spaces
+    the batch by flat cadence arithmetic, so a cash anchor puts every payday in
+    the batch off the grid: **26 of 26** on a 26-period extend whose next
+    nominal payday is closed, against **0 of 26** anchored on the grid (probe
+    2026-09-05, production's cadence).  So it asks
+    :func:`~app.services.pay_calendar.nominal_payday` -- still ONE
+    implementation, not a return to local arithmetic.  It is a PAYDAY either
+    way, never ``end_date + 1``.
 
-    ``$0.00``, and STRUCTURALLY rather than by data: an adversarial review
-    struck a first draft resting it on every row holding ``none``, which one
-    POST through ``C14-b``'s doors falsifies.  Nothing in the pay-calendar
-    package reads a convention until ``C14-e``, so the two producers are one
-    function and cannot disagree.
-
-    **What it does NOT fix is the ANCHOR, and the same review measured what
-    that leaves** (ledger rows **N-495**, **PC-497**).  The grid is stepped from
-    the last RECORDED payday, which **R-PC47** says payroll may have moved --
-    and from ``C14-e`` the writer RECORDS displaced days, so each batch
-    re-anchors on the previous batch's last cash day.  Simulating that writer,
-    301 paydays: a batch of **one** -- the rolling top-up's steady state, since
-    it appends exactly the deficit -- records **178** wrong under ``prior`` and
-    drifts **8 days**, while a batch of 26 happens to record none wrong, which
-    is where the holidays fall rather than a property.  The remedy is a stored
-    nominal phase: **R-PC54** refuses it here, **R-PC58** places it at ``C17``.
-    And PC-497's refusal arrives on a READ path -- ``top_up_rolling_window``
-    reaches this door from ``/grid`` and ``/dashboard`` with no handler and
-    none registered for :class:`~app.exceptions.ValidationError` -- so it is
-    **N-494**'s shape through a second trigger, reported rather than fixed
-    because the degradation it needs is N-494's own unruled fork.
+    **The ANCHOR was the half ``C14-d`` could not fix, and plan step
+    ``C14-e-2`` fixed it** (ledger rows **N-495**, **PC-497** fault 2;
+    developer direction **R-PC61**).  The grid was stepped from the last
+    RECORDED payday, which **R-PC47** says payroll may have moved -- and from
+    ``C14-e-3`` the writer RECORDS displaced days, so each batch re-anchored on
+    the previous batch's cash day and the rhythm walked away from payroll's:
+    **178 of 301** recorded paydays wrong under ``prior`` with **8 days** of
+    final drift at a batch of ONE, the rolling top-up's steady state, against
+    **0 of 301** anchored on the stored phase.  *A batch of 26 happens to
+    record none wrong on this schedule, which is where the holidays fall
+    rather than a property; it is not reassurance.*  The remedy is
+    ``budget.pay_schedule.nominal_anchor``, which **R-PC54** refused and
+    **R-PC61** directs after that ruling's premise -- "one bounded gap" -- was
+    measured false: the gap compounds, and only a stored phase makes the
+    sentence true again.  What remains open is **N-495**, the PROJECTION
+    inheriting a displaced anchor, which this door does not reach and
+    ``C14-c``'s probe window forbids re-anchoring without widening.
 
     Args:
         user_id: The owning user's id.
@@ -205,6 +200,16 @@ def extend_pay_periods(user_id, num_periods):
         ValidationError: When the user has no existing periods to extend
             from (they must generate first), or when ``record_paydays``
             refuses the batch.
+        PayCalendarError: The owner holds no ``budget.pay_schedule`` row
+            (:func:`~app.services.pay_calendar.schedule_for`); or their stored
+            grid reaches no payday past the last paycheck's end within two
+            cadences, which needs a displacement a whole cadence long and is
+            ledger row **N-493**'s reported hole rather than a state a door
+            admits.  **Neither is the ``ValidationError`` the route catches**:
+            both reach ``app/error_handlers.py``'s recovery page for this
+            exception rather than the extend card's flash, which is the right
+            surface for "this owner has no derivable calendar" and the wrong
+            one for "that date is not allowed".
     """
     # Serialize against concurrent structural mutations for this user so the
     # latest payday is read under the lock and the append cannot race another
@@ -213,55 +218,56 @@ def extend_pay_periods(user_id, num_periods):
     # 500.
     user_write_lock.lock_user_writes(user_id)
 
-    # ONE read answers both questions this door asks -- where the schedule ends
-    # and how often the owner is paid.  ``calendar_for`` resolves the cadence
-    # itself, so ``calendar.cadence_days`` is the same value
-    # ``pay_schedule_service.resolve_cadence`` answered here before plan step
-    # C2-f3b, from that same call, rather than a second query of the same row.
-    calendar = calendar_for(user_id)
+    # ONE read answers all three questions this door asks -- where the
+    # schedule ends, how the owner is paid, and what PHASE their nominal grid
+    # runs on.  ``schedule_for`` makes the refusal for an owner with no
+    # ``budget.pay_schedule`` row (plan step C4-d), and ``calendar_at_schedule``
+    # derives from the facts it just answered rather than resolving them again.
+    facts = schedule_for(user_id)
+    calendar = calendar_at_schedule(user_id, facts)
     saved = calendar.saved()
-    if not saved:
+    # A NULL phase and an empty schedule are ONE owner and get one refusal: the
+    # migration backfilled every owner holding a payday and ``record_paydays``
+    # writes it on every batch, so a NULL phase means no paydays at all.
+    if not saved or facts.nominal_anchor is None:
         raise ValidationError(
             "Generate your first pay-period schedule before extending it."
         )
 
-    # An ``int``, since plan step pay_calendar:C4-d (ruling R-PC45): a calendar
-    # carries a cadence or it is not built.  This comment used to argue the
-    # value was not ``None`` HERE because the refusal above excluded the only
-    # calendar that could carry one, which was true and was not a property.
-    cadence_days = calendar.cadence_days
-    # The convention those paydays land under, which the calendar does NOT
-    # carry: nothing in that pure package uses it until plan step C14-e, so
-    # widening it would be a value the derivation held for nobody.  Extend
-    # CONTINUES a rhythm rather than stating one -- the same reading that
-    # denies this door a cadence question (finding P29 above) -- so it reads
-    # the stored answer and hands it straight back.
-    rhythm = pay_schedule_service.Rhythm(
-        cadence_days=cadence_days,
-        shift=pay_schedule_service.resolve_shift(user_id),
-    )
-    # The NOMINAL grid day one cadence past the owner's last recorded payday,
-    # and reading it off the GRID rather than off the calendar is plan step
-    # C14-d.  ``record_paydays`` spaces the batch it is handed by flat cadence
-    # arithmetic, so whatever day arrives here anchors every payday in it: a
-    # day read off the calendar is the projection, which ``C14-e`` displaces
-    # onto a business day, and the batch would then carry that displacement
-    # forward on every one of its paydays and into the next extend's anchor.
-    # ``nominal_payday`` is still the derivation's own producer --
-    # ``projected_payday`` is this call plus the convention -- so this is the
-    # single implementation the C2-f3b review asked for, on the side of the
-    # split that continues a rhythm rather than displaying one.
+    # The owner's stored rhythm, off the read above rather than out of a second
+    # query.  Its cadence is an ``int``, since plan step pay_calendar:C4-d
+    # (ruling R-PC45): a calendar carries a cadence or it is not built.  The
+    # CONVENTION arrives with it since plan step C14-e-1, which deleted the
+    # scalar ``resolve_shift`` this door used to pay for.  Extend CONTINUES a
+    # rhythm rather than stating one -- the same reading that denies it a
+    # cadence question (finding P29 above) -- so it hands the stored values
+    # straight back.
+    rhythm = calendar.rhythm
+    # WHERE THE LAST PAYCHECK ENDS -- ``_reject_backward_payday``'s own
+    # subject, so the producer below answers a day the floor admits rather than
+    # a second spelling of the floor.  Through ``final_covered_day`` and not
+    # ``saved[-1].end_date``, which the destructive-doors census refuses and is
+    # right to: this module decides through PRODUCERS, never by reaching into a
+    # period's span.  The SAVED window and not ``calendar.horizon()``, for the
+    # reason the paragraph above gives (ledger row N-496).
+    horizon = final_covered_day(saved.periods)
+
+    # **The grid is stepped from the STORED PHASE, not from this owner's last
+    # recorded payday** (plan step C14-e-2, R-PC61).  That payday is what the
+    # BANK did; from C14-e-3 it is a nominal day displaced onto a business day,
+    # so anchoring on it re-phases the rhythm by that displacement -- and
+    # permanently, since the next extend reads THIS batch's last cash day.  The
+    # docstring above carries the measurement (ledger row PC-497 fault 2).
     #
-    # The anchor is ``saved[-1]`` and not ``calendar.horizon()``, which is the
-    # accessor the deleted expression used.  ``horizon`` reads
-    # ``periods[-1].end_date`` with NO materialisation filter, so a calendar
-    # whose last candidate were unsaved would name a day no row records; the
-    # window above IS filtered, and it is the same value this door has already
-    # refused an empty answer from.  ``$0.00`` and unreachable today -- ledger
-    # row **N-496** records that no live path supplies an unsaved candidate --
-    # but this door writes ``budget.pay_periods``, so it takes the accessor
-    # that cannot name one.
-    next_payday = nominal_payday(saved[-1].start_date, cadence_days, 1)
+    # WHICH grid index the owner has not been paid at is a CASH question and
+    # WHAT DAY to hand the writer is a GRID question; the producer answers
+    # the first and returns the second, and its docstring carries why it is
+    # asked against the HORIZON rather than against the last recorded payday
+    # -- an adversarial review of C14-e-2 found that a stored phase which
+    # does not place that payday on its own grid (a PIECEWISE owner, ledger
+    # row N-492) is otherwise offered a day the floor then refuses,
+    # permanently, on a read path with no handler.
+    next_payday = nominal_payday_after(facts.nominal_anchor, rhythm, horizon)
     return pay_period_write.record_paydays(
         user_id, next_payday, num_periods, rhythm,
     )
@@ -591,7 +597,7 @@ def regenerate_pay_periods(
         num_periods: How many periods to generate.
         rhythm: How often the rebuilt tail is paid and what payroll does
             when one of its paydays lands on a closed day
-            (:class:`~app.services.pay_schedule_service.Rhythm`); also
+            (:class:`~app.services.pay_rhythm.Rhythm`); also
             persisted as the user's forecast rhythm, by the writer.  A PAIR
             rather than a bare cadence since plan step **C14-b**, because the
             two carry a joint rule the writer judges together.
@@ -778,7 +784,7 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
         num_periods: How many periods to generate.
         rhythm: How often the new schedule is paid and what payroll does
             when one of its paydays lands on a closed day
-            (:class:`~app.services.pay_schedule_service.Rhythm`); also
+            (:class:`~app.services.pay_rhythm.Rhythm`); also
             persisted as the user's rhythm, by the writer.  See
             :func:`regenerate_pay_periods` for why it is a pair.
 

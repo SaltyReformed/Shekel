@@ -3,7 +3,9 @@ Shekel Budget App -- Model Computed Property Tests
 
 Tests for computed properties on models:
   - Transaction: what it contributes (the retired ``effective_amount``
-    rules, now ``row_valuation.owned_contribution``), is_income, is_expense
+    rules, now ``cash_ledger.contribution_of`` for a row that has not settled
+    and ``row_valuation.settled_contribution`` for one that has), is_income,
+    is_expense
   - Transfer: what its amount resolves to (``resolve_transfer_amount``)
   - Category: display_name
   - PaycheckBreakdown: total_pre_tax, total_post_tax, total_taxes
@@ -30,9 +32,10 @@ from app.services.paycheck_calculator import (
 from app.services import account_service
 from app.utils.dates import display_today
 from app.utils.dates import add_months
-from app.services.cash_ledger import resolve_transfer_amount
-from app.services.row_valuation import owned_contribution
+from app.services.cash_ledger import contribution_of, resolve_transfer_amount
+from app.services.row_valuation import settled_contribution
 from tests._test_helpers import (
+    amount_basis_for,
     an_entered_day,
     default_settle_day,
     open_books_before_the_first_assertion,
@@ -52,7 +55,7 @@ class TestTransactionEffectiveAmount:
     ``Transaction.effective_amount`` was deleted at plan step X-au-c2 -- a
     model property cannot resolve a DERIVED amount, being a pure in-memory read
     with no session -- and its four arms moved to
-    ``row_valuation.owned_contribution`` for a row that owns its figure.  These
+    ``row_valuation.settled_contribution`` for a row that owns its figure.  These
     cases moved with them unchanged, because the RULES did not change: zero for
     a soft-deleted or excluded row, what a SETTLED row recorded, else the row's
     own stored figure.
@@ -110,10 +113,19 @@ class TestTransactionEffectiveAmount:
         return txn
 
     def test_projected_returns_estimated(self, app, db, seed_user, seed_periods):
-        """Projected transaction returns estimated_amount."""
+        """Projected transaction returns estimated_amount.
+
+        **It asks the AMOUNT MODEL, and plan step X-bx is why.**  This graded
+        ``row_valuation.owned_contribution`` until then -- an accessor whose
+        readers are all settled-only, which reached a Projected row's plan only
+        through the fall-through that step deleted (finding **BAL-465**).  The
+        producer for what a row that has NOT settled contributes is
+        :func:`~app.services.cash_ledger.contribution_of`, and it always was;
+        the figure asserted is unchanged, and so is the rule under test.
+        """
         with app.app_context():
             txn = self._make_txn(seed_user, seed_periods, "Projected", Decimal("150.00"))
-            assert owned_contribution(txn) == Decimal("150.00")
+            assert contribution_of(txn, amount_basis_for(txn)) == Decimal("150.00")
 
     # ── The case that arrived at plan step X-c2c2c ───────────────────
     #
@@ -142,7 +154,7 @@ class TestTransactionEffectiveAmount:
             txn.is_deleted = True
             db.session.flush()
 
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
     def test_done_with_actual_returns_actual(self, app, db, seed_user, seed_periods):
         """A Paid row that recorded a human's CORRECTION is worth that figure."""
@@ -151,7 +163,7 @@ class TestTransactionEffectiveAmount:
                 seed_user, seed_periods, "Paid",
                 Decimal("150.00"), actual=Decimal("145.00"),
             )
-            assert owned_contribution(txn) == Decimal("145.00")
+            assert settled_contribution(txn) == Decimal("145.00")
 
     def test_done_without_actual_returns_estimated(self, app, db, seed_user, seed_periods):
         """A Paid row that recorded no correction is worth what it DERIVED.
@@ -165,7 +177,7 @@ class TestTransactionEffectiveAmount:
         """
         with app.app_context():
             txn = self._make_txn(seed_user, seed_periods, "Paid", Decimal("150.00"))
-            assert owned_contribution(txn) == Decimal("150.00")
+            assert settled_contribution(txn) == Decimal("150.00")
 
     def test_credit_status_returns_zero(self, app, db, seed_user, seed_periods):
         """Credit-status transaction contributes Decimal('0').
@@ -178,7 +190,7 @@ class TestTransactionEffectiveAmount:
             txn = self._make_txn(
                 seed_user, seed_periods, "Credit", Decimal("250.00"),
             )
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
     def test_cancelled_status_returns_zero(self, app, db, seed_user, seed_periods):
         """Cancelled transaction contributes Decimal('0').
@@ -190,7 +202,7 @@ class TestTransactionEffectiveAmount:
             txn = self._make_txn(
                 seed_user, seed_periods, "Cancelled", Decimal("500.00"),
             )
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
     def test_received_uses_estimated_when_no_actual(self, app, db, seed_user, seed_periods):
         """A Received row that recorded no correction is worth what it DERIVED.
@@ -203,7 +215,7 @@ class TestTransactionEffectiveAmount:
             txn = self._make_txn(
                 seed_user, seed_periods, "Received", Decimal("150.00"),
             )
-            assert owned_contribution(txn) == Decimal("150.00")
+            assert settled_contribution(txn) == Decimal("150.00")
 
     def test_received_uses_actual_when_set(self, app, db, seed_user, seed_periods):
         """A Received row that recorded a CORRECTION is worth that figure.
@@ -217,7 +229,7 @@ class TestTransactionEffectiveAmount:
                 seed_user, seed_periods, "Received",
                 Decimal("150.00"), actual=Decimal("145.00"),
             )
-            assert owned_contribution(txn) == Decimal("145.00")
+            assert settled_contribution(txn) == Decimal("145.00")
 
     def test_done_with_zero_actual(self, app, db, seed_user, seed_periods):
         """A Paid row that recorded ``$0.00`` is worth zero (e.g., a waived fee).
@@ -231,7 +243,7 @@ class TestTransactionEffectiveAmount:
                 seed_user, seed_periods, "Paid",
                 Decimal("100.00"), actual=Decimal("0.00"),
             )
-            assert owned_contribution(txn) == Decimal("0.00")
+            assert settled_contribution(txn) == Decimal("0.00")
 
 
 # ── Transaction.is_income / is_expense ───────────────────────────────

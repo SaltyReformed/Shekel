@@ -43,6 +43,8 @@ from app.services.pay_calendar import (
 )
 
 
+from tests._test_helpers import rhythm_of
+
 @dataclass(frozen=True)
 class CadenceControl:
     """What moved when the calendar was re-derived at a neighbouring cadence.
@@ -132,8 +134,8 @@ def cadence_control(
         cadence_days - 1 if cadence_days >= MAX_CADENCE_DAYS
         else cadence_days + 1
     )
-    baseline = derive_periods(paydays, cadence_days)
-    probed = derive_periods(paydays, probe)
+    baseline = derive_periods(paydays, rhythm_of(cadence_days))
+    probed = derive_periods(paydays, rhythm_of(probe))
     return CadenceControl(
         applicable=bool(baseline),
         probe_cadence=probe,

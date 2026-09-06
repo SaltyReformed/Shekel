@@ -182,8 +182,11 @@ class TestStatingARuleMovesNoMoney:
         """The select still opens on "leave this line alone".
 
         A placement is rendered BESIDE the control, never into it.  The screen
-        proves the rendered default separately
-        (``test_statement_matches.TestTheCreateArm``); what this pins is the
+        proved the rendered default separately, in the review queue's own
+        ``TestTheCreateArm``; plan step ``bank_import:X-gi-2`` deleted that page
+        and the case with it, and the Reconcile card has no *leave this line
+        alone* default to grade -- its OK checkbox is the consent, so the
+        rendered-default half is MOOT rather than lost.  What this pins is the
         service half: a placed line is still an offer, and nothing about it
         says the owner accepted anything.
         """

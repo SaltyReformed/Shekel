@@ -29,7 +29,7 @@ from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services import account_service
 from app.services.cash_ledger import resolve_transfer_amount
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -150,8 +150,8 @@ class TestEffectiveAmountDecimal:
         db.session.add(txn)
         db.session.flush()
 
-        assert isinstance(owned_contribution(txn), Decimal)
-        assert owned_contribution(txn) == Decimal("0")
+        assert isinstance(settled_contribution(txn), Decimal)
+        assert settled_contribution(txn) == Decimal("0")
 
     def test_transaction_cancelled_returns_decimal(self, app, db, seed_user, seed_periods):
         """Cancelled Transaction.effective_amount must be Decimal."""
@@ -172,8 +172,8 @@ class TestEffectiveAmountDecimal:
         db.session.add(txn)
         db.session.flush()
 
-        assert isinstance(owned_contribution(txn), Decimal)
-        assert owned_contribution(txn) == Decimal("0")
+        assert isinstance(settled_contribution(txn), Decimal)
+        assert settled_contribution(txn) == Decimal("0")
 
     def test_transfer_cancelled_returns_decimal(self, app, db, seed_user, seed_periods):
         """A Cancelled transfer's RESOLVED amount is still a Decimal.

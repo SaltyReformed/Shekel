@@ -55,7 +55,7 @@
    and the figure the door checks are one derivation.  With JavaScript off
    this never re-renders: the consent box stays disabled and submits nothing,
    which leaves the door refusing an unbalanced group and naming both sums --
-   the same degradation the workbench's own panel documents.
+   the same degradation the retired workbench's own panel documented.
 
    Context: account (the owned account), opened (an OpenedMatch: the line, the
    proposal a tier offered, the candidate rows, the (kind, row_id) set that is
@@ -73,12 +73,13 @@
      Apply carried no figure at all -- with every server test green, because a
      test posts the field a browser could never hold.
 
-     THIS IS THE SECOND INSTANCE OF THAT DEFECT.  `_statement_hand_totals.html`
-     documents the first, found on the workbench by browser probe, and the
-     remedy is the same one taken there: the attributes live on the wrapper
-     around the tick lists, which the consent box is NOT inside.  What differs
-     is only which element the swap replaces -- the workbench targets an inner
-     totals panel, this replaces the whole pane, because here the ROWS
+     THIS IS THE SECOND INSTANCE OF THAT DEFECT.  The first was found on the
+     workbench by browser probe and written up in its own totals partial, both
+     deleted at plan step bank_import:X-gi-2; the remedy is the same one taken
+     there: the attributes live on the wrapper
+     around the tick lists, which the consent box is NOT inside.  What differed
+     is only which element the swap replaces -- that panel targeted an inner
+     totals element, this replaces the whole pane, because here the ROWS
      re-render too when the search changes.
 
      A change from the search box or any row checkbox bubbles to this element
@@ -284,8 +285,8 @@
      exempts no shape since plan step bank_import:X-gj-1b, so a match states
      the difference it was reviewed against and the door refuses when its own
      arithmetic disagrees.  `needs_consent` is what decides which of the three
-     controls says so; the workbench's own panel carries the same three arms
-     and the argument for them.
+     controls says so; the retired workbench's own panel carried the same
+     three arms and the argument for them.
 
      IT IS OUTSIDE .rec-match-picks, which is the whole of the C2 fix at the
      top of this file: the consent box's own change event must not replace it.
@@ -344,9 +345,12 @@
       <strong>disagree</strong>, the difference appears here and you agree to
       it before anything is written.
       {% else %}
-      {# THE JAVASCRIPT-OFF WORDING, which this pane needs now that it has a
+      {# THE JAVASCRIPT-OFF WORDING, which this pane needed once it had a
          second surface -- exactly the wording its twin on the workbench
-         carries, and for the same reason (plan step bank_import:X-gi-1).
+         carried, and for the same reason (plan step bank_import:X-gi-1).
+         That twin is gone as of bank_import:X-gi-2 and this is now the ONLY
+         hand-build surface, which is what makes the wording load-bearing
+         rather than a match.
 
          The comment that stood here said this arm could not be read with
          scripting off, "because this pane is rendered by htmx and nothing

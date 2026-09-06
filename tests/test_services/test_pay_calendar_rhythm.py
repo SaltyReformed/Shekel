@@ -27,6 +27,8 @@ from app.services.pay_calendar import (
     saved_paydays_in_month_through,
 )
 
+
+from tests._test_helpers import rhythm_of
 #: A biweekly rhythm anchored on a Friday, three paydays in January 2026
 #: (the 2nd, 16th and 30th) and two in every other month it reaches.
 _JANUARY_OPENING = date(2026, 1, 2)
@@ -50,7 +52,7 @@ def _calendar(
     return PayCalendar.from_paydays(
         [(index + 1, opening + timedelta(days=cadence * index))
          for index in range(count)],
-        cadence,
+        rhythm_of(cadence),
         user_id=user_id,
         history_opens_on=history_opens_on,
     )
@@ -145,7 +147,7 @@ class TestPaydaysInMonthThrough:
         schedule row and zero paydays.*
         """
         empty = PayCalendar.from_paydays(
-            [], 14, user_id=1, history_opens_on=None,
+            [], rhythm_of(14), user_id=1, history_opens_on=None,
         )
         assert paydays_in_month_through(empty, date(2026, 1, 31)) == ()
 
@@ -502,7 +504,7 @@ class TestTheBackwardRhythmAndItsFloor:
         calendar = PayCalendar.from_paydays(
             [(1, date(2026, 3, 10)), (2, date(2026, 3, 20)),
              (3, date(2026, 4, 30))],
-            _CADENCE, user_id=1, history_opens_on=date(2025, 1, 1),
+            rhythm_of(_CADENCE), user_id=1, history_opens_on=date(2025, 1, 1),
         )
 
         # Anchored on 03-10: 02-24, 02-10 ... not on 04-30 (which would give
@@ -536,7 +538,7 @@ class TestTheBackwardRhythmAndItsFloor:
     def test_an_empty_calendar_has_no_rhythm_to_run_backward(self):
         """No payday means no anchor, so there is nothing to step back from."""
         empty = PayCalendar.from_paydays(
-            [], 14, user_id=1, history_opens_on=date(2020, 1, 1),
+            [], rhythm_of(14), user_id=1, history_opens_on=date(2020, 1, 1),
         )
 
         assert paydays_in_month_through(empty, date(2026, 1, 31)) == ()
@@ -624,7 +626,7 @@ class TestSavedPaydaysInMonthThrough:
         # defect as a control that cannot fire.
         calendar = PayCalendar.from_paydays(
             [(30, date(2025, 1, 9)), (31, date(2026, 1, 23))],
-            14, user_id=1, history_opens_on=None,
+            rhythm_of(14), user_id=1, history_opens_on=None,
         )
 
         assert saved_paydays_in_month_through(
@@ -637,7 +639,7 @@ class TestSavedPaydaysInMonthThrough:
     def test_an_empty_calendar_records_no_paydays(self):
         """No saved payday means nothing recorded, which is a real answer."""
         empty = PayCalendar.from_paydays(
-            [], 14, user_id=1, history_opens_on=None,
+            [], rhythm_of(14), user_id=1, history_opens_on=None,
         )
 
         assert saved_paydays_in_month_through(empty, date(2026, 1, 31)) == ()

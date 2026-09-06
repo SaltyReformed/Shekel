@@ -805,6 +805,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
           producer-free valuation arms, extracted BELOW ``cash_ledger`` so the
           loan stack can reach them without closing an import cycle, and
           scoped the day they moved so the extraction did not un-rule
+          ``settled_contribution``, which plan step X-bx renamed from
           ``owned_contribution``)
         * ``_KIND_CLASSIFIER_MODULES`` (``account_projection``, D1b)
         * ``_LOAN_RESOLVER_ENGINE_MODULES`` (``loan_resolver``, D3 -- B-12's

@@ -41,7 +41,7 @@ from app.services import posting_service, status_seam, transaction_service
 # ``test_the_live_figure_is_resolved_BEFORE_the_status_flip`` for why patching
 # the package attribute would grade nothing.
 from app.services.transaction_service import _settle
-from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.cash_ledger import amount_basis, amounts_by_id
 from tests._test_helpers import (
     amount_basis_for,
@@ -963,7 +963,7 @@ class TestASettleBooksTheFreshestFigure:
             # correction.
             assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
             assert settled_figure(txn) == Decimal("4000.00")
-            assert owned_contribution(txn) == Decimal("4000.00")
+            assert settled_contribution(txn) == Decimal("4000.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.RECEIVED)
 
     def test_a_supplied_actual_still_wins_over_the_live_figure(
@@ -993,7 +993,7 @@ class TestASettleBooksTheFreshestFigure:
 
             assert txn.settled_amount == Decimal("3912.44")
             assert txn.estimated_amount is None
-            assert owned_contribution(txn) == Decimal("3912.44")
+            assert settled_contribution(txn) == Decimal("3912.44")
             # The PLAN, asserted rather than described: it still resolves from
             # the definition, and it is a different number from the record.
             # An adversarial review of this step found the docstring claiming
@@ -1035,7 +1035,7 @@ class TestASettleBooksTheFreshestFigure:
             # correction.
             assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
             assert settled_figure(txn) == Decimal("1234.56")
-            assert owned_contribution(txn) == Decimal("1234.56")
+            assert settled_contribution(txn) == Decimal("1234.56")
 
     # ``test_an_agreeing_live_figure_leaves_the_column_null`` lived here until
     # plan step X-au-d, and its SUBJECT is deleted rather than the case being
@@ -1077,7 +1077,7 @@ class TestASettleBooksTheFreshestFigure:
             # correction.
             assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
             assert settled_figure(txn) == Decimal("500.00")
-            assert owned_contribution(txn) == Decimal("500.00")
+            assert settled_contribution(txn) == Decimal("500.00")
 
     def test_an_envelope_with_entries_still_settles_at_its_entries(
         self, app, db, seed_user, seed_periods,
@@ -1154,7 +1154,7 @@ class TestASettleBooksTheFreshestFigure:
             # correction.
             assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
             assert settled_figure(txn) == Decimal("500.00")
-            assert owned_contribution(txn) == Decimal("500.00")
+            assert settled_contribution(txn) == Decimal("500.00")
 
     def test_settle_amount_refuses_a_transfer_shadow(
         self, app, db, seed_user, seed_periods,
@@ -1619,7 +1619,7 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
 
             assert txn.settled_amount == Decimal("245.32")
             assert settled_figure(txn) is None
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
 
 class TestAReplayedSettleIsANoOp:

@@ -161,7 +161,7 @@ def _resolve_loan_basis(loan_account_id: int) -> _LoanCashBasis | None:
     which put :func:`get_payment_history` on the pricing path -- so pricing a
     loan payment read the amounts of the loan's own payment rows, and that
     apparent circularity is why ``get_payment_history`` priced through
-    ``cash_ledger.owned_contribution`` instead of the amount resolver, why its
+    ``cash_ledger.settled_contribution`` instead of the amount resolver, why its
     docstring concluded "the loan-side INCOME leg must keep owning its figure,
     and only the checking-side EXPENSE leg can be declared derived".
 

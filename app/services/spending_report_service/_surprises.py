@@ -65,9 +65,11 @@ def _build_surprises(
         # rows" -- true when written, and the reason finding **BAL-462** ruled
         # the remedy DELETE THE ACCESSOR: a public spelling of "what is this
         # row's plan" that answers from the column is a second producer whoever
-        # reaches for it next.  The refusal survives as
-        # ``row_valuation.own_figure``, which takes the column as an ARGUMENT,
-        # inside rule 1's own arm.
+        # reaches for it next.  The refusal survives inside rule 1's own arm as
+        # ``cash_ledger._amount_source._own_figure``, which takes the column as
+        # an ARGUMENT; plan step X-bx moved it there from ``row_valuation`` and
+        # made it PRIVATE, once that step's deletion left both of its callers
+        # inside the amount model.
         #
         # **THE LINE ABOVE TOOK THE SAME ROUTE AT THAT STEP**, and it is the
         # half this fix did not reach: ``resolved_actual_amount``'s fall-through
@@ -106,9 +108,10 @@ def _build_surprises(
         # past date -- so this is a measurement of today's data, not an
         # invariant the schema holds.
         #
-        # It is deliberately not ``owned_contribution``: that answers the
-        # entered actual where there is one, which would make every surprise's
-        # delta zero by construction.
+        # It is deliberately not ``settled_contribution``: that answers what the
+        # row RECORDED as having moved, which is the ACTUAL half below, so
+        # reading it here would make every surprise's delta zero by
+        # construction.
         estimated = resolve_transaction_amount(txn, basis)
         delta = actual - estimated
         if delta == ZERO:

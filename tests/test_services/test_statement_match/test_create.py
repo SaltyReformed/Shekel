@@ -56,6 +56,7 @@ from app.services.statement_match import _create  # pylint: disable=protected-ac
 from tests._test_helpers import (
     last_covered_day,
     open_books_before_the_first_assertion,
+    rhythm_of,
 )
 
 from ._builders import (
@@ -1158,7 +1159,7 @@ class TestTheSpanADestinationCarriesIsDERIVED:
                 seed_user, name="Groceries", amount="500.00", is_envelope=True,
             )
             empty = pay_calendar.PayCalendar.from_paydays(
-                [], 14, seed_user["user"].id, history_opens_on=None,
+                [], rhythm_of(14), seed_user["user"].id, history_opens_on=None,
             )
 
             assert statement_match.destinations_for(

@@ -50,7 +50,7 @@ from tests._test_helpers import (
     make_cadence_rule,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 
 
 def _derived_cash(seed_user, rows):
@@ -415,7 +415,7 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
 
         db.session.expire_all()
         settled = db.session.get(Transaction, income_shadow.id)
-        assert owned_contribution(settled) == Decimal("1699.10")
+        assert settled_contribution(settled) == Decimal("1699.10")
 
         (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
         assert split.due_date == date(2026, 3, 1)
@@ -427,7 +427,7 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
         assert split.excess == Decimal("0.00")
         assert (
             split.interest + split.escrow + split.principal + split.excess
-            == owned_contribution(settled)
+            == settled_contribution(settled)
         )
 
 
@@ -478,7 +478,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
         assert income_shadow is not None
         # Pre-settle the shadow is worth the LIVE PITI, and the parent's stale
         # $1.00 is what it would have shown before the cutover.  Asked of the
-        # amount model, because ``owned_contribution`` REFUSES a derived row --
+        # amount model, because ``settled_contribution`` REFUSES a derived row --
         # its name is the assertion, and a projected shadow no longer owns
         # anything.
         assert _derived_cash(seed_user, [income_shadow])[
@@ -499,7 +499,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
         assert settled.status.is_settled is True
         # Capture-on-settle froze the LIVE PITI, not the $1.00 estimate.
         assert settled.settled_amount == Decimal("1499.10")
-        assert owned_contribution(settled) == Decimal("1499.10")
+        assert settled_contribution(settled) == Decimal("1499.10")
         # The PLAN column stays empty: a settle RECORDS what moved beside the
         # plan (plan step X-au-c3) and never writes into it.
         assert settled.estimated_amount is None
@@ -585,7 +585,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
         assert _derived_cash(seed_user, [settled])[settled.id] == Decimal(
             "1499.10",
         )
-        assert owned_contribution(settled) == Decimal("1499.10")
+        assert settled_contribution(settled) == Decimal("1499.10")
 
         # A stale-tab re-settle leaves the frozen figure untouched.
         resp2 = auth_client.post(
@@ -595,7 +595,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
         db.session.expire_all()
         replayed = db.session.get(Transaction, income_shadow_id)
         assert replayed.settled_amount == Decimal("1499.10")
-        assert owned_contribution(replayed) == Decimal("1499.10")
+        assert settled_contribution(replayed) == Decimal("1499.10")
 
 
 def test_loan_standing_extra_reads_the_recurring_payment_setting(
