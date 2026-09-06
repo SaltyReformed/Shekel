@@ -113,9 +113,11 @@ def show():
     section = request.args.get("section", "general")
     # Gate A ruling 6 (retirement rebuild P3a): the Settings > Retirement
     # section retired -- the assumptions panel on /retirement is the
-    # persistent home for SWR, the planned retirement date, the estimated
-    # retirement tax rate, and the merit-raise horizon.  Old bookmarks and
-    # links land on the retirement page.
+    # persistent home for SWR, the planned retirement date and the estimated
+    # retirement tax rate.  (It held the merit-raise horizon too until plan
+    # step salary:S3-c deleted that setting -- ruling **R-SAL11**: a raise's
+    # end year is a fact on the raise.)  Old bookmarks and links land on the
+    # retirement page.
     if section == "retirement":
         return redirect(url_for("retirement.dashboard"))
     if section not in _VALID_SECTIONS:

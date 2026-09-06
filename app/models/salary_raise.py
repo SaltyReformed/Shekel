@@ -148,28 +148,30 @@ class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin,
         server_default=db.text("false"),
     )
     #: The LAST year this raise is believed to happen, or ``NULL`` for
-    #: indefinitely (plan step **salary:S3-b**, ruling **R-SAL11**).  A
-    #: recorded raise is a fact; a raise marked ``is_recurring`` is partly a
-    #: forecast, and a forecast decays -- this is where that decay is
-    #: stated, per raise, instead of as one global
+    #: indefinitely (plan steps **salary:S3-b** and **S3-c**, ruling
+    #: **R-SAL11**).  A recorded raise is a fact; a raise marked
+    #: ``is_recurring`` is partly a forecast, and a forecast decays -- this
+    #: is where that decay is stated, per raise.  It replaced one global
     #: ``auth.user_settings.merit_raise_horizon_years`` applied by raise TYPE
-    #: on ``/retirement`` alone.
+    #: on ``/retirement`` alone, which plan step salary:S3-c deleted after
+    #: carrying each owner's value onto these rows.
     #:
     #: **Nullable because "indefinitely" is a real belief and the common
     #: one**: a COLA does not stop, because inflation does not stop at a
     #: planning horizon.  ``NULL`` is not "unanswered"; it is the answer that
-    #: says the raise carries no end.
+    #: says the raise carries no end.  The FORM therefore cannot leave it
+    #: unanswered either -- a recurring raise must pick "no end year" or a
+    #: year (:class:`~app.schemas.validation.salary.RaiseCreateSchema`), on
+    #: the developer's 2026-09-05 ruling that a default here would be one
+    #: global belief in per-raise clothing.
     #:
-    #: **It is already LIVE to the raise walk and no value has been written
-    #: yet, which is deliberate.**
-    #: :func:`app.services.salary_raises.apply_raises` reads this attribute
-    #: through ``getattr(raise_obj, "terminal_year", None)`` -- shipped at
-    #: plan step **salary:S3-a** for the ``TerminatedRaise`` value the
-    #: pension projector builds -- so every ORM row the paycheck engine walks
-    #: now carries the field.  ``NULL`` is exactly what that ``getattr``
-    #: answered before the column existed, so an all-``NULL`` column changes
-    #: no figure anywhere.  The values, the write door and the deletion of
-    #: the global setting are the cutover step's, not this one's.
+    #: **It is THE horizon, for every engine.**
+    #: :func:`app.services.salary_raises.apply_raises` reads it on the shared
+    #: walk both the paycheck pipeline and
+    #: :func:`app.services.pension_calculator.project_salaries_by_year` go
+    #: through, and since salary:S3-c neither of them invents a cutoff of its
+    #: own -- so the two long-horizon salary paths that used to disagree past
+    #: a global cutoff are one path.
     terminal_year = db.Column(db.Integer)
     notes = db.Column(db.Text)
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.

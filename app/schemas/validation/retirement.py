@@ -128,14 +128,12 @@ class RetirementSettingsSchema(BaseSchema):
 
     Every field is optional, so the assumptions panel's per-field saves
     (P3a: one field per POST) and a multi-field submit validate through
-    the same schema.  ``merit_raise_horizon_years`` is a plain year
-    count (no percent conversion) whose 0-50 ``Range`` mirrors the DB
-    CHECK ``ck_user_settings_valid_merit_horizon``; it is NOT
-    ``allow_none`` -- the column is NOT NULL, so an empty submit means
-    "not provided" (the key is dropped), never a NULL write.  There is
-    deliberately NO field for an assumed annual return: its save
-    semantics are an open developer question, so the panel's return row
-    stays what-if-only.
+    the same schema.  There is deliberately NO field for an assumed annual
+    return: its save semantics are an open developer question, so the
+    panel's return row stays what-if-only.  There is no longer one for the
+    merit-raise horizon either -- plan step salary:S3-c deleted that
+    setting (ruling **R-SAL11**), and a raise's end year is written on the
+    salary page through :class:`~app.schemas.validation.salary.RaiseCreateSchema`.
     """
 
     _PERCENT_FIELDS = (
@@ -157,10 +155,6 @@ class RetirementSettingsSchema(BaseSchema):
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
     )
-    merit_raise_horizon_years = fields.Integer(
-        validate=validate.Range(min=0, max=50),
-    )
-
     @validates_schema
     def validate_future_retirement_date(self, data, **kwargs):
         """Reject a planned retirement date that is not in the future.
@@ -189,9 +183,12 @@ class RetirementReadinessQuerySchema(BaseSchema):
     retired in P3c); ``return_rate`` mirrors
     ``investment_params.assumed_annual_return``'s ``(-1, 1]`` storage
     bound (F-17: the schema owns the percent-to-fraction conversion via
-    ``@pre_load``, so the route does no money math);
-    ``merit_raise_horizon_years`` is 0-50, mirroring the DB CHECK and the
-    settings schema.  The two lever stepper values: ``months`` capped at
+    ``@pre_load``, so the route does no money math).  It carried a
+    ``merit_raise_horizon_years`` what-if until plan step salary:S3-c
+    deleted the setting behind it (ruling **R-SAL11**); a stale bookmark
+    still passing one is DROPPED rather than rejected, because
+    ``BaseSchema`` excludes unknown keys.  The two lever stepper values:
+    ``months`` capped at
     the P2b +180 search bound
     (:data:`app.services.retirement_levers._MAX_DELAY_MONTHS`) and
     ``contribution`` a money amount bounded to ``[0, 100000]`` (so it is
@@ -220,10 +217,6 @@ class RetirementReadinessQuerySchema(BaseSchema):
         validate=validate.Range(
             min=Decimal("-1"), max=Decimal("1"), min_inclusive=False,
         ),
-    )
-    merit_raise_horizon_years = fields.Integer(
-        allow_none=True,
-        validate=validate.Range(min=0, max=50),
     )
     months = fields.Integer(
         allow_none=True,

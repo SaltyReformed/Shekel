@@ -149,10 +149,13 @@ def compute_readiness_whatif(
     -- funded-ratio delta in percentage points, shortfall delta in dollars).
     At the owner's stored plan the displayed state IS the baseline and
     ``deltas`` is ``None`` (no delta chips render).  **That comparison is by
-    VALUE and it is why the point is resolved**: the merit-horizon input
-    submits the stored value on every request, so a point built from overrides
-    would never equal the baseline and the panel would derive one plan twice
-    and report a delta of zero.
+    VALUE and it is why the point is resolved**: a saveable rail input renders
+    pre-filled and so submits the stored value on every request, so a point
+    built from overrides would never equal the baseline and the panel would
+    derive one plan twice and report a delta of zero.  *It was the
+    merit-horizon input that made that concrete; plan step salary:S3-c
+    deleted that row, and the withdrawal-rate input is pre-filled the same
+    way.*
 
     **Both pictures come from ONE loader and ONE producer** (plan step
     C2-f2d-2, and C2-f2d-1 before it for the read pass).  The two computations
