@@ -546,7 +546,7 @@ def set_history_opening(
 
 
 def upsert_schedule(
-    user_id: int, rhythm: Rhythm, nominal_anchor: "date | None",
+    user_id: int, rhythm: Rhythm, nominal_anchor: "date | None" = None,
 ) -> PaySchedule:
     """Create or update the user's persisted RHYTHM, race-safe.
 
@@ -601,7 +601,7 @@ def upsert_schedule(
             function -- the disposition that function's own docstring
             scheduled.*
         nominal_anchor: A day the owner's NOMINAL grid passes through, or
-            ``None`` for a schedule that states no phase (plan step
+            ``None`` for a write that states no phase (plan step
             ``C14-e-2``).  Written in the SAME statement as the pair above,
             for the pair's own reason: the three describe one rhythm, and a
             row written through two statements passes through a state neither
@@ -610,11 +610,10 @@ def upsert_schedule(
             batch's own first payday rather than accepting it from a door --
             so a phase that is not on the batch's grid is UNREPRESENTABLE
             rather than refused, which is what doctrine asks of a fence.
-            **Required and not defaulted**: this is an UPSERT, so a forgetful
-            caller would not leave the stored phase alone, it would overwrite
-            it with ``None`` and silently un-phase the owner's grid.  A
-            ``TypeError`` at the call site is the cheap failure; a cleared
-            phase is a wrong payday nobody sees.
+            **``None`` LEAVES THE STORED PHASE STANDING** rather than clearing
+            it, which is the one place this door admits "leave that alone";
+            the statement below carries why the RHYTHM gets no such arm and
+            this does.
 
     Returns:
         The created or updated :class:`PaySchedule` row.
@@ -634,16 +633,42 @@ def upsert_schedule(
     # boundary and nowhere else -- ``recurrence._authoring`` resolves the same
     # vocabulary at the same moment for the same reason.
     shift_id = ref_cache.business_day_shift_id(rhythm.shift)
-    written = {
-        "cadence_days": rhythm.cadence_days,
-        "shift_id": shift_id,
-        "nominal_anchor": nominal_anchor,
-    }
     insert_stmt = pg_insert(PaySchedule.__table__).values(
-        user_id=user_id, **written,
+        user_id=user_id,
+        cadence_days=rhythm.cadence_days,
+        shift_id=shift_id,
+        nominal_anchor=nominal_anchor,
     )
     upsert_stmt = insert_stmt.on_conflict_do_update(
-        constraint="uq_pay_schedule_user", set_=written,
+        constraint="uq_pay_schedule_user",
+        set_={
+            "cadence_days": rhythm.cadence_days,
+            "shift_id": shift_id,
+            # COALESCE, so a write that states NO phase leaves the stored one
+            # standing rather than clearing it.  Written the other way it is a
+            # FOOTGUN: this is an UPSERT, so a caller changing the cadence
+            # alone would silently un-phase the owner and their next extend
+            # would be refused.  SIX cases proved that before this arm existed;
+            # ``app/`` has ONE caller and it always states a phase, so the
+            # defect was one door away rather than live -- which is the
+            # distance at which the right move is to make it unrepresentable.
+            #
+            # **The pair still carries a joint rule and this arm does not deny
+            # it**, which a second adversarial review corrected: a cadence and
+            # the phase it is measured from must come from ONE era, or the
+            # grid is one nobody chose.  That is ledger row **N-492** and it is
+            # why the migration backfills MAX rather than MIN.  What holds the
+            # rule here is that ``pay_period_write.record_paydays`` is the only
+            # caller and states BOTH from the batch it is recording -- a
+            # discipline kept by there being one writer, not by this argument
+            # being independent.  A caller that changes the cadence and means a
+            # new grid must say so; ``C17``'s era row is where that stops being
+            # a discipline and becomes a shape.
+            "nominal_anchor": func.coalesce(
+                insert_stmt.excluded.nominal_anchor,
+                PaySchedule.__table__.c.nominal_anchor,
+            ),
+        },
     )
     db.session.execute(upsert_stmt)
     # Reload through the ORM with populate_existing so any instance the
@@ -703,7 +728,7 @@ def set_rolling(user_id: int, enabled: bool, target_periods: int) -> PaySchedule
 
 
 def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
-    """Resolve the two facts a pay calendar is derived from, in ONE read.
+    """Resolve the facts a pay calendar is derived from, in ONE read.
 
     Plan step **balance:X-bh-2**.  :func:`resolve_cadence`'s body, widened to
     the pair -- because :func:`app.services.pay_calendar.calendar_for` needs
@@ -760,13 +785,20 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
     carrying no cadence -- and that split is why some screens showed a repair
     page for them and others showed a blank one.
 
+    **Since plan step ``C14-e-2`` it answers FOUR columns rather than two** --
+    the cadence and the convention as a :class:`~app.services.pay_rhythm.Rhythm`,
+    plus ``history_opens_on`` and ``nominal_anchor`` -- and still in the one
+    read, which is the property :class:`ScheduleFacts` was shaped to have.
+
     **``history_opens_on`` never had a fallback and that asymmetry was the
     point.**  Nothing in ``budget.pay_periods`` says when a job began -- the
     first recorded payday is a record boundary, not an answer -- so an owner who
     HAS a row and has stated nothing carries ``None`` there, and it reads as
     exactly that (ruling **balance:R-IA**, amended 2026-08-31).  It is the one
-    optional left on :class:`ScheduleFacts`, and it is optional because its
-    column is.
+    optional on :class:`ScheduleFacts` for that reason -- ``nominal_anchor``
+    is the other, and it is optional for a different one: the migration cannot
+    answer for a schedule row holding no paydays.  Each is optional because
+    its column is.
 
     Args:
         user_id: The owning user's id.
@@ -775,6 +807,18 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
         The :class:`ScheduleFacts`, or ``None`` when the user has no
         ``budget.pay_schedule`` row -- which by ``fk_pay_periods_schedule`` is
         an owner with no pay periods either.
+
+    Raises:
+        ValidationError: The row names a ``shift_id``
+            ``ref.business_day_shifts`` does not hold
+            (:meth:`ScheduleFacts.of`, since plan step ``C14-e-1``).  **This
+            does not make the door hard**, and the distinction is the one the
+            paragraph above draws: the SOFT answer is about an owner with no
+            schedule, which a form repairs, where a stored id this application
+            cannot name is a ``ref`` table edited under the app and is not a
+            state any form repairs.  Named here because every caller of this
+            door now inherits it, where before it belonged to one scalar
+            reader.
     """
     schedule = get_schedule(user_id)
     if schedule is None:

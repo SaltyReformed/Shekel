@@ -105,13 +105,11 @@ from app.services import (
 from app.services._recurrence_common import log_resource_access_denied
 from app.services.pay_calendar import (
     DerivedPeriod,
-    PayCalendarError,
     PeriodWindow,
-    cadence_steps_to,
     calendar_at_schedule,
     calendar_for,
-    nominal_payday,
-    projected_payday,
+    final_covered_day,
+    nominal_payday_after,
     schedule_for,
 )
 from app.services.pay_period_locks import PeriodLockReason, classify_schedule_locks
@@ -204,10 +202,14 @@ def extend_pay_periods(user_id, num_periods):
             refuses the batch.
         PayCalendarError: The owner holds no ``budget.pay_schedule`` row
             (:func:`~app.services.pay_calendar.schedule_for`); or their stored
-            grid reaches no payday after the last recorded one within two
+            grid reaches no payday past the last paycheck's end within two
             cadences, which needs a displacement a whole cadence long and is
             ledger row **N-493**'s reported hole rather than a state a door
-            admits.
+            admits.  **Neither is the ``ValidationError`` the route catches**:
+            both reach ``app/error_handlers.py``'s recovery page for this
+            exception rather than the extend card's flash, which is the right
+            surface for "this owner has no derivable calendar" and the wrong
+            one for "that date is not allowed".
     """
     # Serialize against concurrent structural mutations for this user so the
     # latest payday is read under the lock and the append cannot race another
@@ -241,8 +243,14 @@ def extend_pay_periods(user_id, num_periods):
     # cadence question (finding P29 above) -- so it hands the stored values
     # straight back.
     rhythm = calendar.rhythm
-    latest = saved[-1].start_date
-    cadence = rhythm.cadence_days
+    # WHERE THE LAST PAYCHECK ENDS -- ``_reject_backward_payday``'s own
+    # subject, so the producer below answers a day the floor admits rather than
+    # a second spelling of the floor.  Through ``final_covered_day`` and not
+    # ``saved[-1].end_date``, which the destructive-doors census refuses and is
+    # right to: this module decides through PRODUCERS, never by reaching into a
+    # period's span.  The SAVED window and not ``calendar.horizon()``, for the
+    # reason the paragraph above gives (ledger row N-496).
+    horizon = final_covered_day(saved.periods)
 
     # **The grid is stepped from the STORED PHASE, not from this owner's last
     # recorded payday** (plan step C14-e-2, R-PC61).  That payday is what the
@@ -251,27 +259,15 @@ def extend_pay_periods(user_id, num_periods):
     # permanently, since the next extend reads THIS batch's last cash day.  The
     # docstring above carries the measurement (ledger row PC-497 fault 2).
     #
-    # WHICH grid index is next is a CASH question; WHAT DAY to hand the writer
-    # is a GRID question, and the two part at C14-e-3.  The index whose PAYDAY
-    # clears the last recorded one is within two of the estimate, since a
-    # displacement is shorter than a cadence
-    # (``reject_shift_on_short_cadence``) -- ``project_period_after``'s theorem.
-    anchor = facts.nominal_anchor
-    estimate = cadence_steps_to(anchor, cadence, latest)
-    for steps in range(estimate, estimate + 3):
-        if projected_payday(anchor, rhythm, steps) > latest:
-            next_payday = nominal_payday(anchor, cadence, steps)
-            break
-    else:
-        raise PayCalendarError(
-            f"user {user_id}'s grid, anchored {anchor.isoformat()} at a "
-            f"{cadence}-day cadence, reaches no payday after their last "
-            f"recorded one ({latest.isoformat()}) within two cadences.  That "
-            f"needs a displacement at least a cadence long, which "
-            f"pay_schedule_service.reject_shift_on_short_cadence refuses at "
-            f"the write door -- ledger row N-493 is that a write-time refusal "
-            f"cannot see a stored row a later holiday-set change made illegal."
-        )
+    # WHICH grid index the owner has not been paid at is a CASH question and
+    # WHAT DAY to hand the writer is a GRID question; the producer answers
+    # the first and returns the second, and its docstring carries why it is
+    # asked against the HORIZON rather than against the last recorded payday
+    # -- an adversarial review of C14-e-2 found that a stored phase which
+    # does not place that payday on its own grid (a PIECEWISE owner, ledger
+    # row N-492) is otherwise offered a day the floor then refuses,
+    # permanently, on a read path with no handler.
+    next_payday = nominal_payday_after(facts.nominal_anchor, rhythm, horizon)
     return pay_period_write.record_paydays(
         user_id, next_payday, num_periods, rhythm,
     )

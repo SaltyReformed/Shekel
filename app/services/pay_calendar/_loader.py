@@ -123,7 +123,7 @@ def schedule_for(user_id: int) -> pay_schedule_service.ScheduleFacts:
     the decorator would not stop it, because on these routes the decorator is
     not there.
 
-    **PUBLIC since plan step ``C14-e-2``, and it was ``schedule_for``.**
+    **PUBLIC since plan step ``C14-e-2``; it was ``_require_schedule``.**
     That step gave ``budget.pay_schedule`` a third calendar fact -- the
     NOMINAL grid's phase -- which the derivation does not read and
     ``pay_period_admin.extend_pay_periods`` does.  A door that holds the

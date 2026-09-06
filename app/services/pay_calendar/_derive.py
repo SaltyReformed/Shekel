@@ -481,12 +481,12 @@ def derive_periods(
             caller whether or not this particular owner has paydays yet, and
             refusing it only when the data reaches the projection branch would
             hide it until the day a user records their first payday.
-            **It was a bare ``cadence_days`` until plan step ``C14-e``**, which
-            made :func:`projected_payday` the nominal day displaced under the
-            owner's convention -- so the cadence and the convention became one
-            owner's one rhythm with one reader, and passing them separately
-            would let a caller pair one owner's cadence with another's
-            convention.
+            **It was a bare ``cadence_days`` until ``C14-e-1``**, which
+            threaded the pair ahead of ``C14-e-3`` making
+            :func:`projected_payday` the nominal day displaced under the
+            owner's convention -- not live yet, and that function says so.
+            The two are one rhythm with one reader; passing them apart would
+            pair one owner's cadence with another's convention.
             **The cadence is not optional, since plan step C4-d** (ruling
             **R-PC45**).  It was
             ``int | None``, ``None`` being legal beside an empty payday set and
@@ -573,9 +573,9 @@ def projected_payday(anchor: date, rhythm: Rhythm, steps: int) -> date:
     yet.  **It is where the shift convention lands** (**R-PC54**: applied at
     the PRODUCER, because the payday a COUNT uses and the payday a PERIOD opens
     on are one value).  **The convention has ARRIVED and the body has not**:
-    plan step ``C14-e-1`` gave every producer in this chain the
+    ``C14-e-1`` gave every producer in this chain the
     :class:`~app.services.pay_rhythm.Rhythm` rather than a bare cadence, which
-    moves no date at all, and ``C14-e-3`` wraps the call below in
+    moves no date, and ``C14-e-3`` wraps the call below in
     :func:`~app.utils.business_days.shift_to_business_day` -- which is what
     makes the money-moving diff one expression.  Until then the answer is the
     NOMINAL grid day and ``rhythm.shift`` is read by nothing here.

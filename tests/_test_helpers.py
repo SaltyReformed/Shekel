@@ -26,7 +26,7 @@ from app.enums import BusinessDayShiftEnum
 from app.models.amount_ownership import AmountOwnership
 from app.services import pay_calendar, pay_rhythm, pay_schedule_service
 from app.services.pay_calendar import _derive as pay_calendar_derive
-from app.services import pay_period_admin
+from app.services.pay_calendar import _searches as pay_calendar_searches
 from app.utils.business_days import shift_to_business_day
 
 
@@ -2775,21 +2775,25 @@ def displace_paydays_under(monkeypatch, shift):
     **THREE bindings are patched, and that is the whole reason this helper is
     shared rather than copied.**  ``from ._derive import projected_payday`` in
     the package's ``__init__`` makes a SECOND name for one function, and
-    ``pay_period_admin``'s own ``from ... import projected_payday`` a THIRD, so
-    patching any of them alone leaves half the application displaced and half
-    of it nominal -- a world no convention can produce, and one a green
-    assertion could not tell from the real thing.  ``pay_calendar._derive`` is
-    what ``derive_periods`` and ``project_period_after`` call; ``pay_calendar``
-    is what ``pay_period_write._reject_backward_payday`` calls since ``C14-d``;
-    ``pay_period_admin`` is what the extend door's grid-index search calls
-    since ``C14-e-2``.
+    ``pay_calendar._searches``' own ``from ._derive import projected_payday`` a
+    THIRD, so patching any of them alone leaves half the application displaced
+    and half of it nominal -- a world no convention can produce, and one a
+    green assertion could not tell from the real thing.
+    ``pay_calendar._derive`` is what ``derive_periods`` and
+    ``project_period_after`` call; ``pay_calendar`` is what
+    ``pay_period_write._reject_backward_payday`` calls since ``C14-d``;
+    ``pay_calendar._searches`` is what ``nominal_payday_after`` calls, which is
+    the extend door's grid-index producer since ``C14-e-2``.
 
     *The third was found by a case that FAILED rather than by reading, and the
     failure is the argument: with the floor displaced and the search nominal,
     the door refused a perfectly ordinary extend with a message no correct
     implementation and no real convention can produce.  That is exactly the
     half-displaced world this paragraph already warned about, reached through a
-    binding it had not enumerated.*
+    binding it had not enumerated.  It MOVED once inside the same step, when
+    the grid-index search left ``pay_period_admin`` for the package -- so the
+    census is a thing to re-take rather than a list to trust, and eleven cases
+    went red the moment it was stale.*
 
     **It displaces under the shift it is HANDED and not under
     ``rhythm.shift``**, which is what the shipped producer will read, and the
@@ -2833,7 +2837,7 @@ def displace_paydays_under(monkeypatch, shift):
         f"no longer simulates the producer C14-e ships.  Update the double "
         f"and every caller of this helper together."
     )
-    for module in (pay_calendar, pay_calendar_derive, pay_period_admin):
+    for module in (pay_calendar, pay_calendar_derive, pay_calendar_searches):
         monkeypatch.setattr(module, "projected_payday", _displaced)
     return _displaced
 

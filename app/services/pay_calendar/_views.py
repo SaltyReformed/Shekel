@@ -373,8 +373,9 @@ def axis_window(
             which is the precondition this function cannot check for itself."*
             It has no subject now: no calendar carries an absent cadence, so no
             caller can hand one down.  *It became the PAIR at plan step
-            ``C14-e-1``, when the projection began to displace under the
-            convention.*
+            ``C14-e-1``, which threaded the rhythm ahead of ``C14-e-3``
+            displacing the projection under the convention; the bound is
+            unchanged and the displacement is not live yet.*
         user_id: The owner these periods belong to, named in the refusal below
             so a traceback says whose schedule the range fell outside of.
         first_day: Inclusive lower bound of the range.  Must be at or after the

@@ -300,10 +300,10 @@ their only live specimen from them, which both `_staging` docstrings predict and
       the STORED convention, and nothing grades that until `C14-e-3`.
 - [x] **C14-e-2 -- the grid carries its own phase.** `ab5b26bc`, migration `a1c7e5d20f43`
       (**R-PC61**). `budget.pay_schedule.nominal_anchor`, three of `C17`'s five era columns; extend
-      steps from it, not from its own last output. Closes **PC-497** fault 2 -- 178 of 301 recorded
-      paydays wrong under `prior` at a batch of ONE before, 0 after. **A LATER STEP MUST OBEY**:
-      `record_paydays` DERIVES the anchor from the batch's first payday, so a phase off that grid is
-      unrepresentable rather than refused, and the anchor is only valid for the cadence beside it.
+      steps from it, not from its own last output. Closes **PC-497** fault 2 -- 178 of 301 wrong
+      under `prior` at a batch of ONE before, 0 after. **A LATER STEP MUST OBEY**: the anchor names
+      the BATCH THAT WROTE IT, not a piecewise owner's surviving grid (**N-492**), so
+      `nominal_payday_after` is asked against the paycheck's END.
 - [ ] **C14-e-3 -- the shift goes live.** Every projected and backdated payday becomes the nominal
       day displaced onto a business day, and the WRITER records the displaced day (**PC-497** fault
       1, whose pin inverts). **MOVES MONEY**, its own review pass and its own PR. Closes **N-398**.

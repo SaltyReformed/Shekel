@@ -13,13 +13,14 @@ longest run of consecutive closed days
 structural decision.**  The pair was declared in
 :mod:`app.services.pay_schedule_service`, and until ``C14-e`` that was the
 right place: the pay calendar read only ``cadence_days``, so the one consumer
-of the pair was the write door beside it.  ``C14-e`` makes
+of the pair was the write door beside it.  ``C14-e-3`` will make
 :func:`~app.services.pay_calendar.projected_payday` the nominal grid day
-DISPLACED under the convention, which gives the PURE half of
-:mod:`app.services.pay_calendar` a reader for it -- and that half may not
-import a module holding a database session, nor could it, because
-``pay_calendar._loader`` imports ``pay_schedule_service`` and the edge back
-would be a cycle (pylint ``R0401``, measured 2026-09-05).
+DISPLACED under the convention, and ``C14-e-1`` threaded the pair to every
+producer ahead of it so the money-moving diff is one expression -- which gives
+the PURE half of :mod:`app.services.pay_calendar` the convention to carry.
+That half may not import a module holding a database session, nor could it,
+because ``pay_calendar._loader`` imports ``pay_schedule_service`` and the edge
+back would be a cycle (pylint ``R0401``, measured 2026-09-05).
 
 Three placements were possible and two are worse.  A second, structurally
 identical pair inside the pay-calendar package is one value with two homes,
@@ -60,13 +61,16 @@ class Rhythm:
     judges the pair, and writes the pair, and no caller is able to hand it half
     of one.
 
-    **Both halves have ONE consumer each and the same one**, which is what
-    plan step ``C14-e`` changed and why this stopped being a writer's value.
-    A :class:`~app.services.pay_calendar.PayCalendar` is derived from the
-    cadence AND the convention: the projection is the nominal grid day
-    displaced under it, so a calendar carrying half the pair could be handed
-    the other half from another owner's schedule -- a mismatch that produces a
-    plausible wrong payday rather than an error.  That is the same argument
+    **The halves acquired a SHARED consumer at plan step ``C14-e``, which is
+    why this stopped being a writer's value.**  A
+    :class:`~app.services.pay_calendar.PayCalendar` is derived from the cadence
+    AND the convention -- from ``C14-e-3`` the projection is the nominal grid
+    day displaced under it -- so a calendar carrying half the pair could be
+    handed the other half from another owner's schedule, a mismatch that
+    produces a plausible wrong payday rather than an error.  *An adversarial
+    review struck a sentence claiming each half has ONE consumer and the same
+    one: the cadence has ten and the convention two.  What is true is the
+    narrower thing the argument needs -- they now share one.*  That is the same argument
     :class:`~app.services.pay_schedule_service.ScheduleFacts` makes for
     pairing the cadence with ``history_opens_on`` rather than resolving them
     separately.

@@ -972,6 +972,72 @@ class TestTheRhythmIsAPairAndIsJudgedAsOne:
             assert "got 2" in message
 
 
+class TestAWriteThatStatesNoPhaseLeavesTheStoredOne:
+    """Plan step **C14-e-2**: `nominal_anchor` is preserved, never cleared by omission.
+
+    ``upsert_schedule`` writes the whole rhythm in ONE statement and gives its
+    two halves no "leave this alone" argument, because a cadence and a
+    convention carry a joint rule and half a pair is not a statement.  The
+    PHASE is a third fact with no joint rule, and a caller that is not
+    recording a batch is not restating where the grid runs -- so the statement
+    ``COALESCE``s it.
+
+    **This is a fix found by FAILURE rather than by design, and the case says
+    so.**  Written the other way, six cases across three modules went red at
+    once: each set up an owner through ``record_paydays`` and then called
+    ``upsert_schedule`` to change the cadence or enable rolling, which cleared
+    the phase and left the owner's next extend refused with "Generate your
+    first pay-period schedule". ``app/`` has ONE caller of this door and it
+    always states a phase, so the defect was one door away rather than live --
+    which is exactly the distance at which a footgun is worth removing rather
+    than documenting.
+    """
+
+    def test_a_phase_less_write_preserves_the_stored_phase(
+        self, app, db, bare_user,
+    ):
+        """Change the cadence alone; the grid's phase survives it."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 6, 8),
+                num_periods=2, rhythm=rhythm_of(14),
+            )
+            db.session.flush()
+
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(7))
+
+            facts = pay_schedule_service.resolve_schedule(user_id)
+            assert facts.nominal_anchor == date(2026, 6, 8)
+            assert facts.rhythm.cadence_days == 7, (
+                "the cadence must still have been written, or this case "
+                "passes by doing nothing at all"
+            )
+
+    def test_a_write_that_STATES_a_phase_replaces_it(self, app, db, bare_user):
+        """The control: `None` means 'not stated', not 'never writable'.
+
+        Without this the case above is satisfied by a door that ignores the
+        argument entirely, which is the same green for the opposite defect --
+        a phase that can never be corrected once written.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 6, 8),
+                num_periods=2, rhythm=rhythm_of(14),
+            )
+            db.session.flush()
+
+            pay_schedule_service.upsert_schedule(
+                user_id, rhythm_of(14), date(2026, 6, 15),
+            )
+
+            assert pay_schedule_service.resolve_schedule(
+                user_id,
+            ).nominal_anchor == date(2026, 6, 15)
+
+
 class TestTheStoredConventionReachesTheCalendar:
     """The stored ``shift_id`` becomes a member on :class:`ScheduleFacts`.
 

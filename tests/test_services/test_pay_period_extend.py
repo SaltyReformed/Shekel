@@ -490,6 +490,64 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
             with pytest.raises(ValidationError, match="Generate your first"):
                 pay_period_admin.extend_pay_periods(user_id, 1)
 
+    def test_a_PIECEWISE_owner_whose_tail_was_truncated_can_still_extend(
+        self, app, db, bare_user,
+    ):
+        """The state an adversarial review of this step built, through real doors.
+
+        A stored phase describes the grid of the batch that WROTE it, which is
+        not always the grid the owner's surviving last payday sits on.  Three
+        shipped doors reach that state together: record at one cadence, record
+        again at another (*correct my cadence going forward*, which
+        ``record_paydays`` permits and ledger row **N-492** records), then
+        truncate back across the change so the surviving latest payday belongs
+        to the FIRST era while the stored phase belongs to the second.
+
+        Asked against the last recorded PAYDAY the door answers 2030-01-18,
+        which falls inside the paycheck the owner still holds and which
+        ``_reject_backward_payday`` refuses -- permanently, and on a read path
+        with no handler, because ``top_up_rolling_window`` reaches this door
+        from ``/grid`` and ``/dashboard``.  Asked against the paycheck's END,
+        which is the floor's own subject, it answers 2030-01-25 and the write
+        is accepted.  **The case is the discriminator**: the two answers differ
+        and only one of them is a day this app can record.
+
+        **2030-01-25 is EIGHT days on and not seven, and that is the intended
+        behaviour rather than an arbitrary date** (adversarial review, second
+        pass).  The stored grid runs through 2030-02-22 at a 7-day cadence, so
+        its days near the horizon are 01-18 and 01-25; the first is below the
+        floor, so the door SKIPS that slot and the owner gets one long
+        paycheck.  It is bounded strictly below two cadences, always accepted,
+        and :func:`~app.services.pay_calendar.derive_periods` closes it with no
+        gap and no overlap -- which is what "the stored pair is the CURRENT
+        era's rhythm and older rows are history" means for an owner ``C17``'s
+        eras do not describe yet.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2030, 1, 3),
+                num_periods=2, rhythm=rhythm_of(14),
+            )
+            # A second era, deliberately OFF the first grid: 2030-02-22 is 36
+            # days after 2030-01-17, and 36 is not a multiple of 7.
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2030, 2, 22),
+                num_periods=2, rhythm=rhythm_of(7),
+            )
+            db.session.commit()
+            keep = next(
+                period for period in calendar_for(user_id).saved()
+                if period.start_date == date(2030, 1, 17)
+            )
+            pay_period_admin.truncate_pay_periods(user_id, keep.period_id)
+            db.session.commit()
+
+            new_periods = pay_period_admin.extend_pay_periods(user_id, 1)
+            db.session.commit()
+
+            assert [p.start_date for p in new_periods] == [date(2030, 1, 25)]
+
     def test_it_is_ZERO_DOLLARS_while_nothing_displaces(
         self, app, db, bare_user,
     ):

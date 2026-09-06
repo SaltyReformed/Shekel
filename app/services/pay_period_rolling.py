@@ -143,6 +143,16 @@ def top_up_rolling_window(user_id, as_of=None):
     # one.  That is the only refusal this comment can prove, and a first draft
     # of it claimed all of them -- caught by an adversarial review of the
     # coverage-rule deletion, which reached the 500 by running it.
+    # **Plan step pay_calendar:C14-e-2 changed WHERE the batch continues FROM
+    # -- the stored grid phase rather than the last recorded payday -- and the
+    # sentence survives because the producer is asked against the last
+    # paycheck's END, which is the floor's own subject.  An adversarial review
+    # of that step found the first cut asking against the last recorded PAYDAY
+    # instead, a whole cadence lower, which refused ordinary extends
+    # permanently right here.  This is the comment that says it has been wrong
+    # once before; it is now checked by
+    # ``test_a_PIECEWISE_owner_whose_tail_was_truncated_can_still_extend``
+    # rather than by a reader.**
     # **It stops being true at plan step ``pay_calendar:C14-e``** (ledger row
     # **pay_calendar:PC-497**, opened by ``C14-d``).  From that step the floor
     # is the last paycheck's DISPLACED end while ``extend_pay_periods`` offers

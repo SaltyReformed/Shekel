@@ -306,9 +306,14 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
     # rather than a scaffold C17 tears down.
     #
     # WHY IT IS NOT DERIVED, which is the objection this column has to answer.
-    # While every owner's convention is ``none`` it equals
-    # ``MIN(budget.pay_periods.start_date)`` exactly, and a value equal to
-    # something the database already holds is rule 14's stored-derived defect.
+    # While every owner's convention is ``none`` it is DERIVABLE from the
+    # recorded rows, and a value the database already determines is rule 14's
+    # stored-derived defect.  *It is not an EQUALITY with any one of them, and
+    # an adversarial review of C14-e-2 struck a sentence claiming it equalled
+    # ``MIN(start_date)``: ``record_paydays`` rewrites this column from every
+    # batch's own first payday, so one press of Extend puts it far above the
+    # minimum.  The migration backfills ``MAX``, and what a reader should carry
+    # is that the anchor names the grid of the batch that WROTE it.*
     # It stops being equal the moment a convention displaces: from C14-e-3 a
     # recorded payday is a CASH day, so the nominal grid has no representation
     # in that table -- the grid is what payroll INTENDS and the rows are what
@@ -329,14 +334,26 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
     # premise was measured FALSE and then made true again.
     #
     # NULLABLE, and the null means one thing: this row states no phase.  The
-    # migration backfills ``MIN(start_date)`` per owner, which is exact for
-    # every row today, so the only nulls it can leave are schedule rows holding
-    # ZERO paydays -- reachable, since ``pay_period_admin.reset_pay_periods``
-    # passes through that state.  No consumer reaches one: the extend door
-    # refuses an owner with no recorded paydays before it reads this, and
-    # ``pay_period_write.record_paydays`` writes it on every batch that records
-    # a payday.  It is NOT NULL-able only because that owner exists, not
-    # because anything defaults it.
+    # migration backfills ``MAX(start_date)`` per owner, so the only nulls it
+    # can leave are schedule rows holding ZERO paydays.  No consumer reaches
+    # one: the extend door refuses an owner with no recorded paydays before it
+    # reads this, and ``pay_period_write.record_paydays`` writes it on every
+    # batch that records a payday.  It is NOT NULL-able only because that
+    # owner exists, not because anything defaults it.
+    #
+    # *An earlier draft cited ``reset_pay_periods`` as where that owner comes
+    # from, which an adversarial review measured wrong: that door retires and
+    # re-records in ONE ``_apply``, so its zero-payday moment is
+    # intra-transaction and never observable.  The reachable source is the
+    # MIGRATION -- a schedule row whose periods were all removed before it
+    # ran.*
+    #
+    # **Nothing has to reconcile it against the rows**, which is the other
+    # half of the rule-14 answer: the extend door asks its producer against
+    # the last paycheck's END rather than against a recorded payday, so a
+    # phase that does not sit on the surviving rows' grid still yields a day
+    # that door's own floor admits.  There is no invariant here for a
+    # reconciler to enforce.
     nominal_anchor = db.Column(db.Date, nullable=True)
     # user_id (UserScopedMixin) and created_at (CreatedAtMixin) render
     # at the table tail; see the mixin docstrings for the DDL contract.
