@@ -23,7 +23,7 @@ from unittest.mock import patch
 from sqlalchemy import event
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
@@ -34,6 +34,7 @@ from app.services import (
     status_seam,
 )
 from app.services.pay_calendar import PayCalendar
+from app.services.cash_ledger import amount_basis
 from app.services.row_valuation import owned_contribution
 from app.services.spending_report_service import (
     Comparison,
@@ -67,6 +68,10 @@ from tests._test_helpers import (
     rhythm_of,
     add_entry,
     create_envelope_txn,
+    create_savings_account,
+    create_settled_transfer,
+    make_expense_template,
+    state_template_price,
     default_settle_day,
     last_covered_day,
     pay_periods_hydrated,
@@ -889,8 +894,13 @@ class TestTheChartReadsTheDerivedOrdinal:
             # hydrated" is true of a query that loaded nothing at all.
             assert len(by_period) == 2 and len(by_span) == 2
             assert hydrated == [], (
-                "a settled-expense query hydrated a PayPeriod, and no "
-                "consumer of either query reads txn.pay_period"
+                "a settled-expense query hydrated a PayPeriod.  This asserts "
+                "the QUERY's loader, not that nothing downstream reads the "
+                "relationship: since the surprises list began pricing through "
+                "cash_ledger (2026-09-05), rule 4's loan arm reads "
+                "txn.pay_period, so the old 'no consumer reads it' wording was "
+                "made false by that change and is corrected here rather than "
+                "left standing"
             )
 
 
@@ -1204,7 +1214,12 @@ class TestDeltas:
                 .order_by(Transaction.id.desc())
                 .all()
             )
-            surprises = _build_surprises(rows)
+            surprises = _build_surprises(
+                rows,
+                amount_basis(
+                    seed_user["user"].id, seed_user["scenario"].id,
+                ),
+            )
 
             ids = [row.transaction_id for row in surprises.rows]
             assert len(ids) == _MAX_SURPRISES, "the cap is five"
@@ -1682,3 +1697,183 @@ class TestNewMeansTheCategoryWasNotThereBefore:
 
         assert len(changes) == 1
         assert changes[0].is_new is True
+
+
+class TestASettledRowWhosePlanIsDerivedIsPriced:
+    """A settled row carrying no figure of its OWN still has a plan."""
+
+    def test_a_settled_shadow_is_priced_from_its_parent_not_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The estimate is the PARENT's figure, and the delta is real.
+
+        Regression for the release blocker measured on a production clone
+        2026-09-05.  The amount-source cutovers declare a row DERIVED and empty
+        its ``estimated_amount``; 116 of the rows they declared on production
+        are SETTLED, and a settled EXPENSE is exactly what this window loads.
+        This list read ``owned_amount``, the cheap accessor that answers a row's
+        own column and REFUSES one carrying none -- so the first derived row it
+        met raised ``AmountUnresolvable`` and ``/analytics/spending`` returned
+        500 for every window.  Measured: 200 on the shipped image, 500 on the
+        candidate, across 323 routes the only regression.
+
+        **It asserts the FIGURE, not the absence of an exception.**  A test that
+        only proved this returns at all would pass against a fix that priced the
+        row wrongly, and the production symptom the sibling defect carries is
+        ``+$9.81`` on a paycheck -- exactly the size that never looks wrong on a
+        page.  So the estimate is pinned to the parent's ``$321.00`` and the
+        delta to the ``$79.00`` the settlement actually recorded.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Surprises Savings",
+                Decimal("1000.00"),
+            )
+            xfer = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
+                amount=Decimal("321.00"), settled_amount=Decimal("400.00"),
+            )
+            db.session.commit()
+
+            expense_leg = (
+                db.session.query(Transaction)
+                .filter_by(
+                    transfer_id=xfer.id,
+                    transaction_type_id=ref_cache.txn_type_id(
+                        TxnTypeEnum.EXPENSE,
+                    ),
+                )
+                .one()
+            )
+            assert expense_leg.estimated_amount is None, (
+                "the precondition this regression needs: the shadow stores no "
+                "plan of its own, so a column read cannot answer it"
+            )
+
+            surprises = _build_surprises(
+                [expense_leg],
+                amount_basis(seed_user["user"].id, seed_user["scenario"].id),
+            )
+
+            assert len(surprises.rows) == 1, (
+                "a settled row whose actual differs from its plan is a surprise "
+                "whether or not the plan is stored"
+            )
+            row = surprises.rows[0]
+            assert row.estimated == Decimal("321.00"), (
+                "the plan is the parent transfer's figure, resolved live -- not "
+                "the settled amount (which would zero every delta) and not a "
+                "refusal"
+            )
+            assert row.actual == Decimal("400.00")
+            assert row.delta == Decimal("79.00")
+            assert surprises.net == Decimal("79.00")
+
+    def test_the_whole_report_renders_it_rather_than_500ing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Through ``compute_spending_report``, which is the door that 500'd.
+
+        The sibling above pins the reducer; this pins the WIRING.  The
+        production symptom was a 500 from ``/analytics/spending``, and a test
+        that only calls ``_build_surprises`` directly proves the reducer can
+        price a derived row while proving nothing about the basis being built
+        and threaded in ``compute_spending_report`` -- which is the line the
+        fix actually added.  Raised by an adversarial review of the fix.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "E2E Savings", Decimal("1000.00"),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
+                amount=Decimal("321.00"), settled_amount=Decimal("400.00"),
+            )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[0]),
+            )
+
+            assert report is not None
+            shadow = [
+                row for row in report.surprises.rows
+                if row.delta == Decimal("79.00")
+            ]
+            assert len(shadow) == 1, (
+                "the settled derived shadow reaches the rendered report, and "
+                "before the fix this call raised AmountUnresolvable instead"
+            )
+            assert shadow[0].estimated == Decimal("321.00")
+
+    def test_a_template_priced_row_reads_the_version_for_its_own_due_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The rule that prices 59 of production's 78 affected rows.
+
+        The transfer shadow above is rule 5.  Rule 3 -- a row generated from a
+        recurring definition, priced by that definition's dated series -- is a
+        different path (``_rule_within_definition`` -> ``_stated_amount`` ->
+        ``amount_as_of``) with refusal arms the transfer path never reaches, and
+        it is the DOMINANT shape among the settled rows the cutovers declared.
+        Raised by an adversarial review, which observed the first test covered
+        the minority shape.
+
+        It asserts the series is read on the ROW'S OWN DUE DATE and not at its
+        newest version: the definition is re-priced to ``$200.00`` effective
+        after this row's due date, so a resolver reading the latest version
+        would answer ``$200.00`` and make the delta ``-$50.00`` instead of
+        ``+$25.00``.
+        """
+        with app.app_context():
+            period = seed_periods[0]
+            template = make_expense_template(
+                db.session, seed_user, amount="100.00",
+            )
+            db.session.flush()
+            state_template_price(
+                template, Decimal("100.00"),
+                effective_on=period.start_date - timedelta(days=30),
+            )
+            state_template_price(
+                template, Decimal("200.00"),
+                effective_on=period.start_date + timedelta(days=60),
+            )
+            db.session.flush()
+
+            due = period.start_date
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                user_id=period.user_id,
+                pay_period_id=period.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                name="Series Priced",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                template_id=template.id,
+                due_date=due,
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+                ),
+                **settle_day_columns(due),
+                **settlement_columns(due, Decimal("125.00")),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            surprises = _build_surprises(
+                [txn],
+                amount_basis(seed_user["user"].id, seed_user["scenario"].id),
+            )
+
+            assert len(surprises.rows) == 1
+            row = surprises.rows[0]
+            assert row.estimated == Decimal("100.00"), (
+                "the plan is the series version in effect on the row's OWN due "
+                "date; reading the newest version would answer $200.00"
+            )
+            assert row.actual == Decimal("125.00")
+            assert row.delta == Decimal("25.00")

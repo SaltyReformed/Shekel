@@ -120,10 +120,26 @@ def query_settled_expenses(
     for one reason: an AST and grep census over everything reachable from
     ``compute_spending_report`` found no read of ``txn.pay_period`` anywhere.
     The period IS the window on this path, so its identity is already resolved
-    (:func:`._window._resolve_window`), and neither the breakdown, the
-    surprises, the hero nor ``owned_contribution`` asks a row which paycheck
-    it sits in.  The load's stated reason was that a caller "attributes by
-    period", which no caller does.
+    (:func:`._window._resolve_window`), and neither the breakdown, the hero nor
+    ``owned_contribution`` asks a row which paycheck it sits in.  The load's
+    stated reason was that a caller "attributes by period", which no caller
+    does.
+
+    **THAT CENSUS IS NO LONGER TOTAL, and it is recorded here rather than
+    re-run because what changed is reachability, not this query.**  The
+    surprises list prices a row through
+    ``cash_ledger.resolve_transaction_amount`` as of 2026-09-05 (the
+    ``/analytics/spending`` fix), and rule 4's arm --
+    ``LoanPricing.derive_cash`` -> ``loan_loaders.loan_payment_due_date`` --
+    reads ``pay_period`` on every call, by that function's own stated
+    precondition.  It is unreachable on production today, where
+    ``budget.loan_payment_settings`` is empty, and reachable in seeded data the
+    moment a payment is tracked in derive mode.  So the sentence above is true
+    of every arm but that one; the removal is not re-litigated here, and
+    whether this query should adopt
+    ``amount_relationships.pricing_load_options`` -- which would re-add the
+    ``pay_period`` load C2-f3d removed -- is finding **N-296**'s, whose census
+    of unguarded batch pricing callers this reader now joins.
 
     **What the removal actually costs, said conditionally because the two
     queries differ in whether they run.**  This one is reached only from the
