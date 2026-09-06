@@ -1,0 +1,58 @@
+# Project rules for djlint, loaded automatically from the project root beside
+# .djlintrc. Both invocation paths reach it: pre-commit passes changed
+# filenames, CI runs `djlint app/templates/ --lint`, and djlint resolves its
+# project root by walking UP from the path it is given.
+#
+# SHK01 -- an inline style attribute.
+#
+# WHY, when djlint already ships H021 for this. H021 refuses an inline style
+# UNLESS a Jinja expression sits between `style=` and the tag's own `>`.
+# Measured 2026-09-04 on the pinned djlint 1.39.2 under this repo's `jinja`
+# profile: `<input class="a" style="..." type="search">` is refused, and
+# `<input class="a" style="..." value="{{ x }}">` passes clean. That one blind
+# spot is what let `_statement_merchants_body.html`'s search box ship
+# `style="max-width: 22rem;"` through pre-commit AND CI's own
+# `djlint app/templates/ --lint`, green over all 159 files, so the box never
+# had that width in a browser (finding bank_import:N-405, fixed at
+# bank_import:X-gi).
+#
+# THE BLIND SPOT IS A MINORITY CASE, and saying otherwise is how this comment
+# was first written. Reconstruct the inline form of `.reconcile-amount`,
+# `.stmt-file-name`, `.stmt-pick-list` or `.stmt-agreement-scroll` and H021
+# fires on all four; roughly 20% of this codebase's tags carry a Jinja
+# expression at all, which is an upper bound on the blind set. H021 therefore
+# STAYS -- it also catches the unquoted `style=color:red` spelling this rule
+# does not -- and the two overlap on ordinary markup, which is duplicate
+# output rather than a conflict.
+#
+# The attribute is not a style question. The app serves
+# `Content-Security-Policy: style-src 'self'` with no `unsafe-inline`
+# (`app/__init__.py`), so the browser REFUSES the declaration and it silently
+# never applies -- and a rule that never fires looks exactly like a rule that
+# was not needed. The recurrence form's free-interval box shipped the same way
+# three weeks earlier and was caught only by driving a browser
+# (`app/static/css/recurring.css`, `tests/manual/verify_recurrence_form.py`).
+#
+# THE PATTERN SKIPS OVER QUOTED ATTRIBUTE VALUES, and that is not decoration.
+# A pattern that ran to the first `>` missed every tag holding a `>` inside an
+# earlier attribute -- 23 of them in `app/templates` today, all the
+# `class="...{% if x > 0 %}..."` idiom -- so adding a style attribute to any of
+# those would have shipped silently, which is N-405 again. It does NOT catch
+# `{%- if hide %}style="display:none"{% endif %}`, where no whitespace precedes
+# the attribute; a pure regex cannot, and that limit is stated rather than
+# implied.
+#
+# `tests/test_arch/test_an_inline_style_is_refused_by_a_gate.py` proves this
+# rule still fires. Without it, deleting or renaming this file -- or a djlint
+# upgrade that drops YAML custom rules -- leaves every gate in the project
+# green while the class it closes ships again.
+- rule:
+    name: SHK01
+    message: >-
+      Inline style attribute: the app's CSP is style-src 'self', so the browser
+      blocks it and the declaration silently never applies. Put it in a class
+      in app/static/css/.
+    flags: re.DOTALL|re.IGNORECASE
+    patterns:
+      - |-
+        <[a-z](?:"[^"]*"|'[^']*'|[^>"'])*?\sstyle\s*=
