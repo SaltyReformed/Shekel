@@ -46,10 +46,19 @@ class TerminatedRaise:
     class claimed otherwise: it does not give the application one horizon.
     :func:`get_raise_event` in this module walks the same rows to badge a
     raise on the salary surfaces and knows nothing about termination, so a
-    stored ``terminal_year`` would have to teach it too; and the paycheck
-    engine's callers pass ORM rows, which carry no such column, so the
-    engine and the pension projection still answer differently past a
-    cutoff.  Closing that is the model-election question, which is unruled.
+    stored ``terminal_year`` has to teach it too -- an obligation the
+    cutover inherits, and nothing enforces it today.
+
+    **The model election is RULED and half-landed** (ruling **R-SAL11**,
+    developer 2026-09-05; plan step **salary:S3-b**), which corrects what
+    this paragraph said while the fork was open.  A raise's end year is a
+    stored fact on the row, and ``salary.salary_raises.terminal_year`` now
+    exists -- so the paycheck engine's ORM rows DO carry the column.  Every
+    value is ``NULL`` until the cutover step writes any, and ``NULL`` is
+    what the ``getattr`` below answered when the attribute was absent, so
+    the engine still compounds every recurring raise indefinitely and the
+    two projections still diverge past a cutoff TODAY.  What changed is why:
+    it is an unwritten column rather than an unmade decision.
 
     Attributes:
         effective_year: The year the raise first applies.
@@ -129,11 +138,14 @@ def apply_raises(base_salary, raises, as_of):
             ``percentage``, and ``flat_amount``, and OPTIONALLY
             ``terminal_year`` -- the last year the raise is believed to
             happen, ``None`` or absent meaning indefinitely.
-            :class:`TerminatedRaise` is the value that carries one; a plain
-            :class:`~app.models.salary_raise.SalaryRaise` row has no such
-            column, so every caller that predates it is unchanged.  A
-            falsy/empty value returns ``base_salary`` unchanged
-            (unquantized, matching the prior behavior).
+            :class:`TerminatedRaise` is the value that carries one, and
+            since plan step **salary:S3-b** so does a plain
+            :class:`~app.models.salary_raise.SalaryRaise` row -- the column
+            exists and every value is ``NULL``, which is the same answer the
+            absent attribute gave, so every caller that predates it is
+            unchanged UNTIL the cutover step writes a value.  A falsy/empty
+            *raises* returns ``base_salary`` unchanged (unquantized,
+            matching the prior behavior).
         as_of: The :class:`datetime.date` the salary is evaluated at;
             only its ``year`` and ``month`` are consulted (day ignored).
 
@@ -194,9 +206,14 @@ def _applications(raises, period_year, period_month):
         eff_year = raise_obj.effective_year
         eff_month = raise_obj.effective_month
         method_rank = 0 if raise_obj.flat_amount else 1
-        # ``None`` (or absent) means the raise is believed indefinitely,
-        # which is what a plain SalaryRaise row gets -- it carries no such
-        # column, so the paycheck engine's own callers are unaffected.
+        # ``None`` (or absent) means the raise is believed indefinitely.
+        # Since plan step salary:S3-b a SalaryRaise row HAS the column and
+        # every value is NULL, so this reads ``None`` for the paycheck
+        # engine's own callers exactly as it did when the attribute was
+        # absent -- which is the whole of that step's claim to be additive.
+        # ``getattr`` stays rather than a plain attribute access because
+        # ``TerminatedRaise`` is not the only shape passed here and the
+        # pension projector's fabricated values predate the column.
         terminal_year = getattr(raise_obj, "terminal_year", None)
 
         if raise_obj.is_recurring:

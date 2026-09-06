@@ -70,6 +70,7 @@ from app.schemas.validation import (
     StateTaxConfigSchema,
     TaxBracketSetSchema,
 )
+from tests._test_helpers import constraint_name_from
 
 
 # ── Constraint name constants ─────────────────────────────────────
@@ -100,20 +101,11 @@ CK_CALIB_SS = "ck_calibration_overrides_valid_ss_rate"
 CK_CALIB_MEDICARE = "ck_calibration_overrides_valid_medicare_rate"
 
 
-def _constraint_name_from(exc: IntegrityError) -> str | None:
-    """Return the named constraint reported on the IntegrityError.
-
-    Reads ``exc.orig.diag.constraint_name`` -- the structured field
-    psycopg2 surfaces from the PostgreSQL error packet -- so the
-    test does not depend on the brittle prose of the error message.
-    """
-    orig = getattr(exc, "orig", None)
-    if orig is None:
-        return None
-    diag = getattr(orig, "diag", None)
-    if diag is None:
-        return None
-    return getattr(diag, "constraint_name", None)
+#: The shared reader, moved to ``tests/_test_helpers`` at plan step
+#: **salary:S3-b** when a second suite needed it and copied it verbatim
+#: instead.  Aliased rather than renamed at ~40 call sites below, which
+#: would be churn in a file this change does not otherwise touch.
+_constraint_name_from = constraint_name_from
 
 
 # ── F-011: RaiseCreateSchema bounds ───────────────────────────────

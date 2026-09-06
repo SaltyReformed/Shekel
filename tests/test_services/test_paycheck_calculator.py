@@ -439,27 +439,68 @@ class TestRaiseTermination:
             flat_amount=None, terminal_year=terminal_year,
         )
 
-    def test_the_orm_row_carries_no_terminal_year_so_the_engine_is_untouched(self):
-        """`SalaryRaise` has no such column, which is why paychecks are unmoved.
+    def test_the_orm_rows_end_year_defaults_to_nothing_so_paychecks_are_unmoved(self):
+        """A new ``SalaryRaise`` starts at "believed indefinitely", so nothing clamps.
 
-        The paycheck engine passes ``profile.raises`` -- real ORM rows --
-        so if they carried a ``terminal_year`` the engine would silently
-        start clamping.  Asserted against the mapped class rather than
-        against a test double, because a double trivially lacks the
-        attribute and would keep passing after a migration added it.
+        **This replaces the absence tripwire plan step salary:S3-a left
+        here, which fired as designed when plan step salary:S3-b added the
+        column** (ruling **R-SAL11**, developer 2026-09-05: the horizon a
+        recurring raise decays over is a fact on the raise).  That test
+        asserted ``not hasattr(SalaryRaise, "terminal_year")`` and said in
+        its own failure message that the premise would need re-deriving if
+        the column arrived.  It has, so this is the re-derivation rather
+        than a test edited to pass.
 
-        ``hasattr`` rather than ``__table__.columns`` because that is the
-        surface the code actually reads: ``_applications`` probes
-        ``getattr(raise_obj, "terminal_year", None)``, which a
-        ``property`` or ``hybrid_property`` would satisfy while the column
-        set would not.  Both are checked, the attribute first.
+        **The premise moved from ABSENCE to a DEFAULT of nothing.**  The
+        paycheck engine passes ``profile.raises`` -- real ORM rows -- and
+        ``_applications`` probes ``getattr(raise_obj, "terminal_year",
+        None)``, so the engine reads this field on every row now.  What
+        keeps paychecks unmoved is that the field answers ``None``, which
+        is exactly what that ``getattr`` answered when the attribute did
+        not exist.  A ``default`` on the column would end that silently
+        and in the money-moving direction, which is what these assertions
+        guard.
+
+        **It is NOT strictly stronger than the check it replaces, and an
+        adversarial review of this step corrected a draft that said it
+        was** -- along with the reason that draft gave, which was simply
+        false: a defaulted column HAS the attribute, so the old
+        ``not hasattr`` would have caught one.  What the old check bought
+        was foreclosing the engine reading anything at all, and the ruling
+        spent that deliberately.  What is left is narrower and is stated
+        rather than claimed: given the column must now exist, this fails on
+        a default the old check could not have distinguished from the
+        column's mere existence.
+
+        **The instance probe is the surface that governs**, and it is here
+        because the deleted test argued for it: it used ``hasattr`` rather
+        than ``__table__.columns`` precisely because a ``property`` or
+        ``hybrid_property`` would satisfy the engine's ``getattr`` while
+        the column set would not.  ``SalaryRaise().terminal_year is None``
+        is that argument kept.
+
+        **A ``server_default`` is asserted against the DATABASE, not this
+        model**, in ``tests/test_models/test_s3b_raise_terminal_year.py``
+        -- a migration could add one without touching this class, and
+        SQLAlchemy omits a valueless column from the INSERT, so the DB
+        default would fire with a model-level assertion still green.  That
+        is the F-068 / F-134 model-migration drift class
+        ``test_c25_column_invariants`` exists for.  The arithmetic IDENTITY
+        is measured there too, over a committed row.
         """
-        assert not hasattr(SalaryRaise, "terminal_year"), (
-            "SalaryRaise gained a terminal_year attribute; the paycheck "
-            "engine now clamps and this step's premise needs re-deriving"
+        column = SalaryRaise.__table__.columns["terminal_year"]
+        assert column.nullable is True
+        assert column.default is None, (
+            "salary_raises.terminal_year gained a client-side default; "
+            "every new raise now terminates and the paycheck engine "
+            "clamps rows nobody set an end year on"
         )
-        columns = {c.name for c in SalaryRaise.__table__.columns}
-        assert "terminal_year" not in columns
+        assert SalaryRaise().terminal_year is None, (
+            "a fresh SalaryRaise answers something other than None for "
+            "terminal_year, so the paycheck engine's getattr now clamps a "
+            "raise nobody gave an end year -- check for a property, a "
+            "hybrid_property or an __init__ default shadowing the column"
+        )
 
     def test_a_raise_with_no_terminal_year_compounds_indefinitely(self):
         """3% recurring from 2026, asked at 2036, is 11 applications.

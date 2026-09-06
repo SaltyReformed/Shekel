@@ -66,6 +66,37 @@ class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin,
             "effective_year >= 2000 AND effective_year <= 2100",
             name="ck_salary_raises_valid_effective_year",
         ),
+        # salary:S3-b / R-SAL11: a raise cannot end before it starts.  The
+        # rule the column exists to make unbreakable -- under the global
+        # horizon it replaces, a raise dated past the cutoff was storable
+        # and silently never applied (measured 2026-09-05: a one-time
+        # $8,000 promotion recorded for 2035 under a 2031 cutoff left the
+        # $91,675.00 base untouched at 2040).
+        db.CheckConstraint(
+            "terminal_year IS NULL OR terminal_year >= effective_year",
+            name="ck_salary_raises_terminal_year_not_before_effective",
+        ),
+        # The same 2000-2100 window ``ck_salary_raises_valid_effective_year``
+        # holds the start year to.  The lower bound is DERIVED -- it follows
+        # from the ordering CHECK above plus that sibling -- so dropping the
+        # sibling silently unbounds this column below, which is a dependency
+        # worth naming since nothing else states it.
+        db.CheckConstraint(
+            "terminal_year IS NULL OR terminal_year <= 2100",
+            name="ck_salary_raises_valid_terminal_year",
+        ),
+        # An end year on a ONE-TIME raise is inert: ``_applications`` gates a
+        # one-time raise on ``eff_year <= terminal_year``, which the ordering
+        # CHECK already guarantees, so no value can move a figure.  The end
+        # year asks how long a FORECAST is believed; a one-time raise is a
+        # recorded fact that happens once.  Developer ruling 2026-09-05,
+        # made against both adversarial reviews of salary:S3-b -- which each
+        # found the state and each declined to add the constraint on their
+        # own authority.
+        db.CheckConstraint(
+            "terminal_year IS NULL OR is_recurring",
+            name="ck_salary_raises_terminal_year_only_on_a_recurring_raise",
+        ),
         db.CheckConstraint(
             "percentage IS NULL OR percentage > 0",
             name="ck_salary_raises_positive_pct",
@@ -116,6 +147,30 @@ class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin,
         db.Boolean, nullable=False, default=False,
         server_default=db.text("false"),
     )
+    #: The LAST year this raise is believed to happen, or ``NULL`` for
+    #: indefinitely (plan step **salary:S3-b**, ruling **R-SAL11**).  A
+    #: recorded raise is a fact; a raise marked ``is_recurring`` is partly a
+    #: forecast, and a forecast decays -- this is where that decay is
+    #: stated, per raise, instead of as one global
+    #: ``auth.user_settings.merit_raise_horizon_years`` applied by raise TYPE
+    #: on ``/retirement`` alone.
+    #:
+    #: **Nullable because "indefinitely" is a real belief and the common
+    #: one**: a COLA does not stop, because inflation does not stop at a
+    #: planning horizon.  ``NULL`` is not "unanswered"; it is the answer that
+    #: says the raise carries no end.
+    #:
+    #: **It is already LIVE to the raise walk and no value has been written
+    #: yet, which is deliberate.**
+    #: :func:`app.services.salary_raises.apply_raises` reads this attribute
+    #: through ``getattr(raise_obj, "terminal_year", None)`` -- shipped at
+    #: plan step **salary:S3-a** for the ``TerminatedRaise`` value the
+    #: pension projector builds -- so every ORM row the paycheck engine walks
+    #: now carries the field.  ``NULL`` is exactly what that ``getattr``
+    #: answered before the column existed, so an all-``NULL`` column changes
+    #: no figure anywhere.  The values, the write door and the deletion of
+    #: the global setting are the cutover step's, not this one's.
+    terminal_year = db.Column(db.Integer)
     notes = db.Column(db.Text)
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 

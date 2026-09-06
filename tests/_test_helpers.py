@@ -2432,6 +2432,36 @@ def run_migration_callable(callable_, db_session):
     db_session.commit()
 
 
+def constraint_name_from(exc):
+    """Return the named constraint reported on an :class:`IntegrityError`.
+
+    Reads ``exc.orig.diag.constraint_name`` -- the structured field psycopg2
+    surfaces from the PostgreSQL error packet -- so a test asserting WHICH
+    CHECK fired does not depend on the brittle prose of the error message.
+
+    Shared because it was written twice: the C-24 range/CHECK sweep and the
+    ``salary:S3-b`` terminal-year suite carried byte-identical copies, and
+    ``pylint app/`` never sees ``tests/``, so ``duplicate-code`` could not
+    find it.
+
+    Args:
+        exc: The :class:`sqlalchemy.exc.IntegrityError` a refused write
+            raised.
+
+    Returns:
+        The constraint name, or ``None`` when the driver reported none --
+        which is itself a useful answer, since a NOT NULL violation and a
+        named CHECK violation are different refusals.
+    """
+    orig = getattr(exc, "orig", None)
+    if orig is None:
+        return None
+    diag = getattr(orig, "diag", None)
+    if diag is None:
+        return None
+    return getattr(diag, "constraint_name", None)
+
+
 def load_migration_module(filename):
     """Load an Alembic migration module by filename via importlib.
 
