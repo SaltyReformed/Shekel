@@ -62,7 +62,6 @@ from app.services.cash_ledger import (
     amounts_by_id,
     contribution_of,
     contributions_by_id,
-    owned_amount,
     resolve_transaction_amount,
     resolve_transfer_amount,
 )
@@ -1703,10 +1702,15 @@ class TestABudgetIsNotAContribution:
         """What a row RECORDED is what it cost, never what it was budgeted.
 
         The control on the surprises list: its two terms are the plan and the
-        record, so a plan accessor that answered the record would make every
-        delta zero and the list empty.  ``owned_amount`` and
-        ``owned_contribution`` are the pair, and this is the row that separates
-        them.
+        record, so a plan producer that answered the record would make every
+        delta zero and the list empty.  This is the row that separates them.
+
+        **The plan half names the RESOLVER since plan step X-bu.**  It read
+        ``owned_amount``, the accessor that answered the plan from the row's own
+        column -- a second spelling of the question ``resolve_transaction_amount``
+        answers, and the pairing this docstring named until that step deleted it
+        (finding **BAL-462**).  The contribution half is unchanged, and so are
+        both figures: what the pair separates was never the accessor's doing.
 
         **The row is SETTLED since plan step X-au-c3.**  A figure records a
         settle, so the projected row this used to build -- ``$60.00`` budgeted,
@@ -1718,27 +1722,49 @@ class TestABudgetIsNotAContribution:
             status_enum=StatusEnum.DONE, settled_amount="81.40",
         )
         db.session.flush()
+        basis = _basis_for(seed_user)
 
-        assert owned_amount(txn) == Decimal("60.00")
+        assert resolve_transaction_amount(txn, basis) == Decimal("60.00")
         assert owned_contribution(txn) == Decimal("81.40")
-        assert amounts_by_id(
-            [txn], _basis_for(seed_user),
-        ) == {txn.id: Decimal("60.00")}
+        assert amounts_by_id([txn], basis) == {txn.id: Decimal("60.00")}
 
-    def test_the_batch_refuses_rather_than_skipping_a_derived_row(
+    def test_a_derived_rows_budget_is_ANSWERED_rather_than_refused(
         self, app, db, seed_user, seed_periods,
     ):
-        """``owned_amount`` raises where the column it replaced answered ``None``.
+        """A row carrying no figure of its own still has a budget.
 
-        The reason every settled-only reader takes the accessor rather than the
-        column: on the day a cutover points a derived row at one of them, the
-        failure is named and loud instead of a ``None`` reaching a subtraction.
+        **This test asserted the opposite until plan step X-bu, and the
+        inversion is the step.**  It read ``owned_amount(txn)`` inside a
+        ``pytest.raises`` and was named for the refusal, on the ground that a
+        settled-only reader handed a derived row should fail loudly rather than
+        subtract a ``None``.  The refusal was real and it FIRED -- on
+        ``/analytics/spending``, for every window, on production-shaped data
+        (finding **BAL-462**) -- because the accessor was a SECOND answer to a
+        question ``resolve_transaction_amount`` already answers, and the two
+        part exactly here: on a row an amount-source cutover has declared
+        DERIVED.  What the deletion removed is the ACCESSOR -- a public,
+        one-token answer to the plan question a reader could take instead of
+        asking the amount model -- and NOT the refusal, which survives in
+        ``own_figure`` and is still reachable by a caller that spells the column
+        read itself.  So the surviving claim is the positive one below.
+
+        **The two assertions guard DIFFERENT things, and an adversarial review
+        corrected this paragraph's account of the first.**  It said the second
+        alone would pass against a producer that had gone back to reading the
+        column; it would not -- ``_declare_derived`` EMPTIES the column, so such
+        a producer refuses and the second assertion fails, which is exactly what
+        a mutation of rule 3 measured.  What ``estimated_amount is None`` guards
+        is the FIXTURE: a later change to ``_template_row`` or
+        ``_declare_derived`` that left a figure on the row would keep the second
+        assertion green while it graded nothing at all.
         """
         template = _priced_template(seed_user)
         txn = _template_row(seed_user, seed_periods[0], template)
 
-        with pytest.raises(AmountUnresolvable, match="owns its amount"):
-            owned_amount(txn)
+        assert txn.estimated_amount is None
+        assert amounts_by_id(
+            [txn], _basis_for(seed_user),
+        ) == {txn.id: _OLD_PRICE}
 
 
 class TestThePinsAreTheContractNow:
