@@ -304,6 +304,14 @@ their only live specimen from them, which both `_staging` docstrings predict and
       day AND when consecutive recorded paydays are not one cadence apart (**R-PC55**); the second
       clause is the one that sees a MISSING payday, which is what **P80**'s own worked example turns
       out to be. Closes **P80**.
+- [ ] **C18 -- a payday may be recorded BEFORE the schedule's earliest, and a period below the books
+      generates nothing** (ruling **R-PC62**; closes **PC-499**, **PC-500**).
+      `_reject_backward_payday` bounds a batch after the LATEST payday, where its own docstring says
+      the only thing left to refuse is one INSIDE a paycheck (**C6**'s); it narrows to
+      *strictly inside `[min(paydays), the last paycheck's end)`*, tested on EVERY new payday, since
+      the narrowed rule is not monotone. And what it admits must not GENERATE: a prepend wrote a
+      `$531.94` Van Payment moving 173 figures. The bound is PER ACCOUNT (openings stagger 03-26 to
+      06-26); the date lives on `budget.transfers.occurs_on`.
 - [ ] **C17 -- a pay schedule is a SEQUENCE OF ERAS** (ruling **R-PC58**; closes **P78**,
       **N-492**). One row per *how I have been paid since* -- effective from, cadence, its KIND, the
       phase anchor and the convention -- replacing the single cadence `budget.pay_schedule` holds
