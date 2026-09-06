@@ -52,7 +52,8 @@ load-bearing:
 **No bound of the PROPOSER's is applied here** (:func:`~._pairing
 .within_window`).  That predicate answers *would the app OFFER this pairing*,
 and this list answers *what may the owner ASSERT* -- the question the
-hand-build workbench answers with no day test at all.  Narrowing by it would
+retired hand-build workbench answered with no day test at all.  Narrowing by
+it would
 withdraw from the owner a pairing the accept door would take, which is the
 opposite of every bound this package applies.
 

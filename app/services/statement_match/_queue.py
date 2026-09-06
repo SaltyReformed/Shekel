@@ -301,9 +301,11 @@ class QueueSweep:
     grouping the queue by evidence is what would have made it a contradiction
     on the page.
 
-    The reach is now the DOM subtree the control lives in
-    (``statement_review.js``), so a sweep cannot select a row outside its own
-    group even if a later edit gave one a placement class.
+    The reach was the DOM subtree the control lived in, so a sweep could not
+    select a row outside its own group even if a later edit gave one a
+    placement class.  **Nothing renders this any more**: plan step
+    ``bank_import:X-gi-2`` deleted the queue's body and its script, and
+    ``bank_import:X-gi-3`` deletes this module.
 
     Attributes:
         css_class: The sweep class key, which is

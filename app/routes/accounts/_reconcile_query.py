@@ -114,8 +114,13 @@ def asked_to_open() -> "int | None":
     argues two functions above.  The Apply form carries it in its ACTION's
     query string, so a REFUSED press answers with the card's rows rather than
     the spinner -- though NOT with the owner's ticks, since the page prices
-    its pane from what the pass OFFERS and never from the submitted body,
-    which is what the workbench also does on a refusal.
+    its pane from what the pass OFFERS and never from the submitted body.
+    **That is finding bank_import:BI-478**, and it is now the only hand-build
+    door there is: it was parity with the workbench, which lost a refused
+    press's ticks the same way, until plan step ``bank_import:X-gi-2`` deleted
+    that page.  ``bank_import:X-gi-2a`` owns the remedy -- pricing the pane
+    from the submitted body when one is present, which is what the live
+    fragment already does.
 
     **CALLED BY EACH ROUTE, BEFORE ITS DOOR**, exactly as :func:`requested_tab`
     is.  It was read inside :func:`~.statement_reconcile._reconcile_context`

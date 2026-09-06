@@ -19,7 +19,7 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.extensions import db
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import AccountAnchorHistory
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
 from app.models.pay_period import PayPeriod
@@ -991,75 +991,6 @@ def _attribution(rows, attributed):
         kind=kind, row_id=orm_row.id, cash_amount=Decimal("0.00"),
         version_id=orm_row.version_id,
     )
-
-
-def a_reviewed_token(orm_row, kind, scope=None):
-    """Return the form value the review screen would emit for *orm_row*.
-
-    **Through the real producer, never composed here** -- a helper that spelled
-    the token itself would agree with the schema by construction.
-
-    **What it does NOT grade, stated because a first draft of this docstring
-    claimed it did**: it calls
-    :func:`~app.services.statement_match.as_reviewed` DIRECTLY, so it never
-    touches the ``reviewed_token`` filter and never renders a template.  It
-    grades the service against itself.  The pair that has to agree is a Jinja
-    filter name and a Marshmallow field name, which nothing in the tree fails
-    over, and the only cases that close that loop scrape the rendered page:
-    ``test_statement_matches.TestWhatTheTEMPLATEEmittedIsWhatTheDOORAccepts``,
-    one per emission site.  Named by adversarial financial review 2026-08-23,
-    which measured the hand form's site ungraded at 418 tests green.
-
-    Args:
-        orm_row: A ``Transaction`` or ``TransactionEntry``.
-        kind: Which of the two it is
-            (:class:`~app.services.statement_match.RowKind`).
-        scope: The pass to read the reviewed state out of, or ``None`` to
-            derive one for this row alone.
-
-            **Passing one is what the SCREEN does**, and deriving per row is a
-            shape the app never has: a render builds ONE
-            :class:`~app.services.statement_match.ReviewScope` and emits every
-            row's token off it.  It is also the twin of :func:`a_submission`,
-            which has always taken the scope rather than building its own.
-
-            **The caller owns FRESHNESS, and that is the whole of the
-            contract**: the scope must be derived after every row it will be
-            asked about is staged.  A row it has not got is not an error here
-            -- it takes the not-offerable fallback below, which is deliberate
-            and therefore SILENT, so a stale scope downgrades a live row's
-            token to ``0.00`` rather than failing.  :func:`a_scope` states the
-            same hazard from the other side ("a case that stages a row and then
-            re-uses an older scope is asserting against a state the app would
-            never have"), which is why this is an explicit parameter and not a
-            cache: a cache would make the staleness a property of call order
-            that no caller declared.
-
-            **Why it exists**: ``ReviewScope.build`` is the expensive object in
-            this package -- 0.59-0.75 s and 202 queries on the developer's own
-            account, and the reason ``apply_statement_review`` derives two per
-            request rather than one per act (finding **N-306**).  A case
-            tokenising many rows and building one scope EACH is the same shape
-            at the test tier, and one such case (51 acts) was the slowest test
-            in the suite and timed out in CI.
-
-    Returns:
-        Its ``"<kind>:<row_id>:<cash_amount>:<version_id>"`` token.
-    """
-    if scope is None:
-        account = db.session.get(Account, orm_row.account_id)
-        scope = ReviewScope.build(account.user_id, account.id)
-    for candidate in scope.candidates.rows:
-        if candidate.kind is kind and candidate.row_id == orm_row.id:
-            return as_reviewed(candidate).token
-    # NOT offerable, which several cases stage deliberately.  The door refuses
-    # such a row before it reconciles anything, so the figure here cannot
-    # change an outcome; what must be right is the SHAPE, so the token still
-    # goes through the same value rather than a literal.
-    return ReviewedRow(
-        kind=kind, row_id=orm_row.id, cash_amount=Decimal("0.00"),
-        version_id=orm_row.version_id,
-    ).token
 
 
 def an_account_whose_books_hide_a_line(db, seed_user, seed_periods):

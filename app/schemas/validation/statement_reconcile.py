@@ -16,11 +16,14 @@ record, meeting that ceiling by cutting prose is the harm that finding names.
 
 **The money DOOR and its schemas are unchanged and shared.**  Everything here
 produces payloads :class:`~.statements.StatementBatchSchema` and
-:class:`~.statements.StatementMatchSchema` load, so the Reconcile page, the
-review queue and the hand-build workbench are graded by ONE set of rules and
-reach ONE applier.  A second schema would be free to grade ``residual`` less
-strictly than the one beside it, which is what that field's own docstring
-records having cost once.
+:class:`~.statements.StatementMatchSchema` load, so the Reconcile page is
+graded by the SAME set of rules the review queue and the hand-build workbench
+were, and reaches the same applier.  A second schema would be free to grade
+``residual`` less strictly than the one beside it, which is what that field's
+own docstring records having cost once.  *Those two pages went at plan step
+``bank_import:X-gi-2``, and their FORM READERS -- ``batch_payload`` and
+``hand_match_payload`` -- were left with no caller in ``app/``; the row filing
+that is ``bank_import:BI-479``, owned by ``bank_import:X-gi-3``.*
 
 **Nothing here validates.**  Every value moved is a raw submitted string, so a
 forged id, an unparseable figure and a destination naming no row are all the
@@ -146,10 +149,12 @@ def reconcile_payload(form) -> "tuple[dict, tuple[str, ...]]":
     """Return one Reconcile pass as :class:`StatementBatchSchema` loads it.
 
     Plan step ``bank_import:X-gj-1b``.  **A second reader for one schema and
-    one door**, which is what :func:`hand_match_payload` already is: the
-    Reconcile page and the review queue apply the same acts through
+    one door**, which is what :func:`hand_match_payload` was for the workbench:
+    the Reconcile page and the review queue applied the same acts through
     :func:`~app.services.statement_match.apply_reviewed`, and a second SCHEMA
     would be free to grade ``residual`` less strictly than the one beside it.
+    Since plan step ``bank_import:X-gi-2`` this is the only reader of the three
+    that a request reaches.
     What differs is the FORM, and the form shape lives here beside the schema
     that grades it.
 

@@ -918,6 +918,137 @@ def _row_tokens(pane, line_id):
     )
 
 
+class TestThePaneTagsARowTheBankNeverShowsAloneOnItsOwn:
+    """Plan step ``bank_import:X-gc``: the caveat, on the surface that renders it.
+
+    A row whose figure is not its own -- a CC payback, or a container priced
+    from the purchases inside it -- can never be a bank line by itself, so the
+    pane tags it and says why (:data:`~app.services.statement_match._offers
+    .NOT_SHOWN_ALONE`).  The row STAYS tickable, because ruling **R-GJ** leaves
+    grouping it against the line that does carry its money as a parked card
+    payment's one remaining arm.
+
+    **These two cases are here because plan step ``bank_import:X-gi-2`` deleted
+    the pair that graded the render.**  They lived on the hand-build workbench
+    (``test_statement_workbench.TestTheNeverShowedPanel``), which was the only
+    other surface that listed candidate rows; ``tests/test_services
+    /test_statement_match/test_candidates.py`` grades the DERIVATION and cannot
+    see a template.  Deleting a page must not silently delete the coverage of a
+    disclosure the surviving page still renders, which is exactly what an
+    adversarial review of that step measured happening.
+
+    **Asserted inside the PANE and not page-wide**, which is the discipline the
+    deleted pair kept for the same reason: this page renders many badges, and a
+    body-wide search would be graded by whatever else says the same words.
+
+    **Both cases pin the row into the CANDIDATE loop by its rendered ``id``,
+    and that is a correctness fix rather than thoroughness.**  The pane has TWO
+    row lists -- a tier's PROPOSAL (``id="proposed-<line>-..."``) and the
+    candidate list this caveat is rendered in (``id="row-<line>-..."``) -- and
+    only the second carries the badge at all.  A first version of the
+    discriminating case gave its row the line's own figure, so a tier proposed
+    it and it rendered in the FIRST list: the case passed with the badge forced
+    on unconditionally, because the block under test never ran.  Measured by
+    mutation.  So the figures here are deliberately unequal.
+    """
+
+    def _a_card_payment_line(self, seed_user, db, description):
+        """Record one unexplained outflow on the owner's first day.
+
+        Args:
+            seed_user: The seeded user bundle.
+            db: The session.
+            description: What the bank called it.
+
+        Returns:
+            The :class:`~app.models.statement_import.BankStatementLine`.
+        """
+        return a_bank_line(
+            seed_user, an_import(seed_user), amount="-500.00",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description=description,
+        )
+
+    def test_the_pane_TAGS_a_payback_and_still_offers_it(
+        self, auth_client, db, seed_user,
+    ):
+        """A CC payback is listed, tickable, AND tagged.
+
+        All three halves matter together: X-gc's plan text said the panel
+        should "stop listing rows the bank could never show", and taken
+        literally that removes the paybacks -- the only thing a parked card
+        payment can be grouped against.  So the row is listed, its token is
+        rendered, and only the CLAIM is withdrawn.
+        """
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = self._a_card_payment_line(
+            seed_user, db, "ACH DEBIT CAPITAL ONE      MOBILE PMT",
+        )
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        db.session.flush()
+        payback = a_transaction(
+            seed_user, name="CC Payback: Groceries", amount="60.00",
+            template=False, status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        payback.credit_payback_for_id = envelope.id
+        db.session.commit()
+
+        pane = auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data={"csrf_token": "x"},
+        ).get_data(as_text=True)
+
+        assert "CC Payback: Groceries" in pane, (
+            "the payback was not offered at all, so the tag assertions below "
+            "would be quantified over a pane that lists nothing"
+        )
+        assert f'id="row-{line.id}-transaction-{payback.id}"' in pane, (
+            "the payback did not render in the CANDIDATE list, so this case "
+            "is not exercising the block that carries the caveat"
+        )
+        assert "not a line of its own" in pane
+        assert "never shows it as a line by itself" in pane
+
+    def test_the_pane_does_NOT_tag_a_row_the_bank_would_have_shown(
+        self, auth_client, db, seed_user,
+    ):
+        """The discriminating half, without which the pair grades nothing.
+
+        A tag on every row would withdraw the alarm from the payments the bank
+        really did fail to make, which is the half of ruling **R-FP** this
+        list exists for.  The two cases have DISJOINT expectations on the same
+        two strings, so a render that tagged unconditionally fails here and a
+        render that tagged nothing fails above.
+        """
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = self._a_card_payment_line(
+            seed_user, db, "ACH DEBIT NOTHING EXPLAINS THIS",
+        )
+        # **NOT the line's own `-$500.00`.**  A row that matches the figure is
+        # PROPOSED, and a proposal renders in the pane's other list, which
+        # carries no caveat markup at all -- so the case would pass however
+        # this block behaved.  See the class docstring.
+        ghost = a_transaction(
+            seed_user, name="Ghost Payment", amount="123.45",
+            status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        db.session.commit()
+
+        pane = auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data={"csrf_token": "x"},
+        ).get_data(as_text=True)
+
+        assert f'id="row-{line.id}-transaction-{ghost.id}"' in pane, (
+            "the row was not offered in the CANDIDATE list, so the absence "
+            "assertions below would pass over a block that never ran"
+        )
+        assert "not a line of its own" not in pane
+        assert "never shows it as a line by itself" not in pane
+
+
 class TestTheReceiptOffersOneStandingRulePerMerchant:
     """Ruling **bank_import:R-IB** (developer, 2026-08-30).
 

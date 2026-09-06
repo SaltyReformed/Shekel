@@ -44,7 +44,7 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 74 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 75 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 
@@ -61,7 +61,7 @@ the coordinator could cite it.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**308 steps, 174 open.** The dependency graph holds 112 edges over 92 rows.
+**309 steps, 174 open.** The dependency graph holds 112 edges over 92 rows.
 
 ## The order
 
@@ -69,8 +69,8 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | --- | --- | --- | --- | --- | --- | --- |
 | balance | X-bv | -- | Make a per-kind cutover's declare guard STRUCTURAL, so a migration cannot ship a bare declare: `d7b2e6c1a483` defines `settled_rows_whose_plan_is_not_recoverable` and calls it only from `downgrade()` while its sibling `c8f3a5d2e714` refuses unless the strand set is empty. Closes **BAL-463**. | #1 | -- | NOW |
 | balance | X-bw | -- | Make `_RESTORE_FROM_DEFINITION_SQL` round-trip a paycheck's own figure rather than the template's `default_amount`, so `flask db downgrade` becomes a real rollback path instead of costing `-$9,677.29` of projected income across 43 future paychecks. Closes **BAL-464**. | #2 | -- | NOW |
-| bank_import | X-gi-2 | -- | Delete the review queue, the register and the workbench AS PAGES (**R-HU**): three route modules over nine endpoints, seven templates, `statement_review.js`, `.stmt-pick-list` and the three route test modules, none of which a surviving surface reaches once the links are repointed. `_statement_queue_macros.html` is NOT among the seven -- it survives and is PRUNED at `X-gi-3`. Closes **N-404**. | #3 | -- | NOW / bank_import:X-gi-1 (shipped) |
-| bank_import | X-gi-3 | -- | Delete what those pages orphan in the service -- `_queue.py` whole, which is the evidence grouping with `_SAID` and `_notes_for`, plus `_register.py`, `ReviewSet.queue`, `rows_never_shown`, `explained_by_a_proposal`, `MerchantRegister`, `answered_merchants`, their re-exports, `test_queue.py` and the queue half of `test_rules.py`. | #4 | -- | after #3 / bank_import:X-gi-2 |
+| bank_import | X-gi-2a | -- | Price the Reconcile page's own MATCH pane from the SUBMITTED body when there is one, so a refused Apply answers with the owner's ticks rather than the tier's proposal: `reconcile_page`'s fifth parameter becomes the ask instead of the line id, and the route builds that ask the way the live fragment already does. Closes **BI-478**. | #3 | -- | NOW / bank_import:X-gi-2 (shipped) |
+| bank_import | X-gi-3 | -- | Delete what those pages orphan: `_queue.py` whole, `_register.py`, four `ReviewSet` members, two `ReviewBounds` properties, the two dead form readers `batch_payload` and `hand_match_payload` with their helpers, every re-export of these, and the tests that reach the schemas only through them. Closes **BI-479**, **BI-480**. | #4 | -- | NOW / bank_import:X-gi-2 (shipped) |
 | bank_import | X-gi-4 | -- | Close the three findings the deletion does not: render `anchors_released` and `merchants_forgotten` on the import-delete receipt (**N-470**), put the statements family in the auth-required sweep -- **N-405**'s half SHIPPED at `af6f8a3f`, and put the statements route family into the auth-required sweep (**N-402**). | #5 | -- | NOW |
 | bank_import | X-gi-5 | -- | Take every row lock the pass needs in ONE ordered read before `apply_reviewed`'s three loops, so two concurrent presses naming the same lines in opposite item order stop deadlocking a door that **MOVES MONEY**; **OWN PR**. Closes **N-471**. | #6 | -- | NOW |
 | bank_import | X-gn | -- | Let the Reconcile card's MATCH pane name a SECOND bank line (**R-KC**), restoring the door the workbench's deletion removes: **R-JY**'s act model keeps `group_id`, the accept door already takes a `frozenset[int]`, and only `reconcile_match_payload`'s single-line key stands in the way. | #7 | -- | NOW |
@@ -213,6 +213,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-by | -- | Give each worktree its OWN virtualenv and correct the comment claiming they already share one: four of the seven hold no `.venv`, so `scripts/test.sh:114` falls through to `command -v python3` and their pytest is the MAIN checkout's, while `:259` states that sharing is universal and two worktrees falsify it. `X-br-4` isolated the DATABASE and stopped there. Closes **BAL-469**. | #144 | -- | NOW |
 | salary | S3-c | -- | THE CUTOVER: the stored end year becomes a raise's only source of termination, `_terminate_after_horizon` and `merit_raise_horizon_years` are deleted, and `get_raise_event` learns about termination. **MOVES MONEY**, and **it OPENS ON A STOP** -- the developer deferred the `/retirement` lever fork to this step's own session, so its first act is to put the option space to him. | SHIPPED | `62567d87` | -- |
 | bank_import | X-gi-1 | -- | Clear the FOUR live inbound links left -- two statements-page repoints, one statements-page DELETION, and the Reconcile page's own `<noscript>` Build link (**R-KA**) -- and give the MATCH pane that scriptless path behind `?open=<line_id>`, offering every unexplained row because that render has no search (**R-BI1**). | SHIPPED | `8543c80f` | -- |
+| bank_import | X-gi-2 | -- | Delete the review queue, the register and the workbench AS PAGES (**R-HU**): three route modules over nine endpoints, seven templates, `statement_review.js`, `.stmt-pick-list` and the three route test modules, none of which a surviving surface reached once `X-gi-1` had repointed the links. Closed **N-404**. | SHIPPED | `b462af07` | -- |
 | balance | X-bu | -- | DELETE the public `owned_amount` accessor and fold its body into the resolver's OWN arm, so a settled row's plan has ONE producer and the `AmountUnresolvable` that 500'd `/analytics/spending` on production data becomes unrepresentable rather than caught. Closes **BAL-462**. | SHIPPED | `142f64cb` | -- |
 | balance | X-br-4 | -- | Deleted what the shared postmaster needed -- the slot, the probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX`, `TEST_TEMPLATE_DATABASE` and the `test-db` service -- making the private cluster the only path, 867 wrapper lines to 522. **Its own sentence was WRONG about the slot**, so re-measurement swapped the lock for a note (**R-BAL1**); the bake port became caller-chosen (**R-BAL2**). Closed **N-457**. | SHIPPED | `6a3eb135` | -- |
 | salary | S3 | -- | The DECOMPOSED parent of pricing every payday of the projected horizon, split 2026-09-05 into FIVE leaves once the RAISE MODEL fork was ruled (**R-SAL11**): the per-raise termination, the additive column, the cutover, the horizon on `project_profile`, and the deletion of `AccountPayrollFeed`'s hold. | container | -- | ticks with #10 |

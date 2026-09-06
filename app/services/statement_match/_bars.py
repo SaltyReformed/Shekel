@@ -479,9 +479,11 @@ class BarredLine:
 
         Plan step ``bank_import:X-gf-3a``.  **A parked line's only door is one
         it does not name**, which is what this closes: since ruling
-        **bank_import:R-GX** an ANSWERED merchant leaves the review screen's
-        own control and appears on the register, so a line parked by an answer
-        the owner now disagrees with had nowhere on this page to say so.
+        **bank_import:R-GX** an ANSWERED merchant leaves this control and is
+        found on the merchants list instead (ruling **bank_import:R-IC**), so a
+        line parked by an answer the owner now disagrees with had nowhere on
+        this page to say so.  *The register was that other home until plan step
+        ``bank_import:X-gi-2`` deleted it.*
 
         **It is ``None`` where changing the answer would change nothing**, and
         that is the whole reason it is derived here rather than being a link
